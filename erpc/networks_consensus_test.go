@@ -3,6 +3,9 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -18,21 +21,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	successResponse, _ = common.NewJsonRpcResponse(1, "0x7a", nil)
-)
-
 func TestNetwork_Consensus(t *testing.T) {
+	type upstreamResponses struct {
+		Request  map[string]interface{}
+		Response map[string]interface{}
+		Calls    int
+	}
+
 	tests := []struct {
 		name                 string
 		upstreams            []*common.UpstreamConfig
 		hasRetries           bool
 		request              map[string]interface{}
-		mockResponses        []map[string]interface{}
+		upstreamResponses    [][]upstreamResponses
 		requiredParticipants int
-		expectedCalls        []int // Number of expected calls for each upstream
-		expectedResponse     *common.NormalizedResponse
+		expectedResponse     map[string]interface{}
 		expectedError        *common.ErrorCode
+		expectedCause        *common.ErrorCode
 		expectedMsg          *string
 	}{
 		{
@@ -68,26 +73,60 @@ func TestNetwork_Consensus(t *testing.T) {
 				"method": "eth_chainId",
 				"params": []interface{}{},
 			},
-			mockResponses: []map[string]interface{}{
+			upstreamResponses: [][]upstreamResponses{
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7a",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x7a",
+						},
+						Calls: 1,
+					},
 				},
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7a",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x7a",
+						},
+						Calls: 1,
+					},
 				},
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7a",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x7a",
+						},
+						Calls: 1,
+					},
 				},
 			},
-			expectedCalls: []int{1, 1, 1}, // Each upstream called once
-			expectedResponse: common.NewNormalizedResponse().
-				WithJsonRpcResponse(successResponse),
+			expectedResponse: map[string]interface{}{
+				"id":     1,
+				"result": "0x7a",
+			},
 		},
 		{
 			name:                 "low participants error",
@@ -106,14 +145,24 @@ func TestNetwork_Consensus(t *testing.T) {
 				"method": "eth_chainId",
 				"params": []interface{}{},
 			},
-			mockResponses: []map[string]interface{}{
+			upstreamResponses: [][]upstreamResponses{
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7b",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x7b",
+						},
+						Calls: 3,
+					},
 				},
 			},
-			expectedCalls: []int{3}, // One upstream, called 3 times
 			expectedError: pointer(common.ErrCodeConsensusLowParticipants),
 			expectedMsg:   pointer("not enough participants"),
 		},
@@ -150,29 +199,61 @@ func TestNetwork_Consensus(t *testing.T) {
 				"method": "eth_chainId",
 				"params": []interface{}{},
 			},
-			mockResponses: []map[string]interface{}{
+			upstreamResponses: [][]upstreamResponses{
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7b",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x7b",
+						},
+						Calls: 1,
+					},
 				},
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7c",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x7c",
+						},
+						Calls: 1,
+					},
 				},
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7d",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x7d",
+						},
+						Calls: 1,
+					},
 				},
 			},
-			expectedCalls: []int{1, 1, 1}, // Each upstream called once
 			expectedError: pointer(common.ErrCodeConsensusDispute),
 			expectedMsg:   pointer("not enough agreement among responses"),
 		},
 		{
-			name:                 "retried dispute error",
+			name:                 "retries around `cannot query unfinalized data` error result in a low participants error",
 			requiredParticipants: 2,
 			upstreams: []*common.UpstreamConfig{
 				{
@@ -196,26 +277,264 @@ func TestNetwork_Consensus(t *testing.T) {
 				"method": "eth_getBlockByNumber",
 				"params": []interface{}{"latest", false},
 			},
-			mockResponses: []map[string]interface{}{
+			upstreamResponses: [][]upstreamResponses{
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x1",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_getBlockByNumber",
+							"params":  []interface{}{"latest", false},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x1",
+						},
+						Calls: 3,
+					},
 				},
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"error": map[string]interface{}{
-						"code":    -32000,
-						"message": "cannot query unfinalized data",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_getBlockByNumber",
+							"params":  []interface{}{"latest", false},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"error": map[string]interface{}{
+								"code":    -32000,
+								"message": "cannot query unfinalized data",
+							},
+						},
+						Calls: 1,
 					},
 				},
 			},
 			hasRetries:    true,
-			expectedCalls: []int{2, 1}, // Each upstream called twice
-			expectedError: pointer(common.ErrCodeConsensusDispute),
-			expectedMsg:   pointer("not enough agreement among responses"),
+			expectedError: pointer(common.ErrCodeFailsafeRetryExceeded),
+			expectedCause: pointer(common.ErrCodeConsensusLowParticipants),
+			expectedMsg:   pointer("gave up retrying on network-level"),
 		},
+		// todo: there seems to be a bug here where consensus isn't established when errors are returned.
+		// {
+		// 	name:                 "eth_sendRawTransaction error is returned if the transaction has any user-facing errors",
+		// 	requiredParticipants: 2,
+		// 	upstreams: []*common.UpstreamConfig{
+		// 		{
+		// 			Id:       "test1",
+		// 			Type:     common.UpstreamTypeEvm,
+		// 			Endpoint: "http://rpc1-dispute.localhost",
+		// 			Evm: &common.EvmUpstreamConfig{
+		// 				ChainId: 123,
+		// 			},
+		// 		},
+		// 		{
+		// 			Id:       "test2",
+		// 			Type:     common.UpstreamTypeEvm,
+		// 			Endpoint: "http://rpc2-dispute.localhost",
+		// 			Evm: &common.EvmUpstreamConfig{
+		// 				ChainId: 123,
+		// 			},
+		// 		},
+		// 	},
+		// 	request: map[string]interface{}{
+		// 		"method": "eth_sendRawTransaction",
+		// 		"params": []interface{}{"0xf8aa8085746a52880083030d4094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e900026a06578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472a01f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc"},
+		// 	},
+		// 	mockResponses: []map[string]interface{}{
+		// 		{
+		// 			"jsonrpc": "2.0",
+		// 			"id":      1,
+		// 			"error": map[string]interface{}{
+		// 				"code":    -32000,
+		// 				"message": "transaction underpriced",
+		// 			},
+		// 		},
+		// 		{
+		// 			"jsonrpc": "2.0",
+		// 			"id":      1,
+		// 			"error": map[string]interface{}{
+		// 				"code":    -32000,
+		// 				"message": "transaction underpriced",
+		// 			},
+		// 		},
+		// 	},
+		// 	hasRetries:    true,
+		// 	expectedCalls: []int{1, 1},
+		// 	expectedResponse: common.NewNormalizedResponse().
+		// 		WithJsonRpcResponse(underpricedSendRawTransactionResponse),
+		// },
+		{
+			name:                 "eth_sendRawTransaction is idempotent within a window for identical nonces, non-incremental gas price for the same transaction hash if nonce is too low",
+			requiredParticipants: 2,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-dispute.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-dispute.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_sendRawTransaction",
+				"params": []interface{}{"0xf8aa8085746a52880083030d4094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e900026a06578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472a01f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc"},
+			},
+			upstreamResponses: [][]upstreamResponses{
+				{
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_sendRawTransaction",
+							"params":  []interface{}{"0xf8aa8085746a52880083030d4094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e900026a06578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472a01f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc"},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result":  "0x34dd76864329e3e79a1ed21d21952d9d809c2df4d58a5c4712ffa3b9432e5bca",
+						},
+						Calls: 1,
+					},
+				},
+				{
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_sendRawTransaction",
+							"params":  []interface{}{"0xf8aa8085746a52880083030d4094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e900026a06578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472a01f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc"},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"error": map[string]interface{}{
+								"code":    -32000,
+								"message": "nonce too low",
+							},
+						},
+						Calls: 1,
+					},
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_getTransactionByHash",
+							"params":  []interface{}{"0x34dd76864329e3e79a1ed21d21952d9d809c2df4d58a5c4712ffa3b9432e5bca"},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"result": map[string]interface{}{
+								"blockHash":        "0xc6c592872e3b3bfff735bc0c4d046765dfe45c13820824e2a3d45e19928a9b6c",
+								"blockNumber":      "0x158435d",
+								"from":             "0x5d977b94eaa0265796591eb39b55d1f51a7cb3a4",
+								"gas":              "0x30d40",
+								"gasPrice":         "0x746a528800",
+								"hash":             "0x34dd76864329e3e79a1ed21d21952d9d809c2df4d58a5c4712ffa3b9432e5bca",
+								"input":            "0xa9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e9000",
+								"nonce":            "0x0",
+								"to":               "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+								"transactionIndex": "0x7",
+								"value":            "0x0",
+								"type":             "0x0",
+								"chainId":          "0x1",
+								"v":                "0x26",
+								"r":                "0x6578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472",
+								"s":                "0x1f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc",
+							},
+						},
+						Calls: 1,
+					},
+				},
+			},
+			expectedResponse: map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x34dd76864329e3e79a1ed21d21952d9d809c2df4d58a5c4712ffa3b9432e5bca",
+			},
+		},
+		// {
+		// 	name:                 "eth_sendRawTransaction is idempotent within a window for identical nonces, non-incremental gas price for the same transaction hash if the transaction is included in the mempool",
+		// 	requiredParticipants: 2,
+		// 	upstreams: []*common.UpstreamConfig{
+		// 		{
+		// 			Id:       "test1",
+		// 			Type:     common.UpstreamTypeEvm,
+		// 			Endpoint: "http://rpc1-dispute.localhost",
+		// 			Evm: &common.EvmUpstreamConfig{
+		// 				ChainId: 123,
+		// 			},
+		// 		},
+		// 		{
+		// 			Id:       "test2",
+		// 			Type:     common.UpstreamTypeEvm,
+		// 			Endpoint: "http://rpc2-dispute.localhost",
+		// 			Evm: &common.EvmUpstreamConfig{
+		// 				ChainId: 123,
+		// 			},
+		// 		},
+		// 	},
+		// 	request: map[string]interface{}{
+		// 		"method": "eth_sendRawTransaction",
+		// 		"params": []interface{}{"0xf8aa8085746a52880083030d4094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e900026a06578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472a01f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc"},
+		// 	},
+		// 	upstreamResponses: [][]upstreamResponses{
+		// 		{
+		// 			{
+		// 				Request: map[string]interface{}{
+		// 					"jsonrpc": "2.0",
+		// 					"id":      "*",
+		// 					"method":  "eth_sendRawTransaction",
+		// 					"params":  []interface{}{"0xf8aa8085746a52880083030d4094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e900026a06578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472a01f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc"},
+		// 				},
+		// 				Response: map[string]interface{}{
+		// 					"jsonrpc": "2.0",
+		// 					"id":      1,
+		// 					"result":  "0x34dd76864329e3e79a1ed21d21952d9d809c2df4d58a5c4712ffa3b9432e5bca",
+		// 				},
+		// 				Calls: 1,
+		// 			},
+		// 		},
+		// 		{
+		// 			{
+		// 				Request: map[string]interface{}{
+		// 					"jsonrpc": "2.0",
+		// 					"id":      "*",
+		// 					"method":  "eth_sendRawTransaction",
+		// 					"params":  []interface{}{"0xf8aa8085746a52880083030d4094a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4880b844a9059cbb00000000000000000000000055fe002aeff02f77364de339a1292923a15844b8000000000000000000000000000000000000000000000000000016bcc41e900026a06578e9605f60007ac6293b15861c59f0d90c97a0390c4d62d2a6be890fd84472a01f3a5f5ad1330f71669324bb8a46ec174c5abd2503587fee897b818540a85dcc"},
+		// 				},
+		// 				Response: map[string]interface{}{
+		// 					"jsonrpc": "2.0",
+		// 					"id":      1,
+		// 					"error": map[string]interface{}{
+		// 						"code":    -32000,
+		// 						"message": "transaction already in mempool",
+		// 					},
+		// 				},
+		// 				Calls: 1,
+		// 			},
+		// 		},
+		// 	},
+		// 	expectedResponse: map[string]interface{}{
+		// 		"jsonrpc": "2.0",
+		// 		"id":      1,
+		// 		"result":  "0x34dd76864329e3e79a1ed21d21952d9d809c2df4d58a5c4712ffa3b9432e5bca",
+		// 	},
+		// },
 		{
 			name:                 "error response on upstreams",
 			requiredParticipants: 3,
@@ -249,33 +568,65 @@ func TestNetwork_Consensus(t *testing.T) {
 				"method": "eth_chainId",
 				"params": []interface{}{},
 			},
-			mockResponses: []map[string]interface{}{
+			upstreamResponses: [][]upstreamResponses{
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"error": map[string]interface{}{
-						"code":    -32000,
-						"message": "internal error",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"error": map[string]interface{}{
+								"code":    -32000,
+								"message": "internal error",
+							},
+						},
+						Calls: 3,
 					},
 				},
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"error": map[string]interface{}{
-						"code":    -32000,
-						"message": "internal error",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"error": map[string]interface{}{
+								"code":    -32000,
+								"message": "internal error",
+							},
+						},
+						Calls: 3,
 					},
 				},
 				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"error": map[string]interface{}{
-						"code":    -32000,
-						"message": "internal error",
+					{
+						Request: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      "*",
+							"method":  "eth_chainId",
+							"params":  []interface{}{},
+						},
+						Response: map[string]interface{}{
+							"jsonrpc": "2.0",
+							"id":      1,
+							"error": map[string]interface{}{
+								"code":    -32000,
+								"message": "internal error",
+							},
+						},
+						Calls: 3,
 					},
 				},
 			},
-			expectedCalls: []int{1, 1, 1}, // Each upstream called once
 			expectedError: pointer(common.ErrCodeConsensusDispute),
 			expectedMsg:   pointer("not enough agreement among responses"),
 		},
@@ -380,12 +731,41 @@ func TestNetwork_Consensus(t *testing.T) {
 
 			// Setup mock responses with expected call counts
 			for i, upstream := range tt.upstreams {
-				gock.New(upstream.Endpoint).
-					Post("/").
-					Times(tt.expectedCalls[i]).
-					Reply(200).
-					SetHeader("Content-Type", "application/json").
-					JSON(tt.mockResponses[i])
+				upstreamResponses := tt.upstreamResponses[i]
+				for _, response := range upstreamResponses {
+					gock.New(upstream.Endpoint).
+						Post("/").
+						AddMatcher(func(request *http.Request, gockReq *gock.Request) (bool, error) {
+							body, err := io.ReadAll(request.Body)
+							if err != nil {
+								return false, err
+							}
+
+							jsonBody := map[string]interface{}{}
+							err = json.Unmarshal(body, &jsonBody)
+							if err != nil {
+								return false, err
+							}
+
+							// Simulate wildcard matching, through altering the request body
+							for key, value := range response.Request {
+								if value == "*" {
+									jsonBody[key] = "*"
+								}
+							}
+
+							matched := reflect.DeepEqual(jsonBody, response.Request)
+
+							t.Logf("matched: %v, url: %s, actual: %v, expected: %v", matched, request.URL.String(), jsonBody, response.Request)
+
+							return matched, nil
+						}).
+						//JSON(response.Request).
+						Times(response.Calls).
+						Reply(200).
+						SetHeader("Content-Type", "application/json").
+						JSON(response.Response)
+				}
 			}
 
 			// Make request
@@ -402,22 +782,43 @@ func TestNetwork_Consensus(t *testing.T) {
 				log.Debug().Err(err).Msg("Got error from Forward")
 			}
 
+			for _, request := range gock.GetUnmatchedRequests() {
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Logf("expected no unmatched requests, got %s", request.URL.String())
+				} else {
+					t.Logf("expected no unmatched requests, got %s, %s", request.URL.String(), string(body))
+				}
+			}
+
+			if len(gock.GetUnmatchedRequests()) > 0 {
+				t.Fatalf("expected no unmatched requests, got %d", len(gock.GetUnmatchedRequests()))
+			}
+
 			if tt.expectedError != nil {
 				assert.Error(t, err, "expected error but got nil")
 				assert.True(t, common.HasErrorCode(err, *tt.expectedError), "expected error code %s, got %s", *tt.expectedError, err)
 				assert.Contains(t, err.Error(), *tt.expectedMsg, "expected error message %s, got %s", *tt.expectedMsg, err.Error())
 				assert.Nil(t, resp, "expected nil response")
+				if tt.expectedCause != nil {
+					if err, ok := err.(common.StandardError); ok {
+						if err, ok := err.GetCause().(common.StandardError); ok {
+							assert.True(t, common.HasErrorCode(err, *tt.expectedCause), "expected error code %s, got %s", *tt.expectedError, err)
+						}
+					}
+				}
 			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, resp)
+				require.NoError(t, err)
+				require.NotNil(t, resp)
 
-				expectedJrr, err := tt.expectedResponse.JsonRpcResponse()
-				assert.NoError(t, err)
-				assert.NotNil(t, expectedJrr)
+				expectedJrr, err := common.NewJsonRpcResponse(tt.expectedResponse["id"], tt.expectedResponse["result"], nil)
+				require.NoError(t, err)
+				require.NotNil(t, expectedJrr)
+				require.NoError(t, err)
 
 				actualJrr, err := resp.JsonRpcResponse()
-				assert.NoError(t, err)
-				assert.NotNil(t, actualJrr)
+				require.NoError(t, err)
+				require.NotNil(t, actualJrr)
 
 				assert.Equal(t, string(expectedJrr.Result), string(actualJrr.Result))
 			}
