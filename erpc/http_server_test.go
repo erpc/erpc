@@ -3286,6 +3286,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
 						},
 					},
 				},
@@ -7668,27 +7671,30 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
 		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{"result": false})
+		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": false})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
-					strings.Contains(util.SafeReadBody(request), `"latest"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"result": map[string]interface{}{
-					"number": "0x300",
-				},
-			})
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
+						strings.Contains(util.SafeReadBody(request), `"latest"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"result": map[string]interface{}{
+						"number": "0x300",
+					},
+				})
+		}
 
 		// The user calls eth_getBlockByNumber("unknownTag", false). Since "unknownTag" is neither
 		// 'latest', 'finalized', 'pending', 'earliest', nor a direct hex, we expect NO override logic to happen.
@@ -7736,11 +7742,11 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0xabcd", result["number"], "invalid block tag should not trigger any override")
 		assert.Equal(t, "0xhash_for_unknownTag", result["hash"], "the block hash should match upstream exactly")
 
-		// Only the poller calls plus the single user request are used; no fallback or second request is triggered.
-		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+		// The 2 persistent poller mocks remain pending after use
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
 
-	t.Run("Should Handle Successful Consensus", func(t *testing.T) {
+	t.Run("ShouldHandleSuccessfulConsensus", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -7818,6 +7824,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 			gock.New(rpc.Endpoint).
 				Post("").
+				Persist().
 				Filter(func(request *http.Request) bool {
 					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
 						strings.Contains(util.SafeReadBody(request), `"latest"`)
@@ -7844,14 +7851,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
-					return strings.Contains(body, `"id":5010`) &&
-						strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					return strings.Contains(body, `"eth_getBlockByNumber"`) &&
 						strings.Contains(body, `"0x300"`)
 				}).
 				Reply(200).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      5050,
+					"id":      1, // ID doesn't matter for the response
 					"result": map[string]interface{}{
 						"number": "0x300",
 						"hash":   "0xhash_for_consensus",
@@ -7871,7 +7877,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0x300", result["number"], "the block number should match the upstream's response")
 		assert.Equal(t, "0xhash_for_consensus", result["hash"], "the block hash should match upstream exactly")
 	})
-	t.Run("Should Handle Consensus Failure due to Low Participants", func(t *testing.T) {
+
+	t.Run("ShouldHandleConsensusFailureDueToLowParticipants", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -7931,6 +7938,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 			gock.New(rpc.Endpoint).
 				Post("").
+				Persist().
 				Filter(func(request *http.Request) bool {
 					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
 						strings.Contains(util.SafeReadBody(request), `"latest"`)
@@ -7959,14 +7967,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Times(3).
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				return strings.Contains(body, `"id":5010`) &&
-					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
 					strings.Contains(body, `"0x300"`)
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
-				"id":      5050,
+				"id":      1, // ID doesn't matter for the response
 				"result": map[string]interface{}{
 					"number": "0x300",
 					"hash":   "0xhash_for_consensus",
@@ -7986,7 +7993,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "not enough participants", errResp["message"], "error message should be 'not enough participants'")
 	})
 
-	t.Run("Should Handle Consensus Failure due to Dispute", func(t *testing.T) {
+	t.Run("ShouldHandleConsensusFailureDueToDispute", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -8064,6 +8071,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 			gock.New(rpc.Endpoint).
 				Post("").
+				Persist().
 				Filter(func(request *http.Request) bool {
 					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
 						strings.Contains(util.SafeReadBody(request), `"latest"`)
@@ -8090,14 +8098,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
-					return strings.Contains(body, `"id":5010`) &&
-						strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					return strings.Contains(body, `"eth_getBlockByNumber"`) &&
 						strings.Contains(body, `"0x300"`)
 				}).
 				Reply(200).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      5050,
+					"id":      1, // ID doesn't matter for the response
 					"result": map[string]interface{}{
 						"number": "0x300",
 						"hash":   fmt.Sprintf("0xhash_for_consensus_%d", idx),

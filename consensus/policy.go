@@ -61,8 +61,8 @@ func NewConsensusPolicyBuilder[R any]() ConsensusPolicyBuilder[R] {
 type consensusPolicy[R any] struct {
 	*config[R]
 	logger                          *zerolog.Logger
-	misbehavingUpstreamsLimiter     sync.Map // [string, *ratelimiter.Limiter]
-	misbehavingUpstreamsSitoutTimer sync.Map // [string, *time.Timer]
+	misbehavingUpstreamsLimiter     *sync.Map // [string, *ratelimiter.Limiter]
+	misbehavingUpstreamsSitoutTimer *sync.Map // [string, *time.Timer]
 }
 
 var _ ConsensusPolicy[any] = &consensusPolicy[any]{}
@@ -126,8 +126,8 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 	return &consensusPolicy[R]{
 		config:                          &hCopy,
 		logger:                          &log,
-		misbehavingUpstreamsLimiter:     sync.Map{},
-		misbehavingUpstreamsSitoutTimer: sync.Map{},
+		misbehavingUpstreamsLimiter:     &sync.Map{},
+		misbehavingUpstreamsSitoutTimer: &sync.Map{},
 	}
 }
 

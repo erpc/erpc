@@ -285,6 +285,10 @@ export interface UpstreamConfig {
   rateLimitBudget?: string;
   rateLimitAutoTune?: RateLimitAutoTuneConfig;
   routing?: RoutingConfig;
+  shadow?: ShadowUpstreamConfig;
+}
+export interface ShadowUpstreamConfig {
+  enabled: boolean;
 }
 export interface RoutingConfig {
   scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
@@ -371,17 +375,17 @@ export interface HedgePolicyConfig {
 }
 export type ConsensusFailureBehavior = string;
 export const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior = "returnError";
-export const ConsensusFailureBehaviorAcceptAnyValidResult: ConsensusFailureBehavior = "acceptAnyValidResult";
+export const ConsensusFailureBehaviorAcceptMostCommonValidResult: ConsensusFailureBehavior = "acceptMostCommonValidResult";
 export const ConsensusFailureBehaviorPreferBlockHeadLeader: ConsensusFailureBehavior = "preferBlockHeadLeader";
 export const ConsensusFailureBehaviorOnlyBlockHeadLeader: ConsensusFailureBehavior = "onlyBlockHeadLeader";
 export type ConsensusLowParticipantsBehavior = string;
 export const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior = "returnError";
-export const ConsensusLowParticipantsBehaviorAcceptAnyValidResult: ConsensusLowParticipantsBehavior = "acceptAnyValidResult";
+export const ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult: ConsensusLowParticipantsBehavior = "acceptMostCommonValidResult";
 export const ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: ConsensusLowParticipantsBehavior = "preferBlockHeadLeader";
 export const ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader";
 export type ConsensusDisputeBehavior = string;
 export const ConsensusDisputeBehaviorReturnError: ConsensusDisputeBehavior = "returnError";
-export const ConsensusDisputeBehaviorAcceptAnyValidResult: ConsensusDisputeBehavior = "acceptAnyValidResult";
+export const ConsensusDisputeBehaviorAcceptMostCommonValidResult: ConsensusDisputeBehavior = "acceptMostCommonValidResult";
 export const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBehavior = "preferBlockHeadLeader";
 export const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior = "onlyBlockHeadLeader";
 export interface ConsensusPolicyConfig {
@@ -393,8 +397,9 @@ export interface ConsensusPolicyConfig {
   punishMisbehavior?: PunishMisbehaviorConfig;
 }
 export interface PunishMisbehaviorConfig {
-  disputeThreshold: number /* int */;
-  sitOutPenalty?: string;
+  disputeThreshold: number /* uint */;
+  disputeWindow?: Duration;
+  sitOutPenalty?: Duration;
 }
 export interface RateLimiterConfig {
   budgets: RateLimitBudgetConfig[];
