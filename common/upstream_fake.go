@@ -54,6 +54,10 @@ func (u *FakeUpstream) Config() *UpstreamConfig {
 	return u.config
 }
 
+func (u *FakeUpstream) IgnoreMethod(method string) {
+	// No-op for testing
+}
+
 func (u *FakeUpstream) Logger() *zerolog.Logger {
 	return &zerolog.Logger{}
 }

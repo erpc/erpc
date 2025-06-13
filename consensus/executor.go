@@ -9,6 +9,7 @@ import (
 	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 	"github.com/failsafe-go/failsafe-go/policy"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
+	"github.com/rs/zerolog"
 )
 
 // executor is a policy.Executor that handles failures according to a ConsensusPolicy.
@@ -48,25 +49,74 @@ func (e *executor[R]) resultToJsonRpcResponse(result R, exec failsafe.Execution[
 
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R]) func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R] {
 	return func(exec failsafe.Execution[R]) *failsafeCommon.PolicyResult[R] {
+		ctx := exec.Context()
+		// Extract the original request and upstream list from the execution context.
+		val := ctx.Value(common.RequestContextKey)
+		originalReq, ok := val.(*common.NormalizedRequest)
+		if !ok || originalReq == nil {
+			// shouldn't happen, but fall back to simple execution
+			e.logger.Warn().Object("request", originalReq).Msg("unexpecued nil request in consensus policy")
+			return innerFn(exec)
+		}
+
+		lg := e.logger.With().
+			Interface("id", originalReq.ID()).
+			Str("component", "consensus").
+			Str("networkId", originalReq.NetworkId()).
+			Logger()
+
+		val = ctx.Value(common.UpstreamsContextKey)
+		upsList, ok := val.([]common.Upstream)
+		if !ok || upsList == nil {
+			lg.Warn().Object("request", originalReq).Interface("upstreams", upsList).Msg("unexpecued incompatible or empty list of upstreams in consensus policy")
+			return innerFn(exec)
+		}
+
+		lg.Debug().
+			Interface("upstreams", func() []string {
+				ids := make([]string, len(upsList))
+				for i, up := range upsList {
+					ids[i] = up.Id()
+				}
+				return ids
+			}()).
+			Int("upstreamsCount", len(upsList)).
+			Msg("consensus policy received upstreams")
+
+		// Pick the upstreams that will participate in the consensus round.
+		selectedUpstreams := e.selectUpstreams(upsList)
+
 		parentExecution := exec.(policy.ExecutionInternal[R])
-		executions := make([]policy.ExecutionInternal[R], e.requiredParticipants)
+		executions := make([]policy.ExecutionInternal[R], len(selectedUpstreams))
 		executionWaitGroup := sync.WaitGroup{}
-		executionWaitGroup.Add(e.requiredParticipants)
+		executionWaitGroup.Add(len(selectedUpstreams))
 
 		// Create a buffered channel for the single result
 		resultChan := make(chan *failsafeCommon.PolicyResult[R], 1)
 
 		// Track responses for consensus checking
-		responses := make([]*execResult[R], 0, e.requiredParticipants)
+		responses := make([]*execResult[R], 0, len(selectedUpstreams))
 		responseMu := sync.Mutex{}
 
-		// Track used upstreams to ensure we don't use the same one twice
-		usedUpstreams := make(map[common.Upstream]struct{})
-		usedUpstreamsMu := sync.Mutex{}
+		for execIdx, up := range selectedUpstreams {
+			cloneReq, err := originalReq.Clone()
+			if err != nil {
+				lg.Error().Err(err).Msg("error cloning request")
+				return innerFn(exec)
+			}
+			cloneReq.Directives().UseUpstream = up.Id()
 
-		for execIdx := range e.requiredParticipants {
-			// Prepare execution
-			executions[execIdx] = parentExecution.CopyForCancellable().(policy.ExecutionInternal[R])
+			lg.Debug().
+				Interface("id", cloneReq.ID()).
+				Int("index", execIdx).
+				Str("upstream", up.Id()).
+				Object("request", cloneReq).
+				Msg("prepared cloned request for consensus execution")
+
+			executions[execIdx] = parentExecution.CopyForCancellableWithValue(
+				common.RequestContextKey,
+				cloneReq,
+			).(policy.ExecutionInternal[R])
 
 			// Perform execution
 			go func(consensusExec policy.ExecutionInternal[R], execIdx int) {
@@ -74,6 +124,7 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 
 				// Get the upstream from the response
 				var upstream common.Upstream
+				lg.Trace().Int("index", execIdx).Object("request", originalReq).Msg("sending consensus request")
 				result := innerFn(consensusExec)
 				if result == nil {
 					return
@@ -82,18 +133,8 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				// Get upstream from response if available
 				if resp, ok := any(result.Result).(*common.NormalizedResponse); ok {
 					if ups := resp.Upstream(); ups != nil {
-						// Check if this upstream has already been used
-						usedUpstreamsMu.Lock()
-						if _, used := usedUpstreams[ups]; used {
-							usedUpstreamsMu.Unlock()
-							e.logger.Debug().Int("request", execIdx).Str("upstream", ups.Config().Id).Msg("skipping already used upstream")
-							return
-						}
-						usedUpstreams[ups] = struct{}{}
-						usedUpstreamsMu.Unlock()
-
 						upstream = ups
-						e.logger.Debug().Int("request", execIdx).Str("upstream", upstream.Config().Id).Msg("consensus request using upstream")
+						lg.Debug().Int("index", execIdx).Str("upstream", upstream.Config().Id).Msg("response for consensus from upstream")
 					}
 				}
 
@@ -112,13 +153,27 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 			// Wait for all executions to complete
 			executionWaitGroup.Wait()
 
+			// Count unique participants
+			nonErrorParticipants := make(map[string]struct{})
+			for _, r := range responses {
+				if r.err == nil && r.upstream != nil && r.upstream.Config() != nil {
+					nonErrorParticipants[r.upstream.Config().Id] = struct{}{}
+				}
+			}
+			nonErrorParticipantCount := len(nonErrorParticipants)
+
+			lg.Debug().
+				Int("nonErrorParticipantCount", nonErrorParticipantCount).
+				Int("requiredParticipants", e.requiredParticipants).
+				Msg("counting unique participants")
+
 			// Count responses by result
 			resultCounts := make(map[string]int)
 			errorCount := 0
 			for _, r := range responses {
 				if r.err != nil {
 					errorCount++
-					e.logger.Debug().
+					lg.Debug().
 						Err(r.err).
 						Msg("response has error")
 					continue
@@ -126,23 +181,31 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				// Extract just the response data for comparison
 				resultHash, err := e.resultToHash(r.result, exec)
 				if err != nil {
-					e.logger.Error().
+					lg.Error().
 						Err(err).
 						Msg("error converting result to hash")
 					continue
 				}
 				resultCounts[resultHash]++
-				e.logger.Debug().
-					Str("result_hash", resultHash).
-					Int("count", resultCounts[resultHash]).
-					Msg("counting response")
+				if lg.GetLevel() <= zerolog.DebugLevel {
+					upstreamId := "unknown"
+					if r.upstream != nil && r.upstream.Config() != nil {
+						upstreamId = r.upstream.Config().Id
+					}
+					lg.Debug().
+						Str("resultHash", resultHash).
+						Int("count", resultCounts[resultHash]).
+						Str("upstream", upstreamId).
+						Object("response", e.resultToJsonRpcResponse(r.result, exec)).
+						Msg("counting response")
+				}
 			}
 
-			e.logger.Debug().
-				Int("total_responses", len(responses)).
-				Int("required", e.requiredParticipants).
-				Int("error_count", errorCount).
-				Interface("response_counts", resultCounts).
+			lg.Debug().
+				Int("totalResponses", len(responses)).
+				Int("required", len(selectedUpstreams)).
+				Int("errorCount", errorCount).
+				Interface("responseCounts", resultCounts).
 				Msg("consensus check")
 
 			// Find the most common result
@@ -155,19 +218,17 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				}
 			}
 
-			e.logger.Debug().
-				Str("most_common_result_hash", mostCommonResultHash).
+			lg.Debug().
+				Str("mostCommonResultHash", mostCommonResultHash).
 				Int("count", mostCommonResultCount).
 				Int("threshold", e.agreementThreshold).
-				Bool("has_consensus", mostCommonResultCount >= e.agreementThreshold).
+				Bool("hasConsensus", mostCommonResultCount >= e.agreementThreshold).
 				Msg("consensus result")
 
-			// Check if we have enough agreement
+			// Check for low participants first
 			if mostCommonResultCount >= e.agreementThreshold {
 				// We have consensus
-				e.logger.Debug().
-					Str("source", "consensus").
-					Msg("sending consensus result")
+				lg.Debug().Msg("completed consensus execution")
 
 				if e.onAgreement != nil {
 					e.onAgreement(failsafe.ExecutionEvent[R]{
@@ -176,7 +237,7 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				}
 
 				// Track misbehaving upstreams
-				e.trackMisbehavingUpstreams(responses, resultCounts, mostCommonResultHash, parentExecution)
+				e.trackMisbehavingUpstreams(&lg, responses, resultCounts, mostCommonResultHash, parentExecution)
 
 				// Convert mostCommonResult back to type R
 				var finalResult R
@@ -184,7 +245,8 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 					if r.err == nil {
 						resultHash, err := e.resultToHash(r.result, exec)
 						if err != nil {
-							e.logger.Error().
+							lg.Error().
+								Interface("result", r.result).
 								Err(err).
 								Msg("error converting result to hash")
 							continue
@@ -198,10 +260,12 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				resultChan <- &failsafeCommon.PolicyResult[R]{
 					Result: finalResult,
 				}
-			} else if len(responses) < e.requiredParticipants {
-				e.logger.Debug().
+			} else if nonErrorParticipantCount < e.requiredParticipants {
+				lg.Debug().
+					Int("nonErrorParticipantCount", nonErrorParticipantCount).
 					Int("responses", len(responses)).
 					Int("required", e.requiredParticipants).
+					Int("selectedUpstreams", len(selectedUpstreams)).
 					Msg("handling low participants")
 
 				if e.onLowParticipants != nil {
@@ -212,29 +276,27 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 
 				switch e.lowParticipantsBehavior {
 				case common.ConsensusLowParticipantsBehaviorReturnError:
-					e.handleReturnError(resultChan, exec, func() error {
+					e.handleReturnError(&lg, resultChan, exec, func() error {
 						return common.NewErrConsensusLowParticipants("not enough participants")
 					})
-				case common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult:
-					e.handleAcceptAnyValid(resultChan, responses, mostCommonResultHash, exec, func() error {
+				case common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult:
+					e.handleAcceptMostCommon(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
 						return common.NewErrConsensusLowParticipants("no valid results found")
 					})
 				case common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader:
-					e.handlePreferBlockHeadLeader(resultChan, responses, mostCommonResultHash, exec, func() error {
+					e.handlePreferBlockHeadLeader(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
 						return common.NewErrConsensusLowParticipants("no block head leader found")
 					})
 				case common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader:
-					e.handleOnlyBlockHeadLeader(resultChan, responses, exec, func() error {
+					e.handleOnlyBlockHeadLeader(&lg, resultChan, responses, exec, func() error {
 						return common.NewErrConsensusLowParticipants("no block head leader found")
 					})
 				}
 			} else {
-				// Handle dispute
-				e.logger.Debug().
-					Str("source", "dispute").
-					Int("max_count", mostCommonResultCount).
+				lg.Debug().
+					Int("maxCount", mostCommonResultCount).
 					Int("threshold", e.agreementThreshold).
-					Msg("handling dispute")
+					Msg("handling consensus dispute")
 
 				if e.onDispute != nil {
 					e.onDispute(failsafe.ExecutionEvent[R]{
@@ -243,24 +305,24 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				}
 
 				// Track misbehaving upstreams
-				e.trackMisbehavingUpstreams(responses, resultCounts, mostCommonResultHash, parentExecution)
+				e.trackMisbehavingUpstreams(&lg, responses, resultCounts, mostCommonResultHash, parentExecution)
 
 				// Handle dispute according to behavior
 				switch e.disputeBehavior {
 				case common.ConsensusDisputeBehaviorReturnError:
-					e.handleReturnError(resultChan, exec, func() error {
+					e.handleReturnError(&lg, resultChan, exec, func() error {
 						return common.NewErrConsensusDispute("not enough agreement among responses")
 					})
-				case common.ConsensusDisputeBehaviorAcceptAnyValidResult:
-					e.handleAcceptAnyValid(resultChan, responses, mostCommonResultHash, exec, func() error {
+				case common.ConsensusDisputeBehaviorAcceptMostCommonValidResult:
+					e.handleAcceptMostCommon(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
 						return common.NewErrConsensusDispute("no valid results found")
 					})
 				case common.ConsensusDisputeBehaviorPreferBlockHeadLeader:
-					e.handlePreferBlockHeadLeader(resultChan, responses, mostCommonResultHash, exec, func() error {
+					e.handlePreferBlockHeadLeader(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
 						return common.NewErrConsensusDispute("no block head leader found")
 					})
 				case common.ConsensusDisputeBehaviorOnlyBlockHeadLeader:
-					e.handleOnlyBlockHeadLeader(resultChan, responses, exec, func() error {
+					e.handleOnlyBlockHeadLeader(&lg, resultChan, responses, exec, func() error {
 						return common.NewErrConsensusDispute("no block head leader found")
 					})
 				}
@@ -282,16 +344,16 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 	}
 }
 
-func (e *executor[R]) createRateLimiter(upstreamId string) ratelimiter.RateLimiter[any] {
+func (e *executor[R]) createRateLimiter(logger *zerolog.Logger, upstreamId string) ratelimiter.RateLimiter[any] {
 	// Try to get existing limiter
 	if limiter, ok := e.misbehavingUpstreamsLimiter.Load(upstreamId); ok {
 		return limiter.(ratelimiter.RateLimiter[any])
 	}
 
-	e.logger.Info().
+	logger.Info().
 		Str("upstream", upstreamId).
-		Uint("dispute_threshold", e.punishMisbehavior.DisputeThreshold).
-		Str("dispute_window", e.punishMisbehavior.DisputeWindow.String()).
+		Uint("disputeThreshold", e.punishMisbehavior.DisputeThreshold).
+		Str("disputeWindow", e.punishMisbehavior.DisputeWindow.String()).
 		Msg("creating new dispute limiter")
 
 	limiter := ratelimiter.
@@ -303,7 +365,7 @@ func (e *executor[R]) createRateLimiter(upstreamId string) ratelimiter.RateLimit
 	return limiter
 }
 
-func (e *executor[R]) trackMisbehavingUpstreams(responses []*execResult[R], resultCounts map[string]int, mostCommonResultHash string, execution policy.ExecutionInternal[R]) {
+func (e *executor[R]) trackMisbehavingUpstreams(logger *zerolog.Logger, responses []*execResult[R], resultCounts map[string]int, mostCommonResultHash string, execution policy.ExecutionInternal[R]) {
 	// Count total valid responses
 	totalValidResponses := 0
 	for _, count := range resultCounts {
@@ -328,7 +390,7 @@ func (e *executor[R]) trackMisbehavingUpstreams(responses []*execResult[R], resu
 
 		resultHash, err := e.resultToHash(response.result, execution)
 		if err != nil {
-			e.logger.Error().
+			logger.Error().
 				Err(err).
 				Msg("error converting result to hash")
 			continue
@@ -339,24 +401,24 @@ func (e *executor[R]) trackMisbehavingUpstreams(responses []*execResult[R], resu
 
 		// If this result doesn't match the most common result, punish the upstream
 		if resultHash != mostCommonResultHash {
-			limiter := e.createRateLimiter(upstream.Config().Id)
+			limiter := e.createRateLimiter(logger, upstream.Config().Id)
 			if !limiter.TryAcquirePermit() {
-				e.handleMisbehavingUpstream(upstream, upstream.Config().Id)
+				e.handleMisbehavingUpstream(logger, upstream, upstream.Config().Id)
 			}
 		}
 	}
 }
 
-func (e *executor[R]) handleMisbehavingUpstream(upstream common.Upstream, upstreamId string) {
+func (e *executor[R]) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId string) {
 	// First check if we're the first to handle this upstream
 	if _, loaded := e.misbehavingUpstreamsSitoutTimer.LoadOrStore(upstreamId, nil); loaded {
-		e.logger.Debug().
+		logger.Debug().
 			Str("upstream", upstreamId).
 			Msg("upstream already in sitout, skipping")
 		return
 	}
 
-	e.logger.Warn().
+	logger.Warn().
 		Str("upstream", upstreamId).
 		Msg("misbehaviour limit exhausted, punishing upstream")
 
@@ -373,20 +435,16 @@ func (e *executor[R]) handleMisbehavingUpstream(upstream common.Upstream, upstre
 	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, timer)
 }
 
-func (e *executor[R]) handleReturnError(resultChan chan<- *failsafeCommon.PolicyResult[R], exec failsafe.Execution[R], errFn func() error) {
-	e.logger.Debug().
-		Str("source", "error").
-		Msg("sending error result")
+func (e *executor[R]) handleReturnError(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], exec failsafe.Execution[R], errFn func() error) {
+	logger.Debug().Msg("sending error result")
 
 	resultChan <- &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}
 }
 
-func (e *executor[R]) handleAcceptAnyValid(resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], mostCommonResult string, exec failsafe.Execution[R], errFn func() error) {
-	e.logger.Debug().
-		Str("source", "accept_valid").
-		Msg("sending first valid result")
+func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], mostCommonResult string, exec failsafe.Execution[R], errFn func() error) {
+	logger.Debug().Msg("sending most common valid result")
 
 	var finalResult R
 	foundValidResult := false
@@ -436,13 +494,11 @@ func (e *executor[R]) findBlockHeadLeader(responses []*execResult[R]) (int64, *e
 	return highestBlock, highestBlockResult
 }
 
-func (e *executor[R]) handlePreferBlockHeadLeader(resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], mostCommonResult string, exec failsafe.Execution[R], errFn func() error) {
+func (e *executor[R]) handlePreferBlockHeadLeader(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], mostCommonResult string, exec failsafe.Execution[R], errFn func() error) {
 	_, highestBlockResult := e.findBlockHeadLeader(responses)
 
 	if highestBlockResult != nil {
-		e.logger.Debug().
-			Str("source", "block_head").
-			Msg("sending block head leader result")
+		logger.Debug().Msg("sending block head leader result")
 
 		if highestBlockResult.err != nil {
 			resultChan <- &failsafeCommon.PolicyResult[R]{
@@ -458,16 +514,14 @@ func (e *executor[R]) handlePreferBlockHeadLeader(resultChan chan<- *failsafeCom
 	}
 
 	// Fall back to most common result
-	e.handleAcceptAnyValid(resultChan, responses, mostCommonResult, exec, errFn)
+	e.handleAcceptMostCommon(logger, resultChan, responses, mostCommonResult, exec, errFn)
 }
 
-func (e *executor[R]) handleOnlyBlockHeadLeader(resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], exec failsafe.Execution[R], errFn func() error) {
+func (e *executor[R]) handleOnlyBlockHeadLeader(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], exec failsafe.Execution[R], errFn func() error) {
 	_, highestBlockResult := e.findBlockHeadLeader(responses)
 
 	if highestBlockResult != nil {
-		e.logger.Debug().
-			Str("source", "only_block_head").
-			Msg("sending block head leader result")
+		logger.Debug().Msg("sending block head leader result")
 		resultChan <- &failsafeCommon.PolicyResult[R]{
 			Result: highestBlockResult.result,
 		}
@@ -475,11 +529,79 @@ func (e *executor[R]) handleOnlyBlockHeadLeader(resultChan chan<- *failsafeCommo
 	}
 
 	// If no block head leader found, return error
-	e.logger.Debug().
-		Str("source", "only_block_head_error").
-		Msg("sending no block head leader error")
+	logger.Debug().Msg("sending no block head leader error")
 
 	resultChan <- &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}
+}
+
+// selectUpstreams chooses which upstreams will participate in the consensus round based
+// on the configured policy and the currently available upstream list. The logic is
+// adapted from the former Network.runConsensus implementation so that the decision
+// lives entirely inside the consensus executor.
+func (e *executor[R]) selectUpstreams(upsList []common.Upstream) []common.Upstream {
+	if len(upsList) == 0 {
+		return nil
+	}
+
+	required := e.requiredParticipants
+	if required <= 0 {
+		required = 2
+	}
+
+	selected := upsList
+	if len(selected) > required {
+		selected = selected[:required]
+	}
+
+	// If behaviour cares about block-head leader, make sure it is in the set.
+	if e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader ||
+		e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader {
+		leader := findBlockHeadLeaderUpstream(upsList)
+		if leader != nil {
+			found := false
+			for _, u := range selected {
+				if u == leader {
+					found = true
+					break
+				}
+			}
+			if !found {
+				if e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader {
+					selected = []common.Upstream{leader}
+				} else { // prefer -> swap last
+					if len(selected) > 0 {
+						selected[len(selected)-1] = leader
+					} else {
+						selected = []common.Upstream{leader}
+					}
+				}
+			}
+		}
+	}
+
+	return selected
+}
+
+// findBlockHeadLeaderUpstream inspects the provided upstream list and returns the
+// upstream with the highest latest block number (best head). When no suitable
+// upstream can be found it returns nil.
+func findBlockHeadLeaderUpstream(ups []common.Upstream) common.Upstream {
+	var leader common.Upstream
+	var highest int64
+	for _, u := range ups {
+		if evmUp, ok := u.(common.EvmUpstream); ok {
+			sp := evmUp.EvmStatePoller()
+			if sp == nil {
+				continue
+			}
+			lb := sp.LatestBlock()
+			if lb > highest {
+				highest = lb
+				leader = u
+			}
+		}
+	}
+	return leader
 }

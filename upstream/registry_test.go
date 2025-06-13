@@ -21,8 +21,8 @@ func init() {
 	telemetry.SetHistogramBuckets("0.05,0.5,5,30")
 }
 
-func getUpsByID(upsList []*Upstream, ids ...string) []*Upstream {
-	var ups []*Upstream
+func getUpsByID(upsList []common.Upstream, ids ...string) []common.Upstream {
+	var ups []common.Upstream
 	for _, id := range ids {
 		for _, u := range upsList {
 			if u.Id() == id {

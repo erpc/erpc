@@ -40,7 +40,7 @@ func TestConsensusExecutor(t *testing.T) {
 		expectedPunishedUpsteams []string
 	}{
 		{
-			name:                 "successful consensus, misbehaving upstreams are punished if there is a clear majority",
+			name:                 "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -59,7 +59,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedPunishedUpsteams: []string{},
 		},
 		{
-			name:                 "successful consensus, misbehaving upstreams are punished if there is a clear majority",
+			name:                 "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -80,7 +80,7 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute with return error, misbehaving upstreams are punished if there is a clear majority",
+			name:                 "dispute_with_return_error_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
 			requiredParticipants: 5,
 			agreementThreshold:   4,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -104,7 +104,7 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute with return error",
+			name:                 "dispute_with_return_error",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -122,10 +122,10 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: nil,
 		},
 		{
-			name:                 "dispute with accept any valid",
+			name:                 "dispute_with_accept_any_valid",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
+			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:     1,
 			responses: []*struct {
 				response                  string
@@ -144,7 +144,7 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute with prefer block head leader",
+			name:                 "dispute_with_prefer_block_head_leader",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorPreferBlockHeadLeader),
@@ -162,7 +162,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result3"},
 		},
 		{
-			name:                 "dispute with only block head leader",
+			name:                 "dispute_with_only_block_head_leader",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
@@ -180,7 +180,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result3"},
 		},
 		{
-			name:                 "dispute with only block head leader",
+			name:                 "dispute_with_only_block_head_leader",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
@@ -198,7 +198,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result3"},
 		},
 		{
-			name:                    "low participants with return error",
+			name:                    "low_participants_with_return_error",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorReturnError),
@@ -209,17 +209,17 @@ func TestConsensusExecutor(t *testing.T) {
 				upstreamLatestBlockNumber int64
 			}{
 				{"result1", "upstream1", 1},
-				{"result1", "upstream1", 1},
-				{"result1", "upstream1", 1},
+				{"result2", "upstream1", 2},
+				{"result3", "upstream1", 3},
 			},
 			expectedError:  pointer("ErrConsensusLowParticipants: not enough participants"),
 			expectedResult: nil,
 		},
 		{
-			name:                    "low participants with accept any valid",
+			name:                    "low_participants_with_accept_any_valid",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
-			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult),
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:        1,
 			responses: []*struct {
 				response                  string
@@ -234,7 +234,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result1"},
 		},
 		{
-			name:                    "low participants with prefer block head leader fallback",
+			name:                    "low_participants_with_prefer_block_head_leader_fallback",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
@@ -252,7 +252,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result1"},
 		},
 		{
-			name:                    "low participants with prefer block head leader",
+			name:                    "low_participants_with_prefer_block_head_leader",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
@@ -427,10 +427,34 @@ func createResponse(result string, upstream common.Upstream) *common.NormalizedR
 // Mock execution that returns pre-defined responses
 type mockExecution struct {
 	responses []*common.NormalizedResponse
+
+	// lazily-initialised context carrying request & upstream metadata so that the
+	// consensus executor runs its full logic during unit tests.
+	ctx context.Context
 }
 
 func (m *mockExecution) Context() context.Context {
-	return context.Background()
+	// Build the context only once
+	if m.ctx != nil {
+		return m.ctx
+	}
+
+	// Build upstream list preserving duplicates so that tests covering low-participant
+	// scenarios (same upstream reused) behave as intended.
+	var upsList []common.Upstream
+	for _, r := range m.responses {
+		if up := r.Upstream(); up != nil {
+			upsList = append(upsList, up)
+		}
+	}
+
+	// Create a bare minimum normalized request so the executor doesn't bail out.
+	dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_test"}`))
+
+	m.ctx = context.Background()
+	m.ctx = context.WithValue(m.ctx, common.RequestContextKey, dummyReq)
+	m.ctx = context.WithValue(m.ctx, common.UpstreamsContextKey, upsList)
+	return m.ctx
 }
 
 func (m *mockExecution) Attempts() int {
@@ -498,6 +522,12 @@ func (m *mockExecution) Cancel(result *failsafeCommon.PolicyResult[*common.Norma
 }
 
 func (m *mockExecution) CopyForCancellable() failsafe.Execution[*common.NormalizedResponse] {
+	return &mockExecution{
+		responses: m.responses,
+	}
+}
+
+func (m *mockExecution) CopyForCancellableWithValue(key, value any) failsafe.Execution[*common.NormalizedResponse] {
 	return &mockExecution{
 		responses: m.responses,
 	}

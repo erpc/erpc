@@ -217,7 +217,7 @@ func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {
 	return u.allUpstreams
 }
 
-func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, method string) ([]*Upstream, error) {
+func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, method string) ([]common.Upstream, error) {
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.GetSortedUpstreams")
 	defer span.End()
 
@@ -281,10 +281,10 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 		}
 		u.upstreamsMu.Unlock()
 
-		return methodUpsList, nil
+		return castToCommonUpstreams(methodUpsList), nil
 	}
 
-	return upsList, nil
+	return castToCommonUpstreams(upsList), nil
 }
 
 func (u *UpstreamsRegistry) RLockUpstreams() {
@@ -895,4 +895,12 @@ func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
 
 func (u *UpstreamsRegistry) GetMetricsTracker() *health.Tracker {
 	return u.metricsTracker
+}
+
+func castToCommonUpstreams(upstreams []*Upstream) []common.Upstream {
+	commonUpstreams := make([]common.Upstream, len(upstreams))
+	for i, ups := range upstreams {
+		commonUpstreams[i] = ups
+	}
+	return commonUpstreams
 }

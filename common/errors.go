@@ -746,7 +746,7 @@ var NewErrUpstreamsExhausted = func(
 	ersObj *sync.Map,
 	prjId, netId, method string,
 	duration time.Duration,
-	attempts, retries, hedges int,
+	attempts, retries, hedges, upstreams int,
 ) error {
 	ers := []error{}
 	ersObj.Range(func(key, value any) bool {
@@ -766,6 +766,7 @@ var NewErrUpstreamsExhausted = func(
 				"attempts":   attempts,
 				"retries":    retries,
 				"hedges":     hedges,
+				"upstreams":  upstreams,
 			},
 		},
 	}
@@ -1259,12 +1260,13 @@ func (e *ErrUpstreamGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
 
 type ErrUpstreamNotAllowed struct{ BaseError }
 
-var NewErrUpstreamNotAllowed = func(upstreamId string) error {
+var NewErrUpstreamNotAllowed = func(required, upstreamId string) error {
 	return &ErrUpstreamNotAllowed{
 		BaseError{
 			Code:    "ErrUpstreamNotAllowed",
 			Message: "upstream not allowed based on use-upstream directive",
 			Details: map[string]interface{}{
+				"required":   required,
 				"upstreamId": upstreamId,
 			},
 		},
