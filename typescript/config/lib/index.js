@@ -28,15 +28,15 @@ __export(src_exports, {
   CacheEmptyBehaviorAllow: () => CacheEmptyBehaviorAllow,
   CacheEmptyBehaviorIgnore: () => CacheEmptyBehaviorIgnore,
   CacheEmptyBehaviorOnly: () => CacheEmptyBehaviorOnly,
-  ConsensusDisputeBehaviorAcceptAnyValidResult: () => ConsensusDisputeBehaviorAcceptAnyValidResult,
+  ConsensusDisputeBehaviorAcceptMostCommonValidResult: () => ConsensusDisputeBehaviorAcceptMostCommonValidResult,
   ConsensusDisputeBehaviorOnlyBlockHeadLeader: () => ConsensusDisputeBehaviorOnlyBlockHeadLeader,
   ConsensusDisputeBehaviorPreferBlockHeadLeader: () => ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorReturnError: () => ConsensusDisputeBehaviorReturnError,
-  ConsensusFailureBehaviorAcceptAnyValidResult: () => ConsensusFailureBehaviorAcceptAnyValidResult,
+  ConsensusFailureBehaviorAcceptMostCommonValidResult: () => ConsensusFailureBehaviorAcceptMostCommonValidResult,
   ConsensusFailureBehaviorOnlyBlockHeadLeader: () => ConsensusFailureBehaviorOnlyBlockHeadLeader,
   ConsensusFailureBehaviorPreferBlockHeadLeader: () => ConsensusFailureBehaviorPreferBlockHeadLeader,
   ConsensusFailureBehaviorReturnError: () => ConsensusFailureBehaviorReturnError,
-  ConsensusLowParticipantsBehaviorAcceptAnyValidResult: () => ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
+  ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult: () => ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
   ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: () => ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
   ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: () => ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
   ConsensusLowParticipantsBehaviorReturnError: () => ConsensusLowParticipantsBehaviorReturnError,
@@ -66,15 +66,15 @@ var EvmSyncingStateUnknown = 0;
 var EvmSyncingStateSyncing = 1;
 var EvmSyncingStateNotSyncing = 2;
 var ConsensusFailureBehaviorReturnError = "returnError";
-var ConsensusFailureBehaviorAcceptAnyValidResult = "acceptAnyValidResult";
+var ConsensusFailureBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
 var ConsensusFailureBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
 var ConsensusFailureBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
 var ConsensusLowParticipantsBehaviorReturnError = "returnError";
-var ConsensusLowParticipantsBehaviorAcceptAnyValidResult = "acceptAnyValidResult";
+var ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
 var ConsensusLowParticipantsBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
 var ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
 var ConsensusDisputeBehaviorReturnError = "returnError";
-var ConsensusDisputeBehaviorAcceptAnyValidResult = "acceptAnyValidResult";
+var ConsensusDisputeBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
 var ConsensusDisputeBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
 var ConsensusDisputeBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
 var AuthTypeSecret = "secret";
@@ -106,15 +106,15 @@ var createConfig = (cfg) => {
   CacheEmptyBehaviorAllow,
   CacheEmptyBehaviorIgnore,
   CacheEmptyBehaviorOnly,
-  ConsensusDisputeBehaviorAcceptAnyValidResult,
+  ConsensusDisputeBehaviorAcceptMostCommonValidResult,
   ConsensusDisputeBehaviorOnlyBlockHeadLeader,
   ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorReturnError,
-  ConsensusFailureBehaviorAcceptAnyValidResult,
+  ConsensusFailureBehaviorAcceptMostCommonValidResult,
   ConsensusFailureBehaviorOnlyBlockHeadLeader,
   ConsensusFailureBehaviorPreferBlockHeadLeader,
   ConsensusFailureBehaviorReturnError,
-  ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
+  ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
   ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
   ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
   ConsensusLowParticipantsBehaviorReturnError,
