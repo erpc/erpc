@@ -125,7 +125,7 @@ func TestConsensusExecutor(t *testing.T) {
 			name:                 "dispute with accept any valid",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
+			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:     1,
 			responses: []*struct {
 				response                  string
@@ -219,7 +219,7 @@ func TestConsensusExecutor(t *testing.T) {
 			name:                    "low participants with accept any valid",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
-			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult),
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:        1,
 			responses: []*struct {
 				response                  string
@@ -427,10 +427,34 @@ func createResponse(result string, upstream common.Upstream) *common.NormalizedR
 // Mock execution that returns pre-defined responses
 type mockExecution struct {
 	responses []*common.NormalizedResponse
+
+	// lazily-initialised context carrying request & upstream metadata so that the
+	// consensus executor runs its full logic during unit tests.
+	ctx context.Context
 }
 
 func (m *mockExecution) Context() context.Context {
-	return context.Background()
+	// Build the context only once
+	if m.ctx != nil {
+		return m.ctx
+	}
+
+	// Build upstream list preserving duplicates so that tests covering low-participant
+	// scenarios (same upstream reused) behave as intended.
+	var upsList []common.Upstream
+	for _, r := range m.responses {
+		if up := r.Upstream(); up != nil {
+			upsList = append(upsList, up)
+		}
+	}
+
+	// Create a bare minimum normalized request so the executor doesn't bail out.
+	dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_test"}`))
+
+	m.ctx = context.Background()
+	m.ctx = context.WithValue(m.ctx, common.RequestContextKey, dummyReq)
+	m.ctx = context.WithValue(m.ctx, common.UpstreamsContextKey, upsList)
+	return m.ctx
 }
 
 func (m *mockExecution) Attempts() int {
@@ -498,6 +522,12 @@ func (m *mockExecution) Cancel(result *failsafeCommon.PolicyResult[*common.Norma
 }
 
 func (m *mockExecution) CopyForCancellable() failsafe.Execution[*common.NormalizedResponse] {
+	return &mockExecution{
+		responses: m.responses,
+	}
+}
+
+func (m *mockExecution) CopyForCancellableWithValue(key, value any) failsafe.Execution[*common.NormalizedResponse] {
 	return &mockExecution{
 		responses: m.responses,
 	}

@@ -20,7 +20,8 @@ const (
 	CompositeTypeLogsSplitProactive = "logs-split-proactive"
 )
 
-const RequestContextKey ContextKey = "request"
+const RequestContextKey ContextKey = "rq"
+const UpstreamsContextKey ContextKey = "ups"
 
 type RequestDirectives struct {
 	// Instruct the proxy to retry if response from the upstream appears to be empty
@@ -70,6 +71,10 @@ type NormalizedRequest struct {
 	directives     *RequestDirectives
 	jsonRpcRequest atomic.Pointer[JsonRpcRequest]
 
+	UpstreamIdx      uint32
+	ErrorsByUpstream sync.Map
+	EmptyResponses   sync.Map
+
 	lastValidResponse atomic.Pointer[NormalizedResponse]
 	lastUpstream      atomic.Value
 	evmBlockRef       atomic.Value
@@ -99,6 +104,31 @@ func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *Nor
 	nr.jsonRpcRequest.Store(jsonRpcRequest)
 	nr.compositeType.Store(CompositeTypeNone)
 	return nr
+}
+
+// Clone creates a deep copy of the request with same request method, and params, but different ID.
+// There will be new pointers for the rest of the fields but same initial values.
+// The last valid response will be set to nil.
+func (r *NormalizedRequest) Clone() (*NormalizedRequest, error) {
+	if r == nil || r.body == nil {
+		return nil, NewErrInvalidRequest(fmt.Errorf("request is nil or body is nil"))
+	}
+	jrq, err := r.JsonRpcRequest()
+	if err != nil {
+		return nil, err
+	}
+	cloneJrq := jrq.Clone()
+	cloneJrq.ID = util.RandomID()
+	clone := NewNormalizedRequestFromJsonRpcRequest(cloneJrq)
+	clone.SetNetwork(r.network)
+	clone.SetCacheDal(r.cacheDal)
+	if r.directives != nil {
+		clone.SetDirectives(r.directives.Clone())
+	} else {
+		clone.SetDirectives(&RequestDirectives{})
+	}
+
+	return clone, nil
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
