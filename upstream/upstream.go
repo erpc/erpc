@@ -999,7 +999,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 			return err, true
 		}
 		if !match {
-			return common.NewErrUpstreamNotAllowed(u.config.Id), true
+			return common.NewErrUpstreamNotAllowed(dirs.UseUpstream, u.config.Id), true
 		}
 	}
 

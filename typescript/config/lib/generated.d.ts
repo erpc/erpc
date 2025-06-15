@@ -261,6 +261,10 @@ export interface UpstreamConfig {
     rateLimitBudget?: string;
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
     routing?: RoutingConfig;
+    shadow?: ShadowUpstreamConfig;
+}
+export interface ShadowUpstreamConfig {
+    enabled: boolean;
 }
 export interface RoutingConfig {
     scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
@@ -349,17 +353,17 @@ export interface HedgePolicyConfig {
 }
 export type ConsensusFailureBehavior = string;
 export declare const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior;
-export declare const ConsensusFailureBehaviorAcceptAnyValidResult: ConsensusFailureBehavior;
+export declare const ConsensusFailureBehaviorAcceptMostCommonValidResult: ConsensusFailureBehavior;
 export declare const ConsensusFailureBehaviorPreferBlockHeadLeader: ConsensusFailureBehavior;
 export declare const ConsensusFailureBehaviorOnlyBlockHeadLeader: ConsensusFailureBehavior;
 export type ConsensusLowParticipantsBehavior = string;
 export declare const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior;
-export declare const ConsensusLowParticipantsBehaviorAcceptAnyValidResult: ConsensusLowParticipantsBehavior;
+export declare const ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult: ConsensusLowParticipantsBehavior;
 export declare const ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: ConsensusLowParticipantsBehavior;
 export declare const ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: ConsensusLowParticipantsBehavior;
 export type ConsensusDisputeBehavior = string;
 export declare const ConsensusDisputeBehaviorReturnError: ConsensusDisputeBehavior;
-export declare const ConsensusDisputeBehaviorAcceptAnyValidResult: ConsensusDisputeBehavior;
+export declare const ConsensusDisputeBehaviorAcceptMostCommonValidResult: ConsensusDisputeBehavior;
 export declare const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBehavior;
 export declare const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior;
 export interface ConsensusPolicyConfig {
@@ -372,7 +376,8 @@ export interface ConsensusPolicyConfig {
 }
 export interface PunishMisbehaviorConfig {
     disputeThreshold: number;
-    sitOutPenalty?: string;
+    disputeWindow?: Duration;
+    sitOutPenalty?: Duration;
 }
 export interface RateLimiterConfig {
     budgets: RateLimitBudgetConfig[];

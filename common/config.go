@@ -671,28 +671,28 @@ func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
 type ConsensusFailureBehavior string
 
 const (
-	ConsensusFailureBehaviorReturnError           ConsensusFailureBehavior = "returnError"
-	ConsensusFailureBehaviorAcceptAnyValidResult  ConsensusFailureBehavior = "acceptAnyValidResult"
-	ConsensusFailureBehaviorPreferBlockHeadLeader ConsensusFailureBehavior = "preferBlockHeadLeader"
-	ConsensusFailureBehaviorOnlyBlockHeadLeader   ConsensusFailureBehavior = "onlyBlockHeadLeader"
+	ConsensusFailureBehaviorReturnError                 ConsensusFailureBehavior = "returnError"
+	ConsensusFailureBehaviorAcceptMostCommonValidResult ConsensusFailureBehavior = "acceptMostCommonValidResult"
+	ConsensusFailureBehaviorPreferBlockHeadLeader       ConsensusFailureBehavior = "preferBlockHeadLeader"
+	ConsensusFailureBehaviorOnlyBlockHeadLeader         ConsensusFailureBehavior = "onlyBlockHeadLeader"
 )
 
 type ConsensusLowParticipantsBehavior string
 
 const (
-	ConsensusLowParticipantsBehaviorReturnError           ConsensusLowParticipantsBehavior = "returnError"
-	ConsensusLowParticipantsBehaviorAcceptAnyValidResult  ConsensusLowParticipantsBehavior = "acceptAnyValidResult"
-	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
-	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader   ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
+	ConsensusLowParticipantsBehaviorReturnError                 ConsensusLowParticipantsBehavior = "returnError"
+	ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult ConsensusLowParticipantsBehavior = "acceptMostCommonValidResult"
+	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader       ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
+	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader         ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
 )
 
 type ConsensusDisputeBehavior string
 
 const (
-	ConsensusDisputeBehaviorReturnError           ConsensusDisputeBehavior = "returnError"
-	ConsensusDisputeBehaviorAcceptAnyValidResult  ConsensusDisputeBehavior = "acceptAnyValidResult"
-	ConsensusDisputeBehaviorPreferBlockHeadLeader ConsensusDisputeBehavior = "preferBlockHeadLeader"
-	ConsensusDisputeBehaviorOnlyBlockHeadLeader   ConsensusDisputeBehavior = "onlyBlockHeadLeader"
+	ConsensusDisputeBehaviorReturnError                 ConsensusDisputeBehavior = "returnError"
+	ConsensusDisputeBehaviorAcceptMostCommonValidResult ConsensusDisputeBehavior = "acceptMostCommonValidResult"
+	ConsensusDisputeBehaviorPreferBlockHeadLeader       ConsensusDisputeBehavior = "preferBlockHeadLeader"
+	ConsensusDisputeBehaviorOnlyBlockHeadLeader         ConsensusDisputeBehavior = "onlyBlockHeadLeader"
 )
 
 type ConsensusPolicyConfig struct {
