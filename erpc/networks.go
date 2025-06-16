@@ -438,7 +438,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if err != nil {
-					ulg.Debug().Err(err).Object("request", effectiveReq).Str("upstreamId", u.Id()).Msgf("DEBUUUUUUUUUG storing error for upstream")
 					effectiveReq.ErrorsByUpstream.Store(u, err)
 				} else if r.IsResultEmptyish(loopCtx) {
 					effectiveReq.ErrorsByUpstream.Store(u, common.NewErrEndpointMissingData(nil))
@@ -610,25 +609,6 @@ func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
 
 func (n *Network) Config() *common.NetworkConfig {
 	return n.cfg
-}
-
-// GetSortedUpstreams exposes the same upstream-selection logic used internally by
-// Network.Forward so that other packages (e.g. the consensus policy) can pre-select
-// upstreams without importing erpc-specific registries. It simply proxies the call
-// to UpstreamsRegistry and casts the resulting slice to the common.Upstream
-// interface slice expected by callers.
-func (n *Network) GetSortedUpstreams(ctx context.Context, method string) ([]common.Upstream, error) {
-	ups, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
-	if err != nil {
-		return nil, err
-	}
-	// The registry returns []*upstream.Upstream (which already implements
-	// common.Upstream).  We just need to widen the slice element type.
-	res := make([]common.Upstream, len(ups))
-	for i, u := range ups {
-		res[i] = u
-	}
-	return res, nil
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead bool) (*common.NormalizedResponse, error) {

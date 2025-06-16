@@ -625,6 +625,169 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			expectedResponse: common.NewNormalizedResponse().
 				WithJsonRpcResponse(successResponse),
 		},
+		{
+			name:                    "only_block_head_leader_selects_highest_block_upstream",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader),
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-leader.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-leader.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-leader.localhost", // This will be the leader
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+			},
+			expectedCalls: []int{
+				0, // test1 should NOT be called
+				0, // test2 should NOT be called
+				1, // test3 (leader) should be called
+			},
+			expectedResponse: common.NewNormalizedResponse().
+				WithJsonRpcResponse(successResponse),
+		},
+		{
+			name:                    "prefer_block_head_leader_includes_leader_in_participants",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-leader.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-leader.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-leader.localhost", // This will be the leader
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+			},
+			expectedCalls: []int{
+				1, // test1 should be called
+				0, // test2 should NOT be called (replaced by leader)
+				1, // test3 (leader) should be called
+			},
+			expectedResponse: common.NewNormalizedResponse().
+				WithJsonRpcResponse(successResponse),
+		},
+		{
+			name:                    "only_block_head_leader_no_leader_available_uses_normal_selection",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader),
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-no-leader.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-no-leader.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+			},
+			expectedCalls: []int{
+				1, // test1 should be called (normal selection)
+				1, // test2 should be called (normal selection)
+			},
+			expectedResponse: common.NewNormalizedResponse().
+				WithJsonRpcResponse(successResponse),
+		},
 	}
 
 	for _, tt := range tests {
@@ -746,6 +909,25 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 
 			upstream.ReorderUpstreams(upsReg)
 
+			// Set up block numbers for leader selection tests
+			if tt.name == "only_block_head_leader_selects_highest_block_upstream" ||
+				tt.name == "prefer_block_head_leader_includes_leader_in_participants" {
+				// Get upstreams and set their block numbers
+				upsList := upsReg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+				if len(upsList) >= 3 {
+					// Set block numbers: test3 will have the highest block
+					upsList[0].EvmStatePoller().SuggestLatestBlock(100) // test1
+					upsList[1].EvmStatePoller().SuggestLatestBlock(200) // test2
+					upsList[2].EvmStatePoller().SuggestLatestBlock(300) // test3 (leader)
+				}
+			} else if tt.name == "only_block_head_leader_no_leader_available_uses_normal_selection" {
+				// For the no-leader test, set all block numbers to 0
+				upsList := upsReg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+				for _, ups := range upsList {
+					ups.EvmStatePoller().SuggestLatestBlock(0)
+				}
+			}
+
 			// Setup mock responses with expected call counts
 			for i, upstream := range tt.upstreams {
 				if tt.expectedCalls[i] > 0 {
@@ -795,7 +977,13 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, actualJrr)
 
-				if actualJrr != nil {
+				// Ensure both are either nil or non-nil
+				if expectedJrr != nil && actualJrr == nil {
+					t.Fatal("expected a JSON-RPC response but got nil")
+				} else if expectedJrr == nil && actualJrr != nil {
+					t.Fatal("expected no JSON-RPC response but got one")
+				} else if expectedJrr != nil && actualJrr != nil {
+					// Both are non-nil, compare the results
 					assert.Equal(t, string(expectedJrr.Result), string(actualJrr.Result))
 				}
 			}
