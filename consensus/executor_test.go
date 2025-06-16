@@ -40,7 +40,7 @@ func TestConsensusExecutor(t *testing.T) {
 		expectedPunishedUpsteams []string
 	}{
 		{
-			name:                 "successful consensus, misbehaving upstreams are punished if there is a clear majority",
+			name:                 "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -59,7 +59,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedPunishedUpsteams: []string{},
 		},
 		{
-			name:                 "successful consensus, misbehaving upstreams are punished if there is a clear majority",
+			name:                 "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -80,7 +80,7 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute with return error, misbehaving upstreams are punished if there is a clear majority",
+			name:                 "dispute_with_return_error_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
 			requiredParticipants: 5,
 			agreementThreshold:   4,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -104,7 +104,7 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute with return error",
+			name:                 "dispute_with_return_error",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
@@ -122,10 +122,10 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: nil,
 		},
 		{
-			name:                 "dispute with accept any valid",
+			name:                 "dispute_with_accept_any_valid",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
+			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:     1,
 			responses: []*struct {
 				response                  string
@@ -144,7 +144,7 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute with prefer block head leader",
+			name:                 "dispute_with_prefer_block_head_leader",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorPreferBlockHeadLeader),
@@ -162,7 +162,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result3"},
 		},
 		{
-			name:                 "dispute with only block head leader",
+			name:                 "dispute_with_only_block_head_leader",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
@@ -180,7 +180,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result3"},
 		},
 		{
-			name:                 "dispute with only block head leader",
+			name:                 "dispute_with_only_block_head_leader",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
@@ -198,7 +198,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result3"},
 		},
 		{
-			name:                    "low participants with return error",
+			name:                    "low_participants_with_return_error",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorReturnError),
@@ -209,17 +209,17 @@ func TestConsensusExecutor(t *testing.T) {
 				upstreamLatestBlockNumber int64
 			}{
 				{"result1", "upstream1", 1},
-				{"result1", "upstream1", 1},
-				{"result1", "upstream1", 1},
+				{"result2", "upstream1", 2},
+				{"result3", "upstream1", 3},
 			},
 			expectedError:  pointer("ErrConsensusLowParticipants: not enough participants"),
 			expectedResult: nil,
 		},
 		{
-			name:                    "low participants with accept any valid",
+			name:                    "low_participants_with_accept_any_valid",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
-			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult),
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:        1,
 			responses: []*struct {
 				response                  string
@@ -234,7 +234,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result1"},
 		},
 		{
-			name:                    "low participants with prefer block head leader fallback",
+			name:                    "low_participants_with_prefer_block_head_leader_fallback",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
@@ -252,7 +252,7 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: []string{"result1"},
 		},
 		{
-			name:                    "low participants with prefer block head leader",
+			name:                    "low_participants_with_prefer_block_head_leader",
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
@@ -427,10 +427,34 @@ func createResponse(result string, upstream common.Upstream) *common.NormalizedR
 // Mock execution that returns pre-defined responses
 type mockExecution struct {
 	responses []*common.NormalizedResponse
+
+	// lazily-initialised context carrying request & upstream metadata so that the
+	// consensus executor runs its full logic during unit tests.
+	ctx context.Context
 }
 
 func (m *mockExecution) Context() context.Context {
-	return context.Background()
+	// Build the context only once
+	if m.ctx != nil {
+		return m.ctx
+	}
+
+	// Build upstream list preserving duplicates so that tests covering low-participant
+	// scenarios (same upstream reused) behave as intended.
+	var upsList []common.Upstream
+	for _, r := range m.responses {
+		if up := r.Upstream(); up != nil {
+			upsList = append(upsList, up)
+		}
+	}
+
+	// Create a bare minimum normalized request so the executor doesn't bail out.
+	dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_test"}`))
+
+	m.ctx = context.Background()
+	m.ctx = context.WithValue(m.ctx, common.RequestContextKey, dummyReq)
+	m.ctx = context.WithValue(m.ctx, common.UpstreamsContextKey, upsList)
+	return m.ctx
 }
 
 func (m *mockExecution) Attempts() int {
@@ -503,6 +527,12 @@ func (m *mockExecution) CopyForCancellable() failsafe.Execution[*common.Normaliz
 	}
 }
 
+func (m *mockExecution) CopyForCancellableWithValue(key, value any) failsafe.Execution[*common.NormalizedResponse] {
+	return &mockExecution{
+		responses: m.responses,
+	}
+}
+
 func (m *mockExecution) CopyForHedge() failsafe.Execution[*common.NormalizedResponse] {
 	return &mockExecution{
 		responses: m.responses,
@@ -527,4 +557,397 @@ func (m *mockExecution) RecordResult(result *failsafeCommon.PolicyResult[*common
 
 func pointer[T any](v T) *T {
 	return &v
+}
+
+// TestSelectUpstreams tests the selectUpstreams method with various configurations,
+// specifically focusing on OnlyBlockHeadLeader and PreferBlockHeadLeader behaviors
+func TestSelectUpstreams(t *testing.T) {
+	tests := []struct {
+		name                    string
+		requiredParticipants    int
+		lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
+		upstreams               []struct {
+			id          string
+			latestBlock int64
+			hasPoller   bool
+		}
+		expectedSelected []string // IDs of expected selected upstreams in order
+	}{
+		// OnlyBlockHeadLeader test cases
+		{
+			name:                    "OnlyBlockHeadLeader_leader_not_in_selected_set",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 100, true},
+				{"upstream2", 200, true},
+				{"upstream3", 300, true}, // This is the leader
+			},
+			expectedSelected: []string{"upstream3"}, // Only the leader should be selected
+		},
+		{
+			name:                    "OnlyBlockHeadLeader_leader_already_in_selected_set",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 300, true}, // This is the leader
+				{"upstream2", 200, true},
+				{"upstream3", 100, true},
+			},
+			expectedSelected: []string{"upstream1", "upstream2"}, // Leader already in selected set, no change
+		},
+		{
+			name:                    "OnlyBlockHeadLeader_no_leader_found",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 0, false}, // No poller
+				{"upstream2", 0, false}, // No poller
+				{"upstream3", 0, false}, // No poller
+			},
+			expectedSelected: []string{"upstream1", "upstream2"}, // Normal selection when no leader
+		},
+		{
+			name:                    "OnlyBlockHeadLeader_empty_upstream_list",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{},
+			expectedSelected: []string{}, // Empty result for empty input
+		},
+		// PreferBlockHeadLeader test cases
+		{
+			name:                    "PreferBlockHeadLeader_leader_not_in_selected_swap_last",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 100, true},
+				{"upstream2", 200, true},
+				{"upstream3", 300, true}, // This is the leader
+			},
+			expectedSelected: []string{"upstream1", "upstream3"}, // Leader swaps with last position
+		},
+		{
+			name:                    "PreferBlockHeadLeader_leader_already_in_selected_no_change",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 300, true}, // This is the leader
+				{"upstream2", 200, true},
+				{"upstream3", 100, true},
+			},
+			expectedSelected: []string{"upstream1", "upstream2"}, // No change as leader is already selected
+		},
+		{
+			name:                    "PreferBlockHeadLeader_single_upstream_selected_leader_not_selected",
+			requiredParticipants:    1,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 100, true},
+				{"upstream2", 300, true}, // This is the leader
+			},
+			expectedSelected: []string{"upstream2"}, // Leader replaces the single selected upstream
+		},
+		{
+			name:                    "PreferBlockHeadLeader_empty_selected_set_add_leader",
+			requiredParticipants:    0, // Will default to 2, but more upstreams than required
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 300, true}, // This is the leader
+			},
+			expectedSelected: []string{"upstream1"}, // Leader is added to empty set
+		},
+		{
+			name:                    "PreferBlockHeadLeader_no_evm_upstreams",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 0, false}, // Not EVM upstream (no poller)
+				{"upstream2", 0, false}, // Not EVM upstream (no poller)
+			},
+			expectedSelected: []string{"upstream1", "upstream2"}, // Normal selection when no leader found
+		},
+		// Edge cases
+		{
+			name:                    "Normal_behavior_no_leader_logic",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 100, true},
+				{"upstream2", 200, true},
+				{"upstream3", 300, true},
+			},
+			expectedSelected: []string{"upstream1", "upstream2"}, // Normal selection, first N upstreams
+		},
+		{
+			name:                    "OnlyBlockHeadLeader_multiple_leaders_same_block",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 100, true},
+				{"upstream2", 300, true}, // Tied for leader
+				{"upstream3", 300, true}, // Tied for leader
+			},
+			expectedSelected: []string{"upstream1", "upstream2"}, // Leader already in selected set (upstream2), no change
+		},
+		{
+			name:                    "PreferBlockHeadLeader_all_upstreams_required",
+			requiredParticipants:    3,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", 100, true},
+				{"upstream2", 200, true},
+				{"upstream3", 300, true}, // This is the leader
+			},
+			expectedSelected: []string{"upstream1", "upstream2", "upstream3"}, // All selected, leader already included
+		},
+		{
+			name:                    "OnlyBlockHeadLeader_negative_block_numbers",
+			requiredParticipants:    2,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+			}{
+				{"upstream1", -1, true},  // Invalid block
+				{"upstream2", 0, true},   // Invalid block
+				{"upstream3", 100, true}, // Valid leader
+			},
+			expectedSelected: []string{"upstream3"}, // Only valid leader selected
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create the upstream list
+			var upsList []common.Upstream
+			for _, upCfg := range tt.upstreams {
+				var upstream common.Upstream
+				if upCfg.hasPoller {
+					upstream = common.NewFakeUpstream(
+						upCfg.id,
+						common.WithEvmStatePoller(
+							common.NewFakeEvmStatePoller(upCfg.latestBlock, upCfg.latestBlock),
+						),
+					)
+				} else {
+					upstream = common.NewFakeUpstream(upCfg.id)
+				}
+				upsList = append(upsList, upstream)
+			}
+
+			// Create executor with the test configuration
+			log := zerolog.New(zerolog.NewTestWriter(t))
+			executor := &executor[*common.NormalizedResponse]{
+				consensusPolicy: &consensusPolicy[*common.NormalizedResponse]{
+					config: &config[*common.NormalizedResponse]{
+						requiredParticipants:    tt.requiredParticipants,
+						lowParticipantsBehavior: tt.lowParticipantsBehavior,
+						logger:                  &log,
+					},
+					logger: &log,
+				},
+			}
+
+			// Call selectUpstreams
+			selected := executor.selectUpstreams(upsList)
+
+			// Verify the selected upstreams match expectations
+			require.Len(t, selected, len(tt.expectedSelected), "Wrong number of selected upstreams")
+
+			for i, expectedId := range tt.expectedSelected {
+				assert.Equal(t, expectedId, selected[i].Id(),
+					"Mismatch at position %d: expected %s, got %s",
+					i, expectedId, selected[i].Id())
+			}
+		})
+	}
+}
+
+// TestFindBlockHeadLeaderUpstream tests the findBlockHeadLeaderUpstream function
+func TestFindBlockHeadLeaderUpstream(t *testing.T) {
+	tests := []struct {
+		name      string
+		upstreams []struct {
+			id          string
+			latestBlock int64
+			hasPoller   bool
+			isEvm       bool
+		}
+		expectedLeaderId string
+	}{
+		{
+			name: "single_leader",
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+				isEvm       bool
+			}{
+				{"upstream1", 100, true, true},
+				{"upstream2", 200, true, true},
+				{"upstream3", 150, true, true},
+			},
+			expectedLeaderId: "upstream2",
+		},
+		{
+			name: "multiple_tied_leaders",
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+				isEvm       bool
+			}{
+				{"upstream1", 200, true, true},
+				{"upstream2", 200, true, true},
+				{"upstream3", 100, true, true},
+			},
+			expectedLeaderId: "upstream1", // First one wins
+		},
+		{
+			name: "no_evm_upstreams",
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+				isEvm       bool
+			}{
+				{"upstream1", 100, false, false},
+				{"upstream2", 200, false, false},
+			},
+			expectedLeaderId: "", // No leader
+		},
+		{
+			name: "mixed_upstream_types",
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+				isEvm       bool
+			}{
+				{"upstream1", 100, false, false}, // Not EVM
+				{"upstream2", 50, true, true},    // EVM with lower block
+				{"upstream3", 150, true, true},   // EVM with higher block
+			},
+			expectedLeaderId: "upstream3",
+		},
+		{
+			name: "upstream_without_poller",
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+				isEvm       bool
+			}{
+				{"upstream1", 100, false, true}, // EVM but no poller
+				{"upstream2", 50, true, true},   // EVM with poller
+			},
+			expectedLeaderId: "upstream2",
+		},
+		{
+			name: "empty_list",
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+				isEvm       bool
+			}{},
+			expectedLeaderId: "",
+		},
+		{
+			name: "negative_and_zero_blocks",
+			upstreams: []struct {
+				id          string
+				latestBlock int64
+				hasPoller   bool
+				isEvm       bool
+			}{
+				{"upstream1", -100, true, true},
+				{"upstream2", 0, true, true},
+				{"upstream3", 50, true, true},
+			},
+			expectedLeaderId: "upstream3", // Only positive block counts
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create the upstream list
+			var upsList []common.Upstream
+			for _, upCfg := range tt.upstreams {
+				var upstream common.Upstream
+				if upCfg.isEvm && upCfg.hasPoller {
+					upstream = common.NewFakeUpstream(
+						upCfg.id,
+						common.WithEvmStatePoller(
+							common.NewFakeEvmStatePoller(upCfg.latestBlock, upCfg.latestBlock),
+						),
+					)
+				} else {
+					upstream = common.NewFakeUpstream(upCfg.id)
+				}
+				upsList = append(upsList, upstream)
+			}
+
+			// Call findBlockHeadLeaderUpstream
+			leader := findBlockHeadLeaderUpstream(upsList)
+
+			// Verify the result
+			if tt.expectedLeaderId == "" {
+				assert.Nil(t, leader, "Expected no leader, but got %v", leader)
+			} else {
+				require.NotNil(t, leader, "Expected leader %s, but got nil", tt.expectedLeaderId)
+				assert.Equal(t, tt.expectedLeaderId, leader.Id(),
+					"Expected leader %s, but got %s", tt.expectedLeaderId, leader.Id())
+			}
+		})
+	}
 }

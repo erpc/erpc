@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/util"
@@ -43,6 +44,10 @@ type JsonRpcResponse struct {
 	resultWriter util.ByteWriter
 	resultMu     sync.RWMutex
 	cachedNode   *ast.Node
+
+	// canonicalHash caches the canonical hash of the Result to avoid recomputing it.
+	// It is populated lazily on the first call to CanonicalHash using atomic.Value for thread-safe access.
+	canonicalHash atomic.Value
 }
 
 func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
@@ -491,14 +496,21 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		return nil, nil
 	}
 
-	return &JsonRpcResponse{
+	clone := &JsonRpcResponse{
 		id:         r.id,
 		idBytes:    r.idBytes,
 		Error:      r.Error,
 		errBytes:   r.errBytes,
 		Result:     r.Result,
 		cachedNode: r.cachedNode,
-	}, nil
+	}
+
+	// Copy the canonical hash if it exists
+	if cached := r.canonicalHash.Load(); cached != nil {
+		clone.canonicalHash.Store(cached)
+	}
+
+	return clone, nil
 }
 
 func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
@@ -530,12 +542,18 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 		return "", nil
 	}
 
+	// Fast-path: if already computed, return immediately
+	if cached := r.canonicalHash.Load(); cached != nil {
+		return cached.(string), nil
+	}
+
+	// Compute hash
 	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
+	resultCopy := r.Result
+	r.resultMu.RUnlock()
 
 	var obj interface{}
-	err := json.Unmarshal(r.Result, &obj)
-	if err != nil {
+	if err := json.Unmarshal(resultCopy, &obj); err != nil {
 		return "", err
 	}
 
@@ -545,8 +563,12 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 	}
 
 	b := sha256.Sum256(canonical)
+	hash := fmt.Sprintf("%x", b)
 
-	return fmt.Sprintf("%x", b), nil
+	// Store the computed hash atomically
+	r.canonicalHash.Store(hash)
+
+	return hash, nil
 }
 
 func canonicalize(v interface{}) ([]byte, error) {
@@ -609,6 +631,8 @@ type JsonRpcRequest struct {
 	ID      interface{}   `json:"id,omitempty"`
 	Method  string        `json:"method"`
 	Params  []interface{} `json:"params"`
+
+	cacheHash atomic.Value
 }
 
 func NewJsonRpcRequest(method string, params []interface{}) *JsonRpcRequest {
@@ -629,6 +653,20 @@ func (r *JsonRpcRequest) RLockWithTrace(ctx context.Context) {
 	_, span := StartDetailSpan(ctx, "JsonRpcRequest.RLock")
 	defer span.End()
 	r.RLock()
+}
+
+func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
+	r.RLock()
+	defer r.RUnlock()
+
+	clone := &JsonRpcRequest{
+		JSONRPC: r.JSONRPC,
+		ID:      r.ID,
+		Method:  r.Method,
+		Params:  make([]interface{}, len(r.Params)),
+	}
+	copy(clone.Params, r.Params)
+	return clone
 }
 
 func (r *JsonRpcRequest) SetID(id interface{}) error {
@@ -698,25 +736,25 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 		_, span := StartDetailSpan(ctx[0], "Request.GenerateCacheHash")
 		defer span.End()
 	}
-
 	if r == nil {
 		return "", nil
 	}
 
-	r.RLock()
-	defer r.RUnlock()
+	if ch := r.cacheHash.Load(); ch != nil {
+		return ch.(string), nil
+	}
 
 	hasher := sha256.New()
-
 	for _, p := range r.Params {
 		err := hashValue(hasher, p)
 		if err != nil {
 			return "", err
 		}
 	}
-
 	b := sha256.Sum256(hasher.Sum(nil))
-	return fmt.Sprintf("%s:%x", r.Method, b), nil
+	ch := fmt.Sprintf("%s:%x", r.Method, b)
+	r.cacheHash.Store(ch)
+	return ch, nil
 }
 
 func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {

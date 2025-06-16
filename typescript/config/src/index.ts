@@ -45,15 +45,15 @@ export {
   AuthTypeNetwork,
   // Consensus related
   ConsensusFailureBehaviorReturnError,
-  ConsensusFailureBehaviorAcceptAnyValidResult,
+  ConsensusFailureBehaviorAcceptMostCommonValidResult,
   ConsensusFailureBehaviorPreferBlockHeadLeader,
   ConsensusFailureBehaviorOnlyBlockHeadLeader,
   ConsensusLowParticipantsBehaviorReturnError,
-  ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
+  ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
   ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
   ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
   ConsensusDisputeBehaviorReturnError,
-  ConsensusDisputeBehaviorAcceptAnyValidResult,
+  ConsensusDisputeBehaviorAcceptMostCommonValidResult,
   ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorOnlyBlockHeadLeader,
 } from "./generated";

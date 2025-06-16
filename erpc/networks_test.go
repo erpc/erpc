@@ -6871,7 +6871,7 @@ func TestNetwork_Forward(t *testing.T) {
 					req.SetNetwork(ntw)
 					oups, err := upstreamsRegistry.GetSortedUpstreams(context.Background(), networkID, method)
 					upstreamsRegistry.RLockUpstreams()
-					ups := []*upstream.Upstream{}
+					ups := []common.Upstream{}
 					ups = append(ups, oups...)
 					upstreamsRegistry.RUnlockUpstreams()
 					assert.NoError(t, err)
