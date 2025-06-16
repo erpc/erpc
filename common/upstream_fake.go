@@ -2,8 +2,10 @@ package common
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 )
 
@@ -12,13 +14,14 @@ var _ Upstream = &FakeUpstream{}
 var _ EvmUpstream = &FakeUpstream{}
 
 type FakeUpstream struct {
-	id             string
-	config         *UpstreamConfig
-	network        Network
-	evmStatePoller EvmStatePoller
-	cordoned       bool
-	cordonedReason string
-	cordonMu       sync.RWMutex
+	id                      string
+	config                  *UpstreamConfig
+	network                 Network
+	evmStatePoller          EvmStatePoller
+	cordoned                bool
+	cordonedReason          string
+	cordonMu                sync.RWMutex
+	transactionHashRegistry map[string]*types.Transaction
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -39,6 +42,12 @@ func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
 func WithEvmStatePoller(evmStatePoller EvmStatePoller) func(*FakeUpstream) {
 	return func(u *FakeUpstream) {
 		u.evmStatePoller = evmStatePoller
+	}
+}
+
+func WithTransactionHashRegistry(transactionHashRegistry map[string]*types.Transaction) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.transactionHashRegistry = transactionHashRegistry
 	}
 }
 
@@ -120,6 +129,14 @@ func (u *FakeUpstream) CordonedReason() (string, bool) {
 
 func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
 	return true, nil
+}
+
+func (u *FakeUpstream) EvmGetTransactionByHash(ctx context.Context, txHash string) (*types.Transaction, error) {
+	if tx, ok := u.transactionHashRegistry[txHash]; ok {
+		return tx, nil
+	}
+
+	return nil, fmt.Errorf("transaction not found")
 }
 
 type FakeEvmStatePoller struct {
