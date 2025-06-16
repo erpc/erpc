@@ -285,7 +285,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					common.ErrorFingerprint(errForward),
 				).Inc()
 				p.Logger.Debug().Err(errForward).
-					Str("component", "proxy-shadow").
+					Str("component", "shadowTraffic").
 					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
@@ -304,7 +304,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					"nil_response",
 				).Inc()
 				p.Logger.Debug().
-					Str("component", "proxy-shadow").
+					Str("component", "shadowTraffic").
 					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
@@ -324,7 +324,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					"hash_error",
 				).Inc()
 				p.Logger.Debug().Err(errHash).
-					Str("component", "proxy-shadow").
+					Str("component", "shadowTraffic").
 					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
@@ -342,7 +342,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					method,
 				).Inc()
 				p.Logger.Trace().
-					Str("component", "proxy-shadow").
+					Str("component", "shadowTraffic").
 					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
@@ -358,14 +358,16 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					method,
 					strconv.FormatBool(isEmpty),
 				).Inc()
-				p.Logger.Debug().
-					Str("component", "proxy-shadow").
+				p.Logger.Error().
+					Str("component", "shadowTraffic").
 					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
 					Str("expectedHash", expectedHash).
 					Str("shadowHash", shadowHash).
+					Object("originalResponse", resp).
+					Object("shadowResponse", shadowResp).
 					Msg("shadow response hash mismatch")
 			}
 

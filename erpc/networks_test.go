@@ -10179,7 +10179,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 			WithFromCache(true)
 
 		cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
-		
+
 		resp, err := network.Forward(ctx, req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)

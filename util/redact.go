@@ -22,7 +22,7 @@ func RedactEndpoint(endpoint string) string {
 
 	// Construct the redacted endpoint
 	var redactedEndpoint string
-	if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" || parsedURL.Scheme == "ws" || parsedURL.Scheme == "wss" {
+	if IsNativeProtocol(endpoint) {
 		redactedEndpoint = parsedURL.Scheme + "://" + parsedURL.Host + "#redacted=" + hash[:5]
 	} else if strings.HasSuffix(parsedURL.Scheme, "envio") {
 		redactedEndpoint = parsedURL.Scheme + "://" + parsedURL.Host

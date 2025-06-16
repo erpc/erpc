@@ -674,7 +674,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 }
 
 func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
-	if !strings.HasPrefix(u.Endpoint, "http") && !strings.HasPrefix(u.Endpoint, "ws") {
+	if !util.IsNativeProtocol(u.Endpoint) {
 		if e.ChainId > 0 {
 			return fmt.Errorf("upstream.*.evm.chainId must be 0 for non-http endpoints, but '%d' is provided for %s", e.ChainId, util.RedactEndpoint(u.Endpoint))
 		}
