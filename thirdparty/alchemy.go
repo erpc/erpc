@@ -2,17 +2,20 @@ package thirdparty
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
 
-var alchemyNetworkSubdomains = map[int64]string{
+var defaultAlchemyNetworkSubdomains = map[int64]string{
 	1:         "eth-mainnet",
 	10:        "opt-mainnet",
 	100:       "gnosis-mainnet",
@@ -55,19 +58,83 @@ var alchemyNetworkSubdomains = map[int64]string{
 	534352:    "scroll-mainnet",
 }
 
+type alchemyNetworkConfigResponse struct {
+	Result struct {
+		Data []struct {
+			NetworkChainID int64  `json:"networkChainId"`
+			KebabCaseID    string `json:"kebabCaseId"`
+		} `json:"data"`
+	} `json:"result"`
+}
+
+const alchemyApiUrl = "https://app-api.alchemy.com/trpc/config.getNetworkConfig"
+
 type AlchemyVendor struct {
 	common.Vendor
+	networkSubdomains map[int64]string
+	initOnce          sync.Once
 }
 
 func CreateAlchemyVendor() common.Vendor {
-	return &AlchemyVendor{}
+	return &AlchemyVendor{
+		networkSubdomains: defaultAlchemyNetworkSubdomains,
+	}
 }
 
 func (v *AlchemyVendor) Name() string {
 	return "alchemy"
 }
 
+func (v *AlchemyVendor) initialize(logger *zerolog.Logger) {
+	v.initOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", alchemyApiUrl, nil)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Alchemy: failed to create request for network config, using defaults")
+			return
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			logger.Warn().Err(err).Msg("Alchemy: failed to fetch network config, using defaults")
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			logger.Warn().Int("status", resp.StatusCode).Msg("Alchemy: failed to fetch network config with non-200 status, using defaults")
+			return
+		}
+
+		var apiResp alchemyNetworkConfigResponse
+		if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+			logger.Warn().Err(err).Msg("Alchemy: failed to decode network config response, using defaults")
+			return
+		}
+
+		if len(apiResp.Result.Data) > 0 {
+			newSubdomains := make(map[int64]string)
+			for _, network := range apiResp.Result.Data {
+				if network.KebabCaseID != "" && network.NetworkChainID != 0 {
+					newSubdomains[network.NetworkChainID] = network.KebabCaseID
+				}
+			}
+			// merge with default, new ones override
+			for k, val := range v.networkSubdomains {
+				if _, ok := newSubdomains[k]; !ok {
+					newSubdomains[k] = val
+				}
+			}
+			v.networkSubdomains = newSubdomains
+			logger.Info().Int("count", len(v.networkSubdomains)).Msg("Alchemy: successfully updated network config from API")
+		}
+	})
+}
+
 func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
+	v.initialize(logger)
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -76,11 +143,12 @@ func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	if err != nil {
 		return false, err
 	}
-	_, ok := alchemyNetworkSubdomains[chainID]
+	_, ok := v.networkSubdomains[chainID]
 	return ok, nil
 }
 
 func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+	v.initialize(logger)
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -94,7 +162,7 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 			if chainID == 0 {
 				return nil, fmt.Errorf("alchemy vendor requires upstream.evm.chainId to be defined")
 			}
-			subdomain, ok := alchemyNetworkSubdomains[chainID]
+			subdomain, ok := v.networkSubdomains[chainID]
 			if !ok {
 				return nil, fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
 			}
