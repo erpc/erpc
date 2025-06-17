@@ -201,6 +201,9 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReques
 				),
 			)
 		} else if code >= -32099 && code <= -32599 || code >= -32603 && code <= -32699 || code >= -32701 && code <= -32768 {
+			// For invalid request errors (codes above), there is a high chance that the error is due to a mistake that the user
+			// has done, and retrying another upstream would not help.
+			// Ref: https://docs.alchemy.com/reference/error-reference#json-rpc-error-codes
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					code,
@@ -223,6 +226,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReques
 		}
 	}
 
+	// Other errors can be properly handled by generic error handling
 	return nil
 }
 
