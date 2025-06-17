@@ -461,6 +461,7 @@ func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, resultChan 
 			Result: finalResult,
 		}
 	} else {
+		logger.Debug().Interface("responses", responses).Msg("no valid results found, sending error")
 		resultChan <- &failsafeCommon.PolicyResult[R]{
 			Error: errFn(),
 		}
