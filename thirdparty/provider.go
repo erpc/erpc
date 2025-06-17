@@ -31,6 +31,14 @@ func (p *Provider) Id() string {
 }
 
 func (p *Provider) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
+	if p.config.IgnoreNetworks != nil {
+		for _, n := range p.config.IgnoreNetworks {
+			if n == networkId {
+				return false, nil
+			}
+		}
+	}
+
 	if p.config.OnlyNetworks != nil {
 		for _, n := range p.config.OnlyNetworks {
 			if n == networkId {

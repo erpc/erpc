@@ -619,6 +619,9 @@ func (u *ProviderConfig) Validate(c *Config) error {
 	if u.UpstreamIdTemplate == "" {
 		return fmt.Errorf("project.*.providers.*.upstreamIdTemplate is required")
 	}
+	if u.OnlyNetworks != nil && u.IgnoreNetworks != nil {
+		return fmt.Errorf("project.*.providers.*.onlyNetworks and project.*.providers.*.ignoreNetworks are mutually exclusive")
+	}
 	if u.Overrides != nil {
 		for _, override := range u.Overrides {
 			if err := override.Validate(c, true); err != nil {
@@ -630,6 +633,13 @@ func (u *ProviderConfig) Validate(c *Config) error {
 		for _, network := range u.OnlyNetworks {
 			if !IsValidNetwork(network) {
 				return fmt.Errorf("project.*.providers.*.onlyNetworks.* '%s' is invalid must be like evm:1", network)
+			}
+		}
+	}
+	if u.IgnoreNetworks != nil {
+		for _, network := range u.IgnoreNetworks {
+			if !IsValidNetwork(network) {
+				return fmt.Errorf("project.*.providers.*.ignoreNetworks.* '%s' is invalid must be like evm:1", network)
 			}
 		}
 	}
