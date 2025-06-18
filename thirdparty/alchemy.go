@@ -2,17 +2,21 @@ package thirdparty
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
-var alchemyNetworkSubdomains = map[int64]string{
+var defaultAlchemyNetworkSubdomains = map[int64]string{
 	1:         "eth-mainnet",
 	10:        "opt-mainnet",
 	100:       "gnosis-mainnet",
@@ -55,12 +59,31 @@ var alchemyNetworkSubdomains = map[int64]string{
 	534352:    "scroll-mainnet",
 }
 
+const DefaultAlchemyRecheckInterval = 24 * time.Hour
+const alchemyApiUrl = "https://app-api.alchemy.com/trpc/config.getNetworkConfig"
+
+type alchemyNetworkConfigResponse struct {
+	Result struct {
+		Data []struct {
+			NetworkChainID int64  `json:"networkChainId"`
+			KebabCaseID    string `json:"kebabCaseId"`
+		} `json:"data"`
+	} `json:"result"`
+}
+
 type AlchemyVendor struct {
 	common.Vendor
+
+	remoteDataLock          sync.Mutex
+	remoteData              map[string]map[int64]string
+	remoteDataLastFetchedAt map[string]time.Time
 }
 
 func CreateAlchemyVendor() common.Vendor {
-	return &AlchemyVendor{}
+	return &AlchemyVendor{
+		remoteData:              make(map[string]map[int64]string),
+		remoteDataLastFetchedAt: make(map[string]time.Time),
+	}
 }
 
 func (v *AlchemyVendor) Name() string {
@@ -76,8 +99,24 @@ func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	if err != nil {
 		return false, err
 	}
-	_, ok := alchemyNetworkSubdomains[chainID]
-	return ok, nil
+
+	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
+	if !ok {
+		recheckInterval = DefaultAlchemyRecheckInterval
+	}
+
+	err = v.ensureRemoteData(ctx, recheckInterval)
+	if err != nil {
+		return false, fmt.Errorf("unable to load remote data: %w", err)
+	}
+
+	networks, ok := v.remoteData[alchemyApiUrl]
+	if !ok || networks == nil {
+		return false, nil
+	}
+
+	_, exists := networks[chainID]
+	return exists, nil
 }
 
 func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -86,30 +125,54 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 	}
 
 	if upstream.Endpoint == "" {
-		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
-			if upstream.Evm == nil {
-				return nil, fmt.Errorf("alchemy vendor requires upstream.evm to be defined")
-			}
-			chainID := upstream.Evm.ChainId
-			if chainID == 0 {
-				return nil, fmt.Errorf("alchemy vendor requires upstream.evm.chainId to be defined")
-			}
-			subdomain, ok := alchemyNetworkSubdomains[chainID]
-			if !ok {
-				return nil, fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
-			}
-			alchemyURL := fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", subdomain, apiKey)
-			parsedURL, err := url.Parse(alchemyURL)
-			if err != nil {
-				return nil, err
-			}
-
-			upstream.Endpoint = parsedURL.String()
-			upstream.Type = common.UpstreamTypeEvm
-		} else {
+		apiKey, ok := settings["apiKey"].(string)
+		if !ok || apiKey == "" {
 			return nil, fmt.Errorf("apiKey is required in alchemy settings")
 		}
+
+		if upstream.Evm == nil {
+			return nil, fmt.Errorf("alchemy vendor requires upstream.evm to be defined")
+		}
+
+		chainID := upstream.Evm.ChainId
+		if chainID == 0 {
+			return nil, fmt.Errorf("alchemy vendor requires upstream.evm.chainId to be defined")
+		}
+
+		recheckInterval, ok := settings["recheckInterval"].(time.Duration)
+		if !ok {
+			recheckInterval = DefaultAlchemyRecheckInterval
+		}
+
+		if err := v.ensureRemoteData(ctx, recheckInterval); err != nil {
+			return nil, fmt.Errorf("unable to load remote data: %w", err)
+		}
+
+		networks, ok := v.remoteData[alchemyApiUrl]
+		if !ok || networks == nil {
+			return nil, fmt.Errorf("network data not available")
+		}
+
+		subdomain, ok := networks[chainID]
+		if !ok {
+			return nil, fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
+		}
+
+		alchemyURL := fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", subdomain, apiKey)
+		parsedURL, err := url.Parse(alchemyURL)
+		if err != nil {
+			return nil, err
+		}
+
+		upstream.Endpoint = parsedURL.String()
+		upstream.Type = common.UpstreamTypeEvm
 	}
+
+	upstream.VendorName = v.Name()
+
+	log.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
+		"recheckInterval": settings["recheckInterval"],
+	}).Msg("generated upstream from alchemy provider")
 
 	return []*common.UpstreamConfig{upstream}, nil
 }
@@ -172,5 +235,81 @@ func (v *AlchemyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 		return true
 	}
 
+	if ups.VendorName == v.Name() {
+		return true
+	}
+
 	return strings.Contains(ups.Endpoint, ".alchemy.com") || strings.Contains(ups.Endpoint, ".alchemyapi.io")
+}
+
+func (v *AlchemyVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration) error {
+	v.remoteDataLock.Lock()
+	defer v.remoteDataLock.Unlock()
+
+	if ltm, ok := v.remoteDataLastFetchedAt[alchemyApiUrl]; ok && time.Since(ltm) < recheckInterval {
+		return nil
+	}
+
+	newData, err := v.fetchAlchemyNetworks(ctx)
+	if err != nil {
+		if _, ok := v.remoteData[alchemyApiUrl]; ok {
+			log.Warn().Err(err).Msg("could not refresh Alchemy API data; will use stale data")
+			return nil
+		}
+		return err
+	}
+
+	v.remoteData[alchemyApiUrl] = newData
+	v.remoteDataLastFetchedAt[alchemyApiUrl] = time.Now()
+	return nil
+}
+
+func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context) (map[int64]string, error) {
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(rctx, "GET", alchemyApiUrl, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+		},
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("Alchemy API returned non-200 code: %d", resp.StatusCode)
+	}
+
+	var apiResp alchemyNetworkConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse Alchemy API data: %w", err)
+	}
+
+	newData := make(map[int64]string)
+	for _, network := range apiResp.Result.Data {
+		if network.KebabCaseID != "" && network.NetworkChainID != 0 {
+			newData[network.NetworkChainID] = network.KebabCaseID
+		}
+	}
+
+	// Merge with defaults, API data takes precedence
+	for chainID, subdomain := range defaultAlchemyNetworkSubdomains {
+		if _, exists := newData[chainID]; !exists {
+			newData[chainID] = subdomain
+		}
+	}
+
+	return newData, nil
 }

@@ -133,6 +133,9 @@ func ResetGock() {
 }
 
 func SafeReadBody(request *http.Request) string {
+	if request.Body == nil {
+		return ""
+	}
 	body, err := io.ReadAll(request.Body)
 	if err != nil {
 		return ""
