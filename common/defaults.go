@@ -1035,6 +1035,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "quicknode", "evm+quicknode":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
 	case "chainstack", "evm+chainstack":
 		settings := VendorSettings{
 			"apiKey": endpoint.Host,
