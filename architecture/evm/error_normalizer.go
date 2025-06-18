@@ -6,9 +6,17 @@ import (
 	"net/http"
 	"strings"
 
+	bdscommon "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func init() {
+	// This ensures the type is not optimized away and is available for reflection
+	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
+}
 
 func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
 	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
@@ -479,6 +487,213 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 	// No error detected.
 	return nil
+}
+
+func ExtractGrpcError(st *status.Status, upstreamId string) error {
+	if st == nil || st.Code() == codes.OK {
+		return nil
+	}
+
+	// Extract error details from gRPC status
+	details := make(map[string]interface{})
+	details["grpcCode"] = st.Code().String()
+	details["grpcMessage"] = st.Message()
+	details["upstreamId"] = upstreamId
+
+	// Try to extract BDS error details using FromGRPCStatus
+	bdsErr, hasBdsError := bdscommon.FromGRPCStatus(st)
+	if hasBdsError {
+		details["bdsErrorCode"] = bdsErr.Code
+		if bdsErr.Cause != nil {
+			details["cause"] = bdsErr.Cause.Error()
+		}
+		if bdsErr.Details != nil {
+			for k, v := range bdsErr.Details {
+				details[k] = v
+			}
+		}
+	}
+
+	msg := st.Message()
+	code := st.Code()
+
+	if hasBdsError {
+		switch bdsErr.Code {
+		case bdscommon.ErrorCode_UNSUPPORTED_BLOCK_TAG,
+			bdscommon.ErrorCode_UNSUPPORTED_METHOD:
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorUnsupportedException),
+					common.JsonRpcErrorUnsupportedException,
+					msg,
+					nil,
+					details,
+				),
+			)
+
+		case bdscommon.ErrorCode_RANGE_OUTSIDE_AVAILABLE:
+			return common.NewErrEndpointMissingData(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorMissingData),
+					common.JsonRpcErrorMissingData,
+					msg,
+					nil,
+					details,
+				),
+			)
+
+		case bdscommon.ErrorCode_INVALID_PARAMETER, bdscommon.ErrorCode_INVALID_REQUEST:
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorInvalidArgument),
+					common.JsonRpcErrorInvalidArgument,
+					msg,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
+
+		case bdscommon.ErrorCode_RATE_LIMITED:
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorCapacityExceeded),
+					common.JsonRpcErrorCapacityExceeded,
+					msg,
+					nil,
+					details,
+				),
+			)
+
+		case bdscommon.ErrorCode_TIMEOUT_ERROR:
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorNodeTimeout),
+					common.JsonRpcErrorNodeTimeout,
+					msg,
+					nil,
+					details,
+				),
+				nil,
+			)
+
+		case bdscommon.ErrorCode_RANGE_TOO_LARGE:
+			return common.NewErrEndpointRequestTooLarge(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorEvmLargeRange),
+					common.JsonRpcErrorEvmLargeRange,
+					msg,
+					nil,
+					details,
+				),
+				common.EvmBlockRangeTooLarge,
+			)
+
+		case bdscommon.ErrorCode_INTERNAL_ERROR:
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorServerSideException),
+					common.JsonRpcErrorServerSideException,
+					msg,
+					nil,
+					details,
+				),
+				nil,
+			)
+		}
+	}
+
+	switch code {
+	case codes.Unimplemented:
+		return common.NewErrEndpointUnsupported(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorUnsupportedException),
+				common.JsonRpcErrorUnsupportedException,
+				msg,
+				nil,
+				details,
+			),
+		)
+
+	case codes.InvalidArgument:
+		return common.NewErrEndpointClientSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorInvalidArgument),
+				common.JsonRpcErrorInvalidArgument,
+				msg,
+				nil,
+				details,
+			),
+		).WithRetryableTowardNetwork(false)
+
+	case codes.ResourceExhausted:
+		return common.NewErrEndpointCapacityExceeded(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorCapacityExceeded),
+				common.JsonRpcErrorCapacityExceeded,
+				msg,
+				nil,
+				details,
+			),
+		)
+
+	case codes.DeadlineExceeded:
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorNodeTimeout),
+				common.JsonRpcErrorNodeTimeout,
+				msg,
+				nil,
+				details,
+			),
+			nil,
+		)
+
+	case codes.Unauthenticated, codes.PermissionDenied:
+		return common.NewErrEndpointUnauthorized(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorUnauthorized),
+				common.JsonRpcErrorUnauthorized,
+				msg,
+				nil,
+				details,
+			),
+		)
+
+	case codes.NotFound, codes.OutOfRange:
+		return common.NewErrEndpointMissingData(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorMissingData),
+				common.JsonRpcErrorMissingData,
+				msg,
+				nil,
+				details,
+			),
+		)
+
+	case codes.Internal, codes.Unknown, codes.Unavailable:
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorServerSideException),
+				common.JsonRpcErrorServerSideException,
+				msg,
+				nil,
+				details,
+			),
+			nil,
+		)
+
+	default:
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorServerSideException),
+				common.JsonRpcErrorServerSideException,
+				msg,
+				nil,
+				details,
+			),
+			nil,
+		)
+	}
 }
 
 func getVendorSpecificErrorIfAny(

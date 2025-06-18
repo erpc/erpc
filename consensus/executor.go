@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -119,23 +120,13 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 			).(policy.ExecutionInternal[R])
 
 			// Perform execution
-			go func(consensusExec policy.ExecutionInternal[R], execIdx int) {
+			go func(consensusExec policy.ExecutionInternal[R], execIdx int, upstream common.Upstream) {
 				defer executionWaitGroup.Done()
 
-				// Get the upstream from the response
-				var upstream common.Upstream
 				lg.Trace().Int("index", execIdx).Object("request", originalReq).Msg("sending consensus request")
 				result := innerFn(consensusExec)
 				if result == nil {
 					return
-				}
-
-				// Get upstream from response if available
-				if resp, ok := any(result.Result).(*common.NormalizedResponse); ok {
-					if ups := resp.Upstream(); ups != nil {
-						upstream = ups
-						lg.Debug().Int("index", execIdx).Str("upstream", upstream.Config().Id).Msg("response for consensus from upstream")
-					}
 				}
 
 				responseMu.Lock()
@@ -143,10 +134,10 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 					result:   result.Result,
 					err:      result.Error,
 					index:    execIdx,
-					upstream: upstream,
+					upstream: selectedUpstreams[execIdx],
 				})
 				responseMu.Unlock()
-			}(executions[execIdx], execIdx)
+			}(executions[execIdx], execIdx, selectedUpstreams[execIdx])
 		}
 
 		go func() {
@@ -277,26 +268,46 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				switch e.lowParticipantsBehavior {
 				case common.ConsensusLowParticipantsBehaviorReturnError:
 					e.handleReturnError(&lg, resultChan, exec, func() error {
-						return common.NewErrConsensusLowParticipants("not enough participants")
+						return common.NewErrConsensusLowParticipants("not enough participants", e.extractParticipants(&lg, responses, exec))
 					})
 				case common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult:
 					e.handleAcceptMostCommon(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
-						return common.NewErrConsensusLowParticipants("no valid results found")
+						return common.NewErrConsensusLowParticipants("no valid results found", e.extractParticipants(&lg, responses, exec))
 					})
 				case common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader:
 					e.handlePreferBlockHeadLeader(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
-						return common.NewErrConsensusLowParticipants("no block head leader found")
+						return common.NewErrConsensusLowParticipants("no block head leader found", e.extractParticipants(&lg, responses, exec))
 					})
 				case common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader:
 					e.handleOnlyBlockHeadLeader(&lg, resultChan, responses, exec, func() error {
-						return common.NewErrConsensusLowParticipants("no block head leader found")
+						return common.NewErrConsensusLowParticipants("no block head leader found", e.extractParticipants(&lg, responses, exec))
 					})
 				}
 			} else {
-				lg.Debug().
+				evt := lg.Warn().
 					Int("maxCount", mostCommonResultCount).
-					Int("threshold", e.agreementThreshold).
-					Msg("handling consensus dispute")
+					Int("threshold", e.agreementThreshold)
+
+				for _, resp := range responses {
+					upstreamID := "unknown"
+					if resp != nil && resp.upstream != nil && resp.upstream.Config() != nil {
+						upstreamID = resp.upstream.Config().Id
+					}
+
+					evt.Str(fmt.Sprintf("upstream%d", resp.index), upstreamID)
+
+					if resp.err != nil {
+						evt.AnErr(fmt.Sprintf("error%d", resp.index), resp.err)
+						continue
+					}
+
+					if jr := e.resultToJsonRpcResponse(resp.result, exec); jr != nil {
+						evt.Object(fmt.Sprintf("response%d", resp.index), jr)
+					} else {
+						evt.Interface(fmt.Sprintf("result%d", resp.index), resp.result)
+					}
+				}
+				evt.Msg("consensus dispute")
 
 				if e.onDispute != nil {
 					e.onDispute(failsafe.ExecutionEvent[R]{
@@ -311,19 +322,19 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				switch e.disputeBehavior {
 				case common.ConsensusDisputeBehaviorReturnError:
 					e.handleReturnError(&lg, resultChan, exec, func() error {
-						return common.NewErrConsensusDispute("not enough agreement among responses")
+						return common.NewErrConsensusDispute("not enough agreement among responses", e.extractParticipants(&lg, responses, exec))
 					})
 				case common.ConsensusDisputeBehaviorAcceptMostCommonValidResult:
 					e.handleAcceptMostCommon(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
-						return common.NewErrConsensusDispute("no valid results found")
+						return common.NewErrConsensusDispute("no valid results found", e.extractParticipants(&lg, responses, exec))
 					})
 				case common.ConsensusDisputeBehaviorPreferBlockHeadLeader:
 					e.handlePreferBlockHeadLeader(&lg, resultChan, responses, mostCommonResultHash, exec, func() error {
-						return common.NewErrConsensusDispute("no block head leader found")
+						return common.NewErrConsensusDispute("no block head leader found", e.extractParticipants(&lg, responses, exec))
 					})
 				case common.ConsensusDisputeBehaviorOnlyBlockHeadLeader:
 					e.handleOnlyBlockHeadLeader(&lg, resultChan, responses, exec, func() error {
-						return common.NewErrConsensusDispute("no block head leader found")
+						return common.NewErrConsensusDispute("no block head leader found", e.extractParticipants(&lg, responses, exec))
 					})
 				}
 			}
@@ -344,6 +355,28 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 	}
 }
 
+func (e *executor[R]) extractParticipants(lg *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R]) []common.ParticipantInfo {
+	participants := make([]common.ParticipantInfo, 0, len(responses))
+	for _, resp := range responses {
+		participant := common.ParticipantInfo{}
+		if resp.upstream != nil && resp.upstream.Config() != nil {
+			participant.Upstream = resp.upstream.Config().Id
+		}
+		if resp.err != nil {
+			participant.ErrSummary = common.ErrorSummary(resp.err)
+		}
+		if jr := e.resultToJsonRpcResponse(resp.result, exec); jr != nil {
+			hash, err := jr.CanonicalHash()
+			if err != nil {
+				lg.Error().Err(err).Msg("error converting result to hash")
+				continue
+			}
+			participant.ResultHash = hash
+		}
+		participants = append(participants, participant)
+	}
+	return participants
+}
 func (e *executor[R]) createRateLimiter(logger *zerolog.Logger, upstreamId string) ratelimiter.RateLimiter[any] {
 	// Try to get existing limiter
 	if limiter, ok := e.misbehavingUpstreamsLimiter.Load(upstreamId); ok {
@@ -435,7 +468,7 @@ func (e *executor[R]) handleMisbehavingUpstream(logger *zerolog.Logger, upstream
 	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, timer)
 }
 
-func (e *executor[R]) handleReturnError(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], exec failsafe.Execution[R], errFn func() error) {
+func (e *executor[R]) handleReturnError(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], _ failsafe.Execution[R], errFn func() error) {
 	logger.Debug().Msg("sending error result")
 
 	resultChan <- &failsafeCommon.PolicyResult[R]{
@@ -443,7 +476,7 @@ func (e *executor[R]) handleReturnError(logger *zerolog.Logger, resultChan chan<
 	}
 }
 
-func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], mostCommonResult string, exec failsafe.Execution[R], errFn func() error) {
+func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], _ string, _ failsafe.Execution[R], errFn func() error) {
 	logger.Debug().Msg("sending most common valid result")
 
 	var finalResult R
@@ -518,7 +551,7 @@ func (e *executor[R]) handlePreferBlockHeadLeader(logger *zerolog.Logger, result
 	e.handleAcceptMostCommon(logger, resultChan, responses, mostCommonResult, exec, errFn)
 }
 
-func (e *executor[R]) handleOnlyBlockHeadLeader(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], exec failsafe.Execution[R], errFn func() error) {
+func (e *executor[R]) handleOnlyBlockHeadLeader(logger *zerolog.Logger, resultChan chan<- *failsafeCommon.PolicyResult[R], responses []*execResult[R], _ failsafe.Execution[R], errFn func() error) {
 	_, highestBlockResult := e.findBlockHeadLeader(responses)
 
 	if highestBlockResult != nil {

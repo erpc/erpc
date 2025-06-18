@@ -494,7 +494,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if execErr != nil {
 		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 		// Don't override consensus errors with last valid response
-		if common.HasErrorCode(translatedErr, common.ErrCodeConsensusFailure, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants) {
+		if common.HasErrorCode(translatedErr, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants) {
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}

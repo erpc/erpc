@@ -7,8 +7,10 @@ import (
 	"net/url"
 	"strings"
 
+	_ "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
+	evmArch "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -16,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type GrpcBdsClient interface {
@@ -124,18 +127,29 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 	}
 
 	// Route to appropriate handler based on method
+	var resp *common.NormalizedResponse
 	switch jrReq.Method {
 	case "eth_getBlockByNumber":
-		return c.handleGetBlockByNumber(ctx, req, jrReq)
+		resp, err = c.handleGetBlockByNumber(ctx, req, jrReq)
 	case "eth_getBlockByHash":
-		return c.handleGetBlockByHash(ctx, req, jrReq)
+		resp, err = c.handleGetBlockByHash(ctx, req, jrReq)
 	case "eth_getLogs":
-		return c.handleGetLogs(ctx, req, jrReq)
+		resp, err = c.handleGetLogs(ctx, req, jrReq)
 	default:
-		err := fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method)
+		err := common.NewErrEndpointUnsupported(
+			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
+		)
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
+
+	// TODO Distinguish between different architectures as a property on GenericHttpJsonRpcClient during initialization
+	// TODO Move the logic to evm package as a post-response hook?
+	if err != nil {
+		return nil, c.normalizeGrpcError(resp, err)
+	}
+
+	return resp, nil
 }
 
 func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -190,7 +204,10 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 
 	// Create JSON-RPC response
 	jsonRpcResp := &common.JsonRpcResponse{}
-	jsonRpcResp.SetID(jrReq.ID)
+	err = jsonRpcResp.SetID(jrReq.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
 
 	if result != nil {
 		resultBytes, err := sonic.Marshal(result)
@@ -265,7 +282,10 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 
 	// Create JSON-RPC response
 	jsonRpcResp := &common.JsonRpcResponse{}
-	jsonRpcResp.SetID(jrReq.ID)
+	err = jsonRpcResp.SetID(jrReq.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
 
 	if result != nil {
 		resultBytes, err := sonic.Marshal(result)
@@ -413,7 +433,10 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 
 	// Create JSON-RPC response
 	jsonRpcResp := &common.JsonRpcResponse{}
-	jsonRpcResp.SetID(jrReq.ID)
+	err = jsonRpcResp.SetID(jrReq.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
 
 	resultBytes, err := sonic.Marshal(result)
 	if err != nil {
@@ -426,9 +449,28 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		WithJsonRpcResponse(jsonRpcResp), nil
 }
 
+func (c *GenericGrpcBdsClient) normalizeGrpcError(resp *common.NormalizedResponse, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// First check if this is a gRPC status error
+	st, ok := status.FromError(err)
+	if !ok {
+		// Not a gRPC error, return as transport failure
+		return common.NewErrEndpointTransportFailure(c.Url, err)
+	}
+
+	// Pass to the EVM error normalizer
+	return evmArch.ExtractGrpcError(st, c.upstreamId)
+}
+
 func (c *GenericGrpcBdsClient) shutdown() {
 	if c.conn != nil {
-		c.conn.Close()
+		err := c.conn.Close()
+		if err != nil {
+			c.logger.Error().Err(err).Msg("failed to close gRPC connection")
+		}
 	}
 }
 

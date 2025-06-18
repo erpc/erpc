@@ -491,20 +491,19 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 		if ser, ok := execErr.(common.StandardError); ok {
 			be := ser.Base()
 			if be != nil {
-				if upstreamId != "" && method != "" {
-					be.Details = map[string]interface{}{
-						"upstreamId": upstreamId,
-						"method":     method,
-					}
-				} else if method != "" {
-					be.Details = map[string]interface{}{
-						"method": method,
-					}
-				} else if upstreamId != "" {
-					be.Details = map[string]interface{}{
-						"upstreamId": upstreamId,
-					}
+				var dts map[string]interface{}
+				if be.Details != nil {
+					dts = be.Details
+				} else {
+					dts = make(map[string]interface{})
 				}
+				if method != "" {
+					dts["method"] = method
+				}
+				if upstreamId != "" {
+					dts["upstreamId"] = upstreamId
+				}
+				be.Details = dts
 			}
 		}
 		return err
