@@ -931,7 +931,10 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 }
 
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
-	if strings.HasPrefix(upstream.Endpoint, "http://") || strings.HasPrefix(upstream.Endpoint, "https://") {
+	if strings.HasPrefix(upstream.Endpoint, "http://") ||
+		strings.HasPrefix(upstream.Endpoint, "https://") ||
+		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
+		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
 		return nil, nil
 	}
 
@@ -1239,7 +1242,7 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 			if err != nil {
 				return fmt.Errorf("failed to parse endpoint: %w", err)
 			}
-			if epUrl.Scheme == "http" || epUrl.Scheme == "https" || epUrl.Scheme == "ws" || epUrl.Scheme == "wss" {
+			if util.IsNativeProtocol(u.Endpoint) {
 				host := epUrl.Hostname()
 				if host == "" {
 					host = epUrl.Host

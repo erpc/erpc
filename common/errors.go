@@ -2293,15 +2293,24 @@ func ClassifySeverity(err error) Severity {
 	return SeverityCritical
 }
 
+type ParticipantInfo struct {
+	Upstream   string `json:"upstream"`
+	ResultHash string `json:"resultHash,omitempty"`
+	ErrSummary string `json:"errorSummary,omitempty"`
+}
+
 type ErrConsensusDispute struct{ BaseError }
 
 const ErrCodeConsensusDispute ErrorCode = "ErrConsensusDispute"
 
-var NewErrConsensusDispute = func(message string) error {
+var NewErrConsensusDispute = func(message string, participants []ParticipantInfo) error {
 	return &ErrConsensusDispute{
 		BaseError{
 			Code:    ErrCodeConsensusDispute,
 			Message: message,
+			Details: map[string]interface{}{
+				"participants": participants,
+			},
 		},
 	}
 }
@@ -2310,24 +2319,14 @@ type ErrConsensusLowParticipants struct{ BaseError }
 
 const ErrCodeConsensusLowParticipants ErrorCode = "ErrConsensusLowParticipants"
 
-var NewErrConsensusLowParticipants = func(message string) error {
+var NewErrConsensusLowParticipants = func(message string, participants []ParticipantInfo) error {
 	return &ErrConsensusLowParticipants{
 		BaseError{
 			Code:    ErrCodeConsensusLowParticipants,
 			Message: message,
-		},
-	}
-}
-
-type ErrConsensusFailure struct{ BaseError }
-
-const ErrCodeConsensusFailure ErrorCode = "ErrConsensusFailure"
-
-var NewErrConsensusFailure = func(message string) error {
-	return &ErrConsensusFailure{
-		BaseError{
-			Code:    ErrCodeConsensusFailure,
-			Message: message,
+			Details: map[string]interface{}{
+				"participants": participants,
+			},
 		},
 	}
 }

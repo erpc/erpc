@@ -3,10 +3,10 @@ package consensus
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
-
-	"sync/atomic"
 
 	"github.com/erpc/erpc/common"
 	"github.com/failsafe-go/failsafe-go"
@@ -336,24 +336,54 @@ func TestConsensusExecutor(t *testing.T) {
 			punishedUpstreams := make(map[string]*common.FakeUpstream)
 
 			for range times {
-				// Execute consensus, this mimicks the actual execution of the policy as defined in networks.go
-				var i atomic.Int32
+				// Build a response queue per upstream so that if the same upstream is
+				// selected more than once in a round (allowed in low-participant
+				// scenarios), each execution still receives the next response from
+				// the predefined list. We rebuild this for each iteration to ensure
+				// responses are available for multiple test runs.
+				responseQueueByUpstream := make(map[string][]*common.NormalizedResponse)
+				for _, r := range responses {
+					if up := r.Upstream(); up != nil {
+						id := up.Config().Id
+						responseQueueByUpstream[id] = append(responseQueueByUpstream[id], r)
+					}
+				}
+
+				// Mutex to protect concurrent access to the response queue
+				var queueMutex sync.Mutex
+
+				// Execute consensus – this mimics the actual execution of the policy as defined in networks.go
 				result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-					currentIndex := i.Add(1) - 1
-					if currentIndex >= int32(len(tt.responses)) {
-						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-							Error: errors.New("no more responses"),
-						}
+					ctx := exec.Context()
+					if ctx == nil {
+						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("missing execution context")}
 					}
 
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-						Result: responses[currentIndex],
+					// Retrieve the cloned request to discover which upstream was selected for this execution.
+					req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+					upstreamID := ""
+					if req != nil && req.Directives() != nil {
+						upstreamID = req.Directives().UseUpstream
 					}
+
+					queueMutex.Lock()
+					defer queueMutex.Unlock()
+
+					queue, ok := responseQueueByUpstream[upstreamID]
+					if !ok || len(queue) == 0 {
+						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: fmt.Errorf("no response for upstream %s", upstreamID)}
+					}
+
+					// Pop the first response from the queue.
+					resp := queue[0]
+					responseQueueByUpstream[upstreamID] = queue[1:]
+
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
 				})(mockExec)
 
 				// Verify results
 				if tt.expectedError != nil {
-					assert.EqualError(t, result.Error, *tt.expectedError)
+					assert.ErrorContains(t, result.Error, *tt.expectedError)
 				} else {
 					require.NoError(t, result.Error)
 					actualJrr, err := result.Result.JsonRpcResponse()
@@ -524,18 +554,29 @@ func (m *mockExecution) Cancel(result *failsafeCommon.PolicyResult[*common.Norma
 func (m *mockExecution) CopyForCancellable() failsafe.Execution[*common.NormalizedResponse] {
 	return &mockExecution{
 		responses: m.responses,
+		ctx:       m.Context(),
 	}
 }
 
 func (m *mockExecution) CopyForCancellableWithValue(key, value any) failsafe.Execution[*common.NormalizedResponse] {
+	// Preserve existing context and attach the additional key/value so that
+	// consensus executor goroutines can identify which upstream they are
+	// executing against (required for request-bound test assertions).
+	newCtx := m.Context()
+	if key != nil {
+		newCtx = context.WithValue(newCtx, key, value)
+	}
+
 	return &mockExecution{
 		responses: m.responses,
+		ctx:       newCtx,
 	}
 }
 
 func (m *mockExecution) CopyForHedge() failsafe.Execution[*common.NormalizedResponse] {
 	return &mockExecution{
 		responses: m.responses,
+		ctx:       m.Context(),
 	}
 }
 

@@ -307,23 +307,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	// Send the request based on client type
 	//
 	switch clientType {
-	case clients.ClientTypeHttpJsonRpc:
-		jsonRpcClient, okClient := u.Client.(clients.HttpJsonRpcClient)
-		if !okClient {
-			err := common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("failed to initialize client for upstream %s", cfg.Id),
-				common.NewErrUpstreamClientInitialization(
-					fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
-					cfg.Id,
-				),
-				nil,
-			)
-			common.SetTraceSpanError(span, err)
-			return nil, err
-		}
-
+	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds:
 		tryForward := func(
 			ctx context.Context,
 			exec failsafe.Execution[*common.NormalizedResponse],
@@ -335,7 +319,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType()).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType())
 
-			nrs, errCall := jsonRpcClient.SendRequest(ctx, nrq)
+			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			isSuccess := false
 			if nrs != nil {
 				nrs.SetUpstream(u)
@@ -770,7 +754,8 @@ func (u *Upstream) prepareRequest(ctx context.Context, nr *common.NormalizedRequ
 			)
 		}
 
-		if u.Client.GetType() == clients.ClientTypeHttpJsonRpc {
+		clientType := u.Client.GetType()
+		if clientType == clients.ClientTypeHttpJsonRpc || clientType == clients.ClientTypeGrpcBds {
 			jsonRpcReq, err := nr.JsonRpcRequest(ctx)
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
