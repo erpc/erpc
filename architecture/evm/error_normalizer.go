@@ -212,13 +212,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 				nil,
+				r.StatusCode,
 			)
 		}
 
 		//----------------------------------------------------------------
 		// "EVM reverts and execution" errors
 		//----------------------------------------------------------------
-
 		if strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
@@ -234,28 +234,39 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		}
+		// Hack for some chains (Berachain) to make the message compatible with Subgraph and other tools.
+		if strings.Contains(msg, "EVM error: InvalidJump") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorEvmReverted,
+					"revert: invalid jump destination",
+					nil,
+					details,
+				),
+			)
+		}
 
 		//----------------------------------------------------------------
-		// "Insufficient funds" or "out of gas" errors
+		// "Transaction rejected" or "Insufficient funds" or "out of gas" errors
 		//----------------------------------------------------------------
 
-		if strings.Contains(msg, "insufficient funds") ||
+		if code == common.JsonRpcErrorTransactionRejected ||
+			strings.Contains(msg, "insufficient funds") ||
 			strings.Contains(msg, "insufficient balance") ||
 			strings.Contains(msg, "out of gas") ||
 			strings.Contains(msg, "gas too low") ||
 			strings.Contains(msg, "IntrinsicGas") {
 
-			// by default, we do not retry this type of client-side exception
-			// as if the gas/funds is low, retrying another upstream would not help.
-			return common.NewErrEndpointClientSideException(
+			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
-					common.JsonRpcErrorCallException,
+					common.JsonRpcErrorTransactionRejected,
 					err.Message,
 					nil,
 					details,
 				),
-			).WithRetryableTowardNetwork(false)
+			)
 		}
 
 		//----------------------------------------------------------------
@@ -426,12 +437,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		return common.NewErrEndpointServerSideException(
 			common.NewErrJsonRpcExceptionInternal(
 				int(code),
-				common.JsonRpcErrorServerSideException,
+				code,
 				err.Message,
 				nil,
 				details,
 			),
 			nil,
+			r.StatusCode,
 		)
 	}
 
@@ -477,6 +489,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 								},
 							),
 							nil,
+							r.StatusCode,
 						)
 					}
 				}
@@ -573,6 +586,7 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 					details,
 				),
 				nil,
+				0,
 			)
 
 		case bdscommon.ErrorCode_RANGE_TOO_LARGE:
@@ -597,6 +611,7 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 					details,
 				),
 				nil,
+				0,
 			)
 		}
 	}
@@ -645,6 +660,7 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 				details,
 			),
 			nil,
+			0,
 		)
 
 	case codes.Unauthenticated, codes.PermissionDenied:
@@ -679,6 +695,7 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 				details,
 			),
 			nil,
+			0,
 		)
 
 	default:
@@ -691,6 +708,7 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 				details,
 			),
 			nil,
+			0,
 		)
 	}
 }

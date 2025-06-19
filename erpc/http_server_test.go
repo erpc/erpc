@@ -2684,7 +2684,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
 
 				assert.Equal(t, http.StatusInternalServerError, statusCode)
-				assert.Contains(t, body, "-32603")
+				assert.Contains(t, body, "-39999")
 				assert.Contains(t, body, "my funky error")
 			})
 
@@ -5741,7 +5741,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      2,
 				"error": map[string]interface{}{
-					"code":    -32000,
+					"code":    -32603,
 					"message": "Server error",
 				},
 			})
@@ -6899,7 +6899,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
 	})
 
-	t.Run("ShouldReturnForwardErrorIfUpstreamFails", func(t *testing.T) {
+	t.Run("ShouldReturnForwardErrorIfUpstreamFailsPreserveCodes", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -6985,7 +6985,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      777,
 				"error": map[string]interface{}{
-					"code":    -32000,
+					"code":    -3212345,
 					"message": "Upstream error",
 				},
 			})
@@ -6995,7 +6995,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		defer shutdown()
 
 		statusCode, respBody := sendRequest(requestBody, nil, nil)
-		assert.Equal(t, http.StatusInternalServerError, statusCode, "should reflect upstream's 500 error")
+		assert.Equal(t, 503, statusCode, "should reflect upstream's 500 error")
 
 		// Verify the server forwards the original error info
 		var respObject map[string]interface{}
@@ -7004,7 +7004,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Contains(t, respObject, "error", "should contain error field")
 
 		errorObj := respObject["error"].(map[string]interface{})
-		assert.Equal(t, float64(-32603), errorObj["code"].(float64), "error code should match upstream error")
+		assert.Equal(t, float64(-3212345), errorObj["code"].(float64), "error code should match upstream error")
 		assert.Contains(t, errorObj["message"].(string), "Upstream error", "error message should match upstream message")
 
 		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
