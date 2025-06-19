@@ -252,6 +252,30 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
+		// "Transaction Rejected" errors
+		//----------------------------------------------------------------
+
+		if strings.Contains(msg, "transaction rejected") ||
+			strings.Contains(msg, "Transaction Rejected") ||
+			strings.Contains(msg, "could not be created") ||
+			strings.Contains(msg, "validation failure") ||
+			strings.Contains(msg, "insufficient resources") ||
+			code == -32003 {
+
+			// Transaction rejection due to validation failure or insufficient resources
+			// should not be retried as the same transaction would be rejected by other upstreams
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
+		}
+
+		//----------------------------------------------------------------
 		// "Not found" or "disabled" errors (missing data or unsupported)
 		//----------------------------------------------------------------
 
