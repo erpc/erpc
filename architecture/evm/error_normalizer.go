@@ -14,7 +14,6 @@ import (
 )
 
 func init() {
-	// This ensures the type is not optimized away and is available for reflection
 	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
 }
 

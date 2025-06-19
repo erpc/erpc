@@ -237,13 +237,13 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr              string     `yaml:"addr" json:"addr"`
+	Addr              string     `yaml:"addr,omitempty" json:"addr"`
 	Username          string     `yaml:"username,omitempty" json:"username"`
-	Password          string     `yaml:"password" json:"-"`
-	DB                int        `yaml:"db" json:"db"`
-	TLS               *TLSConfig `yaml:"tls" json:"tls"`
-	ConnPoolSize      int        `yaml:"connPoolSize" json:"connPoolSize"`
-	URI               string     `yaml:"uri,omitempty" json:"uri"`
+	Password          string     `yaml:"password,omitempty" json:"-"`
+	DB                int        `yaml:"db,omitempty" json:"db"`
+	TLS               *TLSConfig `yaml:"tls,omitempty" json:"tls"`
+	ConnPoolSize      int        `yaml:"connPoolSize,omitempty" json:"connPoolSize"`
+	URI               string     `yaml:"uri" json:"uri"`
 	InitTimeout       Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
 	GetTimeout        Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 	SetTimeout        Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
