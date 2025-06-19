@@ -1733,7 +1733,7 @@ func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
 	if e.Cause != nil {
 		if er, ok := e.Cause.(*ErrJsonRpcExceptionInternal); ok {
 			switch er.NormalizedCode() {
-			case JsonRpcErrorEvmReverted, JsonRpcErrorCallException:
+			case JsonRpcErrorEvmReverted, JsonRpcErrorCallException, JsonRpcErrorTransactionRejected:
 				return 200
 			}
 		}
@@ -1786,11 +1786,18 @@ var NewErrEndpointTransportFailure = func(url *url.URL, cause error) error {
 	}
 }
 
-type ErrEndpointServerSideException struct{ BaseError }
+type ErrEndpointServerSideException struct {
+	BaseError
+
+	// We want to return the same status code as the upstream,
+	// to avoid overriding unknown behavior, this way we will
+	// have exact same code/message/status code as upstreams in case of unknown errors.
+	originalStatusCode int
+}
 
 const ErrCodeEndpointServerSideException = "ErrEndpointServerSideException"
 
-var NewErrEndpointServerSideException = func(cause error, details map[string]interface{}) error {
+var NewErrEndpointServerSideException = func(cause error, details map[string]interface{}, originalStatusCode int) error {
 	return &ErrEndpointServerSideException{
 		BaseError{
 			Code:    ErrCodeEndpointServerSideException,
@@ -1798,11 +1805,15 @@ var NewErrEndpointServerSideException = func(cause error, details map[string]int
 			Cause:   cause,
 			Details: details,
 		},
+		originalStatusCode,
 	}
 }
 
 func (e *ErrEndpointServerSideException) ErrorStatusCode() int {
-	return 500
+	if e.originalStatusCode != 0 {
+		return e.originalStatusCode
+	}
+	return http.StatusInternalServerError
 }
 
 type ErrEndpointRequestTimeout struct{ BaseError }
@@ -1956,6 +1967,7 @@ const (
 
 	// Standard JSON-RPC codes
 	JsonRpcErrorCallException        JsonRpcErrorNumber = -32000
+	JsonRpcErrorTransactionRejected  JsonRpcErrorNumber = -32003
 	JsonRpcErrorClientSideException  JsonRpcErrorNumber = -32600
 	JsonRpcErrorUnsupportedException JsonRpcErrorNumber = -32601
 	JsonRpcErrorInvalidArgument      JsonRpcErrorNumber = -32602
