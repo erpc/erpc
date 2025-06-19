@@ -212,7 +212,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "EVM reverts and execution" errors
 		//----------------------------------------------------------------
 
-		if strings.Contains(msg, "reverted") ||
+		if code == -32003 ||
+			strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
 			strings.Contains(msg, "VM Exception") ||
@@ -244,30 +245,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorCallException,
-					err.Message,
-					nil,
-					details,
-				),
-			).WithRetryableTowardNetwork(false)
-		}
-
-		//----------------------------------------------------------------
-		// "Transaction Rejected" errors
-		//----------------------------------------------------------------
-
-		if strings.Contains(msg, "transaction rejected") ||
-			strings.Contains(msg, "Transaction Rejected") ||
-			strings.Contains(msg, "could not be created") ||
-			strings.Contains(msg, "validation failure") ||
-			strings.Contains(msg, "insufficient resources") ||
-			code == -32003 {
-
-			// Transaction rejection due to validation failure or insufficient resources
-			// should not be retried as the same transaction would be rejected by other upstreams
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorTransactionRejected,
 					err.Message,
 					nil,
 					details,
