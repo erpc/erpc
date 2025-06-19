@@ -162,12 +162,12 @@ export interface TLSConfig {
     insecureSkipVerify?: boolean;
 }
 export interface RedisConnectorConfig {
-    addr: string;
+    addr?: string;
     username?: string;
-    db: number;
+    db?: number;
     tls?: TLSConfig;
-    connPoolSize: number;
-    uri?: string;
+    connPoolSize?: number;
+    uri: string;
     initTimeout?: Duration;
     getTimeout?: Duration;
     setTimeout?: Duration;

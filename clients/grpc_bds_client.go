@@ -143,19 +143,17 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, err
 	}
 
-	// TODO Distinguish between different architectures as a property on GenericHttpJsonRpcClient during initialization
+	// TODO Distinguish between different architectures as a property on GenericGrpcBdsClient during initialization
 	// TODO Move the logic to evm package as a post-response hook?
 	if err != nil {
-		return nil, c.normalizeGrpcError(resp, err)
+		return nil, c.normalizeGrpcError(err)
 	}
 
 	return resp, nil
 }
 
 func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	// Parse params: [blockNumber, includeTransactions]
 	var params []interface{}
-	// Marshal and unmarshal to handle the conversion properly
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
@@ -168,19 +166,16 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		return nil, fmt.Errorf("insufficient params for eth_getBlockByNumber")
 	}
 
-	// Parse block number
 	blockNumber, ok := params[0].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid block number parameter")
 	}
 
-	// Parse includeTransactions
 	includeTransactions, ok := params[1].(bool)
 	if !ok {
 		return nil, fmt.Errorf("invalid includeTransactions parameter")
 	}
 
-	// Make gRPC call
 	grpcReq := &evm.GetBlockByNumberRequest{
 		BlockNumber:         blockNumber,
 		IncludeTransactions: includeTransactions,
@@ -196,13 +191,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	// Convert gRPC response to JSON-RPC response
 	var result interface{}
 	if grpcResp.Block != nil {
 		result = convertBlockToJsonRpc(grpcResp.Block, grpcResp.Transactions)
 	}
 
-	// Create JSON-RPC response
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
@@ -216,7 +209,6 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		}
 		jsonRpcResp.Result = resultBytes
 	} else {
-		// null result for not found
 		jsonRpcResp.Result = []byte("null")
 	}
 
@@ -226,9 +218,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 }
 
 func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	// Parse params: [blockHash, includeTransactions]
 	var params []interface{}
-	// Marshal and unmarshal to handle the conversion properly
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
@@ -241,7 +231,6 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		return nil, fmt.Errorf("insufficient params for eth_getBlockByHash")
 	}
 
-	// Parse block hash
 	blockHashStr, ok := params[0].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid block hash parameter")
@@ -252,13 +241,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		return nil, fmt.Errorf("failed to parse block hash: %w", err)
 	}
 
-	// Parse includeTransactions
 	includeTransactions, ok := params[1].(bool)
 	if !ok {
 		return nil, fmt.Errorf("invalid includeTransactions parameter")
 	}
 
-	// Make gRPC call
 	grpcReq := &evm.GetBlockByHashRequest{
 		BlockHash:           blockHash,
 		IncludeTransactions: includeTransactions,
@@ -274,13 +261,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	// Convert gRPC response to JSON-RPC response
 	var result interface{}
 	if grpcResp.Block != nil {
 		result = convertBlockToJsonRpc(grpcResp.Block, grpcResp.Transactions)
 	}
 
-	// Create JSON-RPC response
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
@@ -294,7 +279,6 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		}
 		jsonRpcResp.Result = resultBytes
 	} else {
-		// null result for not found
 		jsonRpcResp.Result = []byte("null")
 	}
 
@@ -304,9 +288,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 }
 
 func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	// Parse params: [{fromBlock, toBlock, address/addresses, topics}]
 	var params []map[string]interface{}
-	// Marshal and unmarshal to handle the conversion properly
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
@@ -321,7 +303,6 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 
 	filterParams := params[0]
 
-	// Parse from/to blocks
 	var fromBlock, toBlock *uint64
 	if fromStr, ok := filterParams["fromBlock"].(string); ok {
 		if fromStr != "latest" && fromStr != "pending" && fromStr != "earliest" {
@@ -343,12 +324,10 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		}
 	}
 
-	// For now, require explicit block numbers
 	if fromBlock == nil || toBlock == nil {
 		return nil, fmt.Errorf("special block numbers not yet supported via gRPC for eth_getLogs")
 	}
 
-	// Parse addresses
 	var addresses [][]byte
 	if addrParam, ok := filterParams["address"]; ok {
 		switch v := addrParam.(type) {
@@ -371,7 +350,6 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		}
 	}
 
-	// Parse topics
 	var topics []*evm.TopicFilter
 	if topicsParam, ok := filterParams["topics"].([]interface{}); ok {
 		for _, topicParam := range topicsParam {
@@ -405,7 +383,6 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		}
 	}
 
-	// Make gRPC call
 	grpcReq := &evm.GetLogsRequest{
 		FromBlock: fromBlock,
 		ToBlock:   toBlock,
@@ -425,13 +402,11 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	// Convert logs to JSON-RPC format
 	var result []interface{}
 	for _, log := range grpcResp.Logs {
 		result = append(result, convertLogToJsonRpc(log))
 	}
 
-	// Create JSON-RPC response
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
@@ -449,7 +424,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		WithJsonRpcResponse(jsonRpcResp), nil
 }
 
-func (c *GenericGrpcBdsClient) normalizeGrpcError(resp *common.NormalizedResponse, err error) error {
+func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 	if err == nil {
 		return nil
 	}
