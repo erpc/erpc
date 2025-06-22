@@ -19,6 +19,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	// Import gzip to register the compressor - enables automatic gzip compression
+	// when clients send "grpc-accept-encoding: gzip" header
+	_ "google.golang.org/grpc/encoding/gzip"
 )
 
 type GrpcBdsClient interface {
