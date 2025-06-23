@@ -309,6 +309,21 @@ func (r *JsonRpcResponse) PeekStringByPath(ctx context.Context, path ...interfac
 	return n.String()
 }
 
+func (r *JsonRpcResponse) Size(ctx ...context.Context) (int, error) {
+	if r == nil {
+		return 0, nil
+	}
+
+	if r.Result != nil && len(r.Result) > 0 {
+		return len(r.Result), nil
+	}
+
+	if r.resultWriter != nil {
+		return r.resultWriter.Size(ctx...)
+	}
+	return 0, nil
+}
+
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	if r == nil {
 		return

@@ -1,10 +1,14 @@
 package util
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 type ByteWriter interface {
 	WriteTo(w io.Writer, trimSides bool) (n int64, err error)
 	IsResultEmptyish() bool
+	Size(ctx ...context.Context) (int, error)
 }
 
 func IsBytesEmptyish(b []byte) bool {

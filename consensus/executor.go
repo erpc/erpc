@@ -377,6 +377,7 @@ func (e *executor[R]) extractParticipants(lg *zerolog.Logger, responses []*execR
 	}
 	return participants
 }
+
 func (e *executor[R]) createRateLimiter(logger *zerolog.Logger, upstreamId string) ratelimiter.RateLimiter[any] {
 	// Try to get existing limiter
 	if limiter, ok := e.misbehavingUpstreamsLimiter.Load(upstreamId); ok {

@@ -370,6 +370,19 @@ func (r *NormalizedResponse) Hash(ctx ...context.Context) (string, error) {
 	return jrr.CanonicalHash(ctx...)
 }
 
+func (r *NormalizedResponse) Size(ctx ...context.Context) (int, error) {
+	if r == nil {
+		return 0, nil
+	}
+
+	jrr, err := r.JsonRpcResponse(ctx...)
+	if err != nil {
+		return 0, err
+	}
+
+	return jrr.Size(ctx...)
+}
+
 // CopyResponseForRequest creates a copy of the response for another request
 // We use references for underlying Result and Error fields to save memory.
 func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
