@@ -320,7 +320,7 @@ var (
 		Namespace: "erpc",
 		Name:      "shadow_response_mismatch_total",
 		Help:      "Total number of shadow upstream responses that differ from the expected response.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "emptyish"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "emptyish", "larger"})
 
 	MetricShadowResponseErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

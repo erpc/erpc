@@ -359,6 +359,18 @@ func (g *GetLogsMultiResponseWriter) IsResultEmptyish() bool {
 	return true
 }
 
+func (g *GetLogsMultiResponseWriter) Size(ctx ...context.Context) (int, error) {
+	size := 0
+	for _, response := range g.responses {
+		s, err := response.Size(ctx...)
+		if err != nil {
+			return 0, err
+		}
+		size += s
+	}
+	return size, nil
+}
+
 type ethGetLogsSubRequest struct {
 	fromBlock int64
 	toBlock   int64
