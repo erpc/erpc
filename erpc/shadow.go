@@ -49,6 +49,15 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 
 	// Fire shadow requests concurrently
 	for _, ups := range shadowUpstreams {
+		allowed, err := ups.ShouldHandleMethod(method)
+		if err != nil {
+			p.Logger.Error().Err(err).Msg("failed to check if method is allowed for shadow upstream")
+			continue
+		}
+		if !allowed {
+			p.Logger.Debug().Str("method", method).Str("upstreamId", ups.Id()).Msg("method not allowed for shadow upstream")
+			continue
+		}
 		ups := ups // capture loop variable
 		go func() {
 			ctx, cancel := context.WithCancel(p.networksRegistry.appCtx)
@@ -87,7 +96,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			// Set network reference for completeness (not strictly required for forwarding)
 			shadowReq.SetNetwork(origReq.Network())
 
-			// Execute the request against the shadow upstream (bypass exclusion)
+			// Execute the request against the shadow upstream (do bypass exclusion because we have to enforce method exclusion locally here - to ignore the shadow flag checking)
 			shadowResp, errForward := ups.Forward(shadowCtx, shadowReq, true)
 			if errForward != nil {
 				telemetry.MetricShadowResponseErrorTotal.WithLabelValues(
@@ -100,10 +109,11 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				).Inc()
 				p.Logger.Debug().Err(errForward).
 					Str("component", "shadowTraffic").
-					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
+					Object("request", shadowReq).
+					Object("response", shadowResp).
 					Msg("shadow request returned error")
 				return
 			}
@@ -119,10 +129,11 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				).Inc()
 				p.Logger.Debug().
 					Str("component", "shadowTraffic").
-					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
+					Object("request", shadowReq).
+					Object("response", shadowResp).
 					Msg("shadow request returned nil response")
 				return
 			}
@@ -146,15 +157,19 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				).Inc()
 				p.Logger.Debug().Err(errHash).
 					Str("component", "shadowTraffic").
-					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
+					Object("request", shadowReq).
+					Object("response", shadowResp).
 					Msg("failed to compute hash for shadow response")
 				return
 			}
 
-			if shadowHash == expectedHash {
+			isShadowEmpty := shadowResp.IsResultEmptyish(shadowCtx)
+			isOriginalEmpty := resp.IsResultEmptyish(ctx)
+
+			if shadowHash == expectedHash || (isShadowEmpty && isOriginalEmpty) {
 				telemetry.MetricShadowResponseIdenticalTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
@@ -164,20 +179,20 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				).Inc()
 				p.Logger.Trace().
 					Str("component", "shadowTraffic").
-					Str("projectId", p.Config.Id).
 					Str("networkId", network.networkId).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
+					Object("request", shadowReq).
+					Object("response", shadowResp).
 					Msg("shadow response identical to primary response")
 			} else {
-				isEmpty := shadowResp.IsResultEmptyish(shadowCtx)
 				telemetry.MetricShadowResponseMismatchTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
 					network.networkId,
 					ups.Id(),
 					method,
-					strconv.FormatBool(isEmpty),
+					strconv.FormatBool(isShadowEmpty),
 					strconv.FormatBool(isShadowLarger),
 				).Inc()
 				p.Logger.Error().
@@ -188,6 +203,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					Str("method", method).
 					Str("expectedHash", expectedHash).
 					Str("shadowHash", shadowHash).
+					Object("request", shadowReq).
 					Object("originalResponse", resp).
 					Object("shadowResponse", shadowResp).
 					Msg("shadow response hash mismatch")

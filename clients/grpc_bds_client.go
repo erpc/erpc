@@ -139,6 +139,12 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleGetBlockByHash(ctx, req, jrReq)
 	case "eth_getLogs":
 		resp, err = c.handleGetLogs(ctx, req, jrReq)
+	case "eth_getTransactionByHash":
+		resp, err = c.handleGetTransactionByHash(ctx, req, jrReq)
+	case "eth_getTransactionReceipt":
+		resp, err = c.handleGetTransactionReceipt(ctx, req, jrReq)
+	case "eth_chainId":
+		resp, err = c.handleChainId(ctx, req, jrReq)
 	default:
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
@@ -197,7 +203,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 
 	var result interface{}
 	if grpcResp.Block != nil {
-		result = convertBlockToJsonRpc(grpcResp.Block, grpcResp.Transactions)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions)
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -267,7 +273,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 
 	var result interface{}
 	if grpcResp.Block != nil {
-		result = convertBlockToJsonRpc(grpcResp.Block, grpcResp.Transactions)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions)
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -408,8 +414,165 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 
 	var result []interface{}
 	for _, log := range grpcResp.Logs {
-		result = append(result, convertLogToJsonRpc(log))
+		result = append(result, evm.LogToJsonRpc(log))
 	}
+
+	jsonRpcResp := &common.JsonRpcResponse{}
+	err = jsonRpcResp.SetID(jrReq.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+
+	resultBytes, err := sonic.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	jsonRpcResp.Result = resultBytes
+
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	var params []interface{}
+	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+	if err := sonic.Unmarshal(paramsBytes, &params); err != nil {
+		return nil, fmt.Errorf("failed to parse params: %w", err)
+	}
+
+	if len(params) < 1 {
+		return nil, fmt.Errorf("insufficient params for eth_getTransactionByHash")
+	}
+
+	txHashStr, ok := params[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid transaction hash parameter")
+	}
+
+	txHash, err := parseHexBytes(txHashStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse transaction hash: %w", err)
+	}
+
+	grpcReq := &evm.GetTransactionByHashRequest{
+		TransactionHash: txHash,
+	}
+
+	c.logger.Debug().
+		Str("transactionHash", txHashStr).
+		Msg("calling gRPC GetTransactionByHash")
+
+	grpcResp, err := c.rpcClient.GetTransactionByHash(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	var result interface{}
+	if grpcResp.Transaction != nil {
+		result = evm.TransactionToJsonRpc(grpcResp.Transaction)
+	}
+
+	jsonRpcResp := &common.JsonRpcResponse{}
+	err = jsonRpcResp.SetID(jrReq.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+
+	if result != nil {
+		resultBytes, err := sonic.Marshal(result)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+		jsonRpcResp.Result = resultBytes
+	} else {
+		jsonRpcResp.Result = []byte("null")
+	}
+
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	var params []interface{}
+	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+	if err := sonic.Unmarshal(paramsBytes, &params); err != nil {
+		return nil, fmt.Errorf("failed to parse params: %w", err)
+	}
+
+	if len(params) < 1 {
+		return nil, fmt.Errorf("insufficient params for eth_getTransactionReceipt")
+	}
+
+	txHashStr, ok := params[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid transaction hash parameter")
+	}
+
+	txHash, err := parseHexBytes(txHashStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse transaction hash: %w", err)
+	}
+
+	grpcReq := &evm.GetTransactionReceiptRequest{
+		TransactionHash: txHash,
+	}
+
+	c.logger.Debug().
+		Str("transactionHash", txHashStr).
+		Msg("calling gRPC GetTransactionReceipt")
+
+	grpcResp, err := c.rpcClient.GetTransactionReceipt(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	var result interface{}
+	if grpcResp.Receipt != nil {
+		result = evm.ReceiptToJsonRpc(grpcResp.Receipt)
+	}
+
+	jsonRpcResp := &common.JsonRpcResponse{}
+	err = jsonRpcResp.SetID(jrReq.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+
+	if result != nil {
+		resultBytes, err := sonic.Marshal(result)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+		jsonRpcResp.Result = resultBytes
+	} else {
+		jsonRpcResp.Result = []byte("null")
+	}
+
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+func (c *GenericGrpcBdsClient) handleChainId(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	grpcReq := &evm.ChainIdRequest{}
+
+	c.logger.Debug().
+		Msg("calling gRPC ChainId")
+
+	grpcResp, err := c.rpcClient.ChainId(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	// Convert chain ID to hex string per JSON-RPC standard
+	result := fmt.Sprintf("0x%x", grpcResp.ChainId)
 
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
@@ -465,94 +628,4 @@ func parseHexUint64(hexStr string) (uint64, error) {
 func parseHexBytes(hexStr string) ([]byte, error) {
 	hexStr = strings.TrimPrefix(hexStr, "0x")
 	return hex.DecodeString(hexStr)
-}
-
-func convertBlockToJsonRpc(block *evm.BlockHeader, transactions [][]byte) map[string]interface{} {
-	result := map[string]interface{}{
-		"number":           fmt.Sprintf("0x%x", block.Number),
-		"hash":             fmt.Sprintf("0x%x", block.Hash),
-		"parentHash":       fmt.Sprintf("0x%x", block.ParentHash),
-		"nonce":            fmt.Sprintf("0x%016x", block.Nonce),
-		"sha3Uncles":       fmt.Sprintf("0x%x", block.Sha3Uncles),
-		"logsBloom":        fmt.Sprintf("0x%x", block.LogsBloom),
-		"transactionsRoot": fmt.Sprintf("0x%x", block.TransactionsRoot),
-		"stateRoot":        fmt.Sprintf("0x%x", block.StateRoot),
-		"receiptsRoot":     fmt.Sprintf("0x%x", block.ReceiptsRoot),
-		"miner":            fmt.Sprintf("0x%x", block.Miner),
-		"difficulty":       block.Difficulty,
-		"totalDifficulty":  block.TotalDifficulty,
-		"extraData":        fmt.Sprintf("0x%x", block.ExtraData),
-		"size":             fmt.Sprintf("0x%x", block.Size),
-		"gasLimit":         fmt.Sprintf("0x%x", block.GasLimit),
-		"gasUsed":          fmt.Sprintf("0x%x", block.GasUsed),
-		"timestamp":        fmt.Sprintf("0x%x", block.Timestamp),
-	}
-
-	// Add optional fields if present
-	if block.BaseFeePerGas != nil {
-		result["baseFeePerGas"] = block.BaseFeePerGas
-	}
-	if block.MixHash != nil {
-		result["mixHash"] = fmt.Sprintf("0x%x", block.MixHash)
-	}
-	if block.WithdrawalsRoot != nil {
-		result["withdrawalsRoot"] = fmt.Sprintf("0x%x", block.WithdrawalsRoot)
-	}
-	if block.BlobGasUsed != nil {
-		result["blobGasUsed"] = fmt.Sprintf("0x%x", *block.BlobGasUsed)
-	}
-	if block.ExcessBlobGas != nil {
-		result["excessBlobGas"] = fmt.Sprintf("0x%x", *block.ExcessBlobGas)
-	}
-	if block.ParentBeaconBlockRoot != nil {
-		result["parentBeaconBlockRoot"] = fmt.Sprintf("0x%x", block.ParentBeaconBlockRoot)
-	}
-
-	// Handle transactions
-	if transactions != nil {
-		// For now, just include transaction hashes
-		// Full transaction objects would require more complex conversion
-		txList := make([]string, len(transactions))
-		for i, tx := range transactions {
-			// Assuming transactions are hashes when includeTransactions is false
-			txList[i] = fmt.Sprintf("0x%x", tx)
-		}
-		result["transactions"] = txList
-	} else {
-		result["transactions"] = []interface{}{}
-	}
-
-	// Add uncles
-	if block.Uncles != nil {
-		uncleList := make([]string, len(block.Uncles))
-		for i, uncle := range block.Uncles {
-			uncleList[i] = fmt.Sprintf("0x%x", uncle)
-		}
-		result["uncles"] = uncleList
-	} else {
-		result["uncles"] = []interface{}{}
-	}
-
-	return result
-}
-
-func convertLogToJsonRpc(log *evm.Log) map[string]interface{} {
-	topics := make([]string, len(log.Topics))
-	for i, topic := range log.Topics {
-		topics[i] = fmt.Sprintf("0x%x", topic)
-	}
-
-	result := map[string]interface{}{
-		"address":          fmt.Sprintf("0x%x", log.Address),
-		"topics":           topics,
-		"data":             fmt.Sprintf("0x%x", log.Data),
-		"blockNumber":      fmt.Sprintf("0x%x", log.BlockNumber),
-		"transactionHash":  fmt.Sprintf("0x%x", log.TransactionHash),
-		"transactionIndex": fmt.Sprintf("0x%x", log.TransactionIndex),
-		"blockHash":        fmt.Sprintf("0x%x", log.BlockHash),
-		"logIndex":         fmt.Sprintf("0x%x", log.LogIndex),
-		"removed":          false, // Always false for confirmed logs
-	}
-
-	return result
 }

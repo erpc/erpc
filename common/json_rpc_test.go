@@ -230,3 +230,149 @@ func TestJsonRpcRequest_MarshalParams(t *testing.T) {
 		assert.Equal(t, expectedRawReq, string(rawReq))
 	})
 }
+
+func TestJsonRpcResponse_CanonicalHash_EmptyishNormalization(t *testing.T) {
+	// Test cases that should produce the same hash due to emptyish normalization
+	testGroups := []struct {
+		name     string
+		variants []string
+	}{
+		{
+			name: "empty arrays vs non-existing fields",
+			variants: []string{
+				`{"result": {"data": "0x123", "logs": []}}`,
+				`{"result": {"data": "0x123"}}`,
+				`{"result": {"data": "0x123", "logs": null}}`,
+			},
+		},
+		{
+			name: "null values vs non-existing fields",
+			variants: []string{
+				`{"result": {"from": "0xabc", "to": null}}`,
+				`{"result": {"from": "0xabc"}}`,
+				`{"result": {"from": "0xabc", "to": ""}}`,
+			},
+		},
+		{
+			name: "empty strings and hex values",
+			variants: []string{
+				`{"result": {"data": "", "value": "0x123"}}`,
+				`{"result": {"data": "0x", "value": "0x123"}}`,
+				`{"result": {"data": "0x0", "value": "0x123"}}`,
+				`{"result": {"value": "0x123"}}`,
+			},
+		},
+		{
+			name: "nested empty objects",
+			variants: []string{
+				`{"result": {"block": {"transactions": []}, "status": "ok"}}`,
+				`{"result": {"block": {}, "status": "ok"}}`,
+				`{"result": {"status": "ok"}}`,
+			},
+		},
+		{
+			name: "field ordering should not matter",
+			variants: []string{
+				`{"result": {"a": "1", "b": "2", "c": "3"}}`,
+				`{"result": {"c": "3", "a": "1", "b": "2"}}`,
+				`{"result": {"b": "2", "c": "3", "a": "1"}}`,
+			},
+		},
+		{
+			name: "real-world example - transaction fields with nulls",
+			variants: []string{
+				`{"result": {"hash": "0xabc", "from": "0x123", "to": "0x456", "accessList": [], "chainId": null, "yParity": null}}`,
+				`{"result": {"hash": "0xabc", "from": "0x123", "to": "0x456"}}`,
+				`{"result": {"from": "0x123", "hash": "0xabc", "to": "0x456", "accessList": null}}`,
+			},
+		},
+		{
+			name: "array with empty elements",
+			variants: []string{
+				`{"result": {"items": ["a", "", "c"]}}`,
+				`{"result": {"items": ["a", null, "c"]}}`,
+				`{"result": {"items": ["a", "0x", "c"]}}`,
+			},
+		},
+	}
+
+	for _, group := range testGroups {
+		group := group
+		t.Run(group.name, func(t *testing.T) {
+			t.Parallel()
+
+			var hashes []string
+			for i, variant := range group.variants {
+				resp := &JsonRpcResponse{
+					Result: []byte(variant),
+				}
+				hash, err := resp.CanonicalHash()
+				assert.NoError(t, err, "variant %d: %s", i, variant)
+				hashes = append(hashes, hash)
+			}
+
+			// All variants in the group should produce the same hash
+			for i := 1; i < len(hashes); i++ {
+				assert.Equal(t, hashes[0], hashes[i],
+					"Hash mismatch between variant 0 and variant %d\nVariant 0: %s\nVariant %d: %s",
+					i, group.variants[0], i, group.variants[i])
+			}
+		})
+	}
+
+	// Test cases that should produce different hashes
+	t.Run("different values should produce different hashes", func(t *testing.T) {
+		cases := []string{
+			`{"result": {"value": "0x123"}}`,
+			`{"result": {"value": "0x456"}}`,
+			`{"result": {"value": "123"}}`,
+			`{"result": {"data": "0x123"}}`,
+		}
+
+		hashes := make(map[string]bool)
+		for _, c := range cases {
+			resp := &JsonRpcResponse{Result: []byte(c)}
+			hash, err := resp.CanonicalHash()
+			assert.NoError(t, err)
+			assert.False(t, hashes[hash], "Duplicate hash found for: %s", c)
+			hashes[hash] = true
+		}
+		assert.Equal(t, len(cases), len(hashes), "Expected all different hashes")
+	})
+
+	// Test the specific shadow response example
+	t.Run("shadow response normalization", func(t *testing.T) {
+		// Simplified version of the shadow response example
+		original := `{
+			"result": {
+				"hash": "0xa52b",
+				"transactions": [{
+					"hash": "0x18c4",
+					"from": "0x3d2f",
+					"chainId": null,
+					"accessList": []
+				}]
+			}
+		}`
+
+		shadow := `{
+			"result": {
+				"transactions": [{
+					"from": "0x3d2f",
+					"hash": "0x18c4"
+				}],
+				"hash": "0xa52b"
+			}
+		}`
+
+		resp1 := &JsonRpcResponse{Result: []byte(original)}
+		resp2 := &JsonRpcResponse{Result: []byte(shadow)}
+
+		hash1, err1 := resp1.CanonicalHash()
+		hash2, err2 := resp2.CanonicalHash()
+
+		assert.NoError(t, err1)
+		assert.NoError(t, err2)
+		assert.Equal(t, hash1, hash2, "Shadow response should have same canonical hash")
+	})
+}
