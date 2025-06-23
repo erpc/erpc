@@ -587,50 +587,143 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 }
 
 func canonicalize(v interface{}) ([]byte, error) {
+	// Check if the value is emptyish before processing
+	if isEmptyishValue(v) {
+		return nil, nil
+	}
+
 	switch val := v.(type) {
 	case map[string]interface{}:
-		keys := make([]string, 0, len(val))
-		for k := range val {
+		// Filter out empty values from the map
+		filtered := make(map[string]interface{})
+		for k, v := range val {
+			if !isEmptyishValue(v) {
+				filtered[k] = v
+			}
+		}
+		
+		// If the filtered map is empty, return nil
+		if len(filtered) == 0 {
+			return nil, nil
+		}
+
+		keys := make([]string, 0, len(filtered))
+		for k := range filtered {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 
 		var buf bytes.Buffer
 		buf.WriteByte('{')
-		for i, k := range keys {
-			kj, _ := json.Marshal(k)
-			vj, err := canonicalize(val[k])
+		first := true
+		for _, k := range keys {
+			vj, err := canonicalize(filtered[k])
 			if err != nil {
 				return nil, err
 			}
+			// Skip if the canonicalized value is empty
+			if vj == nil || len(vj) == 0 {
+				continue
+			}
+			
+			if !first {
+				buf.WriteByte(',')
+			}
+			first = false
+			
+			kj, _ := json.Marshal(k)
 			buf.Write(kj)
 			buf.WriteByte(':')
 			buf.Write(vj)
-			if i < len(keys)-1 {
-				buf.WriteByte(',')
-			}
 		}
 		buf.WriteByte('}')
-		return buf.Bytes(), nil
+		b := buf.Bytes()
+		if util.IsBytesEmptyish(b) {
+			return nil, nil
+		}
+		return b, nil
 
 	case []interface{}:
+		// Filter out empty values from the array
+		var filtered []interface{}
+		for _, item := range val {
+			if !isEmptyishValue(item) {
+				filtered = append(filtered, item)
+			}
+		}
+		
+		// If the filtered array is empty, return nil
+		if len(filtered) == 0 {
+			return nil, nil
+		}
+
 		var buf bytes.Buffer
 		buf.WriteByte('[')
-		for i, item := range val {
+		first := true
+		for _, item := range filtered {
 			b, err := canonicalize(item)
 			if err != nil {
 				return nil, err
 			}
-			buf.Write(b)
-			if i < len(val)-1 {
+			// Skip if the canonicalized value is empty
+			if b == nil || len(b) == 0 {
+				continue
+			}
+			
+			if !first {
 				buf.WriteByte(',')
 			}
+			first = false
+			buf.Write(b)
 		}
 		buf.WriteByte(']')
-		return buf.Bytes(), nil
+		b := buf.Bytes()
+		if util.IsBytesEmptyish(b) {
+			return nil, nil
+		}
+		return b, nil
 
 	default:
-		return json.Marshal(val)
+		b, err := json.Marshal(val)
+		if err != nil {
+			return nil, err
+		}
+		if util.IsBytesEmptyish(b) {
+			return nil, nil
+		}
+		return b, nil
+	}
+}
+
+// isEmptyishValue checks if a value should be considered empty for canonicalization
+func isEmptyishValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+
+	switch val := v.(type) {
+	case string:
+		// Treat empty strings and common empty hex values as empty
+		return val == "" || val == "0x" || val == "0x0" || val == "0x00"
+	case []interface{}:
+		// Empty arrays are considered empty
+		return len(val) == 0
+	case map[string]interface{}:
+		// Empty objects are considered empty
+		return len(val) == 0
+	case float64:
+		// Don't treat 0 as emptyish - it's a valid value for many fields
+		return val == 0
+	case bool:
+		// Booleans are never emptyish
+		return false
+	default:
+		// For other types, marshal and check
+		b, err := json.Marshal(val)
+		if err != nil {
+			return false
+		}
+		return util.IsBytesEmptyish(b)
 	}
 }
 

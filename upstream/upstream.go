@@ -827,7 +827,7 @@ func (u *Upstream) recordRemoteRateLimit(method string) {
 	}
 }
 
-func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
+func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
 	cfg := u.Config()
 	if s, ok := u.supportedMethods.Load(method); ok {
 		return s.(bool), nil
@@ -968,7 +968,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	allowed, err := u.shouldHandleMethod(method)
+	allowed, err := u.ShouldHandleMethod(method)
 	if err != nil {
 		return err, true
 	}
