@@ -389,6 +389,11 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
+		util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.ResetGock()
+		defer util.AssertNoPendingMocks(t, 0)
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
@@ -403,6 +408,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBalance",
+			Empty:   common.CacheEmptyBehaviorAllow,
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
@@ -636,7 +642,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				name:           "HighBlockBalance_Cache",
 				method:         "eth_getBalance",
 				params:         `["0x123","0x399"]`,
-				result:         `"result":"0x0"`,
+				result:         `"result":"0x222222"`,
 				expectedCache:  true, // Height above tip → Unfinalized
 				expectedPolicy: unfinalizedPolicy,
 			},
@@ -644,7 +650,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				name:           "LowBlockBalance_Cache",
 				method:         "eth_getBalance",
 				params:         `["0x123","0x5"]`,
-				result:         `"result":"0x0"`,
+				result:         `"result":"0x22222"`,
 				expectedCache:  true, // Height 0x5 finalized
 				expectedPolicy: finalizedPolicy,
 			},
