@@ -601,7 +601,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 				filtered[k] = v
 			}
 		}
-		
+
 		// If the filtered map is empty, return nil
 		if len(filtered) == 0 {
 			return nil, nil
@@ -625,12 +625,12 @@ func canonicalize(v interface{}) ([]byte, error) {
 			if vj == nil || len(vj) == 0 {
 				continue
 			}
-			
+
 			if !first {
 				buf.WriteByte(',')
 			}
 			first = false
-			
+
 			kj, _ := json.Marshal(k)
 			buf.Write(kj)
 			buf.WriteByte(':')
@@ -651,7 +651,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 				filtered = append(filtered, item)
 			}
 		}
-		
+
 		// If the filtered array is empty, return nil
 		if len(filtered) == 0 {
 			return nil, nil
@@ -669,7 +669,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 			if b == nil || len(b) == 0 {
 				continue
 			}
-			
+
 			if !first {
 				buf.WriteByte(',')
 			}
@@ -683,6 +683,19 @@ func canonicalize(v interface{}) ([]byte, error) {
 		}
 		return b, nil
 
+	case string:
+		valb := util.S2Bytes(val)
+		if util.IsBytesEmptyish(valb) {
+			return nil, nil
+		}
+		return removeLeadingZeroes(valb), nil
+
+	case []byte:
+		if util.IsBytesEmptyish(val) {
+			return nil, nil
+		}
+		return removeLeadingZeroes(val), nil
+
 	default:
 		b, err := json.Marshal(val)
 		if err != nil {
@@ -691,8 +704,20 @@ func canonicalize(v interface{}) ([]byte, error) {
 		if util.IsBytesEmptyish(b) {
 			return nil, nil
 		}
-		return b, nil
+		return removeLeadingZeroes(b), nil
 	}
+}
+
+func removeLeadingZeroes(b []byte) []byte {
+	if len(b) > 2 && b[0] == '0' && (b[1] == 'x' || b[1] == 'X') {
+		b = bytes.TrimLeft(b[2:], "0")
+	} else if len(b) > 3 && b[0] == '"' && b[1] == '0' && b[2] == 'x' && b[3] == '0' {
+		b = bytes.TrimLeft(b[3:], "0")
+		if len(b) == 1 {
+			return nil
+		}
+	}
+	return b
 }
 
 // isEmptyishValue checks if a value should be considered empty for canonicalization
@@ -703,8 +728,26 @@ func isEmptyishValue(v interface{}) bool {
 
 	switch val := v.(type) {
 	case string:
-		// Treat empty strings and common empty hex values as empty
-		return val == "" || val == "0x" || val == "0x0" || val == "0x00"
+		// Empty string
+		if val == "" {
+			return true
+		}
+		// Check for hex values that are all zeros (0x, 0x0, 0x00, 0x000, etc.)
+		if strings.HasPrefix(val, "0x") {
+			// Remove the 0x prefix and check if the rest is all zeros
+			hexPart := val[2:]
+			if hexPart == "" {
+				return true // "0x" is empty
+			}
+			// Check if all remaining characters are zeros
+			for _, c := range hexPart {
+				if c != '0' {
+					return false
+				}
+			}
+			return true // All zeros after 0x
+		}
+		return false
 	case []interface{}:
 		// Empty arrays are considered empty
 		return len(val) == 0
