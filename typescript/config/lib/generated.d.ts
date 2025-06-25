@@ -241,6 +241,7 @@ export interface ProviderConfig {
     vendor: string;
     settings?: VendorSettings;
     onlyNetworks?: string[];
+    ignoreNetworks?: string[];
     upstreamIdTemplate?: string;
     overrides?: {
         [key: string]: UpstreamConfig | undefined;
@@ -265,6 +266,9 @@ export interface UpstreamConfig {
 }
 export interface ShadowUpstreamConfig {
     enabled: boolean;
+    ignoreFields?: {
+        [key: string]: string[];
+    };
 }
 export interface RoutingConfig {
     scoreMultipliers: (ScoreMultiplierConfig | undefined)[];

@@ -432,7 +432,8 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 }
 
 type ShadowUpstreamConfig struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled      bool                `yaml:"enabled" json:"enabled"`
+	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
 type RoutingConfig struct {

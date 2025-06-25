@@ -37,7 +37,6 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 	method, _ := origReq.Method()
 
 	// Compute the expected hash of the original upstream response once
-	expectedHash, err := resp.Hash(ctx)
 	originalSize, err := resp.Size(ctx)
 	if err != nil {
 		resp.RUnlock()
@@ -145,7 +144,33 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			}
 			isShadowLarger := shadowSize > originalSize
 
-			shadowHash, errHash := shadowResp.Hash(shadowCtx)
+			// Check if this shadow upstream has ignore fields configured for this method
+			var ignoreFields []string
+			if ups.Config().Shadow.IgnoreFields != nil {
+				if fields, ok := ups.Config().Shadow.IgnoreFields[method]; ok {
+					ignoreFields = fields
+				}
+			}
+
+			// Calculate hashes, using ignored fields if configured
+			var shadowHash string
+			var expectedHash string
+			var errHash error
+			if len(ignoreFields) > 0 {
+				// Recalculate both hashes with ignored fields for fair comparison
+				expectedHash, err = resp.HashWithIgnoredFields(ignoreFields, ctx)
+				if err != nil {
+					p.Logger.Error().Err(err).Msg("failed to compute hash with ignored fields for original response")
+				}
+				shadowHash, errHash = shadowResp.HashWithIgnoredFields(ignoreFields, shadowCtx)
+			} else {
+				expectedHash, err = resp.Hash(ctx)
+				if err != nil {
+					p.Logger.Error().Err(err).Msg("failed to compute hash for original response")
+				}
+				shadowHash, errHash = shadowResp.Hash(shadowCtx)
+			}
+
 			if errHash != nil {
 				telemetry.MetricShadowResponseErrorTotal.WithLabelValues(
 					p.Config.Id,
@@ -203,6 +228,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					Str("method", method).
 					Str("expectedHash", expectedHash).
 					Str("shadowHash", shadowHash).
+					Strs("ignoredFields", ignoreFields).
 					Object("request", shadowReq).
 					Object("originalResponse", resp).
 					Object("shadowResponse", shadowResp).
