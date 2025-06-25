@@ -370,6 +370,19 @@ func (r *NormalizedResponse) Hash(ctx ...context.Context) (string, error) {
 	return jrr.CanonicalHash(ctx...)
 }
 
+func (r *NormalizedResponse) HashWithIgnoredFields(ignoreFields []string, ctx ...context.Context) (string, error) {
+	if r == nil {
+		return "", nil
+	}
+
+	jrr, err := r.JsonRpcResponse(ctx...)
+	if err != nil {
+		return "", err
+	}
+
+	return jrr.CanonicalHashWithIgnoredFields(ignoreFields, ctx...)
+}
+
 func (r *NormalizedResponse) Size(ctx ...context.Context) (int, error) {
 	if r == nil {
 		return 0, nil

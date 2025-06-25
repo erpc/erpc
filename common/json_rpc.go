@@ -586,6 +586,116 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 	return hash, nil
 }
 
+// CanonicalHashWithIgnoredFields calculates the canonical hash while ignoring specified field paths
+func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, ctx ...context.Context) (string, error) {
+	if r == nil {
+		return "", nil
+	}
+
+	// Compute hash with ignored fields (no caching for this variant)
+	r.resultMu.RLock()
+	resultCopy := r.Result
+	r.resultMu.RUnlock()
+
+	var obj interface{}
+	if err := json.Unmarshal(resultCopy, &obj); err != nil {
+		return "", err
+	}
+
+	// Remove ignored fields before canonicalization
+	if len(ignoreFields) > 0 {
+		obj = removeFieldsByPaths(obj, ignoreFields)
+	}
+
+	canonical, err := canonicalize(obj)
+	if err != nil {
+		return "", err
+	}
+
+	b := sha256.Sum256(canonical)
+	hash := fmt.Sprintf("%x", b)
+
+	return hash, nil
+}
+
+// removeFieldsByPaths removes fields from an object based on dot-separated paths
+// Supports:
+// - Simple fields: "status"
+// - Nested fields: "receipt.status"
+// - Array wildcards: "logs.*.blockTimestamp"
+func removeFieldsByPaths(obj interface{}, paths []string) interface{} {
+	if obj == nil || len(paths) == 0 {
+		return obj
+	}
+
+	// Parse paths into a tree structure for efficient removal
+	pathTree := make(map[string]interface{})
+	for _, path := range paths {
+		parts := strings.Split(path, ".")
+		current := pathTree
+		for i, part := range parts {
+			if i == len(parts)-1 {
+				current[part] = true // Leaf node
+			} else {
+				if _, exists := current[part]; !exists {
+					current[part] = make(map[string]interface{})
+				}
+				if next, ok := current[part].(map[string]interface{}); ok {
+					current = next
+				}
+			}
+		}
+	}
+
+	return removeFieldsRecursive(obj, pathTree)
+}
+
+// removeFieldsRecursive recursively removes fields based on the path tree
+func removeFieldsRecursive(obj interface{}, pathTree map[string]interface{}) interface{} {
+	switch v := obj.(type) {
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for key, value := range v {
+			// Check if this key should be removed or has nested removals
+			if pathNode, exists := pathTree[key]; exists {
+				if pathNode == true {
+					// This field should be removed entirely
+					continue
+				} else if nestedTree, ok := pathNode.(map[string]interface{}); ok {
+					// Apply nested removals
+					result[key] = removeFieldsRecursive(value, nestedTree)
+				}
+			} else if wildcardTree, exists := pathTree["*"]; exists {
+				// Handle wildcard for arrays
+				if nestedTree, ok := wildcardTree.(map[string]interface{}); ok {
+					result[key] = removeFieldsRecursive(value, nestedTree)
+				}
+			} else {
+				// Keep the field as-is
+				result[key] = value
+			}
+		}
+		return result
+
+	case []interface{}:
+		// Handle array wildcards
+		if wildcardTree, exists := pathTree["*"]; exists {
+			if nestedTree, ok := wildcardTree.(map[string]interface{}); ok {
+				result := make([]interface{}, len(v))
+				for i, item := range v {
+					result[i] = removeFieldsRecursive(item, nestedTree)
+				}
+				return result
+			}
+		}
+		return v
+
+	default:
+		// Primitive types or other types are returned as-is
+		return v
+	}
+}
+
 func canonicalize(v interface{}) ([]byte, error) {
 	// Check if the value is emptyish before processing
 	if isEmptyishValue(v) {
