@@ -1090,7 +1090,11 @@ func handleErrorResponse(
 	span.AddEvent("http.response_write_start")
 	err = encoder.Encode(resp)
 	if err != nil {
-		logger.Error().Err(err).Msgf("failed to encode error response")
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			logger.Debug().Err(err).Interface("response", resp).Msgf("skipping error response encoding due to context cancellation")
+		} else {
+			logger.Error().Err(err).Interface("response", resp).Msgf("failed to encode error response")
+		}
 		writeFatalError(httpCtx, http.StatusInternalServerError, err)
 	} else {
 		common.EnrichHTTPServerSpan(httpCtx, statusCode, nil)
