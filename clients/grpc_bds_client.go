@@ -143,6 +143,8 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleGetTransactionByHash(ctx, req, jrReq)
 	case "eth_getTransactionReceipt":
 		resp, err = c.handleGetTransactionReceipt(ctx, req, jrReq)
+	case "eth_getBlockReceipts":
+		resp, err = c.handleGetBlockReceipts(ctx, req, jrReq)
 	case "eth_chainId":
 		resp, err = c.handleChainId(ctx, req, jrReq)
 	default:
@@ -203,7 +205,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 
 	var result interface{}
 	if grpcResp.Block != nil {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -273,7 +275,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 
 	var result interface{}
 	if grpcResp.Block != nil {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions)
+		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -585,6 +587,68 @@ func (c *GenericGrpcBdsClient) handleChainId(ctx context.Context, req *common.No
 		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
 	jsonRpcResp.Result = resultBytes
+
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	var params []interface{}
+	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+	if err := sonic.Unmarshal(paramsBytes, &params); err != nil {
+		return nil, fmt.Errorf("failed to parse params: %w", err)
+	}
+
+	if len(params) < 1 {
+		return nil, fmt.Errorf("insufficient params for eth_getBlockReceipts")
+	}
+
+	blockNumber, ok := params[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid block number parameter")
+	}
+
+	grpcReq := &evm.GetBlockReceiptsRequest{
+		BlockNumber: blockNumber,
+	}
+
+	c.logger.Debug().
+		Str("blockNumber", blockNumber).
+		Msg("calling gRPC GetBlockReceipts")
+
+	grpcResp, err := c.rpcClient.GetBlockReceipts(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	// Convert receipts to JSON-RPC format
+	var result []interface{}
+	if grpcResp.Receipts != nil {
+		result = make([]interface{}, len(grpcResp.Receipts))
+		for i, receipt := range grpcResp.Receipts {
+			result[i] = evm.ReceiptToJsonRpc(receipt)
+		}
+	}
+
+	jsonRpcResp := &common.JsonRpcResponse{}
+	err = jsonRpcResp.SetID(jrReq.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+
+	if result != nil {
+		resultBytes, err := sonic.Marshal(result)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+		jsonRpcResp.Result = resultBytes
+	} else {
+		jsonRpcResp.Result = []byte("null")
+	}
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
