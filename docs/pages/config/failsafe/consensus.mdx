@@ -1,0 +1,95 @@
+---
+description: Consensus policy compares responses from multiple upstreams and returns the agreed result
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+# Consensus
+
+The `consensus` policy sends the same request to multiple upstreams and returns the result only when enough of them agree. This can be used to detect misbehaving nodes or inconsistencies between providers.
+
+It can only be defined on **network level** since it requires a set of upstreams.
+
+## Config
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 42161
+        failsafe:
+          consensus:
+            requiredParticipants: 3       # how many upstreams participate
+            agreementThreshold: 2         # how many identical responses are needed
+            disputeBehavior: preferBlockHeadLeader
+            lowParticipantsBehavior: acceptMostCommonValidResult
+            punishMisbehavior:
+              disputeThreshold: 3
+              disputeWindow: 10s
+              sitOutPenalty: 30s
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: { chainId: 42161 },
+          failsafe: {
+            consensus: {
+              requiredParticipants: 3,
+              agreementThreshold: 2,
+              disputeBehavior: "preferBlockHeadLeader",
+              lowParticipantsBehavior: "acceptMostCommonValidResult",
+              punishMisbehavior: {
+                disputeThreshold: 3,
+                disputeWindow: "10s",
+                sitOutPenalty: "30s",
+              },
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+### Options
+
+- `requiredParticipants` – number of upstreams selected for a round.
+- `agreementThreshold` – minimum count of identical responses to reach consensus.
+- `failureBehavior` – what to do when most participants return an error:
+  - `returnError`
+  - `acceptMostCommonValidResult`
+  - `preferBlockHeadLeader`
+  - `onlyBlockHeadLeader`
+- `disputeBehavior` – how to pick a result when participants disagree:
+  - `returnError`
+  - `acceptMostCommonValidResult`
+  - `preferBlockHeadLeader`
+  - `onlyBlockHeadLeader`
+- `lowParticipantsBehavior` – how to handle cases with fewer than `requiredParticipants` healthy upstreams:
+  - `returnError`
+  - `acceptMostCommonValidResult`
+  - `preferBlockHeadLeader`
+  - `onlyBlockHeadLeader`
+- `punishMisbehavior` – optional settings to temporarily sit out upstreams that consistently disagree with the majority:
+  - `disputeThreshold` – how many disputes trigger punishment
+  - `disputeWindow` – time period used to measure disputes
+  - `sitOutPenalty` – how long an upstream is ignored once punished
+
+<Callout type="info">Misbehaving upstreams are cordoned for the `sitOutPenalty` duration once their dispute count exceeds `disputeThreshold` within `disputeWindow`.</Callout>
+

@@ -68,6 +68,7 @@ This setup is ideal for development and testing purposes. For production environ
 - **Smart batching**: [Aggregate multiple RPC or contract calls into one](https://docs.erpc.cloud/operation/batch)
 - **Selection policy**: Allows you to influence how upstreams are selected to serve traffic (or not) w/ [selection policies](https://docs.erpc.cloud/config/projects/selection-policies).
 - **Data integrity**: Ensures accurate, up-to-date responses by levering several [data integrity mechanisms](https://docs.erpc.cloud/config/failsafe/integrity).
+- **Consensus policy**: Compares results from multiple upstreams and punishes nodes that consistently disagree.
 
 ---
 
