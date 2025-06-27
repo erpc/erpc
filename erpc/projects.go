@@ -175,9 +175,18 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 
 	if err == nil {
+		upstream := resp.Upstream()
+		vendor := ""
+		upstreamId := ""
+		if upstream != nil {
+			vendor = upstream.VendorName()
+			upstreamId = upstream.Id()
+		}
 		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
 			p.Config.Id,
 			network.networkId,
+			vendor,
+			upstreamId,
 			method,
 			strconv.FormatInt(int64(resp.Attempts()), 10),
 			finality.String(),
