@@ -29,6 +29,7 @@ var dwellirNetworkSubdomains = map[int64]string{
 	169:       "api-manta-pacific-archive.n",
 	204:       "api-opbnb-mainnet.n",
 	250:       "api-fantom-mainnet-archive.n",
+	288:       "api-boba-mainnet.n",
 	324:       "api-zksync-era-mainnet-full.n",
 	336:       "api-shiden.n",
 	369:       "api-pulse-mainnet.n",
