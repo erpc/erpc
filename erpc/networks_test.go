@@ -10142,7 +10142,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		// Create good metrics for included upstream
 		metricsTracker.RecordUpstreamRequest(includedUpstream, "*")
-		metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none")
+		metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for selection policy to evaluate
 		time.Sleep(150 * time.Millisecond)

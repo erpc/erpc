@@ -82,6 +82,8 @@ type NormalizedRequest struct {
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
+
+	finality atomic.Value // Cached finality state
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -534,4 +536,24 @@ func (r *NormalizedRequest) SetParentRequestId(parentId interface{}) {
 		return
 	}
 	r.parentRequestId.Store(parentId)
+}
+
+func (r *NormalizedRequest) Finality(ctx context.Context) DataFinalityState {
+	if r == nil {
+		return DataFinalityStateUnknown
+	}
+
+	// Check if we have a cached value
+	if f := r.finality.Load(); f != nil {
+		return f.(DataFinalityState)
+	}
+
+	// Calculate and cache the finality
+	if r.network != nil {
+		finality := r.network.GetFinality(ctx, r, nil)
+		r.finality.Store(finality)
+		return finality
+	}
+
+	return DataFinalityStateUnknown
 }

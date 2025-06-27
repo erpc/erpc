@@ -163,10 +163,9 @@ type SharedStateConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors  []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
-	Policies    []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
-	Methods     map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
-	Compression *CompressionConfig            `yaml:"compression,omitempty" json:"compression"`
+	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
+	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
+	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
 }
 
 type CompressionConfig struct {
@@ -772,6 +771,11 @@ type DeprecatedProjectHealthCheckConfig struct {
 	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
 }
 
+type MethodsConfig struct {
+	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
+	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
+}
+
 type NetworkConfig struct {
 	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
@@ -780,6 +784,7 @@ type NetworkConfig struct {
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
+	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 }
 
 type DirectiveDefaultsConfig struct {

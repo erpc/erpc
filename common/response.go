@@ -27,6 +27,7 @@ type NormalizedResponse struct {
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
 	evmBlockNumber  atomic.Value
 	evmBlockRef     atomic.Value
+	finality        atomic.Value // Cached finality state
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -112,6 +113,26 @@ func (r *NormalizedResponse) SetEvmBlockNumber(blockNumber interface{}) {
 		return
 	}
 	r.evmBlockNumber.Store(blockNumber)
+}
+
+func (r *NormalizedResponse) Finality(ctx context.Context) DataFinalityState {
+	if r == nil {
+		return DataFinalityStateUnknown
+	}
+
+	// Check if we have a cached value
+	if f := r.finality.Load(); f != nil {
+		return f.(DataFinalityState)
+	}
+
+	// Calculate and cache the finality
+	if r.request != nil && r.request.network != nil {
+		finality := r.request.network.GetFinality(ctx, r.request, r)
+		r.finality.Store(finality)
+		return finality
+	}
+
+	return DataFinalityStateUnknown
 }
 
 func (r *NormalizedResponse) Attempts() int {
