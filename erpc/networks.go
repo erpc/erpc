@@ -156,6 +156,51 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	return maxBlock
 }
 
+func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.EvmLowestFinalizedBlockNumber", trace.WithAttributes(
+		attribute.String("network.id", n.networkId),
+	))
+	defer span.End()
+
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	var minBlock int64 = 0
+	var initialized bool = false
+	
+	for _, u := range upstreams {
+		statePoller := u.EvmStatePoller()
+		if statePoller == nil {
+			continue
+		}
+
+		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
+		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
+			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for lowest finalized block calculation")
+			continue
+		}
+
+		// Check if upstream is excluded by selection policy
+		if n.selectionPolicyEvaluator != nil {
+			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
+			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
+				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for lowest finalized block calculation")
+				continue
+			}
+		}
+
+		upBlock := statePoller.FinalizedBlock()
+		// Skip upstreams that haven't determined finalized block yet (returning 0)
+		if upBlock > 0 {
+			if !initialized || upBlock < minBlock {
+				minBlock = upBlock
+				initialized = true
+			}
+		}
+	}
+	
+	span.SetAttributes(attribute.Int64("lowest_finalized_block", minBlock))
+	return minBlock
+}
+
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
@@ -658,6 +703,43 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 				}
 			}
 		}
+	}
+	
+	if blockNumber > 0 && finality == common.DataFinalityStateUnknown {
+		// When we have a block number but no response yet, try multiple fallbacks
+		
+		// First, try to use LastUpstream from the request (if this is a retry or subsequent attempt)
+		upstream := req.LastUpstream()
+		if upstream != nil {
+			if ups, ok := upstream.(common.EvmUpstream); ok {
+				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
+					if isFinalized {
+						finality = common.DataFinalityStateFinalized
+					} else {
+						finality = common.DataFinalityStateUnfinalized
+					}
+					return finality
+				}
+			}
+		}
+		
+		// If no LastUpstream, use the network's lowest finalized block as a heuristic
+		// This provides a conservative estimate for early metrics collection
+		if n.upstreamsRegistry != nil {
+			lowestFinalized := n.EvmLowestFinalizedBlockNumber(ctx)
+			if lowestFinalized > 0 {
+				if blockNumber <= lowestFinalized {
+					finality = common.DataFinalityStateFinalized
+				} else {
+					finality = common.DataFinalityStateUnfinalized
+				}
+				span.SetAttributes(
+					attribute.Bool("used_network_finalized_heuristic", true),
+					attribute.Int64("lowest_finalized", lowestFinalized),
+				)
+			}
+		}
+		// If we still can't determine, it remains unknown
 	}
 
 	return finality
