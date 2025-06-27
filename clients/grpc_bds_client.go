@@ -187,10 +187,10 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 	case float64:
 		// JSON numbers are parsed as float64
 		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
 	case int64:
 		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
 	case uint64:
 		// Convert to hex format
 		blockNumber = fmt.Sprintf("0x%x", v)
@@ -632,10 +632,10 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 	case float64:
 		// JSON numbers are parsed as float64
 		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
 	case int64:
 		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
 	case uint64:
 		// Convert to hex format
 		blockNumber = fmt.Sprintf("0x%x", v)
