@@ -390,8 +390,6 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 	}
 
-	cacheDal := &common.MockCacheDal{}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -402,10 +400,10 @@ func TestExtractBlockReference(t *testing.T) {
 			var err error
 
 			if tt.response == nil {
-				blkRef, blkNum, err = extractRefFromJsonRpcRequest(context.TODO(), cacheDal, tt.request)
+				nrq := common.NewNormalizedRequestFromJsonRpcRequest(tt.request)
+				blkRef, blkNum, err = extractRefFromJsonRpcRequest(context.TODO(), nrq, tt.request)
 			} else {
 				nrq := common.NewNormalizedRequestFromJsonRpcRequest(tt.request)
-				nrq.SetCacheDal(cacheDal)
 				nrs := common.NewNormalizedResponse().WithJsonRpcResponse(tt.response).WithRequest(nrq)
 				nrq.SetLastValidResponse(ctx, nrs)
 

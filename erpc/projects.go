@@ -129,16 +129,20 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	method, _ := nq.Method()
 
+	// Get initial finality from request
+	reqFinality := nq.Finality(ctx)
+
 	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
 		telemetry.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,
 			network.networkId,
 			method,
+			reqFinality.String(),
 		).Observe(v)
 	}))
 	defer timer.ObserveDuration()
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method).Inc()
+	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String()).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
@@ -164,12 +168,19 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		common.SetTraceSpanError(span, err)
 	}
 
+	// Get finality from response if available, otherwise use request finality
+	finality := reqFinality
+	if resp != nil {
+		finality = resp.Finality(ctx)
+	}
+
 	if err == nil {
 		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
 			p.Config.Id,
 			network.networkId,
 			method,
 			strconv.FormatInt(int64(resp.Attempts()), 10),
+			finality.String(),
 		).Inc()
 		if lg.GetLevel() == zerolog.TraceLevel {
 			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
@@ -194,6 +205,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			strconv.FormatInt(int64(resp.Attempts()), 10),
 			common.ErrorFingerprint(err),
 			string(common.ClassifySeverity(err)),
+			finality.String(),
 		).Inc()
 	}
 

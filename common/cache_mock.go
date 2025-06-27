@@ -23,14 +23,6 @@ func (m *MockCacheDal) Set(ctx context.Context, nrq *NormalizedRequest, nrs *Nor
 	return args.Error(0)
 }
 
-func (m *MockCacheDal) MethodConfig(method string) *CacheMethodConfig {
-	cfg := CacheConfig{}
-	if err := cfg.SetDefaults(); err != nil {
-		return nil
-	}
-	return cfg.Methods[method]
-}
-
 func (m *MockCacheDal) IsObjectNull() bool {
 	return m == nil
 }

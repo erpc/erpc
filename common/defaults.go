@@ -403,8 +403,47 @@ func (c *CacheConfig) SetDefaults() error {
 		}
 	}
 
-	if c.Methods == nil {
+	// Set compression defaults
+	if c.Compression == nil {
+		c.Compression = &CompressionConfig{}
+	}
+	if err := c.Compression.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for compression: %w", err)
+	}
+
+	return nil
+}
+
+func (m *MethodsConfig) SetDefaults() error {
+	if m.Definitions == nil || (len(m.Definitions) == 0 && !m.PreserveDefaultMethods) {
+		// If no definitions provided or PreserveDefaultMethods is false, use all defaults
+		mergedMethods := map[string]*CacheMethodConfig{}
+
 		// Merge all default methods into a single map
+		for name, method := range DefaultStaticCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultRealtimeCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultWithBlockCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultSpecialCacheMethods {
+			mergedMethods[name] = method
+		}
+
+		if m.PreserveDefaultMethods && m.Definitions != nil {
+			// Merge user definitions on top of defaults
+			for name, method := range m.Definitions {
+				mergedMethods[name] = method
+			}
+		}
+
+		m.Definitions = mergedMethods
+	} else if m.PreserveDefaultMethods {
+		// User provided some definitions and wants to preserve defaults
+		// First copy all defaults
 		mergedMethods := map[string]*CacheMethodConfig{}
 		for name, method := range DefaultStaticCacheMethods {
 			mergedMethods[name] = method
@@ -418,16 +457,15 @@ func (c *CacheConfig) SetDefaults() error {
 		for name, method := range DefaultSpecialCacheMethods {
 			mergedMethods[name] = method
 		}
-		c.Methods = mergedMethods
-	}
 
-	// Set compression defaults
-	if c.Compression == nil {
-		c.Compression = &CompressionConfig{}
+		// Then override with user definitions
+		for name, method := range m.Definitions {
+			mergedMethods[name] = method
+		}
+
+		m.Definitions = mergedMethods
 	}
-	if err := c.Compression.SetDefaults(); err != nil {
-		return fmt.Errorf("failed to set defaults for compression: %w", err)
-	}
+	// else: User provided definitions and doesn't want defaults, keep as is
 
 	return nil
 }
@@ -1475,6 +1513,15 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Architecture == "evm" && n.Evm == nil {
 		n.Evm = &EvmNetworkConfig{}
 	}
+
+	// Apply methods defaults
+	if n.Methods == nil {
+		n.Methods = &MethodsConfig{}
+	}
+	if err := n.Methods.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for methods: %w", err)
+	}
+
 	if n.Evm != nil {
 		if err := n.Evm.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for network evm config: %w", err)
@@ -1493,6 +1540,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.SelectionPolicy != nil {
 		if err := n.SelectionPolicy.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for selection policy: %w", err)
+		}
+	}
+
+	if n.DirectiveDefaults != nil {
+		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
+			return err
 		}
 	}
 

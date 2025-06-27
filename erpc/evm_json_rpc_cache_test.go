@@ -1909,13 +1909,6 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		},
 	}
 
-	// Add method configs to ensure consistent behavior
-	cacheCfg.Methods = map[string]*common.CacheMethodConfig{
-		"eth_getBlockByNumber": {
-			Realtime: true, // This will make "latest" treated as realtime
-		},
-	}
-
 	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 	require.NoError(t, err, "failed to create cache")
 
@@ -1930,6 +1923,13 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
 				ChainId: 123,
+			},
+			Methods: &common.MethodsConfig{
+				Definitions: map[string]*common.CacheMethodConfig{
+					"eth_getBlockByNumber": {
+						Realtime: true, // This will make "latest" treated as realtime
+					},
+				},
 			},
 		},
 	}
