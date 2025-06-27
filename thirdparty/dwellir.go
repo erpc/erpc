@@ -35,7 +35,7 @@ var dwellirNetworkSubdomains = map[int64]string{
 	545:       "api-flow-evm-gateway-testnet.n",
 	592:       "api-astar.n",
 	747:       "api-flow-evm-gateway-mainnet.n",
-	943:       "api-pulsechain-testnet-v4", // This domain will be migrated to a .n domain soon.
+	943:       "api-pulsechain-testnet-v4.n",
 	945:       "api-bittensor-testnet.n",
 	964:       "api-bittensor-mainnet.n",
 	996:       "api-bifrost-polkadot.n",
@@ -49,15 +49,15 @@ var dwellirNetworkSubdomains = map[int64]string{
 	2020:      "api-ronin-mainnet.n",
 	2031:      "api-centrifuge.n",
 	2039:      "api-aleph-zero-evm-testnet.n",
-	2442:      "api-polygon-zkevm-sepolia-archive", // This domain will be migrated to a .n domain soon.
-	3338:      "api-peaq",                          // This domain will be migrated to a .n domain soon.
-	4202:      "api-lisk-sepolia",                  // This domain will be migrated to a .n domain soon.
+	2442:      "api-polygon-zkevm-sepolia.n",
+	3338:      "api-peaq.n",
+	4202:      "api-lisk-sepolia.n",
 	5000:      "api-mantle-mainnet.n",
 	5003:      "api-mantle-sepolia.n",
 	5234:      "api-humanode.n",
 	5611:      "api-opbnb-testnet.n",
-	5845:      "api-tangle-mainnet",            // This domain will be migrated to a .n domain soon.
-	7000:      "api-zetachain-mainnet-archive", // This domain will be migrated to a .n domain soon.
+	5845:      "api-tangle-mainnet.n",
+	7000:      "api-zetachain-mainnet-archive.n",
 	8453:      "api-base-mainnet-archive.n",
 	8880:      "api-unique.n",
 	8881:      "api-quartz.n",
@@ -76,13 +76,14 @@ var dwellirNetworkSubdomains = map[int64]string{
 	84532:     "api-base-sepolia-archive.n",
 	88882:     "api-chiliz-spicy.n",
 	88888:     "api-chiliz-mainnet.n",
-	212013:    "api-litentry", // This domain will be migrated to a .n domain soon.
+	212013:    "api-heima.n",
 	222222:    "api-hydration.n",
 	421614:    "api-arbitrum-sepolia.n",
 	534352:    "api-scroll-mainnet.n",
 	7777777:   "api-zora-mainnet.n",
 	11155111:  "api-ethereum-sepolia.n",
 	11155420:  "api-optimism-sepolia.n",
+	168587773: "api-blast-sepolia-archive.n",
 	728126428: "api-tron-mainnet-jsonrpc.n",
 	999999999: "api-zora-sepolia-archive.n",
 }
