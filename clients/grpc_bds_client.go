@@ -178,9 +178,24 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		return nil, fmt.Errorf("insufficient params for eth_getBlockByNumber")
 	}
 
-	blockNumber, ok := params[0].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid block number parameter")
+	var blockNumber string
+	
+	// Handle different parameter types for block number
+	switch v := params[0].(type) {
+	case string:
+		blockNumber = v
+	case float64:
+		// JSON numbers are parsed as float64
+		// Convert to hex format
+		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+	case int64:
+		// Convert to hex format
+		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+	case uint64:
+		// Convert to hex format
+		blockNumber = fmt.Sprintf("0x%x", v)
+	default:
+		return nil, fmt.Errorf("invalid block number parameter type: %T", params[0])
 	}
 
 	includeTransactions, ok := params[1].(bool)
@@ -195,6 +210,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 
 	c.logger.Debug().
 		Str("blockNumber", blockNumber).
+		Interface("originalParam", params[0]).
 		Bool("includeTransactions", includeTransactions).
 		Msg("calling gRPC GetBlockByNumber")
 
@@ -607,9 +623,24 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 		return nil, fmt.Errorf("insufficient params for eth_getBlockReceipts")
 	}
 
-	blockNumber, ok := params[0].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid block number parameter")
+	var blockNumber string
+	
+	// Handle different parameter types
+	switch v := params[0].(type) {
+	case string:
+		blockNumber = v
+	case float64:
+		// JSON numbers are parsed as float64
+		// Convert to hex format
+		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+	case int64:
+		// Convert to hex format
+		blockNumber = fmt.Sprintf("0x%x", uint64(v))
+	case uint64:
+		// Convert to hex format
+		blockNumber = fmt.Sprintf("0x%x", v)
+	default:
+		return nil, fmt.Errorf("invalid block number parameter type: %T", params[0])
 	}
 
 	grpcReq := &evm.GetBlockReceiptsRequest{
@@ -618,6 +649,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 
 	c.logger.Debug().
 		Str("blockNumber", blockNumber).
+		Interface("originalParam", params[0]).
 		Msg("calling gRPC GetBlockReceipts")
 
 	grpcResp, err := c.rpcClient.GetBlockReceipts(ctx, grpcReq)

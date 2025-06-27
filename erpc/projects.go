@@ -176,8 +176,8 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	if err == nil {
 		upstream := resp.Upstream()
-		vendor := ""
-		upstreamId := ""
+		vendor := "n/a"
+		upstreamId := "n/a"
 		if upstream != nil {
 			vendor = upstream.VendorName()
 			upstreamId = upstream.Id()
