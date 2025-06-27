@@ -128,7 +128,10 @@ func (r *NormalizedResponse) Finality(ctx context.Context) DataFinalityState {
 	// Calculate and cache the finality
 	if r.request != nil && r.request.network != nil {
 		finality := r.request.network.GetFinality(ctx, r.request, r)
-		r.finality.Store(finality)
+		// Only cache if we got a definitive answer (not unknown)
+		if finality != DataFinalityStateUnknown {
+			r.finality.Store(finality)
+		}
 		return finality
 	}
 
