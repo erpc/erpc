@@ -174,11 +174,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		finality = resp.Finality(ctx)
 	}
 
-	if err == nil {
+	if err == nil && resp != nil {
 		upstream := resp.Upstream()
 		vendor := "n/a"
 		upstreamId := "n/a"
-		if upstream != nil {
+		if resp.FromCache() {
+			vendor = "<cache>"
+			upstreamId = "<cache>"
+		} else if upstream != nil {
 			vendor = upstream.VendorName()
 			upstreamId = upstream.Id()
 		}
