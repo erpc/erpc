@@ -1307,7 +1307,19 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 				// Find matching default by method/finality
 				var defaultFs *FailsafeConfig
 				for _, dfs := range defaults.Failsafe {
-					if dfs.Method == fs.Method && dfs.Finality == fs.Finality {
+					// Match method using wildcard (if both are specified)
+					methodMatch := true
+					if dfs.Method != "" && fs.Method != "" {
+						methodMatch, _ = WildcardMatch(dfs.Method, fs.Method)
+					} else if dfs.Method != "" || fs.Method != "" {
+						// If only one has a method specified, they don't match
+						methodMatch = false
+					}
+					
+					// Match finality (0 means any finality)
+					finalityMatch := dfs.Finality == 0 || fs.Finality == 0 || dfs.Finality == fs.Finality
+					
+					if methodMatch && finalityMatch {
 						defaultFs = dfs
 						break
 					}
@@ -1502,7 +1514,19 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 					// Find matching default by method/finality
 					var defaultFs *FailsafeConfig
 					for _, dfs := range defaults.Failsafe {
-						if dfs.Method == fs.Method && dfs.Finality == fs.Finality {
+						// Match method using wildcard (if both are specified)
+						methodMatch := true
+						if dfs.Method != "" && fs.Method != "" {
+							methodMatch, _ = WildcardMatch(dfs.Method, fs.Method)
+						} else if dfs.Method != "" || fs.Method != "" {
+							// If only one has a method specified, they don't match
+							methodMatch = false
+						}
+						
+						// Match finality (0 means any finality)
+						finalityMatch := dfs.Finality == 0 || fs.Finality == 0 || dfs.Finality == fs.Finality
+						
+						if methodMatch && finalityMatch {
 							defaultFs = dfs
 							break
 						}

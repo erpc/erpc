@@ -247,7 +247,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 		}
 	}
 
-	// Then, try to find a match for method only
+	// Then, try to find a match for method only (finality = 0 means any finality)
 	for _, fe := range u.failsafeExecutors {
 		if fe.method != "" && fe.finality == 0 {
 			matched, _ := common.WildcardMatch(fe.method, method)
@@ -266,7 +266,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 		}
 	}
 
-	// Return the first generic executor if no specific one is found
+	// Return the first generic executor if no specific one is found (method = "", finality = 0)
 	for _, fe := range u.failsafeExecutors {
 		if fe.method == "" && fe.finality == 0 {
 			return fe

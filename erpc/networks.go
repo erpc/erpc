@@ -221,7 +221,7 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 		}
 	}
 
-	// Then, try to find a match for method only
+	// Then, try to find a match for method only (finality = 0 means any finality)
 	for _, fe := range n.failsafeExecutors {
 		if fe.method != "" && fe.finality == 0 {
 			matched, _ := common.WildcardMatch(fe.method, method)
@@ -240,7 +240,7 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 		}
 	}
 
-	// Return the first generic executor if no specific one is found
+	// Return the first generic executor if no specific one is found (method = "", finality = 0)
 	for _, fe := range n.failsafeExecutors {
 		if fe.method == "" && fe.finality == 0 {
 			return fe
