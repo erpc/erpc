@@ -21,6 +21,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -677,6 +678,32 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 	} else {
 		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}
+}
+
+func (u *Upstream) EvmGetTransactionByHash(ctx context.Context, txHash string) (*types.Transaction, error) {
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":75412,"method":"eth_getTransactionByHash","params":["%s"]}`, txHash)))
+
+	resp, err := u.Forward(ctx, pr, true)
+	if err != nil {
+		return nil, err
+	}
+
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if jrr.Result == nil {
+		return nil, fmt.Errorf("transaction not found")
+	}
+
+	var txn types.Transaction
+	err = txn.UnmarshalJSON(jrr.Result)
+	if err != nil {
+		return nil, err
+	}
+
+	return &txn, nil
 }
 
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.

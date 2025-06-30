@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 )
 
@@ -44,6 +45,10 @@ func WithEvmStatePoller(evmStatePoller EvmStatePoller) func(*FakeUpstream) {
 
 func (u *FakeUpstream) Id() string {
 	return u.id
+}
+
+func (u *FakeUpstream) EvmGetTransactionByHash(ctx context.Context, txHash string) (*types.Transaction, error) {
+	return nil, nil
 }
 
 func (u *FakeUpstream) VendorName() string {
