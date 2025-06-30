@@ -53,8 +53,6 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
-	evmLatestBlockTracker       data.LatestBlockTracker
-	evmFinalizedBlockTracker    data.FinalizedBlockTracker
 }
 
 func NewUpstream(

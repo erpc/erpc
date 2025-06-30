@@ -375,6 +375,10 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 	n.Evm = old.Evm
 	
 	if old.Failsafe != nil {
+		// For backward compatibility, if method is empty, set it to "*"
+		if old.Failsafe.Method == "" {
+			old.Failsafe.Method = "*"
+		}
 		n.Failsafe = []*FailsafeConfig{old.Failsafe}
 	}
 	
@@ -483,6 +487,10 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.Shadow = old.Shadow
 	
 	if old.Failsafe != nil {
+		// For backward compatibility, if method is empty, set it to "*"
+		if old.Failsafe.Method == "" {
+			old.Failsafe.Method = "*"
+		}
 		u.Failsafe = []*FailsafeConfig{old.Failsafe}
 	}
 	
@@ -926,6 +934,10 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.Methods = old.Methods
 	
 	if old.Failsafe != nil {
+		// For backward compatibility, if method is empty, set it to "*"
+		if old.Failsafe.Method == "" {
+			old.Failsafe.Method = "*"
+		}
 		n.Failsafe = []*FailsafeConfig{old.Failsafe}
 	}
 	
