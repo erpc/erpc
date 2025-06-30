@@ -656,8 +656,10 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Failsafe != nil {
-		if err := u.Failsafe.Validate(); err != nil {
-			return err
+		for _, fs := range u.Failsafe {
+			if err := fs.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 	if u.JsonRpc != nil {
@@ -708,6 +710,11 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 }
 
 func (f *FailsafeConfig) Validate() error {
+	// Validate MatchMethod - empty string is not allowed
+	if f.MatchMethod == "" {
+		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
+	}
+
 	if f.Timeout != nil {
 		if err := f.Timeout.Validate(); err != nil {
 			return err
@@ -858,8 +865,10 @@ func (n *NetworkConfig) Validate(c *Config) error {
 		}
 	}
 	if n.Failsafe != nil {
-		if err := n.Failsafe.Validate(); err != nil {
-			return err
+		for _, fs := range n.Failsafe {
+			if err := fs.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 	if n.SelectionPolicy != nil {

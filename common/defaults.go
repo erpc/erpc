@@ -14,6 +14,25 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// matchFinalities checks if two finality arrays match.
+// Empty arrays (nil or len=0) match any finality.
+func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
+	// If either is empty, they match any finality
+	if len(finalities1) == 0 || len(finalities2) == 0 {
+		return true
+	}
+
+	// Check if there's any overlap between the two arrays
+	for _, f1 := range finalities1 {
+		for _, f2 := range finalities2 {
+			if f1 == f2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type connectorScope string
 
 const (
@@ -98,20 +117,22 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 							EnforceGetLogsBlockRange: util.BoolPtr(true),
 						},
 					},
-					Failsafe: &FailsafeConfig{
-						Retry: &RetryPolicyConfig{
-							MaxAttempts:     5,
-							Delay:           Duration(0),
-							Jitter:          Duration(0),
-							BackoffMaxDelay: Duration(0),
-							BackoffFactor:   1.0,
-						},
-						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(120 * time.Second),
-						},
-						Hedge: &HedgePolicyConfig{
-							Quantile: 0.7,
-							MaxCount: 2,
+					Failsafe: []*FailsafeConfig{
+						{
+							Retry: &RetryPolicyConfig{
+								MaxAttempts:     5,
+								Delay:           Duration(0),
+								Jitter:          Duration(0),
+								BackoffMaxDelay: Duration(0),
+								BackoffFactor:   1.0,
+							},
+							Timeout: &TimeoutPolicyConfig{
+								Duration: Duration(120 * time.Second),
+							},
+							Hedge: &HedgePolicyConfig{
+								Quantile: 0.7,
+								MaxCount: 2,
+							},
 						},
 					},
 				},
@@ -119,13 +140,15 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 					Evm: &EvmUpstreamConfig{
 						GetLogsAutoSplittingRangeThreshold: 5000,
 					},
-					Failsafe: &FailsafeConfig{
-						Retry: &RetryPolicyConfig{
-							MaxAttempts: 1,
-							Delay:       Duration(500 * time.Millisecond),
-						},
-						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(60 * time.Second),
+					Failsafe: []*FailsafeConfig{
+						{
+							Retry: &RetryPolicyConfig{
+								MaxAttempts: 1,
+								Delay:       Duration(500 * time.Millisecond),
+							},
+							Timeout: &TimeoutPolicyConfig{
+								Duration: Duration(60 * time.Second),
+							},
 						},
 					},
 				},
@@ -1139,9 +1162,11 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 }
 
 func (n *NetworkDefaults) SetDefaults() error {
-	if n.Failsafe != nil {
-		if err := n.Failsafe.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	if n.Failsafe != nil && len(n.Failsafe) > 0 {
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
 	}
 	if n.SelectionPolicy != nil {
@@ -1298,22 +1323,63 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		u.Type = UpstreamTypeEvm
 	}
 
-	if u.Failsafe != nil {
-		if defaults != nil && defaults.Failsafe != nil {
-			if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	if u.Failsafe != nil && len(u.Failsafe) > 0 {
+		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+			// Apply defaults to each failsafe config
+			for i, fs := range u.Failsafe {
+				// Find matching default by method/finality
+				var defaultFs *FailsafeConfig
+				for _, dfs := range defaults.Failsafe {
+					// Match method using wildcard (if both are specified)
+					methodMatch := true
+					if dfs.MatchMethod != "" && fs.MatchMethod != "" {
+						methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
+					} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
+						// If only one has a method specified, they don't match
+						methodMatch = false
+					}
+
+					// Match finality (empty array means any finality)
+					finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+
+					if methodMatch && finalityMatch {
+						defaultFs = dfs
+						break
+					}
+				}
+				// If no specific match found, use first default as general default
+				if defaultFs == nil && len(defaults.Failsafe) > 0 {
+					defaultFs = defaults.Failsafe[0]
+				}
+				if defaultFs != nil {
+					if err := fs.SetDefaults(defaultFs); err != nil {
+						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+					}
+				} else {
+					if err := fs.SetDefaults(nil); err != nil {
+						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+					}
+				}
 			}
 		} else {
-			if err := u.Failsafe.SetDefaults(nil); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+			// Apply nil defaults to each failsafe config
+			for i, fs := range u.Failsafe {
+				if err := fs.SetDefaults(nil); err != nil {
+					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+				}
 			}
 		}
-	} else if defaults != nil && defaults.Failsafe != nil {
-		u.Failsafe = &FailsafeConfig{}
-		if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+		u.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+		for i, dfs := range defaults.Failsafe {
+			u.Failsafe[i] = &FailsafeConfig{}
+			*u.Failsafe[i] = *dfs
+			if err := u.Failsafe[i].SetDefaults(dfs); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
 	}
+
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
 		u.RateLimitAutoTune = &RateLimitAutoTuneConfig{}
 	}
@@ -1453,18 +1519,49 @@ func (j *JsonRpcUpstreamConfig) SetDefaults() error {
 }
 
 func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) error {
-	sysDefCfg := NewDefaultNetworkConfig(upstreams)
 	if defaults != nil {
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
-		if defaults.Failsafe != nil {
-			if n.Failsafe == nil {
-				n.Failsafe = &FailsafeConfig{}
-				*n.Failsafe = *defaults.Failsafe
+		if defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+			if n.Failsafe == nil || len(n.Failsafe) == 0 {
+				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+				for i, fs := range defaults.Failsafe {
+					n.Failsafe[i] = &FailsafeConfig{}
+					*n.Failsafe[i] = *fs
+				}
 			} else {
-				if err := n.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+				// Apply defaults to each failsafe config
+				for i, fs := range n.Failsafe {
+					// Find matching default by method/finality
+					var defaultFs *FailsafeConfig
+					for _, dfs := range defaults.Failsafe {
+						// Match method using wildcard (if both are specified)
+						methodMatch := true
+						if dfs.MatchMethod != "" && fs.MatchMethod != "" {
+							methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
+						} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
+							// If only one has a method specified, they don't match
+							methodMatch = false
+						}
+
+						// Match finality (empty array means any finality)
+						finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+
+						if methodMatch && finalityMatch {
+							defaultFs = dfs
+							break
+						}
+					}
+					// If no specific match found, use first default as general default
+					if defaultFs == nil && len(defaults.Failsafe) > 0 {
+						defaultFs = defaults.Failsafe[0]
+					}
+					if defaultFs != nil {
+						if err := fs.SetDefaults(defaultFs); err != nil {
+							return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+						}
+					}
 				}
 			}
 		}
@@ -1496,12 +1593,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
 			}
 		}
-	} else if n.Failsafe != nil {
-		if err := n.Failsafe.SetDefaults(sysDefCfg.Failsafe); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	} else if n.Failsafe != nil && len(n.Failsafe) > 0 {
+		// Apply system default to each failsafe config
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
-	} else {
-		n.Failsafe = sysDefCfg.Failsafe
 	}
 
 	if n.Architecture == "" {
@@ -1583,6 +1681,15 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 }
 
 func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
+	// Set default for MatchMethod if empty
+	if f.MatchMethod == "" {
+		if defaults != nil && defaults.MatchMethod != "" {
+			f.MatchMethod = defaults.MatchMethod
+		} else {
+			f.MatchMethod = "*" // Default to match any method
+		}
+	}
+
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
 			if err := f.Timeout.SetDefaults(defaults.Timeout); err != nil {
@@ -2079,7 +2186,7 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to compile default selection policy function")
-			return nil
+			return n
 		}
 
 		selectionPolicy := &SelectionPolicyConfig{

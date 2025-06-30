@@ -337,10 +337,52 @@ type ProjectConfig struct {
 
 type NetworkDefaults struct {
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+}
+
+// UnmarshalYAML provides backward compatibility for old single failsafe object format
+func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Define a type alias to avoid recursion
+	type rawNetworkDefaults NetworkDefaults
+	raw := (*rawNetworkDefaults)(n)
+
+	// Try unmarshaling normally first
+	if err := unmarshal(raw); err == nil {
+		return nil
+	}
+
+	// If that fails, try the old format with single failsafe object
+	type oldNetworkDefaults struct {
+		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
+		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
+		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
+		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+	}
+
+	var old oldNetworkDefaults
+	if err := unmarshal(&old); err != nil {
+		return err
+	}
+
+	// Convert old format to new format
+	n.RateLimitBudget = old.RateLimitBudget
+	n.SelectionPolicy = old.SelectionPolicy
+	n.DirectiveDefaults = old.DirectiveDefaults
+	n.Evm = old.Evm
+
+	if old.Failsafe != nil {
+		// Ensure MatchMethod has a default value for backward compatibility
+		if old.Failsafe.MatchMethod == "" {
+			old.Failsafe.MatchMethod = "*"
+		}
+		n.Failsafe = []*FailsafeConfig{old.Failsafe}
+	}
+
+	return nil
 }
 
 type CORSConfig struct {
@@ -386,11 +428,73 @@ type UpstreamConfig struct {
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
 	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty" json:"autoIgnoreUnsupportedMethods"`
-	Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
 	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
+}
+
+// UnmarshalYAML provides backward compatibility for old single failsafe object format
+func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Define a type alias to avoid recursion
+	type rawUpstreamConfig UpstreamConfig
+	raw := (*rawUpstreamConfig)(u)
+
+	// Try unmarshaling normally first
+	if err := unmarshal(raw); err == nil {
+		return nil
+	}
+
+	// If that fails, try the old format with single failsafe object
+	type oldUpstreamConfig struct {
+		Id                           string                   `yaml:"id,omitempty"`
+		Type                         UpstreamType             `yaml:"type,omitempty"`
+		Group                        string                   `yaml:"group,omitempty"`
+		VendorName                   string                   `yaml:"vendorName,omitempty"`
+		Endpoint                     string                   `yaml:"endpoint,omitempty"`
+		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
+		JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty"`
+		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
+		AllowMethods                 []string                 `yaml:"allowMethods,omitempty"`
+		AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty"`
+		Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty"`
+		RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty"`
+		Routing                      *RoutingConfig           `yaml:"routing,omitempty"`
+		Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty"`
+	}
+
+	var old oldUpstreamConfig
+	if err := unmarshal(&old); err != nil {
+		return err
+	}
+
+	// Convert old format to new format
+	u.Id = old.Id
+	u.Type = old.Type
+	u.Group = old.Group
+	u.VendorName = old.VendorName
+	u.Endpoint = old.Endpoint
+	u.Evm = old.Evm
+	u.JsonRpc = old.JsonRpc
+	u.IgnoreMethods = old.IgnoreMethods
+	u.AllowMethods = old.AllowMethods
+	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
+	u.RateLimitBudget = old.RateLimitBudget
+	u.RateLimitAutoTune = old.RateLimitAutoTune
+	u.Routing = old.Routing
+	u.Shadow = old.Shadow
+
+	if old.Failsafe != nil {
+		// Ensure MatchMethod has a default value for backward compatibility
+		if old.Failsafe.MatchMethod == "" {
+			old.Failsafe.MatchMethod = "*"
+		}
+		u.Failsafe = []*FailsafeConfig{old.Failsafe}
+	}
+
+	return nil
 }
 
 func (c *UpstreamConfig) Copy() *UpstreamConfig {
@@ -405,7 +509,10 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 		copied.Evm = c.Evm.Copy()
 	}
 	if c.Failsafe != nil {
-		copied.Failsafe = c.Failsafe.Copy()
+		copied.Failsafe = make([]*FailsafeConfig, len(c.Failsafe))
+		for i, failsafe := range c.Failsafe {
+			copied.Failsafe[i] = failsafe.Copy()
+		}
 	}
 	if c.JsonRpc != nil {
 		copied.JsonRpc = c.JsonRpc.Copy()
@@ -565,6 +672,8 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
+	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
@@ -579,6 +688,12 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 
 	copied := &FailsafeConfig{}
 	*copied = *c
+
+	// Deep copy the MatchFinality array
+	if c.MatchFinality != nil {
+		copied.MatchFinality = make([]DataFinalityState, len(c.MatchFinality))
+		copy(copied.MatchFinality, c.MatchFinality)
+	}
 
 	if c.Retry != nil {
 		copied.Retry = c.Retry.Copy()
@@ -779,12 +894,60 @@ type MethodsConfig struct {
 type NetworkConfig struct {
 	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
+}
+
+// UnmarshalYAML provides backward compatibility for old single failsafe object format
+func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Define a type alias to avoid recursion
+	type rawNetworkConfig NetworkConfig
+	raw := (*rawNetworkConfig)(n)
+
+	// Try unmarshaling normally first
+	if err := unmarshal(raw); err == nil {
+		return nil
+	}
+
+	// If that fails, try the old format with single failsafe object
+	type oldNetworkConfig struct {
+		Architecture      NetworkArchitecture      `yaml:"architecture"`
+		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
+		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
+		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
+		Alias             string                   `yaml:"alias,omitempty"`
+		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
+	}
+
+	var old oldNetworkConfig
+	if err := unmarshal(&old); err != nil {
+		return err
+	}
+
+	// Convert old format to new format
+	n.Architecture = old.Architecture
+	n.RateLimitBudget = old.RateLimitBudget
+	n.Evm = old.Evm
+	n.SelectionPolicy = old.SelectionPolicy
+	n.DirectiveDefaults = old.DirectiveDefaults
+	n.Alias = old.Alias
+	n.Methods = old.Methods
+
+	if old.Failsafe != nil {
+		// Ensure MatchMethod has a default value for backward compatibility
+		if old.Failsafe.MatchMethod == "" {
+			old.Failsafe.MatchMethod = "*"
+		}
+		n.Failsafe = []*FailsafeConfig{old.Failsafe}
+	}
+
+	return nil
 }
 
 type DirectiveDefaultsConfig struct {

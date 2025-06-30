@@ -21,13 +21,13 @@ func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
 		VUs:      50,
 		MaxRPS:   10000,
 		AdditionalNetworkConfig: &common.NetworkConfig{
-			Failsafe: &common.FailsafeConfig{
+			Failsafe: []*common.FailsafeConfig{{
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 4,
 					Delay:       common.Duration(1000 * time.Millisecond),
 					Jitter:      common.Duration(200 * time.Millisecond),
 				},
-			},
+			}},
 		},
 	}
 

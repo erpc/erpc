@@ -111,4 +111,4 @@ func TestNetworkGetFinality(t *testing.T) {
 		finality3 := req.Finality(ctx)
 		assert.Equal(t, common.DataFinalityStateRealtime, finality3)
 	})
-} 
+}

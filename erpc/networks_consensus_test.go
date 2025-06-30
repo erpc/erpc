@@ -878,15 +878,17 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 					Evm: &common.EvmNetworkConfig{
 						ChainId: 123,
 					},
-					Failsafe: &common.FailsafeConfig{
-						Retry: retryPolicy,
-						Consensus: &common.ConsensusPolicyConfig{
-							RequiredParticipants:    tt.requiredParticipants,
-							AgreementThreshold:      agreementThreshold,
-							FailureBehavior:         failureBehavior,
-							DisputeBehavior:         disputeBehavior,
-							LowParticipantsBehavior: lowParticipantsBehavior,
-							PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+					Failsafe: []*common.FailsafeConfig{
+						{
+							Retry: retryPolicy,
+							Consensus: &common.ConsensusPolicyConfig{
+								RequiredParticipants:    tt.requiredParticipants,
+								AgreementThreshold:      agreementThreshold,
+								FailureBehavior:         failureBehavior,
+								DisputeBehavior:         disputeBehavior,
+								LowParticipantsBehavior: lowParticipantsBehavior,
+								PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+							},
 						},
 					},
 				},
@@ -1067,18 +1069,20 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 			Evm: &common.EvmNetworkConfig{
 				ChainId: 123,
 			},
-			Failsafe: &common.FailsafeConfig{
-				Retry: &common.RetryPolicyConfig{
-					MaxAttempts: 2,
-					Delay:       common.Duration(0),
-				},
-				Consensus: &common.ConsensusPolicyConfig{
-					RequiredParticipants:    2,
-					AgreementThreshold:      2,
-					FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-					DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-					LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
-					PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+			Failsafe: []*common.FailsafeConfig{
+				{
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts: 2,
+						Delay:       common.Duration(0),
+					},
+					Consensus: &common.ConsensusPolicyConfig{
+						RequiredParticipants:    2,
+						AgreementThreshold:      2,
+						FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
+						DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+						LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+						PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+					},
 				},
 			},
 		},
