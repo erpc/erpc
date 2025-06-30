@@ -22,6 +22,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type FailsafeExecutor struct {
+	method   string
+	finality common.DataFinalityState
+	executor failsafe.Executor[*common.NormalizedResponse]
+	timeout  *time.Duration
+}
+
 type Network struct {
 	networkId                string
 	projectId                string
@@ -30,8 +37,7 @@ type Network struct {
 	appCtx                   context.Context
 	cfg                      *common.NetworkConfig
 	inFlightRequests         *sync.Map
-	timeoutDuration          *time.Duration
-	failsafeExecutor         failsafe.Executor[*common.NormalizedResponse]
+	failsafeExecutors        []*FailsafeExecutor
 	rateLimitersRegistry     *upstream.RateLimitersRegistry
 	cacheDal                 common.CacheDAL
 	metricsTracker           *health.Tracker
@@ -201,6 +207,33 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	return minBlock
 }
 
+func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+	method, _ := req.Method()
+	finality := req.Finality(context.Background())
+
+	for _, fe := range n.failsafeExecutors {
+		if fe.method == "" && fe.finality == 0 {
+			continue
+		}
+		if fe.method != "" && fe.method != method {
+			continue
+		}
+		if fe.finality != 0 && fe.finality != finality {
+			continue
+		}
+		return fe
+	}
+
+	// Return the first generic executor if no specific one is found
+	for _, fe := range n.failsafeExecutors {
+		if fe.method == "" && fe.finality == 0 {
+			return fe
+		}
+	}
+
+	return nil
+}
+
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
@@ -338,7 +371,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		upsList,
 	)
 
-	resp, execErr := n.failsafeExecutor.
+	failsafeExecutor := n.getFailsafeExecutor(req)
+	if failsafeExecutor == nil {
+		return nil, errors.New("no failsafe executor found for this request")
+	}
+
+	resp, execErr := failsafeExecutor.executor.
 		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 			execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
@@ -378,7 +416,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					return nil, ctxErr
 				}
 			}
-			if n.timeoutDuration != nil {
+			if failsafeExecutor.timeout != nil {
 				var cancelFn context.CancelFunc
 				execSpanCtx, cancelFn = context.WithTimeout(
 					execSpanCtx,
@@ -386,7 +424,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
 					//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 					//      but allow the failsafe execution to fail with timeout first for proper error handling.
-					*n.timeoutDuration+5*time.Millisecond,
+					*failsafeExecutor.timeout+5*time.Millisecond,
 				)
 
 				defer cancelFn()

@@ -337,7 +337,7 @@ type ProjectConfig struct {
 
 type NetworkDefaults struct {
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
@@ -386,7 +386,7 @@ type UpstreamConfig struct {
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
 	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty" json:"autoIgnoreUnsupportedMethods"`
-	Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
@@ -405,7 +405,10 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 		copied.Evm = c.Evm.Copy()
 	}
 	if c.Failsafe != nil {
-		copied.Failsafe = c.Failsafe.Copy()
+		copied.Failsafe = make([]*FailsafeConfig, len(c.Failsafe))
+		for i, failsafe := range c.Failsafe {
+			copied.Failsafe[i] = failsafe.Copy()
+		}
 	}
 	if c.JsonRpc != nil {
 		copied.JsonRpc = c.JsonRpc.Copy()
@@ -565,6 +568,8 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
+	Method         string                      `yaml:"method,omitempty" json:"method"`
+	Finality       DataFinalityState           `yaml:"finality,omitempty" json:"finality"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
@@ -779,7 +784,7 @@ type MethodsConfig struct {
 type NetworkConfig struct {
 	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
