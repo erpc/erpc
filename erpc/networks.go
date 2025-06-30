@@ -214,7 +214,7 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 
 	// First, try to find a specific match for both method and finality
 	for _, fe := range n.failsafeExecutors {
-		if fe.method != "" && len(fe.finalities) > 0 {
+		if fe.method != "*" && len(fe.finalities) > 0 {
 			matched, _ := common.WildcardMatch(fe.method, method)
 			if matched && slices.Contains(fe.finalities, finality) {
 				return fe
@@ -224,7 +224,7 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 
 	// Then, try to find a match for method only (empty finalities means any finality)
 	for _, fe := range n.failsafeExecutors {
-		if fe.method != "" && (fe.finalities == nil || len(fe.finalities) == 0) {
+		if fe.method != "*" && (fe.finalities == nil || len(fe.finalities) == 0) {
 			matched, _ := common.WildcardMatch(fe.method, method)
 			if matched {
 				return fe

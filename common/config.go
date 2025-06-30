@@ -784,15 +784,6 @@ func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
 	return copied
 }
 
-type ConsensusFailureBehavior string
-
-const (
-	ConsensusFailureBehaviorReturnError                 ConsensusFailureBehavior = "returnError"
-	ConsensusFailureBehaviorAcceptMostCommonValidResult ConsensusFailureBehavior = "acceptMostCommonValidResult"
-	ConsensusFailureBehaviorPreferBlockHeadLeader       ConsensusFailureBehavior = "preferBlockHeadLeader"
-	ConsensusFailureBehaviorOnlyBlockHeadLeader         ConsensusFailureBehavior = "onlyBlockHeadLeader"
-)
-
 type ConsensusLowParticipantsBehavior string
 
 const (
@@ -814,7 +805,6 @@ const (
 type ConsensusPolicyConfig struct {
 	RequiredParticipants    int                              `yaml:"requiredParticipants" json:"requiredParticipants"`
 	AgreementThreshold      int                              `yaml:"agreementThreshold,omitempty" json:"agreementThreshold"`
-	FailureBehavior         ConsensusFailureBehavior         `yaml:"failureBehavior,omitempty" json:"failureBehavior"`
 	DisputeBehavior         ConsensusDisputeBehavior         `yaml:"disputeBehavior,omitempty" json:"disputeBehavior"`
 	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`
 	PunishMisbehavior       *PunishMisbehaviorConfig         `yaml:"punishMisbehavior,omitempty" json:"punishMisbehavior"`

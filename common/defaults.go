@@ -2027,10 +2027,10 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalFunction == nil {
 		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
-			log.Error().Err(err).Msg("failed to compile default selection policy function")
-		} else {
-			c.EvalFunction = evalFunction
+			// This should never happen with the default function - it's a programming error
+			return fmt.Errorf("failed to compile default selection policy function: %w", err)
 		}
+		c.EvalFunction = evalFunction
 	}
 	if c.ResampleExcluded {
 		if c.ResampleInterval == 0 {
@@ -2185,8 +2185,8 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 	if hasAnyFallbackUpstream {
 		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
-			log.Error().Err(err).Msg("failed to compile default selection policy function")
-			return n
+			// This should never happen with the default function - it's a programming error
+			panic(fmt.Sprintf("failed to compile default selection policy function: %v", err))
 		}
 
 		selectionPolicy := &SelectionPolicyConfig{

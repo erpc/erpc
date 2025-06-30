@@ -9292,6 +9292,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		pollerDebounce := 1000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
+			MatchMethod: "*",
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: failAttempts, // upstream‑level retries
 			},
@@ -9831,9 +9832,10 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	)
 
 	fsCfg := &common.FailsafeConfig{
-		Hedge:   nil,
-		Timeout: nil,
-		Retry:   nil,
+		MatchMethod: "*",
+		Hedge:       nil,
+		Timeout:     nil,
+		Retry:       nil,
 	}
 
 	networkConfig := &common.NetworkConfig{

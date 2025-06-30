@@ -101,9 +101,6 @@ export interface SharedStateConfig {
 export interface CacheConfig {
     connectors?: TsConnectorConfig[];
     policies?: (CachePolicyConfig | undefined)[];
-    methods?: {
-        [key: string]: CacheMethodConfig | undefined;
-    };
     compression?: CompressionConfig;
 }
 export interface CompressionConfig {
@@ -220,11 +217,17 @@ export interface ProjectConfig {
 }
 export interface NetworkDefaults {
     rateLimitBudget?: string;
-    failsafe?: FailsafeConfig;
+    failsafe?: (FailsafeConfig | undefined)[];
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -258,12 +261,18 @@ export interface UpstreamConfig {
     ignoreMethods?: string[];
     allowMethods?: string[];
     autoIgnoreUnsupportedMethods?: boolean;
-    failsafe?: FailsafeConfig;
+    failsafe?: (FailsafeConfig | undefined)[];
     rateLimitBudget?: string;
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -323,6 +332,8 @@ export interface EvmUpstreamConfig {
     skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
+    matchMethod?: string;
+    matchFinality?: DataFinalityState[];
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
@@ -355,11 +366,6 @@ export interface HedgePolicyConfig {
     minDelay?: Duration;
     maxDelay?: Duration;
 }
-export type ConsensusFailureBehavior = string;
-export declare const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior;
-export declare const ConsensusFailureBehaviorAcceptMostCommonValidResult: ConsensusFailureBehavior;
-export declare const ConsensusFailureBehaviorPreferBlockHeadLeader: ConsensusFailureBehavior;
-export declare const ConsensusFailureBehaviorOnlyBlockHeadLeader: ConsensusFailureBehavior;
 export type ConsensusLowParticipantsBehavior = string;
 export declare const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior;
 export declare const ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult: ConsensusLowParticipantsBehavior;
@@ -373,7 +379,6 @@ export declare const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDispu
 export interface ConsensusPolicyConfig {
     requiredParticipants: number;
     agreementThreshold?: number;
-    failureBehavior?: ConsensusFailureBehavior;
     disputeBehavior?: ConsensusDisputeBehavior;
     lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
     punishMisbehavior?: PunishMisbehaviorConfig;
@@ -403,15 +408,28 @@ export interface ProxyPoolConfig {
 export interface DeprecatedProjectHealthCheckConfig {
     scoreMetricsWindowSize: Duration;
 }
+export interface MethodsConfig {
+    preserveDefaultMethods?: boolean;
+    definitions?: {
+        [key: string]: CacheMethodConfig | undefined;
+    };
+}
 export interface NetworkConfig {
     architecture: TsNetworkArchitecture;
     rateLimitBudget?: string;
-    failsafe?: FailsafeConfig;
+    failsafe?: (FailsafeConfig | undefined)[];
     evm?: EvmNetworkConfig;
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     alias?: string;
+    methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;

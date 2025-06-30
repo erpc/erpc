@@ -44,10 +44,6 @@ export {
   AuthTypeSiwe,
   AuthTypeNetwork,
   // Consensus related
-  ConsensusFailureBehaviorReturnError,
-  ConsensusFailureBehaviorAcceptMostCommonValidResult,
-  ConsensusFailureBehaviorPreferBlockHeadLeader,
-  ConsensusFailureBehaviorOnlyBlockHeadLeader,
   ConsensusLowParticipantsBehaviorReturnError,
   ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
   ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,

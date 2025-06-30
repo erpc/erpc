@@ -7876,10 +7876,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									MatchMethod: "*",
 									Consensus: &common.ConsensusPolicyConfig{
 										RequiredParticipants:    3,
 										AgreementThreshold:      2,
-										FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
 										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
 									},
@@ -8010,10 +8010,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									MatchMethod: "*",
 									Consensus: &common.ConsensusPolicyConfig{
 										RequiredParticipants:    3,
 										AgreementThreshold:      2,
-										FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
 										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
 									},
@@ -8127,10 +8127,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									MatchMethod: "*",
 									Consensus: &common.ConsensusPolicyConfig{
 										RequiredParticipants:    3,
 										AgreementThreshold:      2,
-										FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
 										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
 									},

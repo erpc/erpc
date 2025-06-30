@@ -28,7 +28,6 @@ func TestConsensusExecutor(t *testing.T) {
 		agreementThreshold      int
 		disputeBehavior         *common.ConsensusDisputeBehavior
 		lowParticipantsBehavior *common.ConsensusLowParticipantsBehavior
-		failureBehavior         *common.ConsensusFailureBehavior
 		disputeThreshold        uint
 		responses               []*struct {
 			response                  string
