@@ -665,7 +665,7 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 
 type FailsafeConfig struct {
 	Method         string                      `yaml:"method,omitempty" json:"method"`
-	Finality       DataFinalityState           `yaml:"finality,omitempty" json:"finality"`
+	Finality       *DataFinalityState          `yaml:"finality,omitempty" json:"finality"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`

@@ -30,7 +30,7 @@ import (
 // FailsafeExecutor wraps a failsafe executor with method and finality filters
 type FailsafeExecutor struct {
 	method   string
-	finality common.DataFinalityState
+	finality *common.DataFinalityState
 	executor failsafe.Executor[*common.NormalizedResponse]
 	timeout  *time.Duration
 }
@@ -53,6 +53,8 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	evmLatestBlockTracker       data.LatestBlockTracker
+	evmFinalizedBlockTracker    data.FinalizedBlockTracker
 }
 
 func NewUpstream(
@@ -79,23 +81,25 @@ func NewUpstream(
 			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge", "timeout")
 			
 			var timeoutDuration *time.Duration
-			if fsCfg.Timeout != nil {
-				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+			if fsCfg.Timeout != nil && fsCfg.Timeout.Duration > 0 {
+				t := fsCfg.Timeout.Duration.Duration()
+				timeoutDuration = &t
 			}
 			
-			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+			executor := &FailsafeExecutor{
 				method:   fsCfg.Method,
 				finality: fsCfg.Finality,
-				executor: failsafe.NewExecutor(policiesArray...),
+				executor: failsafe.NewExecutor[*common.NormalizedResponse](policiesArray...),
 				timeout:  timeoutDuration,
-			})
+			}
+			failsafeExecutors = append(failsafeExecutors, executor)
 		}
 	} else {
-		// Create a default executor if no failsafe config is provided
+		// Create default failsafe executor
 		lg.Debug().Msg("no failsafe config provided, creating default executor")
 		failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-			method:   "",
-			finality: 0,
+			method:   "*",
+			finality: nil,
 			executor: failsafe.NewExecutor[*common.NormalizedResponse](),
 			timeout:  nil,
 		})
@@ -239,17 +243,17 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 
 	// First, try to find a specific match for both method and finality
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "" && fe.finality != 0 {
+		if fe.method != "" && fe.method != "*" && fe.finality != nil {
 			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && fe.finality == finality {
+			if matched && *fe.finality == finality {
 				return fe
 			}
 		}
 	}
 
-	// Then, try to find a match for method only (finality = 0 means any finality)
+	// Then, try to find a match for method only (finality = nil means any finality)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "" && fe.finality == 0 {
+		if fe.method != "" && fe.method != "*" && fe.finality == nil {
 			matched, _ := common.WildcardMatch(fe.method, method)
 			if matched {
 				return fe
@@ -259,16 +263,16 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 
 	// Then, try to find a match for finality only
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "" && fe.finality != 0 {
-			if fe.finality == finality {
+		if (fe.method == "" || fe.method == "*") && fe.finality != nil {
+			if *fe.finality == finality {
 				return fe
 			}
 		}
 	}
 
-	// Return the first generic executor if no specific one is found (method = "", finality = 0)
+	// Return the default executor (method = "*" or "", finality = nil)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "" && fe.finality == 0 {
+		if (fe.method == "" || fe.method == "*") && fe.finality == nil {
 			return fe
 		}
 	}
@@ -567,7 +571,7 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 	
 	// Return the default executor (the one with no method/finality filters)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "" && fe.finality == 0 {
+		if (fe.method == "" || fe.method == "*") && fe.finality == nil {
 			return fe.executor
 		}
 	}

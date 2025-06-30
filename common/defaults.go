@@ -1516,15 +1516,15 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 					for _, dfs := range defaults.Failsafe {
 						// Match method using wildcard (if both are specified)
 						methodMatch := true
-						if dfs.Method != "" && fs.Method != "" {
+						if dfs.Method != "" && dfs.Method != "*" && fs.Method != "" && fs.Method != "*" {
 							methodMatch, _ = WildcardMatch(dfs.Method, fs.Method)
-						} else if dfs.Method != "" || fs.Method != "" {
-							// If only one has a method specified, they don't match
+						} else if (dfs.Method != "" && dfs.Method != "*") || (fs.Method != "" && fs.Method != "*") {
+							// If only one has a specific method, they don't match
 							methodMatch = false
 						}
 						
-						// Match finality (0 means any finality)
-						finalityMatch := dfs.Finality == 0 || fs.Finality == 0 || dfs.Finality == fs.Finality
+						// Match finality (nil means any finality)
+						finalityMatch := dfs.Finality == nil || fs.Finality == nil || *dfs.Finality == *fs.Finality
 						
 						if methodMatch && finalityMatch {
 							defaultFs = dfs

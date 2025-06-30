@@ -82,29 +82,31 @@ func NewNetwork(
 			if err != nil {
 				return nil, err
 			}
-			policyArray := upstream.ToPolicyArray(pls, "timeout", "consensus", "retry", "hedge")
+			policyArray := upstream.ToPolicyArray(pls, "retry", "circuitBreaker", "hedge", "timeout")
 			
 			var timeoutDuration *time.Duration
-			if fsCfg.Timeout != nil {
-				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+			if fsCfg.Timeout != nil && fsCfg.Timeout.Duration > 0 {
+				t := fsCfg.Timeout.Duration.Duration()
+				timeoutDuration = &t
 			}
 			
-			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+			executor := &FailsafeExecutor{
 				method:   fsCfg.Method,
 				finality: fsCfg.Finality,
-				executor: failsafe.NewExecutor(policyArray...),
+				executor: failsafe.NewExecutor[*common.NormalizedResponse](policyArray...),
 				timeout:  timeoutDuration,
-			})
+			}
+			failsafeExecutors = append(failsafeExecutors, executor)
 		}
 	} else {
-		// Create a default executor if no failsafe config is provided
-		lg.Debug().Msg("no failsafe config provided, creating default executor")
-		failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-			method:   "",
-			finality: 0,
+		// Create default failsafe executor
+		defaultExecutor := &FailsafeExecutor{
+			method:   "*",
+			finality: nil,
 			executor: failsafe.NewExecutor[*common.NormalizedResponse](),
 			timeout:  nil,
-		})
+		}
+		failsafeExecutors = []*FailsafeExecutor{defaultExecutor}
 	}
 	
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))

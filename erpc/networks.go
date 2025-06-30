@@ -24,7 +24,7 @@ import (
 
 type FailsafeExecutor struct {
 	method   string
-	finality common.DataFinalityState
+	finality *common.DataFinalityState
 	executor failsafe.Executor[*common.NormalizedResponse]
 	timeout  *time.Duration
 }
@@ -213,17 +213,17 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 
 	// First, try to find a specific match for both method and finality
 	for _, fe := range n.failsafeExecutors {
-		if fe.method != "" && fe.finality != 0 {
+		if fe.method != "" && fe.method != "*" && fe.finality != nil {
 			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && fe.finality == finality {
+			if matched && *fe.finality == finality {
 				return fe
 			}
 		}
 	}
 
-	// Then, try to find a match for method only (finality = 0 means any finality)
+	// Then, try to find a match for method only (finality = nil means any finality)
 	for _, fe := range n.failsafeExecutors {
-		if fe.method != "" && fe.finality == 0 {
+		if fe.method != "" && fe.method != "*" && fe.finality == nil {
 			matched, _ := common.WildcardMatch(fe.method, method)
 			if matched {
 				return fe
@@ -233,16 +233,16 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 
 	// Then, try to find a match for finality only
 	for _, fe := range n.failsafeExecutors {
-		if fe.method == "" && fe.finality != 0 {
-			if fe.finality == finality {
+		if (fe.method == "" || fe.method == "*") && fe.finality != nil {
+			if *fe.finality == finality {
 				return fe
 			}
 		}
 	}
 
-	// Return the first generic executor if no specific one is found (method = "", finality = 0)
+	// Return the default executor (method = "*" or "", finality = nil)
 	for _, fe := range n.failsafeExecutors {
-		if fe.method == "" && fe.finality == 0 {
+		if (fe.method == "" || fe.method == "*") && fe.finality == nil {
 			return fe
 		}
 	}
