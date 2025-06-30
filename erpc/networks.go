@@ -211,17 +211,33 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 	method, _ := req.Method()
 	finality := req.Finality(context.Background())
 
+	// First, try to find a specific match for both method and finality
 	for _, fe := range n.failsafeExecutors {
-		if fe.method == "" && fe.finality == 0 {
-			continue
+		if fe.method != "" && fe.finality != 0 {
+			matched, _ := common.WildcardMatch(fe.method, method)
+			if matched && fe.finality == finality {
+				return fe
+			}
 		}
-		if fe.method != "" && fe.method != method {
-			continue
+	}
+
+	// Then, try to find a match for method only
+	for _, fe := range n.failsafeExecutors {
+		if fe.method != "" && fe.finality == 0 {
+			matched, _ := common.WildcardMatch(fe.method, method)
+			if matched {
+				return fe
+			}
 		}
-		if fe.finality != 0 && fe.finality != finality {
-			continue
+	}
+
+	// Then, try to find a match for finality only
+	for _, fe := range n.failsafeExecutors {
+		if fe.method == "" && fe.finality != 0 {
+			if fe.finality == finality {
+				return fe
+			}
 		}
-		return fe
 	}
 
 	// Return the first generic executor if no specific one is found

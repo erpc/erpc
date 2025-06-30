@@ -1139,9 +1139,11 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 }
 
 func (n *NetworkDefaults) SetDefaults() error {
-	if n.Failsafe != nil {
-		if err := n.Failsafe.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	if n.Failsafe != nil && len(n.Failsafe) > 0 {
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
 	}
 	if n.SelectionPolicy != nil {
@@ -1298,22 +1300,51 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		u.Type = UpstreamTypeEvm
 	}
 
-	if u.Failsafe != nil {
-		if defaults != nil && defaults.Failsafe != nil {
-			if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	if u.Failsafe != nil && len(u.Failsafe) > 0 {
+		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+			// Apply defaults to each failsafe config
+			for i, fs := range u.Failsafe {
+				// Find matching default by method/finality
+				var defaultFs *FailsafeConfig
+				for _, dfs := range defaults.Failsafe {
+					if dfs.Method == fs.Method && dfs.Finality == fs.Finality {
+						defaultFs = dfs
+						break
+					}
+				}
+				// If no specific match found, use first default as general default
+				if defaultFs == nil && len(defaults.Failsafe) > 0 {
+					defaultFs = defaults.Failsafe[0]
+				}
+				if defaultFs != nil {
+					if err := fs.SetDefaults(defaultFs); err != nil {
+						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+					}
+				} else {
+					if err := fs.SetDefaults(nil); err != nil {
+						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+					}
+				}
 			}
 		} else {
-			if err := u.Failsafe.SetDefaults(nil); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+			// Apply nil defaults to each failsafe config
+			for i, fs := range u.Failsafe {
+				if err := fs.SetDefaults(nil); err != nil {
+					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+				}
 			}
 		}
-	} else if defaults != nil && defaults.Failsafe != nil {
-		u.Failsafe = &FailsafeConfig{}
-		if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+		u.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+		for i, dfs := range defaults.Failsafe {
+			u.Failsafe[i] = &FailsafeConfig{}
+			*u.Failsafe[i] = *dfs
+			if err := u.Failsafe[i].SetDefaults(dfs); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
 	}
+	
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
 		u.RateLimitAutoTune = &RateLimitAutoTuneConfig{}
 	}
@@ -1458,13 +1489,33 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
-		if defaults.Failsafe != nil {
-			if n.Failsafe == nil {
-				n.Failsafe = &FailsafeConfig{}
-				*n.Failsafe = *defaults.Failsafe
+		if defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+			if n.Failsafe == nil || len(n.Failsafe) == 0 {
+				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+				for i, fs := range defaults.Failsafe {
+					n.Failsafe[i] = &FailsafeConfig{}
+					*n.Failsafe[i] = *fs
+				}
 			} else {
-				if err := n.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+				// Apply defaults to each failsafe config
+				for i, fs := range n.Failsafe {
+					// Find matching default by method/finality
+					var defaultFs *FailsafeConfig
+					for _, dfs := range defaults.Failsafe {
+						if dfs.Method == fs.Method && dfs.Finality == fs.Finality {
+							defaultFs = dfs
+							break
+						}
+					}
+					// If no specific match found, use first default as general default
+					if defaultFs == nil && len(defaults.Failsafe) > 0 {
+						defaultFs = defaults.Failsafe[0]
+					}
+					if defaultFs != nil {
+						if err := fs.SetDefaults(defaultFs); err != nil {
+							return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+						}
+					}
 				}
 			}
 		}
@@ -1496,9 +1547,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
 			}
 		}
-	} else if n.Failsafe != nil {
-		if err := n.Failsafe.SetDefaults(sysDefCfg.Failsafe); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	} else if n.Failsafe != nil && len(n.Failsafe) > 0 {
+		// Apply system default to each failsafe config
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(sysDefCfg.Failsafe[0]); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
 	} else {
 		n.Failsafe = sysDefCfg.Failsafe
@@ -2074,12 +2128,20 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 	hasAnyFallbackUpstream := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
 		return u.Group == "fallback"
 	})
-	n := &NetworkConfig{}
+	n := &NetworkConfig{
+		Failsafe: []*FailsafeConfig{
+			{
+				// Default general failsafe config
+				Method:   "",
+				Finality: 0,
+			},
+		},
+	}
 	if hasAnyFallbackUpstream {
 		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to compile default selection policy function")
-			return nil
+			return n
 		}
 
 		selectionPolicy := &SelectionPolicyConfig{
