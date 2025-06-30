@@ -119,6 +119,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 					},
 					Failsafe: []*FailsafeConfig{
 						{
+							MatchMethod: "*",
 							Retry: &RetryPolicyConfig{
 								MaxAttempts:     5,
 								Delay:           Duration(0),
@@ -142,6 +143,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 					},
 					Failsafe: []*FailsafeConfig{
 						{
+							MatchMethod: "*",
 							Retry: &RetryPolicyConfig{
 								MaxAttempts: 1,
 								Delay:       Duration(500 * time.Millisecond),
