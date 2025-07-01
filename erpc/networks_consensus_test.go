@@ -33,7 +33,6 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		agreementThreshold      *int
 		disputeBehavior         *common.ConsensusDisputeBehavior
 		lowParticipantsBehavior *common.ConsensusLowParticipantsBehavior
-		failureBehavior         *common.ConsensusFailureBehavior
 		expectedCalls           []int // Number of expected calls for each upstream
 		expectedResponse        *common.NormalizedResponse
 		expectedError           *common.ErrorCode
@@ -859,11 +858,6 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				lowParticipantsBehavior = *tt.lowParticipantsBehavior
 			}
 
-			failureBehavior := common.ConsensusFailureBehaviorReturnError
-			if tt.failureBehavior != nil {
-				failureBehavior = *tt.failureBehavior
-			}
-
 			disputeBehavior := common.ConsensusDisputeBehaviorReturnError
 			if tt.disputeBehavior != nil {
 				disputeBehavior = *tt.disputeBehavior
@@ -878,15 +872,17 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 					Evm: &common.EvmNetworkConfig{
 						ChainId: 123,
 					},
-					Failsafe: &common.FailsafeConfig{
-						Retry: retryPolicy,
-						Consensus: &common.ConsensusPolicyConfig{
-							RequiredParticipants:    tt.requiredParticipants,
-							AgreementThreshold:      agreementThreshold,
-							FailureBehavior:         failureBehavior,
-							DisputeBehavior:         disputeBehavior,
-							LowParticipantsBehavior: lowParticipantsBehavior,
-							PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+					Failsafe: []*common.FailsafeConfig{
+						{
+							MatchMethod: "*", // Match all methods to ensure consensus executor is selected
+							Retry:       retryPolicy,
+							Consensus: &common.ConsensusPolicyConfig{
+								RequiredParticipants:    tt.requiredParticipants,
+								AgreementThreshold:      agreementThreshold,
+								DisputeBehavior:         disputeBehavior,
+								LowParticipantsBehavior: lowParticipantsBehavior,
+								PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+							},
 						},
 					},
 				},
@@ -1067,18 +1063,20 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 			Evm: &common.EvmNetworkConfig{
 				ChainId: 123,
 			},
-			Failsafe: &common.FailsafeConfig{
-				Retry: &common.RetryPolicyConfig{
-					MaxAttempts: 2,
-					Delay:       common.Duration(0),
-				},
-				Consensus: &common.ConsensusPolicyConfig{
-					RequiredParticipants:    2,
-					AgreementThreshold:      2,
-					FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-					DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-					LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
-					PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+			Failsafe: []*common.FailsafeConfig{
+				{
+					MatchMethod: "*", // Match all methods to ensure consensus executor is selected
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts: 2,
+						Delay:       common.Duration(0),
+					},
+					Consensus: &common.ConsensusPolicyConfig{
+						RequiredParticipants:    2,
+						AgreementThreshold:      2,
+						DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+						LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+						PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+					},
 				},
 			},
 		},

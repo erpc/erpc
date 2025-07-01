@@ -179,7 +179,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 	}
 
 	var blockNumber string
-	
+
 	// Handle different parameter types for block number
 	switch v := params[0].(type) {
 	case string:
@@ -624,7 +624,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 	}
 
 	var blockNumber string
-	
+
 	// Handle different parameter types
 	switch v := params[0].(type) {
 	case string:

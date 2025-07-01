@@ -28,13 +28,19 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 	lg := logger.With().Str("scope", string(scope)).Str("entity", entity).Logger()
 
 	if fsCfg.Timeout != nil {
-		var err error
-		p, err := createTimeoutPolicy(&lg, fsCfg.Timeout)
+		plc, err := createTimeoutPolicy(logger, fsCfg.Timeout)
 		if err != nil {
-			return nil, err
+			return nil, common.NewErrFailsafeConfiguration(
+				err,
+				map[string]interface{}{
+					"scope":    scope,
+					"entity":   entity,
+					"policy":   "timeout",
+					"provider": fsCfg.Timeout,
+				},
+			)
 		}
-
-		policies["timeout"] = p
+		policies["timeout"] = plc
 	}
 
 	if fsCfg.Retry != nil {

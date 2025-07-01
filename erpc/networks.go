@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type FailsafeExecutor struct {
+	method     string
+	finalities []common.DataFinalityState
+	executor   failsafe.Executor[*common.NormalizedResponse]
+	timeout    *time.Duration
+}
+
 type Network struct {
 	networkId                string
 	projectId                string
@@ -30,8 +38,7 @@ type Network struct {
 	appCtx                   context.Context
 	cfg                      *common.NetworkConfig
 	inFlightRequests         *sync.Map
-	timeoutDuration          *time.Duration
-	failsafeExecutor         failsafe.Executor[*common.NormalizedResponse]
+	failsafeExecutors        []*FailsafeExecutor
 	rateLimitersRegistry     *upstream.RateLimitersRegistry
 	cacheDal                 common.CacheDAL
 	metricsTracker           *health.Tracker
@@ -165,7 +172,7 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 	var minBlock int64 = 0
 	var initialized bool = false
-	
+
 	for _, u := range upstreams {
 		statePoller := u.EvmStatePoller()
 		if statePoller == nil {
@@ -196,9 +203,52 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 			}
 		}
 	}
-	
+
 	span.SetAttributes(attribute.Int64("lowest_finalized_block", minBlock))
 	return minBlock
+}
+
+func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+	method, _ := req.Method()
+	finality := req.Finality(context.Background())
+
+	// First, try to find a specific match for both method and finality
+	for _, fe := range n.failsafeExecutors {
+		if fe.method != "*" && len(fe.finalities) > 0 {
+			matched, _ := common.WildcardMatch(fe.method, method)
+			if matched && slices.Contains(fe.finalities, finality) {
+				return fe
+			}
+		}
+	}
+
+	// Then, try to find a match for method only (empty finalities means any finality)
+	for _, fe := range n.failsafeExecutors {
+		if fe.method != "*" && (fe.finalities == nil || len(fe.finalities) == 0) {
+			matched, _ := common.WildcardMatch(fe.method, method)
+			if matched {
+				return fe
+			}
+		}
+	}
+
+	// Then, try to find a match for finality only
+	for _, fe := range n.failsafeExecutors {
+		if fe.method == "*" && len(fe.finalities) > 0 {
+			if slices.Contains(fe.finalities, finality) {
+				return fe
+			}
+		}
+	}
+
+	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
+	for _, fe := range n.failsafeExecutors {
+		if fe.method == "*" && (fe.finalities == nil || len(fe.finalities) == 0) {
+			return fe
+		}
+	}
+
+	return nil
 }
 
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -338,7 +388,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		upsList,
 	)
 
-	resp, execErr := n.failsafeExecutor.
+	failsafeExecutor := n.getFailsafeExecutor(req)
+	if failsafeExecutor == nil {
+		return nil, errors.New("no failsafe executor found for this request")
+	}
+
+	resp, execErr := failsafeExecutor.executor.
 		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 			execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
@@ -378,7 +433,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					return nil, ctxErr
 				}
 			}
-			if n.timeoutDuration != nil {
+			if failsafeExecutor.timeout != nil {
 				var cancelFn context.CancelFunc
 				execSpanCtx, cancelFn = context.WithTimeout(
 					execSpanCtx,
@@ -386,7 +441,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
 					//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 					//      but allow the failsafe execution to fail with timeout first for proper error handling.
-					*n.timeoutDuration+5*time.Millisecond,
+					*failsafeExecutor.timeout+5*time.Millisecond,
 				)
 
 				defer cancelFn()
@@ -704,10 +759,10 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 			}
 		}
 	}
-	
+
 	if blockNumber > 0 && finality == common.DataFinalityStateUnknown {
 		// When we have a block number but no response yet, try multiple fallbacks
-		
+
 		// First, try to use LastUpstream from the request (if this is a retry or subsequent attempt)
 		upstream := req.LastUpstream()
 		if upstream != nil {
@@ -722,7 +777,7 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 				}
 			}
 		}
-		
+
 		// If no LastUpstream, use the network's lowest finalized block as a heuristic
 		// This provides a conservative estimate for early metrics collection
 		if n.upstreamsRegistry != nil {

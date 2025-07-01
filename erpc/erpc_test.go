@@ -41,10 +41,12 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmNetworkConfig{
 							ChainId: 123,
 						},
-						Failsafe: &common.FailsafeConfig{
-							Retry: &common.RetryPolicyConfig{
-								MaxAttempts: 3,
-								Delay:       common.Duration(10 * time.Millisecond),
+						Failsafe: []*common.FailsafeConfig{
+							{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 3,
+									Delay:       common.Duration(10 * time.Millisecond),
+								},
 							},
 						},
 					},

@@ -32,10 +32,6 @@ __export(src_exports, {
   ConsensusDisputeBehaviorOnlyBlockHeadLeader: () => ConsensusDisputeBehaviorOnlyBlockHeadLeader,
   ConsensusDisputeBehaviorPreferBlockHeadLeader: () => ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorReturnError: () => ConsensusDisputeBehaviorReturnError,
-  ConsensusFailureBehaviorAcceptMostCommonValidResult: () => ConsensusFailureBehaviorAcceptMostCommonValidResult,
-  ConsensusFailureBehaviorOnlyBlockHeadLeader: () => ConsensusFailureBehaviorOnlyBlockHeadLeader,
-  ConsensusFailureBehaviorPreferBlockHeadLeader: () => ConsensusFailureBehaviorPreferBlockHeadLeader,
-  ConsensusFailureBehaviorReturnError: () => ConsensusFailureBehaviorReturnError,
   ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult: () => ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
   ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: () => ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
   ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: () => ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
@@ -65,10 +61,6 @@ var EvmNodeTypeArchive = "archive";
 var EvmSyncingStateUnknown = 0;
 var EvmSyncingStateSyncing = 1;
 var EvmSyncingStateNotSyncing = 2;
-var ConsensusFailureBehaviorReturnError = "returnError";
-var ConsensusFailureBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
-var ConsensusFailureBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
-var ConsensusFailureBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
 var ConsensusLowParticipantsBehaviorReturnError = "returnError";
 var ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
 var ConsensusLowParticipantsBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
@@ -110,10 +102,6 @@ var createConfig = (cfg) => {
   ConsensusDisputeBehaviorOnlyBlockHeadLeader,
   ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorReturnError,
-  ConsensusFailureBehaviorAcceptMostCommonValidResult,
-  ConsensusFailureBehaviorOnlyBlockHeadLeader,
-  ConsensusFailureBehaviorPreferBlockHeadLeader,
-  ConsensusFailureBehaviorReturnError,
   ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
   ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
   ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,

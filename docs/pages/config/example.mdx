@@ -203,6 +203,7 @@ projects:
         # Refer to "Failsafe" section for more details.
         # On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries)
         failsafe:
+        - matchMethod: "*"    # Default policy for all methods
           timeout:
             duration: 30s
           retry:
@@ -223,6 +224,7 @@ projects:
         evm:
           chainId: 42161
         failsafe:
+        - matchMethod: "*"
           timeout:
             duration: 30s
           retry:
@@ -248,6 +250,7 @@ projects:
           - "eth_traceTransaction"
         # Refer to "Failsafe" section for more details:
         failsafe:
+        - matchMethod: "*"    # Default policy for all methods
           timeout:
             duration: 15s
           retry:
@@ -263,6 +266,7 @@ projects:
         evm:
           chainId: 1
         failsafe:
+        - matchMethod: "*"
           timeout:
             duration: 15s
           retry:
@@ -289,6 +293,7 @@ projects:
         evm:
           chainId: 42161
         failsafe:
+        - matchMethod: "*"
           timeout:
             duration: 15s
           retry:
@@ -306,6 +311,7 @@ projects:
         endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
         rateLimitBudget: global
         failsafe:
+        - matchMethod: "*"
           timeout:
             duration: 15s
           retry:
@@ -478,47 +484,53 @@ export default createConfig({
           },
           // Refer to "Failsafe" section for more details.
           // On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries on upstreams)
-          failsafe: {
-            timeout: {
-              duration: "30s",
-            },
-            retry: {
-              maxAttempts: 3,
-              delay: "0ms",
-            },
-            // Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
-            // a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
-            hedge: {
-              delay: "500ms",
-              maxCount: 1,
-            },
-            circuitBreaker: {
-              failureThresholdCount: 160, // 80% error rate
-              failureThresholdCapacity: 200,
-              halfOpenAfter: "5m",
-              successThresholdCount: 3,
-              successThresholdCapacity: 3,
-            },
-          },
+          failsafe: [
+            {
+              matchMethod: "*",    // Default policy for all methods
+              timeout: {
+                duration: "30s",
+              },
+              retry: {
+                maxAttempts: 3,
+                delay: "0ms",
+              },
+              // Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
+              // a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
+              hedge: {
+                delay: "500ms",
+                maxCount: 1,
+              },
+              circuitBreaker: {
+                failureThresholdCount: 160, // 80% error rate
+                failureThresholdCapacity: 200,
+                halfOpenAfter: "5m",
+                successThresholdCount: 3,
+                successThresholdCapacity: 3,
+              },
+            }
+          ],
         },
         {
           architecture: "evm",
           evm: {
             chainId: 42161,
           },
-          failsafe: {
-            timeout: {
-              duration: "30s",
-            },
-            retry: {
-              maxAttempts: 3,
-              delay: "0ms",
-            },
-            hedge: {
-              delay: "500ms",
-              maxCount: 1,
-            },
-          },
+          failsafe: [
+            {
+              matchMethod: "*",
+              timeout: {
+                duration: "30s",
+              },
+              retry: {
+                maxAttempts: 3,
+                delay: "0ms",
+              },
+              hedge: {
+                delay: "500ms",
+                maxCount: 1,
+              },
+            }
+          ],
         },
       ],
 
@@ -537,18 +549,21 @@ export default createConfig({
           // Which methods must never be sent to this upstream:
           ignoreMethods: ["alchemy_*", "eth_traceTransaction"],
           // Refer to "Failsafe" section for more details:
-          failsafe: {
-            timeout: {
-              duration: "15s",
-            },
-            retry: {
-              maxAttempts: 2,
-              delay: "500ms",
-              backoffMaxDelay: "3s",
-              backoffFactor: 1.2,
-              jitter: "0ms",
-            },
-          },
+          failsafe: [
+            {
+              matchMethod: "*",    // Default policy for all methods
+              timeout: {
+                duration: "15s",
+              },
+              retry: {
+                maxAttempts: 2,
+                delay: "500ms",
+                backoffMaxDelay: "3s",
+                backoffFactor: 1.2,
+                jitter: "0ms",
+              },
+            }
+          ],
         },
         {
           id: "blastapi-chain-1",
@@ -558,18 +573,21 @@ export default createConfig({
           evm: {
             chainId: 1,
           },
-          failsafe: {
-            timeout: {
-              duration: "15s",
-            },
-            retry: {
-              maxAttempts: 2,
-              delay: "500ms",
-              backoffMaxDelay: "3s",
-              backoffFactor: 1.2,
-              jitter: "0ms",
-            },
-          },
+          failsafe: [
+            {
+              matchMethod: "*",
+              timeout: {
+                duration: "15s",
+              },
+              retry: {
+                maxAttempts: 2,
+                delay: "500ms",
+                backoffMaxDelay: "3s",
+                backoffFactor: 1.2,
+                jitter: "0ms",
+              },
+            }
+          ],
         },
         {
           id: "quiknode-chain-42161",
@@ -592,18 +610,21 @@ export default createConfig({
           evm: {
             chainId: 42161,
           },
-          failsafe: {
-            timeout: {
-              duration: "15s",
-            },
-            retry: {
-              maxAttempts: 2,
-              delay: "500ms",
-              backoffMaxDelay: "3s",
-              backoffFactor: 1.2,
-              jitter: "0ms",
-            },
-          },
+          failsafe: [
+            {
+              matchMethod: "*",
+              timeout: {
+                duration: "15s",
+              },
+              retry: {
+                maxAttempts: 2,
+                delay: "500ms",
+                backoffMaxDelay: "3s",
+                backoffFactor: 1.2,
+                jitter: "0ms",
+              },
+            }
+          ],
         },
         // "id" is a unique identifier to distinguish in logs and metrics.
         {
@@ -613,18 +634,21 @@ export default createConfig({
           // Note that these chains are hard-coded in the repo, so if they support a new chain eRPC must be updated.
           endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`,
           rateLimitBudget: "global",
-          failsafe: {
-            timeout: {
-              duration: "15s",
-            },
-            retry: {
-              maxAttempts: 2,
-              delay: "500ms",
-              backoffMaxDelay: "3s",
-              backoffFactor: 1.2,
-              jitter: "0ms",
-            },
-          },
+          failsafe: [
+            {
+              matchMethod: "*",
+              timeout: {
+                duration: "15s",
+              },
+              retry: {
+                maxAttempts: 2,
+                delay: "500ms",
+                backoffMaxDelay: "3s",
+                backoffFactor: 1.2,
+                jitter: "0ms",
+              },
+            }
+          ],
         },
       ],
     },

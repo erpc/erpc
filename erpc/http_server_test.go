@@ -487,9 +487,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(200 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(200 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -501,9 +503,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -556,11 +560,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(30 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(30 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -572,11 +578,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(300 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(300 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -634,11 +642,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -651,11 +661,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(5 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(5 * time.Second),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -711,9 +723,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1 * time.Second),
+									},
 								},
 							},
 						},
@@ -725,9 +739,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -784,11 +800,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(5 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(5 * time.Second),
+									},
 								},
 							},
 						},
@@ -801,11 +819,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -861,9 +881,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(50 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(50 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -875,9 +897,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(5 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(5 * time.Second),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -936,10 +960,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:   nil,
-								Hedge:   nil,
-								Timeout: nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:   nil,
+									Hedge:   nil,
+									Timeout: nil,
+								},
 							},
 						},
 					},
@@ -951,10 +977,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:   nil,
-								Hedge:   nil,
-								Timeout: nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:   nil,
+									Hedge:   nil,
+									Timeout: nil,
+								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
@@ -1010,11 +1038,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(300 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(300 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1027,11 +1057,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(10 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1095,10 +1127,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 8,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 8,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1114,10 +1148,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1131,10 +1167,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1206,10 +1244,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1288,12 +1328,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: nil,
-								Retry:   nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: nil,
+									Retry:   nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1306,10 +1348,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: nil,
-								Retry:   nil,
-								Hedge:   nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: nil,
+									Retry:   nil,
+									Hedge:   nil,
+								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
@@ -1379,14 +1423,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(50 * time.Millisecond),
-								},
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(50 * time.Millisecond),
+									},
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1399,10 +1445,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1416,10 +1464,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(500 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(500 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1487,14 +1537,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(100 * time.Millisecond),
-								},
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(100 * time.Millisecond),
+									},
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1507,10 +1559,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1524,10 +1578,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1600,14 +1656,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
-								},
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(300 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(300 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1620,11 +1678,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(150 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(150 * time.Millisecond),
+									},
+									Retry: nil,
 								},
-								Retry: nil,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1637,11 +1697,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(200 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(200 * time.Millisecond),
+									},
+									Retry: nil,
 								},
-								Retry: nil,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1712,11 +1774,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1805,11 +1869,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1894,11 +1960,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{
 								// Network-level hedge configuration
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(100 * time.Millisecond),
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -3043,11 +3111,13 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3059,11 +3129,13 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3350,11 +3422,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3366,11 +3440,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 						{
@@ -3380,11 +3456,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3445,11 +3523,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3461,11 +3541,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 						{
@@ -3475,11 +3557,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3551,10 +3635,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 8,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 8,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -3570,10 +3656,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -3587,10 +3675,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -3689,8 +3779,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
+								},
 							},
 						},
 					},
@@ -3701,8 +3793,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+								},
 							},
 						},
 						{
@@ -3711,8 +3805,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+								},
 							},
 						},
 					},
@@ -5269,10 +5365,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				{
 					Id: "test_project",
 					UpstreamDefaults: &common.UpstreamConfig{
-						Failsafe: &common.FailsafeConfig{
-							Hedge: &common.HedgePolicyConfig{
-								Delay:    common.Duration(10 * time.Millisecond),
-								MaxCount: 267,
+						Failsafe: []*common.FailsafeConfig{
+							{
+								Hedge: &common.HedgePolicyConfig{
+									Delay:    common.Duration(10 * time.Millisecond),
+									MaxCount: 267,
+								},
 							},
 						},
 						Evm: &common.EvmUpstreamConfig{
@@ -5355,8 +5453,8 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		require.Equal(t, len(upstreams), 1)
 		upsCfg := upstreams[0].Config()
 
-		assert.Equalf(t, upsCfg.Failsafe.Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
-		assert.Equalf(t, upsCfg.Failsafe.Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be set")
+		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
+		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be set")
 	})
 
 	t.Run("InheritUpstreamsOverridesAfterUpstreamDefaultsConfig", func(t *testing.T) {
@@ -5368,10 +5466,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				{
 					Id: "test_project",
 					UpstreamDefaults: &common.UpstreamConfig{
-						Failsafe: &common.FailsafeConfig{
-							Hedge: &common.HedgePolicyConfig{
-								Delay:    common.Duration(10 * time.Millisecond),
-								MaxCount: 267,
+						Failsafe: []*common.FailsafeConfig{
+							{
+								Hedge: &common.HedgePolicyConfig{
+									Delay:    common.Duration(10 * time.Millisecond),
+									MaxCount: 267,
+								},
 							},
 						},
 						Evm: &common.EvmUpstreamConfig{
@@ -5388,9 +5488,11 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 							},
 							Overrides: map[string]*common.UpstreamConfig{
 								"evm:1": {
-									Failsafe: &common.FailsafeConfig{
-										Retry: &common.RetryPolicyConfig{
-											MaxAttempts: 123,
+									Failsafe: []*common.FailsafeConfig{
+										{
+											Retry: &common.RetryPolicyConfig{
+												MaxAttempts: 123,
+											},
 										},
 									},
 								},
@@ -5462,8 +5564,8 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		require.Equal(t, len(upstreams), 1)
 		upsCfg := upstreams[0].Config()
 
-		assert.Equalf(t, upsCfg.Failsafe.Retry.MaxAttempts, 123, "Retry policy should be set")
-		assert.Nilf(t, upsCfg.Failsafe.Hedge, "Hedge policy should not be set")
+		assert.Equalf(t, upsCfg.Failsafe[0].Retry.MaxAttempts, 123, "Retry policy should be set")
+		assert.Nilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should not be set")
 	})
 }
 
@@ -5501,9 +5603,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 								ChainId:                            1,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 2,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
 								},
 							},
 						},
@@ -5685,9 +5789,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 								ChainId:                            1,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 2,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
 								},
 							},
 						},
@@ -5803,9 +5909,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 								ChainId:                            1,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 2,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
 								},
 							},
 						},
@@ -7766,13 +7874,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
 							},
-							Failsafe: &common.FailsafeConfig{
-								Consensus: &common.ConsensusPolicyConfig{
-									RequiredParticipants:    3,
-									AgreementThreshold:      2,
-									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									MatchMethod: "*",
+									Consensus: &common.ConsensusPolicyConfig{
+										RequiredParticipants:    3,
+										AgreementThreshold:      2,
+										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+									},
 								},
 							},
 						},
@@ -7898,13 +8008,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
 							},
-							Failsafe: &common.FailsafeConfig{
-								Consensus: &common.ConsensusPolicyConfig{
-									RequiredParticipants:    3,
-									AgreementThreshold:      2,
-									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									MatchMethod: "*",
+									Consensus: &common.ConsensusPolicyConfig{
+										RequiredParticipants:    3,
+										AgreementThreshold:      2,
+										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+									},
 								},
 							},
 						},
@@ -8013,13 +8125,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
 							},
-							Failsafe: &common.FailsafeConfig{
-								Consensus: &common.ConsensusPolicyConfig{
-									RequiredParticipants:    3,
-									AgreementThreshold:      2,
-									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									MatchMethod: "*",
+									Consensus: &common.ConsensusPolicyConfig{
+										RequiredParticipants:    3,
+										AgreementThreshold:      2,
+										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+									},
 								},
 							},
 						},

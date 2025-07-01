@@ -317,7 +317,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -448,7 +448,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -588,7 +588,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: upsFsCfg,
+			Failsafe: []*common.FailsafeConfig{upsFsCfg},
 		}
 		up2 := &common.UpstreamConfig{
 			Id:       "rpc2",
@@ -597,7 +597,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: upsFsCfg,
+			Failsafe: []*common.FailsafeConfig{upsFsCfg},
 		}
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -663,7 +663,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: ntwFsCfg,
+				Failsafe: []*common.FailsafeConfig{ntwFsCfg},
 			},
 			rlr,
 			upr,
@@ -744,7 +744,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: upsFsCfg,
+			Failsafe: []*common.FailsafeConfig{upsFsCfg},
 		}
 		up2 := &common.UpstreamConfig{
 			Id:       "rpc2",
@@ -753,7 +753,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: upsFsCfg,
+			Failsafe: []*common.FailsafeConfig{upsFsCfg},
 		}
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -819,7 +819,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: ntwFsCfg,
+				Failsafe: []*common.FailsafeConfig{ntwFsCfg},
 			},
 			rlr,
 			upr,
@@ -995,10 +995,10 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: &common.FailsafeConfig{
+				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 1,
-					},
+					}},
 				},
 			},
 			rlr,
@@ -1197,7 +1197,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
 				},
@@ -1406,10 +1406,10 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: &common.FailsafeConfig{
+				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 3,
-					},
+					}},
 				},
 			},
 			rlr,
@@ -1599,10 +1599,10 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: &common.FailsafeConfig{
+				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 3,
-					},
+					}},
 				},
 			},
 			rlr,
@@ -1805,7 +1805,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
 				},
@@ -2010,7 +2010,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
 				},
@@ -2205,7 +2205,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
 				},
@@ -2392,7 +2392,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
 				},
@@ -2614,7 +2614,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
 				},
@@ -2823,7 +2823,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryPending: &retryPending,
 				},
@@ -3016,7 +3016,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -3206,7 +3206,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -3363,7 +3363,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -3581,7 +3581,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 		up2 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3590,7 +3590,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 		up3 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3599,7 +3599,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -3673,7 +3673,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -3754,7 +3754,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -3808,7 +3808,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -3887,7 +3887,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &FALSE,
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -4187,7 +4187,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -4319,7 +4319,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -4448,10 +4448,10 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: &common.FailsafeConfig{
+				Failsafe: []*common.FailsafeConfig{{
 					Timeout: &common.TimeoutPolicyConfig{
 						Duration: common.Duration(30 * time.Millisecond),
-					},
+					}},
 				},
 			},
 			rlr,
@@ -4582,7 +4582,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -4730,7 +4730,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -4884,7 +4884,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -5037,7 +5037,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -5123,7 +5123,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Type:     common.UpstreamTypeEvm,
 			Id:       "upstream1",
 			Endpoint: "http://rpc1.localhost",
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
@@ -5258,7 +5258,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Type:     common.UpstreamTypeEvm,
 			Id:       "upstream1",
 			Endpoint: "http://rpc1.localhost",
-			Failsafe: fsCfgUp1,
+			Failsafe: []*common.FailsafeConfig{fsCfgUp1},
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
@@ -5315,7 +5315,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfgNetwork,
+				Failsafe: []*common.FailsafeConfig{fsCfgNetwork},
 			},
 			rlr,
 			upr,
@@ -5396,14 +5396,14 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: &common.FailsafeConfig{
+			Failsafe: []*common.FailsafeConfig{{
 				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 					FailureThresholdCount:    2,
 					FailureThresholdCapacity: 4,
 					HalfOpenAfter:            common.Duration(500 * time.Millisecond),
 					SuccessThresholdCount:    2,
 					SuccessThresholdCapacity: 2,
-				},
+				}},
 			},
 		}
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
@@ -5604,7 +5604,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -5761,7 +5761,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -5885,7 +5885,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -6030,7 +6030,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
 				},
@@ -6184,7 +6184,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -6321,10 +6321,10 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: &common.FailsafeConfig{
+				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 2,
-					},
+					}},
 				},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
 					RetryEmpty: &common.TRUE,
@@ -6455,7 +6455,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -6578,7 +6578,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -6701,7 +6701,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -7011,7 +7011,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -7224,10 +7224,10 @@ func TestNetwork_Forward(t *testing.T) {
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.TRUE,
 			},
-			Failsafe: &common.FailsafeConfig{
+			Failsafe: []*common.FailsafeConfig{{
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 2,
-				},
+				}},
 			},
 		}, nil)
 
@@ -7591,12 +7591,12 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe: &common.FailsafeConfig{
+			Failsafe: []*common.FailsafeConfig{{
 				Retry: nil,
 				Hedge: nil,
 				Timeout: &common.TimeoutPolicyConfig{
 					Duration: common.Duration(50 * time.Millisecond),
-				},
+				}},
 			},
 		}, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -8641,11 +8641,11 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 					EnforceGetLogsBlockRange: util.BoolPtr(true),
 				},
 			},
-			Failsafe: &common.FailsafeConfig{
+			Failsafe: []*common.FailsafeConfig{{
 				Hedge: &common.HedgePolicyConfig{
 					Delay:    common.Duration(1 * time.Millisecond),
 					MaxCount: 10,
-				},
+				}},
 			},
 		})
 
@@ -9292,6 +9292,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		pollerDebounce := 1000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
+			MatchMethod: "*",
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: failAttempts, // upstream‑level retries
 			},
@@ -9308,7 +9309,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 				StatePollerInterval: common.Duration(pollerInterval),
 				StatePollerDebounce: common.Duration(pollerDebounce),
 			},
-			Failsafe: fsCfg,
+			Failsafe: []*common.FailsafeConfig{fsCfg},
 		}
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -9325,7 +9326,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		ntwCfg := &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			Failsafe:     fsCfg,
+			Failsafe:     []*common.FailsafeConfig{fsCfg},
 		}
 		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
@@ -9831,9 +9832,10 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	)
 
 	fsCfg := &common.FailsafeConfig{
-		Hedge:   nil,
-		Timeout: nil,
-		Retry:   nil,
+		MatchMethod: "*",
+		Hedge:       nil,
+		Timeout:     nil,
+		Retry:       nil,
 	}
 
 	networkConfig := &common.NetworkConfig{
@@ -9841,7 +9843,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		Evm: &common.EvmNetworkConfig{
 			ChainId: 123,
 		},
-		Failsafe: fsCfg,
+		Failsafe: []*common.FailsafeConfig{fsCfg},
 	}
 	network, err := NewNetwork(
 		ctx,
