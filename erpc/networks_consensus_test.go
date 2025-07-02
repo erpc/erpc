@@ -952,8 +952,8 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			// Log the error for debugging
 			if err != nil {
 				t.Logf("Got error from Forward: %v", err)
-			} else if resp != nil {
-				t.Logf("Got response from upstream: %v", resp.Upstream())
+			} else if resp != nil && resp.Upstream() != nil {
+				t.Logf("Got response from upstream: %s", resp.Upstream().Id())
 			}
 
 			if tt.expectedError != nil {
