@@ -1,0 +1,102 @@
+# Repository Guide for AI Agents
+
+This project hosts **eRPC**, a fault-tolerant EVM RPC proxy with built-in caching, failover logic and a TypeScript CLI. The repository contains Go code for the server and TypeScript packages for tooling and configuration.
+
+## Local Development
+
+### Go code
+- Install dependencies with `make setup`.
+- Format all Go files with `make fmt`.
+- Build the server with `make build` or run it via `make run`.
+- Execute the unit tests quickly with `make test-fast` (no race checks).
+- Run the full suite with race checks using `make test` when needed.
+- To run a single test or pattern, use `LOG_LEVEL=trace go test -run <pattern> ./...`.
+
+### Node/TypeScript packages
+- Use `pnpm install` to install dependencies.
+- Format TypeScript sources with `pnpm -r run format` (uses [Biome](https://biomejs.dev/)).
+- Build all packages with `pnpm -r run build`.
+
+## Testing Guidelines
+
+### Test Initialization
+- **Always** include this in test files that need logging:
+  ```go
+  func init() {
+      util.ConfigureTestLogger()
+  }
+  ```
+- Use the global logger: `log.Logger` from `github.com/rs/zerolog/log`
+- For debugging tests, use: `LOG_LEVEL=debug go test -run <pattern> ./...` or `LOG_LEVEL=trace` for even more detail
+
+### Gock (HTTP Mocking) Best Practices
+1. **Setup Order is Critical**: Always set up ALL gock mocks BEFORE initializing any network components or services
+   ```go
+   // ✅ CORRECT: Set up mocks first
+   util.ResetGock()
+   defer util.ResetGock()
+   util.SetupMocksForEvmStatePoller()
+   
+   // Set up your test-specific mocks here
+   gock.New("http://example.com")...
+   
+   // THEN initialize network/services
+   network := setupTestNetwork(t, ctx, ...)
+   ```
+
+2. **Standard Gock Pattern**:
+   ```go
+   util.ResetGock()
+   defer util.ResetGock()
+   util.SetupMocksForEvmStatePoller()  // Handles background state polling
+   defer util.AssertNoPendingMocks(t, 0)  // 0 or expected pending count
+   ```
+
+3. **Filtering Requests**: Use filters to distinguish between different request types
+   ```go
+   gock.New("http://rpc1.localhost").
+       Post("").
+       Filter(func(r *http.Request) bool {
+           body := util.SafeReadBody(r)
+           return strings.Contains(body, "eth_getBalance")
+       }).
+       Reply(200).
+       JSON(map[string]interface{}{...})
+   ```
+
+4. **Mock Persistence**:
+   - Use `Times(1)` for mocks that should only match once
+   - Use `Persist()` for mocks that might be called multiple times or in unpredictable patterns
+   - For concurrent tests or tests with background processes, use `Persist()`
+
+### Context Management
+- Always create and properly clean up contexts:
+  ```go
+  ctx, cancel := context.WithCancel(context.Background())
+  defer cancel()
+  ```
+- Pass this context through all network/service operations
+
+### Race Condition Prevention
+1. **Never use `t.Parallel()`** with tests that use gock mocks
+2. Set up all mocks before component initialization (components may start background goroutines)
+3. Be aware that network initialization starts background processes like state pollers
+4. For concurrent tests, don't use `defer util.AssertNoPendingMocks(t, 0)`
+
+### Common Debugging Tips
+- If tests fail with "gock: cannot match any request", check:
+  1. Are mocks set up BEFORE component initialization?
+  2. Are filters too restrictive?
+  3. Are background processes consuming mocks?
+- Run with race detector during development: `go test -race -run TestName ./...`
+- Use `gock.Clean()` sparingly - prefer proper mock setup order
+
+## Commit and PR Guidelines
+- Follow the [Conventional Commits](https://www.conventionalcommits.org/) style (e.g. `feat:`, `fix:`) when writing commit messages.
+- Create feature branches for new work and open Pull Requests against `main`.
+- Ensure `make fmt` and `make test` succeed before pushing your changes.
+- Reference relevant issues in the PR description when applicable.
+
+## Additional Notes
+- All contributions fall under the [Contributor License Agreement](CLA.md) and require adherence to the [Code of Conduct](CODE_OF_CONDUCT.md).
+- Documentation lives under the `docs/` directory. See `README.md` for a project overview and quick start instructions.

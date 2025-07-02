@@ -870,7 +870,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 	// Execute consensus in a goroutine
 	done := make(chan struct{})
 	var result *failsafeCommon.PolicyResult[*common.NormalizedResponse]
-	
+
 	go func() {
 		defer close(done)
 		result = executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
@@ -919,7 +919,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 	// Wait for result
 	require.NoError(t, result.Error)
 	require.NotNil(t, result.Result)
-	
+
 	// Verify consensus was achieved
 	jrr, err := result.Result.JsonRpcResponse()
 	require.NoError(t, err)
@@ -930,7 +930,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 	// 1. Consensus was achieved (2 upstreams returned consensus_result)
 	// 2. The executor didn't hang waiting for cancelled goroutines
 	// 3. The drainResponses function properly handled remaining messages
-	
+
 	t.Logf("Consensus achieved with %d responses collected", responseCount.Load())
 	t.Log("Fix verified: Removing default cases ensures all goroutines send messages, preventing collector hangs")
 }

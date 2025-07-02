@@ -350,8 +350,20 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 	raw := (*rawNetworkDefaults)(n)
 
 	// Try unmarshaling normally first
-	if err := unmarshal(raw); err == nil {
+	err := unmarshal(raw)
+	if err == nil {
 		return nil
+	}
+
+	// Save the original error - it might be more informative
+	originalErr := err
+
+	// Check if the error is about unknown fields - if so, return it as is
+	// This preserves errors like "field maxCount not found in type"
+	errStr := err.Error()
+	if strings.Contains(errStr, "not found in type") ||
+		strings.Contains(errStr, "unknown field") {
+		return originalErr
 	}
 
 	// If that fails, try the old format with single failsafe object
@@ -365,7 +377,9 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 
 	var old oldNetworkDefaults
 	if err := unmarshal(&old); err != nil {
-		return err
+		// If both formats fail, return the original error as it's likely more informative
+		// about the actual problem (like invalid field names)
+		return originalErr
 	}
 
 	// Convert old format to new format
@@ -442,8 +456,20 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	raw := (*rawUpstreamConfig)(u)
 
 	// Try unmarshaling normally first
-	if err := unmarshal(raw); err == nil {
+	err := unmarshal(raw)
+	if err == nil {
 		return nil
+	}
+
+	// Save the original error - it might be more informative
+	originalErr := err
+
+	// Check if the error is about unknown fields - if so, return it as is
+	// This preserves errors like "field maxCount not found in type"
+	errStr := err.Error()
+	if strings.Contains(errStr, "not found in type") ||
+		strings.Contains(errStr, "unknown field") {
+		return originalErr
 	}
 
 	// If that fails, try the old format with single failsafe object
@@ -467,7 +493,9 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 
 	var old oldUpstreamConfig
 	if err := unmarshal(&old); err != nil {
-		return err
+		// If both formats fail, return the original error as it's likely more informative
+		// about the actual problem (like invalid field names)
+		return originalErr
 	}
 
 	// Convert old format to new format
@@ -899,8 +927,20 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	raw := (*rawNetworkConfig)(n)
 
 	// Try unmarshaling normally first
-	if err := unmarshal(raw); err == nil {
+	err := unmarshal(raw)
+	if err == nil {
 		return nil
+	}
+
+	// Save the original error - it might be more informative
+	originalErr := err
+
+	// Check if the error is about unknown fields - if so, return it as is
+	// This preserves errors like "field maxCount not found in type"
+	errStr := err.Error()
+	if strings.Contains(errStr, "not found in type") ||
+		strings.Contains(errStr, "unknown field") {
+		return originalErr
 	}
 
 	// If that fails, try the old format with single failsafe object
@@ -917,7 +957,9 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	var old oldNetworkConfig
 	if err := unmarshal(&old); err != nil {
-		return err
+		// If both formats fail, return the original error as it's likely more informative
+		// about the actual problem (like invalid field names)
+		return originalErr
 	}
 
 	// Convert old format to new format
