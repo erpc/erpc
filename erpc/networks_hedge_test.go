@@ -355,7 +355,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 					"id":      1,
 					"result":  "0x1111",
 				})
-			
+
 			// Also set up rpc2 in case it's used
 			gock.New("http://rpc2.localhost").
 				Post("").

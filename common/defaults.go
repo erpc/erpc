@@ -905,7 +905,7 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 		}
 	}
 	if len(p.Providers) == 0 && len(p.Upstreams) == 0 {
-		if len(opts.Endpoints) > 0 {
+		if opts != nil && len(opts.Endpoints) > 0 {
 			for _, endpoint := range opts.Endpoints {
 				upstream := &UpstreamConfig{
 					Endpoint: endpoint,
