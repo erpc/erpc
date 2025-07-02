@@ -9056,7 +9056,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				fmt.Println("body 1111", body)
 				return strings.Contains(body, "eth_getLogs") &&
 					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
 					strings.Contains(body, `"toBlock":"0x111181ff"`)
@@ -9370,7 +9369,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		assert.Equal(t, int64(20), poller.LatestBlock())
 
 		// Metric counts successful cache refreshes (bootstrap + final success).
-		// It should *not* increase for each failed attempt, so we expect exactly 2.
+		// It should *not* increase for each failed attempt, so we expect exactly 2.
 		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
 			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
 		require.NoError(t, err)
@@ -9461,7 +9460,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we’ll drive it manually
+				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we'll drive it manually
 				StatePollerDebounce: common.Duration(5000 * time.Millisecond), // TryUpdateIfStale → 1 s default
 			},
 		}
@@ -9510,7 +9509,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		require.Equal(t, int64(10), poller.LatestBlock())
 
 		//----------------------------------------------------------------------
-		// 3) Sleep 1.1 s so the cached value becomes “stale”
+		// 3) Sleep 1.1 s so the cached value becomes "stale"
 		//----------------------------------------------------------------------
 		time.Sleep(1100 * time.Millisecond) // TryUpdateIfStale default is 1 s
 
