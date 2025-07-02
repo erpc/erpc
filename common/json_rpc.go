@@ -920,14 +920,48 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	r.RLock()
 	defer r.RUnlock()
 
-	clone := &JsonRpcRequest{
+	// Deep copy the params to avoid concurrent access issues
+	var clonedParams []interface{}
+	if r.Params != nil {
+		clonedParams = make([]interface{}, len(r.Params))
+		for i, param := range r.Params {
+			clonedParams[i] = deepCopyValue(param)
+		}
+	}
+
+	return &JsonRpcRequest{
 		JSONRPC: r.JSONRPC,
 		ID:      r.ID,
 		Method:  r.Method,
-		Params:  make([]interface{}, len(r.Params)),
+		Params:  clonedParams,
 	}
-	copy(clone.Params, r.Params)
-	return clone
+}
+
+// deepCopyValue creates a deep copy of a value to avoid concurrent access issues
+func deepCopyValue(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+
+	switch val := v.(type) {
+	case map[string]interface{}:
+		// Deep copy map
+		newMap := make(map[string]interface{}, len(val))
+		for k, v := range val {
+			newMap[k] = deepCopyValue(v)
+		}
+		return newMap
+	case []interface{}:
+		// Deep copy slice
+		newSlice := make([]interface{}, len(val))
+		for i, v := range val {
+			newSlice[i] = deepCopyValue(v)
+		}
+		return newSlice
+	default:
+		// Primitive types are safe to copy directly
+		return val
+	}
 }
 
 func (r *JsonRpcRequest) SetID(id interface{}) error {

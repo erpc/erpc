@@ -1649,6 +1649,161 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
 	})
 
+	t.Run("HedgeRequestsBlockedBySharedJsonRpcLock", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer func() {
+			cancel()
+			// Allow hedge requests to complete before cleanup
+			time.Sleep(500 * time.Millisecond)
+		}()
+
+		// Test parameters
+		hedgeDelay := 100 * time.Millisecond
+		upstream1Delay := 300 * time.Millisecond // Slow upstream
+		upstream2Delay := 50 * time.Millisecond  // Fast upstream
+
+		// Upstream 1: Slow response
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			MatchType("json").
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "eth_getBlockByNumber",
+				"params":  []interface{}{"0x123", false},
+				"id":      float64(1),
+			}).
+			Reply(200).
+			Delay(upstream1Delay).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x123",
+					"hash":   "0xabc",
+				},
+			})
+
+		// Upstream 2: Fast response
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			MatchType("json").
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "eth_getBlockByNumber",
+				"params":  []interface{}{"0x123", false},
+				"id":      float64(1),
+			}).
+			Reply(200).
+			Delay(upstream2Delay).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x123",
+					"hash":   "0xdef",
+				},
+			})
+
+		// Configure network with hedge policy
+		fsCfg := &common.FailsafeConfig{
+			Hedge: &common.HedgePolicyConfig{
+				Delay:    common.Duration(hedgeDelay),
+				MaxCount: 1,
+			},
+		}
+
+		// Set up the test environment
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+
+		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0)
+		_ = upr.Bootstrap(ctx)
+		_ = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+
+		// Create clients
+		pup1, _ := upr.NewUpstream(up1)
+		cl1, _ := clr.GetOrCreateClient(ctx, pup1)
+		pup1.Client = cl1
+
+		pup2, _ := upr.NewUpstream(up2)
+		cl2, _ := clr.GetOrCreateClient(ctx, pup2)
+		pup2.Client = cl2
+
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			Failsafe:     []*common.FailsafeConfig{fsCfg},
+		}, rlr, upr, mt)
+
+		_ = ntw.Bootstrap(ctx)
+		upstream.ReorderUpstreams(upr)
+
+		// Make the request
+		fakeReq := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByNumber",
+			"params": ["0x123", false],
+			"id": 1
+		}`))
+
+		startTime := time.Now()
+		resp, err := ntw.Forward(ctx, fakeReq)
+		totalDuration := time.Since(startTime)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		t.Logf("Total request duration: %v", totalDuration)
+
+		// Calculate expected duration with hedge:
+		// - Request starts with upstream1
+		// - After hedgeDelay (100ms), hedge request goes to upstream2
+		// - Upstream2 responds after upstream2Delay (50ms)
+		// - Total expected: hedgeDelay + upstream2Delay = 150ms
+		expectedMaxDuration := hedgeDelay + upstream2Delay + 50*time.Millisecond // 50ms tolerance
+
+		// The total duration should be much less than waiting for upstream1 (300ms)
+		// It should be close to hedgeDelay + upstream2Delay
+		if totalDuration > expectedMaxDuration {
+			t.Errorf("Total duration %v exceeds expected hedged response time %v (hedge delay %v + upstream2 delay %v + tolerance). This indicates hedge was blocked or not triggered properly",
+				totalDuration, expectedMaxDuration, hedgeDelay, upstream2Delay)
+		}
+
+		// Also verify it's not too fast (which would mean hedge didn't wait)
+		if totalDuration < hedgeDelay {
+			t.Errorf("Total duration %v is less than hedge delay %v, indicating hedge triggered too early",
+				totalDuration, hedgeDelay)
+		}
+	})
+
 	t.Run("RetryWhenWeDoNotKnowNodeSyncState", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -4627,7 +4782,11 @@ func TestNetwork_Forward(t *testing.T) {
 			Delay(200 * time.Millisecond)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer func() {
+			cancel()
+			// Allow hedge requests to complete before cleanup
+			time.Sleep(600 * time.Millisecond)
+		}()
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -8630,7 +8789,11 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer func() {
+			cancel()
+			// Allow hedge requests to complete before cleanup
+			time.Sleep(200 * time.Millisecond)
+		}()
 
 		// Setup network with a node that has a small GetLogsAutoSplittingRangeThreshold
 		network := setupTestNetworkSimple(t, ctx, nil, &common.NetworkConfig{
@@ -9370,7 +9533,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		assert.Equal(t, int64(20), poller.LatestBlock())
 
 		// Metric counts successful cache refreshes (bootstrap + final success).
-		// It should *not* increase for each failed attempt, so we expect exactly 2.
+		// It should *not* increase for each failed attempt, so we expect exactly 2.
 		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
 			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
 		require.NoError(t, err)
@@ -9461,7 +9624,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we’ll drive it manually
+				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we'll drive it manually
 				StatePollerDebounce: common.Duration(5000 * time.Millisecond), // TryUpdateIfStale → 1 s default
 			},
 		}
@@ -9510,7 +9673,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		require.Equal(t, int64(10), poller.LatestBlock())
 
 		//----------------------------------------------------------------------
-		// 3) Sleep 1.1 s so the cached value becomes “stale”
+		// 3) Sleep 1.1 s so the cached value becomes "stale"
 		//----------------------------------------------------------------------
 		time.Sleep(1100 * time.Millisecond) // TryUpdateIfStale default is 1 s
 

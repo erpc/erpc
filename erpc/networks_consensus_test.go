@@ -797,7 +797,11 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			defer util.AssertNoPendingMocks(t, 0)
 
 			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			defer func() {
+				cancel()
+				// Allow any hedge/consensus requests to complete before cleanup
+				time.Sleep(500 * time.Millisecond)
+			}()
 
 			// Setup network with consensus policy
 			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -994,7 +998,11 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() {
+		cancel()
+		// Allow any hedge/consensus requests to complete before cleanup
+		time.Sleep(500 * time.Millisecond)
+	}()
 
 	// Setup network with consensus policy
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -655,5 +656,85 @@ func TestJsonRpcResponse_CanonicalHash_EmptyishNormalization(t *testing.T) {
 		assert.NoError(t, err1)
 		assert.NoError(t, err2)
 		assert.Equal(t, hash1, hash2, "Shadow response should have same canonical hash")
+	})
+}
+
+// Append this test at the end of the file
+func TestJsonRpcRequest_CloneDeepCopy(t *testing.T) {
+	// Test that Clone creates a deep copy of Params to avoid concurrent access issues
+	original := &JsonRpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "eth_getLogs",
+		Params: []interface{}{
+			map[string]interface{}{
+				"fromBlock": "0x1",
+				"toBlock":   "0x2",
+				"address":   []interface{}{"0xabc", "0xdef"},
+				"topics":    []interface{}{"0x123", "0x456"},
+			},
+		},
+	}
+
+	// Clone the request
+	cloned := original.Clone()
+
+	// Verify basic fields are copied
+	assert.Equal(t, original.JSONRPC, cloned.JSONRPC)
+	assert.Equal(t, original.Method, cloned.Method)
+	assert.Equal(t, original.ID, cloned.ID) // ID is copied as-is
+
+	// Verify Params is deep copied
+	assert.Equal(t, len(original.Params), len(cloned.Params))
+
+	// Modify the cloned map
+	clonedMap := cloned.Params[0].(map[string]interface{})
+	clonedMap["fromBlock"] = "0x99"
+	clonedMap["newField"] = "test"
+
+	// Modify the address array in the cloned map
+	clonedAddresses := clonedMap["address"].([]interface{})
+	clonedAddresses[0] = "0xmodified"
+
+	// Verify original is unchanged
+	originalMap := original.Params[0].(map[string]interface{})
+	assert.Equal(t, "0x1", originalMap["fromBlock"])
+	assert.Nil(t, originalMap["newField"])
+
+	originalAddresses := originalMap["address"].([]interface{})
+	assert.Equal(t, "0xabc", originalAddresses[0])
+
+	// Test concurrent access safety
+	t.Run("ConcurrentAccess", func(t *testing.T) {
+		const goroutines = 100
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func(idx int) {
+				defer wg.Done()
+
+				// Clone the request
+				clone := original.Clone()
+
+				// Access and modify the cloned params
+				if m, ok := clone.Params[0].(map[string]interface{}); ok {
+					// Read
+					_ = m["fromBlock"]
+					_ = m["toBlock"]
+
+					// Write
+					m[fmt.Sprintf("field_%d", idx)] = idx
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		// Verify original is still unchanged
+		originalMap := original.Params[0].(map[string]interface{})
+		assert.Equal(t, 4, len(originalMap)) // Should still have only original 4 fields
+		assert.Equal(t, "0x1", originalMap["fromBlock"])
+		assert.Equal(t, "0x2", originalMap["toBlock"])
 	})
 }
