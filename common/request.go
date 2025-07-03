@@ -112,7 +112,7 @@ func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *Nor
 // There will be new pointers for the rest of the fields but same initial values.
 // The last valid response will be set to nil.
 func (r *NormalizedRequest) Clone() (*NormalizedRequest, error) {
-	if r == nil || r.body == nil {
+	if r == nil {
 		return nil, NewErrInvalidRequest(fmt.Errorf("request is nil or body is nil"))
 	}
 	jrq, err := r.JsonRpcRequest()

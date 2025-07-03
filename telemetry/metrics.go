@@ -376,7 +376,7 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_errors_total",
 		Help:      "Total number of consensus errors by type.",
-	}, []string{"project", "network", "category", "error_type", "finality"})
+	}, []string{"project", "network", "category", "error", "finality"})
 
 	MetricConsensusPanics = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
