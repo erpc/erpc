@@ -42,7 +42,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250615203945-0a86262bfaec
+replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250703184545-72df61cc1e94
 
 replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250626153718-281491825ac6
 
@@ -122,9 +122,9 @@ require (
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.62.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.49.0 // indirect
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
+	go.opentelemetry.io/otel/sdk/metric v1.37.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.0.0 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.39.0 // indirect
