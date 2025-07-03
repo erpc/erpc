@@ -91,6 +91,109 @@ This project hosts **eRPC**, a fault-tolerant EVM RPC proxy with built-in cachin
 - Run with race detector during development: `go test -race -run TestName ./...`
 - Use `gock.Clean()` sparingly - prefer proper mock setup order
 
+## Error Handling Patterns
+
+### Error Type Checking
+- Use `common.HasErrorCode(err, codes...)` to check for specific error codes in the error chain
+- For extracting specific error types from nested errors, use `errors.As()`:
+  ```go
+  var jre *common.ErrJsonRpcExceptionInternal
+  if errors.As(err, &jre) {
+      normalizedCode := jre.NormalizedCode()
+      // Use the extracted error
+  }
+  ```
+
+### JSON-RPC Error Handling
+- `ErrJsonRpcExceptionInternal` contains normalized codes that should be used for comparison
+- Access normalized code with `err.NormalizedCode()` method
+- Common normalized codes:
+  - `JsonRpcErrorEvmReverted` (3) - EVM execution reverted
+  - `JsonRpcErrorCallException` (-32000) - Call exception
+  - `JsonRpcErrorTransactionRejected` (-32003) - Transaction rejected
+
+### Consensus Error Patterns
+- Execution exceptions (like smart contract reverts) are valid consensus results
+- When comparing errors for consensus, compare by their normalized JSON-RPC codes
+- Use `common.ErrCodeEndpointExecutionException` to identify execution errors
+
+## Consensus Implementation
+
+### Treating Errors as Valid Results
+- Execution exceptions represent valid blockchain state (e.g., all nodes agree a transaction reverts)
+- Implement `isConsensusValidError()` to identify which errors contribute to consensus
+- Error consensus should compare normalized codes, not just error types
+
+### Error Hash Generation
+- For consensus comparison, generate hashes that include the normalized error code:
+  ```go
+  if errors.As(err, &jre) {
+      return fmt.Sprintf("%d", jre.NormalizedCode())
+  }
+  ```
+
+### Short-Circuit Logic
+- Consensus can be reached on errors just like successful results
+- When implementing short-circuit logic, consider both successful responses and consensus-valid errors
+- Count participants with consensus-valid errors as valid participants
+
+## Advanced Testing Patterns
+
+### Mock Creation Best Practices
+- When working with gock for different response bodies, create separate simple mocks:
+  ```go
+  // ✅ GOOD: Simple, readable mocks
+  gock.New(url).Post("").Times(1).Reply(200).JSON(response1)
+  gock.New(url).Post("").Times(1).Reply(200).JSON(response2)
+  
+  // ❌ AVOID: Complex body generation functions
+  ```
+
+### Subscription and Integration Tests
+- Always set required configuration values that might have zero defaults:
+  - `MaxSyncRangeSize` (e.g., 1000)
+  - `HttpParallelBlockFetches` (e.g., 10)
+- Ensure parent hash chains are properly connected in blockchain tests:
+  ```go
+  if blockNum == 1 {
+      parentHash = []byte("genesis")  // Block 1 points to genesis
+  } else {
+      parentHash = []byte(fmt.Sprintf("hash-%d", blockNum-1))
+  }
+  ```
+- Use `SetID()` method on JsonRpcResponse objects to set the ID field correctly
+
+### Test Execution Patterns
+- For debugging specific tests: `LOG_LEVEL=trace go test -run TestName ./... -v`
+- When tests timeout, check for:
+  - Parent hash mismatches in blockchain data
+  - Missing required configuration values
+  - Improper mock setup order
+
+## Code Patterns and Best Practices
+
+### Working with Upstreams
+- Always check if upstream and its config are not nil before accessing:
+  ```go
+  if r.upstream != nil && r.upstream.Config() != nil {
+      upstreamId := r.upstream.Config().Id
+  }
+  ```
+
+### Goroutine Management in Tests
+- Be careful with goroutine leaks in tests
+- Use proper context cancellation to clean up goroutines
+- When collecting responses from multiple goroutines, always handle nil responses from cancelled goroutines
+
+## Kubernetes and Infrastructure Safety
+
+### Working with Production Systems
+- **NEVER** run commands that modify, delete, or create Kubernetes resources directly
+- Only run read-only commands for investigation and debugging
+- Always provide commands as suggestions and let the user execute them
+- Safe commands examples: `kubectl get`, `kubectl describe`, `kubectl logs`
+- Unsafe commands (never run): `kubectl delete`, `kubectl apply`, `terraform apply`
+
 ## Commit and PR Guidelines
 - Follow the [Conventional Commits](https://www.conventionalcommits.org/) style (e.g. `feat:`, `fix:`) when writing commit messages.
 - Create feature branches for new work and open Pull Requests against `main`.

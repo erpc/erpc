@@ -2875,3 +2875,228 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 		t.Log("Test verified: drainResponses count calculation correctly handles nil responses")
 	})
 }
+
+// TestConsensusOnExecutionException tests that execution exceptions are treated as valid consensus results
+func TestConsensusOnExecutionException(t *testing.T) {
+	// Helper to create execution exception error
+	createExecutionException := func(normalizedCode common.JsonRpcErrorNumber) error {
+		return common.NewErrEndpointExecutionException(
+			common.NewErrJsonRpcExceptionInternal(
+				3, // original code
+				normalizedCode,
+				"execution reverted",
+				nil,
+				nil,
+			),
+		)
+	}
+
+	t.Run("consensus_on_execution_exception", func(t *testing.T) {
+		// Create upstreams
+		upstreams := []common.Upstream{
+			common.NewFakeUpstream("upstream1", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream2", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream3", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+		}
+
+		// Create request
+		dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call"}`))
+
+		// Create context
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, common.RequestContextKey, dummyReq)
+		ctx = context.WithValue(ctx, common.UpstreamsContextKey, upstreams)
+
+		// Create logger
+		logger := log.Logger
+
+		// Create consensus policy
+		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			WithRequiredParticipants(3).
+			WithAgreementThreshold(2). // Changed from 3 to 2
+			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
+			WithLogger(&logger).
+			Build()
+
+		// Create executor
+		executor := &executor[*common.NormalizedResponse]{
+			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		}
+
+		// Create mock execution
+		mockExec := &mockExecution{
+			ctx: ctx,
+		}
+
+		// Execute with all upstreams returning the same execution exception
+		executionError := createExecutionException(common.JsonRpcErrorEvmReverted)
+
+		result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			// All upstreams return the same execution exception
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: executionError,
+			}
+		})(mockExec)
+
+		// Verify: consensus should be achieved on the error
+		require.NotNil(t, result.Error, "expected error but got nil")
+		require.True(t, common.HasErrorCode(result.Error, common.ErrCodeEndpointExecutionException),
+			"expected execution exception error but got %v", result.Error)
+	})
+
+	t.Run("dispute_on_different_execution_exceptions", func(t *testing.T) {
+		// Create upstreams
+		upstreams := []common.Upstream{
+			common.NewFakeUpstream("upstream1", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream2", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream3", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+		}
+
+		// Create request
+		dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call"}`))
+
+		// Create context
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, common.RequestContextKey, dummyReq)
+		ctx = context.WithValue(ctx, common.UpstreamsContextKey, upstreams)
+
+		// Create logger
+		logger := log.Logger
+
+		// Create consensus policy - use dispute behavior that returns error
+		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			WithRequiredParticipants(3).
+			WithAgreementThreshold(2).                                       // Changed from 3 to 2
+			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError). // This should return error on dispute
+			WithLogger(&logger).
+			Build()
+
+		// Create executor
+		executor := &executor[*common.NormalizedResponse]{
+			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		}
+
+		// Map of upstream errors - all different to ensure dispute
+		upstreamErrors := map[string]error{
+			"upstream1": createExecutionException(common.JsonRpcErrorEvmReverted),
+			"upstream2": createExecutionException(common.JsonRpcErrorTransactionRejected), // Different error
+			"upstream3": createExecutionException(common.JsonRpcErrorCallException),       // Also different
+		}
+
+		// Track which upstreams were called
+		calledUpstreams := make(map[string]bool)
+		var mu sync.Mutex
+
+		// Create mock execution
+		mockExec := &mockExecution{
+			ctx: ctx,
+		}
+
+		// Execute with upstreams returning different execution exceptions
+		result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			ctx := exec.Context()
+			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+			upstreamID := req.Directives().UseUpstream
+
+			mu.Lock()
+			calledUpstreams[upstreamID] = true
+			mu.Unlock()
+
+			if err, ok := upstreamErrors[upstreamID]; ok {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: err,
+				}
+			}
+
+			t.Fatalf("unexpected upstream ID: %s", upstreamID)
+			return nil
+		})(mockExec)
+
+		// Log which upstreams were called for debugging
+		t.Logf("Called upstreams: %v", calledUpstreams)
+		t.Logf("Result error: %v", result.Error)
+
+		// Verify: should result in dispute since different execution exceptions
+		require.NotNil(t, result.Error, "expected error but got nil")
+		require.True(t, common.HasErrorCode(result.Error, common.ErrCodeConsensusDispute),
+			"expected consensus dispute error but got %v", result.Error)
+	})
+
+	t.Run("majority_agrees_on_execution_exception", func(t *testing.T) {
+		// Create upstreams
+		upstreams := []common.Upstream{
+			common.NewFakeUpstream("upstream1", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream2", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream3", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+		}
+
+		// Create request
+		dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call"}`))
+
+		// Create context
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, common.RequestContextKey, dummyReq)
+		ctx = context.WithValue(ctx, common.UpstreamsContextKey, upstreams)
+
+		// Create logger
+		logger := log.Logger
+
+		// Create consensus policy
+		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			WithRequiredParticipants(3).
+			WithAgreementThreshold(2).
+			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
+			WithLogger(&logger).
+			Build()
+
+		// Create executor
+		executor := &executor[*common.NormalizedResponse]{
+			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		}
+
+		// Create mock execution
+		mockExec := &mockExecution{
+			ctx: ctx,
+		}
+
+		// Create successful response
+		successResp := createResponse("success_result", nil)
+		executionError := createExecutionException(common.JsonRpcErrorEvmReverted)
+
+		// Map of upstream responses
+		upstreamResponses := map[string]struct {
+			resp *common.NormalizedResponse
+			err  error
+		}{
+			"upstream1": {resp: nil, err: executionError}, // execution error
+			"upstream2": {resp: nil, err: executionError}, // execution error (same)
+			"upstream3": {resp: successResp, err: nil},    // success
+		}
+
+		// Execute
+		result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			ctx := exec.Context()
+			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+			upstreamID := req.Directives().UseUpstream
+
+			if resp, ok := upstreamResponses[upstreamID]; ok {
+				if resp.err != nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: resp.err,
+					}
+				}
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Result: resp.resp,
+				}
+			}
+
+			t.Fatalf("unexpected upstream ID: %s", upstreamID)
+			return nil
+		})(mockExec)
+
+		// Verify: consensus should be achieved on the execution error (2 out of 3)
+		require.NotNil(t, result.Error, "expected error but got nil")
+		require.True(t, common.HasErrorCode(result.Error, common.ErrCodeEndpointExecutionException),
+			"expected execution exception error but got %v", result.Error)
+	})
+}

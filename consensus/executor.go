@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,6 +55,44 @@ func (e *executor[R]) resultToJsonRpcResponse(result R, exec failsafe.Execution[
 	}
 
 	return jr
+}
+
+// isConsensusValidError checks if an error is a valid consensus result (e.g., execution exception)
+func (e *executor[R]) isConsensusValidError(err error) bool {
+	// Execution exceptions are valid consensus results (e.g., smart contract reverts)
+	return common.HasErrorCode(err, common.ErrCodeEndpointExecutionException)
+}
+
+// errorToConsensusHash converts a consensus-valid error to a hash for consensus comparison
+func (e *executor[R]) errorToConsensusHash(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	var jrr *common.ErrJsonRpcExceptionInternal
+	if errors.As(err, &jrr) {
+		normalizedCode := jrr.NormalizedCode()
+		// TODO should we include "data" for reverted transactions?
+		return fmt.Sprintf("%d", normalizedCode)
+	}
+
+	return ""
+}
+
+// resultOrErrorToHash converts either a successful result or an error to a hash for consensus comparison
+func (e *executor[R]) resultOrErrorToHash(result R, err error, exec failsafe.Execution[R]) (string, error) {
+	// If there's an error and it's consensus-valid, use the error hash
+	if err != nil && e.isConsensusValidError(err) {
+		return e.errorToConsensusHash(err), nil
+	}
+
+	// Otherwise, use the result hash (for successful responses)
+	if err != nil {
+		// Non-consensus-valid errors don't contribute to consensus
+		return "", fmt.Errorf("error is not consensus-valid: %v", err)
+	}
+
+	return e.resultToHash(result, exec)
 }
 
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R]) func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R] {
@@ -458,10 +497,7 @@ collectLoop:
 func (e *executor[R]) hasConsensus(responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
 	resultCounts := make(map[string]int)
 	for _, r := range responses {
-		if r.err != nil {
-			continue
-		}
-		if resultHash, err := e.resultToHash(r.result, exec); err == nil {
+		if resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec); err == nil && resultHash != "" {
 			resultCounts[resultHash]++
 			if resultCounts[resultHash] >= e.agreementThreshold {
 				return true
@@ -476,11 +512,8 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	// Count results by hash
 	resultCounts := make(map[string]int)
 	for _, r := range responses {
-		if r.err != nil {
-			continue
-		}
-		resultHash, err := e.resultToHash(r.result, exec)
-		if err != nil {
+		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
+		if err != nil || resultHash == "" {
 			continue
 		}
 		resultCounts[resultHash]++
@@ -510,7 +543,7 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	// Count unique participants so far
 	uniqueParticipants := make(map[string]struct{})
 	for _, r := range responses {
-		if r.err == nil && r.upstream != nil && r.upstream.Config() != nil {
+		if (r.err == nil || e.isConsensusValidError(r.err)) && r.upstream != nil && r.upstream.Config() != nil {
 			uniqueParticipants[r.upstream.Config().Id] = struct{}{}
 		}
 	}
@@ -644,6 +677,28 @@ func (e *executor[R]) evaluateConsensus(
 			})
 		}
 
+		// Check if consensus was reached on an error
+		// Find a response that matches the consensus hash to determine if it's an error consensus
+		var consensusError error
+		for _, r := range responses {
+			if r.err != nil && e.isConsensusValidError(r.err) {
+				errorHash := e.errorToConsensusHash(r.err)
+				if errorHash == mostCommonResultHash {
+					consensusError = r.err
+					break
+				}
+			}
+		}
+
+		if consensusError != nil {
+			// Consensus was reached on an error (e.g., all nodes agree on execution revert)
+			lg.Debug().Err(consensusError).Msg("consensus reached on error")
+			evalSpan.SetStatus(codes.Ok, "consensus achieved on error")
+			return &failsafeCommon.PolicyResult[R]{
+				Error: consensusError,
+			}
+		}
+
 		// Find the actual result that matches the consensus
 		if result := e.findResultByHash(responses, mostCommonResultHash, exec); result != nil {
 			evalSpan.SetStatus(codes.Ok, "consensus achieved")
@@ -704,7 +759,7 @@ func (e *executor[R]) evaluateConsensus(
 func (e *executor[R]) countUniqueParticipants(responses []*execResult[R]) int {
 	nonErrorParticipants := make(map[string]struct{})
 	for _, r := range responses {
-		if r.err == nil && r.upstream != nil && r.upstream.Config() != nil {
+		if (r.err == nil || e.isConsensusValidError(r.err)) && r.upstream != nil && r.upstream.Config() != nil {
 			nonErrorParticipants[r.upstream.Config().Id] = struct{}{}
 		}
 	}
@@ -716,19 +771,18 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 	resultCounts := make(map[string]int)
 	errorCount := 0
 	for _, r := range responses {
-		if r.err != nil {
+		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
+		if err != nil || resultHash == "" {
 			errorCount++
-			lg.Debug().
-				Err(r.err).
-				Msg("response has error")
-			continue
-		}
-		resultHash, err := e.resultToHash(r.result, exec)
-		if err != nil {
-			errorCount++
-			lg.Error().
-				Err(err).
-				Msg("error converting result to hash")
+			if r.err != nil && !e.isConsensusValidError(r.err) {
+				lg.Debug().
+					Err(r.err).
+					Msg("response has non-consensus-valid error")
+			} else if err != nil {
+				lg.Error().
+					Err(err).
+					Msg("error converting result/error to hash")
+			}
 			continue
 		}
 		resultCounts[resultHash]++
@@ -741,7 +795,13 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 				Str("resultHash", resultHash).
 				Int("count", resultCounts[resultHash]).
 				Str("upstream", upstreamId).
-				Object("response", e.resultToJsonRpcResponse(r.result, exec)).
+				Bool("isError", r.err != nil).
+				Interface("response", func() interface{} {
+					if r.err != nil {
+						return r.err
+					}
+					return e.resultToJsonRpcResponse(r.result, exec)
+				}()).
 				Msg("counting response")
 		}
 	}
@@ -761,6 +821,7 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 
 // findResultByHash finds a result that matches the given hash
 func (e *executor[R]) findResultByHash(responses []*execResult[R], targetHash string, exec failsafe.Execution[R]) *R {
+	// First try to find a successful result with matching hash
 	for _, r := range responses {
 		if r.err == nil {
 			resultHash, err := e.resultToHash(r.result, exec)
@@ -772,6 +833,19 @@ func (e *executor[R]) findResultByHash(responses []*execResult[R], targetHash st
 			}
 		}
 	}
+
+	// If no successful result matches, check if the hash matches a consensus-valid error
+	// In this case, we return the result from a response with the matching error
+	for _, r := range responses {
+		if r.err != nil && e.isConsensusValidError(r.err) {
+			errorHash := e.errorToConsensusHash(r.err)
+			if errorHash == targetHash {
+				// Return the result even though there's an error, as the consensus agreed on this error
+				return &r.result
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -939,11 +1013,8 @@ func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 	// First, count results to find the most common one
 	resultCounts := make(map[string]int)
 	for _, r := range responses {
-		if r.err != nil {
-			continue
-		}
-		resultHash, err := e.resultToHash(r.result, parentExecution)
-		if err != nil {
+		resultHash, err := e.resultOrErrorToHash(r.result, r.err, parentExecution)
+		if err != nil || resultHash == "" {
 			continue
 		}
 		resultCounts[resultHash]++
@@ -978,17 +1049,17 @@ func (e *executor[R]) extractParticipants(lg *zerolog.Logger, responses []*execR
 		if resp.upstream != nil && resp.upstream.Config() != nil {
 			participant.Upstream = resp.upstream.Config().Id
 		}
+
+		// Get the hash for this response (could be from result or consensus-valid error)
+		if hash, err := e.resultOrErrorToHash(resp.result, resp.err, exec); err == nil && hash != "" {
+			participant.ResultHash = hash
+		}
+
+		// Always include error summary if there's an error
 		if resp.err != nil {
 			participant.ErrSummary = common.ErrorSummary(resp.err)
 		}
-		if jr := e.resultToJsonRpcResponse(resp.result, exec); jr != nil {
-			hash, err := jr.CanonicalHash()
-			if err != nil {
-				lg.Error().Err(err).Msg("error converting result to hash")
-				continue
-			}
-			participant.ResultHash = hash
-		}
+
 		participants = append(participants, participant)
 	}
 	return participants
@@ -1035,23 +1106,19 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 
 	misbehavingCount := 0
 	for _, response := range responses {
-		if response.err != nil {
-			continue
-		}
-
 		upstream := response.upstream
 		if upstream == nil {
 			continue
 		}
 
-		resultHash, err := e.resultToHash(response.result, execution)
-		if err != nil {
-			logger.Error().
+		resultHash, err := e.resultOrErrorToHash(response.result, response.err, execution)
+		if err != nil || resultHash == "" {
+			// Skip responses that can't be hashed (non-consensus-valid errors)
+			logger.Debug().
 				Err(err).
-				Msg("error converting result to hash")
-			continue
-		}
-		if resultHash == "" {
+				Str("resultHash", resultHash).
+				Str("mostCommonResultHash", mostCommonResultHash).
+				Msg("skipping response that cannot be hashed for misbehavior tracking")
 			continue
 		}
 
@@ -1119,6 +1186,7 @@ func (e *executor[R]) handleReturnError(logger *zerolog.Logger, errFn func() err
 func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
 	logger.Debug().Msg("sending most common valid result")
 
+	// First try to find a successful result
 	var finalResult R
 	foundValidResult := false
 	for _, r := range responses {
@@ -1133,11 +1201,22 @@ func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, responses [
 		return &failsafeCommon.PolicyResult[R]{
 			Result: finalResult,
 		}
-	} else {
-		logger.Debug().Interface("responses", responses).Msg("no valid results found, sending error")
-		return &failsafeCommon.PolicyResult[R]{
-			Error: errFn(),
+	}
+
+	// If no successful result, check for consensus-valid errors
+	for _, r := range responses {
+		if r.err != nil && e.isConsensusValidError(r.err) {
+			logger.Debug().Err(r.err).Msg("returning consensus-valid error as result")
+			return &failsafeCommon.PolicyResult[R]{
+				Error: r.err,
+			}
 		}
+	}
+
+	// No valid results found
+	logger.Debug().Interface("responses", responses).Msg("no valid results found, sending error")
+	return &failsafeCommon.PolicyResult[R]{
+		Error: errFn(),
 	}
 }
 
