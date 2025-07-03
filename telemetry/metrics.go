@@ -332,7 +332,7 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_total",
 		Help:      "Total number of consensus operations attempted.",
-	}, []string{"project", "network", "category", "outcome", "finality"}) // outcome: success, dispute, low_participants, error
+	}, []string{"project", "network", "category", "outcome", "finality"}) // outcome: success, consensus_on_error, agreed_error, dispute, low_participants, error
 
 	MetricConsensusAgreementRate = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -376,7 +376,7 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_errors_total",
 		Help:      "Total number of consensus errors by type.",
-	}, []string{"project", "network", "category", "error", "finality"})
+	}, []string{"project", "network", "category", "error", "finality"}) // error: low_participants, dispute, agreed_error, consensus_on_error, invalid_upstreams
 
 	MetricConsensusPanics = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

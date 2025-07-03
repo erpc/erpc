@@ -444,6 +444,16 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	builder = builder.WithLowParticipantsBehavior(cfg.LowParticipantsBehavior)
 	builder = builder.WithLogger(logger)
 
+	// Parse dispute log level if specified
+	if cfg.DisputeLogLevel != "" {
+		level, err := zerolog.ParseLevel(cfg.DisputeLogLevel)
+		if err != nil {
+			logger.Warn().Str("disputeLogLevel", cfg.DisputeLogLevel).Err(err).Msg("invalid dispute log level, using default")
+		} else {
+			builder = builder.WithDisputeLogLevel(level)
+		}
+	}
+
 	builder.OnAgreement(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		logger.Debug().Msg("spawning additional consensus request")
 	})

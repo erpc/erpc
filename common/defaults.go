@@ -1164,7 +1164,7 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 }
 
 func (n *NetworkDefaults) SetDefaults() error {
-	if n.Failsafe != nil && len(n.Failsafe) > 0 {
+	if len(n.Failsafe) > 0 {
 		for i, fs := range n.Failsafe {
 			if err := fs.SetDefaults(nil); err != nil {
 				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
@@ -1325,7 +1325,7 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		u.Type = UpstreamTypeEvm
 	}
 
-	if u.Failsafe != nil && len(u.Failsafe) > 0 {
+	if len(u.Failsafe) > 0 {
 		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
 			// Apply defaults to each failsafe config
 			for i, fs := range u.Failsafe {
@@ -1525,8 +1525,8 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
-		if defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
-			if n.Failsafe == nil || len(n.Failsafe) == 0 {
+		if len(defaults.Failsafe) > 0 {
+			if len(n.Failsafe) == 0 {
 				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
 				for i, fs := range defaults.Failsafe {
 					n.Failsafe[i] = &FailsafeConfig{}
@@ -1595,7 +1595,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
 			}
 		}
-	} else if n.Failsafe != nil && len(n.Failsafe) > 0 {
+	} else if len(n.Failsafe) > 0 {
 		// Apply system default to each failsafe config
 		for i, fs := range n.Failsafe {
 			if err := fs.SetDefaults(nil); err != nil {

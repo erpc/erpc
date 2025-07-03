@@ -71,7 +71,7 @@ func NewUpstream(
 
 	// Create failsafe executors from configs
 	var failsafeExecutors []*FailsafeExecutor
-	if cfg.Failsafe != nil && len(cfg.Failsafe) > 0 {
+	if len(cfg.Failsafe) > 0 {
 		for _, fsCfg := range cfg.Failsafe {
 			policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, fsCfg)
 			if err != nil {
@@ -252,7 +252,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 
 	// Then, try to find a match for method only (empty finalities means any finality)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && (fe.finalities == nil || len(fe.finalities) == 0) {
+		if fe.method != "*" && (len(fe.finalities) == 0) {
 			matched, _ := common.WildcardMatch(fe.method, method)
 			if matched {
 				return fe
@@ -271,7 +271,7 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 
 	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (fe.finalities == nil || len(fe.finalities) == 0) {
+		if fe.method == "*" && (len(fe.finalities) == 0) {
 			return fe
 		}
 	}
@@ -570,7 +570,7 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 
 	// Return the default executor (the one with "*" method and no finality filters)
 	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (fe.finalities == nil || len(fe.finalities) == 0) {
+		if fe.method == "*" && (len(fe.finalities) == 0) {
 			return fe.executor
 		}
 	}

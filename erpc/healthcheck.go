@@ -376,7 +376,7 @@ func checkEvmChainId(ctx context.Context, upstreams []*upstream.Upstream, upstre
 			if err != nil {
 				mu.Lock()
 				upstreamResult["status"] = "ERROR"
-				upstreamResult["message"] = fmt.Sprintf("eth_chainId request failed")
+				upstreamResult["message"] = "eth_chainId request failed"
 				mu.Unlock()
 				failureCount.Add(1)
 				return
@@ -386,7 +386,7 @@ func checkEvmChainId(ctx context.Context, upstreams []*upstream.Upstream, upstre
 			if err != nil {
 				mu.Lock()
 				upstreamResult["status"] = "ERROR"
-				upstreamResult["message"] = fmt.Sprintf("invalid chain id format")
+				upstreamResult["message"] = "invalid chain id format"
 				mu.Unlock()
 				failureCount.Add(1)
 				return

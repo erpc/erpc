@@ -457,7 +457,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
 	}
-	if p.Providers != nil && len(p.Providers) > 0 {
+	if len(p.Providers) > 0 {
 		existingIds := make(map[string]bool)
 		for _, provider := range p.Providers {
 			if err := provider.Validate(c); err != nil {
@@ -469,7 +469,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			existingIds[provider.Id] = true
 		}
 	}
-	if p.Upstreams != nil && len(p.Upstreams) > 0 {
+	if len(p.Upstreams) > 0 {
 		existingIds := make(map[string]bool)
 		for _, upstream := range p.Upstreams {
 			if err := upstream.Validate(c, false); err != nil {
@@ -480,7 +480,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			}
 			existingIds[upstream.Id] = true
 		}
-	} else if p.Providers == nil || len(p.Providers) == 0 {
+	} else if len(p.Providers) == 0 {
 		return fmt.Errorf("project.*.upstreams or project.*.providers is required, add at least one of them")
 	}
 	if p.Networks != nil {
@@ -518,7 +518,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 }
 
 func (a *AuthConfig) Validate() error {
-	if a.Strategies == nil || len(a.Strategies) == 0 {
+	if len(a.Strategies) == 0 {
 		return fmt.Errorf("project.*.auth.strategies is required, add at least one strategy")
 	}
 	for _, strategy := range a.Strategies {
@@ -585,7 +585,7 @@ func (s *SecretStrategyConfig) Validate() error {
 }
 
 func (j *JwtStrategyConfig) Validate() error {
-	if j.VerificationKeys == nil || len(j.VerificationKeys) == 0 {
+	if len(j.VerificationKeys) == 0 {
 		return fmt.Errorf("auth.*.jwt.verificationKeys is required, add at least one verification key")
 	}
 	return nil
@@ -596,7 +596,7 @@ func (s *SiweStrategyConfig) Validate() error {
 }
 
 func (c *CORSConfig) Validate() error {
-	if c.AllowedOrigins == nil || len(c.AllowedOrigins) == 0 {
+	if len(c.AllowedOrigins) == 0 {
 		return fmt.Errorf("*.cors.allowedOrigins is required, add at least one allowed origin")
 	}
 	return nil
