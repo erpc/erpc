@@ -29,6 +29,7 @@ type ConsensusPolicyBuilder[R any] interface {
 	OnAgreement(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	OnDispute(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
+	WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R]
 
 	// Build returns a new ConsensusPolicy using the builder's configuration.
 	Build() ConsensusPolicy[R]
@@ -44,6 +45,7 @@ type config[R any] struct {
 	punishMisbehavior       *common.PunishMisbehaviorConfig
 	timeout                 time.Duration
 	logger                  *zerolog.Logger
+	disputeLogLevel         zerolog.Level
 
 	onAgreement       func(event failsafe.ExecutionEvent[R])
 	onDispute         func(event failsafe.ExecutionEvent[R])
@@ -63,6 +65,7 @@ type consensusPolicy[R any] struct {
 	logger                          *zerolog.Logger
 	misbehavingUpstreamsLimiter     *sync.Map // [string, *ratelimiter.Limiter]
 	misbehavingUpstreamsSitoutTimer *sync.Map // [string, *time.Timer]
+	disputeLogLevel                 zerolog.Level
 }
 
 var _ ConsensusPolicy[any] = &consensusPolicy[any]{}
@@ -112,6 +115,11 @@ func (c *config[R]) OnLowParticipants(listener func(failsafe.ExecutionEvent[R]))
 	return c
 }
 
+func (c *config[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R] {
+	c.disputeLogLevel = level
+	return c
+}
+
 func (c *config[R]) Build() ConsensusPolicy[R] {
 	hCopy := *c
 	if !c.BaseAbortablePolicy.IsConfigured() {
@@ -123,11 +131,18 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 
 	log := c.logger.With().Str("component", "consensus").Logger()
 
+	// Set default dispute log level if not specified
+	disputeLevel := c.disputeLogLevel
+	if disputeLevel == 0 {
+		disputeLevel = zerolog.WarnLevel
+	}
+
 	return &consensusPolicy[R]{
 		config:                          &hCopy,
 		logger:                          &log,
 		misbehavingUpstreamsLimiter:     &sync.Map{},
 		misbehavingUpstreamsSitoutTimer: &sync.Map{},
+		disputeLogLevel:                 disputeLevel,
 	}
 }
 
@@ -153,6 +168,12 @@ func (p *consensusPolicy[R]) WithLogger(logger *zerolog.Logger) ConsensusPolicy[
 	pCopy := *p
 	lg := logger.With().Str("component", "consensus").Logger()
 	pCopy.logger = &lg
+	return &pCopy
+}
+
+func (p *consensusPolicy[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicy[R] {
+	pCopy := *p
+	pCopy.disputeLogLevel = level
 	return &pCopy
 }
 

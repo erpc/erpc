@@ -778,7 +778,7 @@ func (e *executor[R]) evaluateConsensus(
 	}
 
 	// Consensus dispute
-	e.logDispute(lg, responses, mostCommonResultCount, exec)
+	e.logDispute(lg, req, responses, mostCommonResultCount, exec)
 
 	if e.onDispute != nil {
 		e.onDispute(failsafe.ExecutionEvent[R]{
@@ -920,10 +920,19 @@ func (e *executor[R]) isLowParticipants(participantCount, responseCount, selecte
 }
 
 // logDispute logs details about a consensus dispute
-func (e *executor[R]) logDispute(lg *zerolog.Logger, responses []*execResult[R], mostCommonResultCount int, exec failsafe.Execution[R]) {
-	evt := lg.Warn().
+func (e *executor[R]) logDispute(lg *zerolog.Logger, req *common.NormalizedRequest, responses []*execResult[R], mostCommonResultCount int, exec failsafe.Execution[R]) {
+	method, _ := req.Method()
+
+	evt := lg.WithLevel(e.disputeLogLevel).
+		Str("method", method).
+		Object("request", req).
 		Int("maxCount", mostCommonResultCount).
-		Int("threshold", e.agreementThreshold)
+		Int("threshold", e.agreementThreshold).
+		Int("totalResponses", len(responses))
+
+	// Count responses by hash for the dispute log
+	resultHashCounts := make(map[string]int)
+	hashToUpstreams := make(map[string][]string)
 
 	for _, resp := range responses {
 		upstreamID := "unknown"
@@ -935,15 +944,38 @@ func (e *executor[R]) logDispute(lg *zerolog.Logger, responses []*execResult[R],
 
 		if resp.err != nil {
 			evt.AnErr(fmt.Sprintf("error%d", resp.index), resp.err)
+
+			// Get hash for errors that are consensus-valid
+			if e.isConsensusValidError(resp.err) {
+				hash := e.errorToConsensusHash(resp.err)
+				if hash != "" {
+					evt.Str(fmt.Sprintf("errorHash%d", resp.index), hash)
+					resultHashCounts[hash]++
+					hashToUpstreams[hash] = append(hashToUpstreams[hash], upstreamID)
+				}
+			}
 			continue
 		}
 
+		// Log successful response details
 		if jr := e.resultToJsonRpcResponse(resp.result, exec); jr != nil {
 			evt.Object(fmt.Sprintf("response%d", resp.index), jr)
+
+			// Include the hash for successful responses
+			if hash, err := e.resultToHash(resp.result, exec); err == nil && hash != "" {
+				evt.Str(fmt.Sprintf("hash%d", resp.index), hash)
+				resultHashCounts[hash]++
+				hashToUpstreams[hash] = append(hashToUpstreams[hash], upstreamID)
+			}
 		} else {
 			evt.Interface(fmt.Sprintf("result%d", resp.index), resp.result)
 		}
 	}
+
+	// Log the hash distribution
+	evt.Interface("hashDistribution", resultHashCounts)
+	evt.Interface("hashToUpstreams", hashToUpstreams)
+
 	evt.Msg("consensus dispute")
 }
 
