@@ -163,3 +163,14 @@ func EndRequestSpan(ctx context.Context, resp *NormalizedResponse, err interface
 
 	span.End()
 }
+
+// ForceFlushTraces forces the tracer provider to export all pending spans
+// Use sparingly for critical traces that must be delivered
+func ForceFlushTraces(ctx context.Context) error {
+	if !IsTracingEnabled || tracerProvider == nil {
+		return nil
+	}
+
+	// ForceFlush exports all ended spans that have not yet been exported
+	return tracerProvider.ForceFlush(ctx)
+}
