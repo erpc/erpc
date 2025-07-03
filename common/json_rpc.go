@@ -16,6 +16,8 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type JsonRpcResponse struct {
@@ -529,12 +531,16 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 }
 
 func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
+	var span trace.Span
 	if len(ctx) > 0 {
-		_, span := StartDetailSpan(ctx[0], "JsonRpcResponse.IsResultEmptyish")
+		_, span = StartDetailSpan(ctx[0], "JsonRpcResponse.IsResultEmptyish")
 		defer span.End()
 	}
 
 	if r == nil {
+		if span != nil {
+			span.SetAttributes(attribute.Bool("resultEmptyish", true))
+		}
 		return true
 	}
 
@@ -542,13 +548,24 @@ func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
 	defer r.resultMu.RUnlock()
 
 	if len(r.Result) > 0 {
-		return util.IsBytesEmptyish(r.Result)
+		e := util.IsBytesEmptyish(r.Result)
+		if span != nil {
+			span.SetAttributes(attribute.Bool("resultEmptyish", e))
+		}
+		return e
 	}
 
 	if r.resultWriter != nil {
-		return r.resultWriter.IsResultEmptyish()
+		e := r.resultWriter.IsResultEmptyish()
+		if span != nil {
+			span.SetAttributes(attribute.Bool("resultEmptyish", e))
+		}
+		return e
 	}
 
+	if span != nil {
+		span.SetAttributes(attribute.Bool("resultEmptyish", true))
+	}
 	return true
 }
 
