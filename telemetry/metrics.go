@@ -327,7 +327,91 @@ var (
 		Name:      "shadow_response_error_total",
 		Help:      "Total number of shadow upstream requests that resulted in error.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "error"})
+
+	MetricConsensusTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_total",
+		Help:      "Total number of consensus operations attempted.",
+	}, []string{"project", "network", "category", "outcome", "finality"}) // outcome: success, dispute, low_participants, error
+
+	MetricConsensusAgreementRate = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "consensus_agreement_rate",
+		Help:      "Rate of consensus agreements achieved (moving average).",
+	}, []string{"project", "network"})
+
+	MetricConsensusResponsesCollected = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "consensus_responses_collected",
+		Help:      "Number of responses collected before consensus decision.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10), // 1 to 10 participants
+	}, []string{"project", "network", "category", "short_circuited", "finality"})
+
+	MetricConsensusAgreementCount = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "consensus_agreement_count",
+		Help:      "Number of upstreams agreeing on the most common result.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10),
+	}, []string{"project", "network", "category", "finality"})
+
+	MetricConsensusMisbehaviorDetected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_misbehavior_detected_total",
+		Help:      "Total number of misbehaving upstream detections.",
+	}, []string{"project", "network", "upstream", "category", "finality"})
+
+	MetricConsensusUpstreamPunished = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_upstream_punished_total",
+		Help:      "Total number of times upstreams were punished.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricConsensusShortCircuit = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_short_circuit_total",
+		Help:      "Total number of consensus rounds that short-circuited.",
+	}, []string{"project", "network", "category", "reason", "finality"}) // reason: consensus_reached, impossible
+
+	MetricConsensusErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_errors_total",
+		Help:      "Total number of consensus errors by type.",
+	}, []string{"project", "network", "category", "error_type", "finality"})
+
+	MetricConsensusPanics = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_panics_total",
+		Help:      "Total number of panic recoveries in consensus.",
+	}, []string{"project", "network", "category", "finality"})
+
+	MetricConsensusCancellations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "consensus_cancellations_total",
+		Help:      "Total number of context cancellations during consensus.",
+	}, []string{"project", "network", "category", "phase", "finality"}) // phase: before_execution, after_execution, collection
 )
+
+var slowHistogramBuckets = []float64{
+	0.050, // 50ms
+	0.100, // 100ms
+	0.250, // 250ms
+	0.500, // 500ms
+	0.700, // 700ms
+	0.800, // 800ms
+	1,     // 1s
+	2,     // 2s
+	3,     // 3s
+	4,     // 4s
+	5,     // 5s
+	6,     // 6s
+	7,     // 7s
+	8,     // 8s
+	15,    // 15s
+	30,    // 30s
+	60,    // 60s
+	120,   // 2m
+	300,   // 5m
+}
 
 var DefaultHistogramBuckets = []float64{
 	0.05, // 50 ms
@@ -343,7 +427,8 @@ var (
 	MetricCacheSetErrorDuration,
 	MetricCacheGetSuccessHitDuration,
 	MetricCacheGetSuccessMissDuration,
-	MetricCacheGetErrorDuration *prometheus.HistogramVec
+	MetricCacheGetErrorDuration,
+	MetricConsensusDuration *prometheus.HistogramVec
 )
 
 func SetHistogramBuckets(bucketsStr string) error {
@@ -360,6 +445,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessHitDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessMissDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricCacheGetErrorDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricConsensusDuration)
 	}
 	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -409,6 +495,13 @@ func SetHistogramBuckets(bucketsStr string) error {
 		Help:      "Duration of cache get errors.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
+	MetricConsensusDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "consensus_duration_seconds",
+		Help:      "Duration of consensus operations.",
+		Buckets:   slowHistogramBuckets,
+	}, []string{"project", "network", "category", "outcome", "finality"})
 
 	return nil
 }

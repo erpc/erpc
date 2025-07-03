@@ -6,11 +6,15 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/failsafe-go/failsafe-go"
 	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 	"github.com/failsafe-go/failsafe-go/policy"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // executor is a policy.Executor that handles failures according to a ConsensusPolicy.
@@ -54,7 +58,9 @@ func (e *executor[R]) resultToJsonRpcResponse(result R, exec failsafe.Execution[
 
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R]) func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R] {
 	return func(exec failsafe.Execution[R]) *failsafeCommon.PolicyResult[R] {
+		startTime := time.Now()
 		ctx := exec.Context()
+
 		// Extract the original request and upstream list from the execution context.
 		val := ctx.Value(common.RequestContextKey)
 		originalReq, ok := val.(*common.NormalizedRequest)
@@ -64,16 +70,48 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 			return innerFn(exec)
 		}
 
+		// Extract method and network info for metrics
+		method := "unknown"
+		if m, err := originalReq.Method(); err == nil {
+			method = m
+		}
+		category := method
+		networkId := originalReq.NetworkId()
+		projectId := ""
+		if originalReq.Network() != nil {
+			projectId = originalReq.Network().ProjectId()
+		}
+		finality := originalReq.Finality(ctx)
+		finalityStr := finality.String()
+
+		// Start main consensus span
+		ctx, consensusSpan := common.StartSpan(ctx, "Consensus.Apply",
+			trace.WithAttributes(
+				attribute.String("network.id", networkId),
+				attribute.String("request.method", method),
+				attribute.Int("execution.attempts", exec.Attempts()),
+			),
+		)
+		if common.IsTracingDetailed {
+			consensusSpan.SetAttributes(
+				attribute.String("request.id", fmt.Sprintf("%v", originalReq.ID())),
+			)
+		}
+		defer consensusSpan.End()
+
 		lg := e.logger.With().
 			Interface("id", originalReq.ID()).
 			Str("component", "consensus").
-			Str("networkId", originalReq.NetworkId()).
+			Str("networkId", networkId).
 			Logger()
 
 		val = ctx.Value(common.UpstreamsContextKey)
 		upsList, ok := val.([]common.Upstream)
 		if !ok || upsList == nil || len(upsList) == 0 {
 			lg.Warn().Object("request", originalReq).Interface("upstreams", upsList).Msg("unexpecued incompatible or empty list of upstreams in consensus policy")
+			common.SetTraceSpanError(consensusSpan, fmt.Errorf("invalid or empty upstreams list"))
+			telemetry.MetricConsensusTotal.WithLabelValues(projectId, networkId, category, "error", finalityStr).Inc()
+			telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "invalid_upstreams", finalityStr).Inc()
 			return innerFn(exec)
 		}
 
@@ -89,7 +127,14 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 			Msg("consensus policy received upstreams")
 
 		// Pick the upstreams that will participate in the consensus round.
+		_, selectionSpan := common.StartDetailSpan(ctx, "Consensus.SelectUpstreams")
 		selectedUpstreams := e.selectUpstreams(upsList)
+		selectionSpan.SetAttributes(
+			attribute.Int("upstreams.total", len(upsList)),
+			attribute.Int("upstreams.selected", len(selectedUpstreams)),
+			attribute.Int("required_participants", e.requiredParticipants),
+		)
+		selectionSpan.End()
 
 		parentExecution := exec.(policy.ExecutionInternal[R])
 
@@ -97,10 +142,41 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 		responses := e.collectResponses(ctx, &lg, originalReq, selectedUpstreams, parentExecution, innerFn)
 
 		// Phase 2: Evaluate consensus
-		result := e.evaluateConsensus(&lg, responses, selectedUpstreams, exec)
+		result := e.evaluateConsensus(ctx, &lg, responses, selectedUpstreams, exec)
 
 		// Phase 3: Track misbehaving upstreams (only if we have a clear majority)
-		e.checkAndPunishMisbehavingUpstreams(&lg, responses, parentExecution)
+		e.checkAndPunishMisbehavingUpstreams(ctx, &lg, responses, parentExecution)
+
+		// Set final consensus result attributes
+		consensusSpan.SetAttributes(
+			attribute.Int("responses.collected", len(responses)),
+			attribute.Bool("consensus.achieved", result.Error == nil || !common.HasErrorCode(result.Error, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants)),
+		)
+
+		// Determine outcome for metrics
+		outcome := "success"
+		if result.Error != nil {
+			if common.HasErrorCode(result.Error, common.ErrCodeConsensusDispute) {
+				outcome = "dispute"
+			} else if common.HasErrorCode(result.Error, common.ErrCodeConsensusLowParticipants) {
+				outcome = "low_participants"
+			} else {
+				outcome = "error"
+			}
+			common.SetTraceSpanError(consensusSpan, result.Error)
+		}
+
+		// Record metrics
+		duration := time.Since(startTime).Seconds()
+		telemetry.MetricConsensusTotal.WithLabelValues(projectId, networkId, category, outcome, finalityStr).Inc()
+		telemetry.MetricConsensusDuration.WithLabelValues(projectId, networkId, category, outcome, finalityStr).Observe(duration)
+
+		// Update agreement rate (simplified moving average)
+		if outcome == "success" {
+			telemetry.MetricConsensusAgreementRate.WithLabelValues(projectId, networkId).Set(1.0)
+		} else {
+			telemetry.MetricConsensusAgreementRate.WithLabelValues(projectId, networkId).Set(0.0)
+		}
 
 		return result
 	}
@@ -117,6 +193,28 @@ func (e *executor[R]) collectResponses(
 	parentExecution policy.ExecutionInternal[R],
 	innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R],
 ) []*execResult[R] {
+	// Extract metrics labels
+	method := "unknown"
+	if m, err := originalReq.Method(); err == nil {
+		method = m
+	}
+	category := method
+	networkId := originalReq.NetworkId()
+	projectId := ""
+	if originalReq.Network() != nil {
+		projectId = originalReq.Network().ProjectId()
+	}
+	finality := originalReq.Finality(ctx)
+	finalityStr := finality.String()
+
+	// Start collection span
+	ctx, collectionSpan := common.StartDetailSpan(ctx, "Consensus.CollectResponses",
+		trace.WithAttributes(
+			attribute.Int("upstreams.selected", len(selectedUpstreams)),
+		),
+	)
+	defer collectionSpan.End()
+
 	// Context for canceling remaining requests
 	cancellableCtx, cancelRemaining := context.WithCancel(ctx)
 	defer cancelRemaining()
@@ -156,6 +254,15 @@ func (e *executor[R]) collectResponses(
 
 		// Fire off the request
 		go func(consensusExec policy.ExecutionInternal[R], execIdx int, upstream common.Upstream) {
+			// Start a span for this consensus attempt
+			attemptCtx, attemptSpan := common.StartDetailSpan(cancellableCtx, "Consensus.Attempt",
+				trace.WithAttributes(
+					attribute.Int("attempt.index", execIdx),
+					attribute.String("upstream.id", upstream.Id()),
+				),
+			)
+			defer attemptSpan.End()
+
 			// Add panic recovery
 			defer func() {
 				if r := recover(); r != nil {
@@ -165,10 +272,16 @@ func (e *executor[R]) collectResponses(
 						Interface("panic", r).
 						Msg("panic in consensus execution")
 
+					panicErr := fmt.Errorf("panic in consensus execution: %v", r)
+					common.SetTraceSpanError(attemptSpan, panicErr)
+
+					// Record panic metric
+					telemetry.MetricConsensusPanics.WithLabelValues(projectId, networkId, category, finalityStr).Inc()
+
 					// Send error result
 					select {
 					case responseChan <- &execResult[R]{
-						err:      fmt.Errorf("panic in consensus execution: %v", r),
+						err:      panicErr,
 						index:    execIdx,
 						upstream: upstream,
 					}:
@@ -184,12 +297,15 @@ func (e *executor[R]) collectResponses(
 
 			// Check cancellation before execution
 			select {
-			case <-cancellableCtx.Done():
+			case <-attemptCtx.Done():
 				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("skipping execution, context cancelled")
+				attemptSpan.SetAttributes(attribute.Bool("cancelled_before_execution", true))
+				attemptSpan.SetStatus(codes.Error, "cancelled before execution")
+				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "before_execution", finalityStr).Inc()
 				// Still send a nil result so the collector knows this goroutine is done
 				select {
 				case responseChan <- nil:
-				case <-cancellableCtx.Done():
+				case <-attemptCtx.Done():
 					// Already cancelled, safe to exit
 				}
 				return
@@ -200,37 +316,52 @@ func (e *executor[R]) collectResponses(
 
 			// The execution should inherit the cancellable context from the parent
 			// Double-check the context hasn't been cancelled before executing
-			if cancellableCtx.Err() != nil {
+			if attemptCtx.Err() != nil {
 				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("context cancelled before execution")
+				attemptSpan.SetAttributes(attribute.Bool("cancelled_before_execution", true))
+				attemptSpan.SetStatus(codes.Error, "cancelled before execution")
+				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "before_execution", finalityStr).Inc()
 				select {
 				case responseChan <- nil:
-				case <-cancellableCtx.Done():
+				case <-attemptCtx.Done():
 				}
 				return
 			}
 
+			// The consensus execution already has the correct context from the parent
 			result := innerFn(consensusExec)
 
 			// Check cancellation again after execution
 			select {
-			case <-cancellableCtx.Done():
+			case <-attemptCtx.Done():
 				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("discarding result, context cancelled after execution")
+				attemptSpan.SetAttributes(attribute.Bool("cancelled_after_execution", true))
+				attemptSpan.SetStatus(codes.Error, "cancelled after execution")
+				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "after_execution", finalityStr).Inc()
 				// Still send nil to unblock collector
 				select {
 				case responseChan <- nil:
-				case <-cancellableCtx.Done():
+				case <-attemptCtx.Done():
 				}
 				return
 			default:
 			}
 
 			if result == nil {
+				attemptSpan.SetAttributes(attribute.Bool("result.nil", true))
 				// Send nil to indicate this goroutine is done
 				select {
 				case responseChan <- nil:
-				case <-cancellableCtx.Done():
+				case <-attemptCtx.Done():
 				}
 				return
+			}
+
+			// Set attempt result attributes
+			if result.Error != nil {
+				common.SetTraceSpanError(attemptSpan, result.Error)
+			} else {
+				attemptSpan.SetStatus(codes.Ok, "")
 			}
 
 			// Send response to channel
@@ -241,12 +372,14 @@ func (e *executor[R]) collectResponses(
 				index:    execIdx,
 				upstream: upstream,
 			}:
-			case <-cancellableCtx.Done():
+			case <-attemptCtx.Done():
 				// Context cancelled, still try to send nil to unblock collector
 				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("discarding response due to context cancellation")
+				attemptSpan.SetAttributes(attribute.Bool("response_discarded", true))
+				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "after_execution", finalityStr).Inc()
 				select {
 				case responseChan <- nil:
-				case <-cancellableCtx.Done():
+				case <-attemptCtx.Done():
 					// Already cancelled, safe to exit
 				}
 			}
@@ -257,7 +390,9 @@ func (e *executor[R]) collectResponses(
 	// Collect responses with short-circuit logic
 	responses := make([]*execResult[R], 0, len(selectedUpstreams))
 	var shortCircuited bool
+	var shortCircuitReason string
 
+collectLoop:
 	for i := 0; i < actualGoroutineCount; i++ {
 		select {
 		case resp := <-responseChan:
@@ -269,11 +404,26 @@ func (e *executor[R]) collectResponses(
 			// Check if we should short-circuit (only if we have a non-nil response)
 			if resp != nil && !shortCircuited && e.checkShortCircuit(lg, responses, selectedUpstreams, parentExecution) {
 				shortCircuited = true
+
+				// Determine short-circuit reason
+				if e.hasConsensus(responses, parentExecution) {
+					shortCircuitReason = "consensus_reached"
+				} else {
+					shortCircuitReason = "consensus_impossible"
+				}
+
 				cancelRemaining()
+				collectionSpan.SetAttributes(
+					attribute.Bool("short_circuited", true),
+					attribute.Int("responses.at_short_circuit", len(responses)),
+				)
+
+				// Record short-circuit metric
+				telemetry.MetricConsensusShortCircuit.WithLabelValues(projectId, networkId, category, shortCircuitReason, finalityStr).Inc()
 
 				// Drain any remaining responses in the background
 				go e.drainResponses(responseChan, actualGoroutineCount-(i+1))
-				return responses
+				break collectLoop
 			}
 
 		case <-ctx.Done():
@@ -283,11 +433,42 @@ func (e *executor[R]) collectResponses(
 				Int("expected", actualGoroutineCount).
 				Msg("context cancelled while waiting for consensus responses")
 			cancelRemaining()
-			return responses
+			common.SetTraceSpanError(collectionSpan, ctx.Err())
+			telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "collection", finalityStr).Inc()
+			break collectLoop
 		}
 	}
 
+	collectionSpan.SetAttributes(
+		attribute.Int("responses.collected", len(responses)),
+		attribute.Int("responses.expected", actualGoroutineCount),
+	)
+
+	// Record responses collected metric
+	shortCircuitedStr := "false"
+	if shortCircuited {
+		shortCircuitedStr = "true"
+	}
+	telemetry.MetricConsensusResponsesCollected.WithLabelValues(projectId, networkId, category, shortCircuitedStr, finalityStr).Observe(float64(len(responses)))
+
 	return responses
+}
+
+// hasConsensus checks if consensus has been reached in the current responses
+func (e *executor[R]) hasConsensus(responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
+	resultCounts := make(map[string]int)
+	for _, r := range responses {
+		if r.err != nil {
+			continue
+		}
+		if resultHash, err := e.resultToHash(r.result, exec); err == nil {
+			resultCounts[resultHash]++
+			if resultCounts[resultHash] >= e.agreementThreshold {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkShortCircuit determines if we can exit early based on current responses
@@ -380,11 +561,36 @@ func (e *executor[R]) drainResponses(responseChan <-chan *execResult[R], remaini
 
 // evaluateConsensus performs the final consensus evaluation on collected responses
 func (e *executor[R]) evaluateConsensus(
+	ctx context.Context,
 	lg *zerolog.Logger,
 	responses []*execResult[R],
 	selectedUpstreams []common.Upstream,
 	exec failsafe.Execution[R],
 ) *failsafeCommon.PolicyResult[R] {
+	// Get request metadata for metrics
+	req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+	method := "unknown"
+	if m, err := req.Method(); err == nil {
+		method = m
+	}
+	category := method
+	networkId := req.NetworkId()
+	projectId := ""
+	if req.Network() != nil {
+		projectId = req.Network().ProjectId()
+	}
+	finality := req.Finality(ctx)
+	finalityStr := finality.String()
+
+	// Start evaluation span
+	ctx, evalSpan := common.StartDetailSpan(ctx, "Consensus.Evaluate",
+		trace.WithAttributes(
+			attribute.Int("responses.count", len(responses)),
+			attribute.Int("selected_upstreams.count", len(selectedUpstreams)),
+		),
+	)
+	defer evalSpan.End()
+
 	// Count unique participants and responses
 	nonErrorParticipantCount := e.countUniqueParticipants(responses)
 
@@ -395,6 +601,19 @@ func (e *executor[R]) evaluateConsensus(
 
 	// Count responses by result hash
 	resultCounts, mostCommonResultHash, mostCommonResultCount := e.countResponsesByHash(lg, responses, exec)
+
+	// Record agreement count metric
+	if mostCommonResultCount > 0 {
+		telemetry.MetricConsensusAgreementCount.WithLabelValues(projectId, networkId, category, finalityStr).Observe(float64(mostCommonResultCount))
+	}
+
+	evalSpan.SetAttributes(
+		attribute.Int("participants.non_error", nonErrorParticipantCount),
+		attribute.Int("participants.required", e.requiredParticipants),
+		attribute.Int("results.unique_count", len(resultCounts)),
+		attribute.Int("results.most_common_count", mostCommonResultCount),
+		attribute.Int("results.agreement_threshold", e.agreementThreshold),
+	)
 
 	lg.Debug().
 		Int("totalResponses", len(responses)).
@@ -414,6 +633,10 @@ func (e *executor[R]) evaluateConsensus(
 	if mostCommonResultCount >= e.agreementThreshold {
 		// We have consensus
 		lg.Debug().Msg("completed consensus execution")
+		evalSpan.SetAttributes(
+			attribute.Bool("consensus.achieved", true),
+			attribute.String("consensus.result_hash", mostCommonResultHash),
+		)
 
 		if e.onAgreement != nil {
 			e.onAgreement(failsafe.ExecutionEvent[R]{
@@ -423,6 +646,7 @@ func (e *executor[R]) evaluateConsensus(
 
 		// Find the actual result that matches the consensus
 		if result := e.findResultByHash(responses, mostCommonResultHash, exec); result != nil {
+			evalSpan.SetStatus(codes.Ok, "consensus achieved")
 			return &failsafeCommon.PolicyResult[R]{
 				Result: *result,
 			}
@@ -440,7 +664,17 @@ func (e *executor[R]) evaluateConsensus(
 			Int("selectedUpstreams", len(selectedUpstreams)).
 			Msg("handling low participants")
 
-		return e.handleLowParticipants(lg, responses, exec)
+		evalSpan.SetAttributes(
+			attribute.Bool("consensus.low_participants", true),
+			attribute.String("low_participants.behavior", string(e.lowParticipantsBehavior)),
+		)
+
+		result := e.handleLowParticipants(lg, responses, exec)
+		if result.Error != nil {
+			common.SetTraceSpanError(evalSpan, result.Error)
+			telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "low_participants", finalityStr).Inc()
+		}
+		return result
 	}
 
 	// Consensus dispute
@@ -452,8 +686,18 @@ func (e *executor[R]) evaluateConsensus(
 		})
 	}
 
+	evalSpan.SetAttributes(
+		attribute.Bool("consensus.dispute", true),
+		attribute.String("dispute.behavior", string(e.disputeBehavior)),
+	)
+
 	// Handle dispute according to behavior
-	return e.handleDispute(lg, responses, exec)
+	result := e.handleDispute(lg, responses, exec)
+	if result.Error != nil {
+		common.SetTraceSpanError(evalSpan, result.Error)
+		telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "dispute", finalityStr).Inc()
+	}
+	return result
 }
 
 // countUniqueParticipants counts the number of unique non-error participants
@@ -663,6 +907,7 @@ func (e *executor[R]) handleDispute(
 
 // checkAndPunishMisbehavingUpstreams tracks misbehaving upstreams if there's a clear majority
 func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
+	ctx context.Context,
 	lg *zerolog.Logger,
 	responses []*execResult[R],
 	parentExecution policy.ExecutionInternal[R],
@@ -671,6 +916,25 @@ func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 	if e.punishMisbehavior == nil {
 		return
 	}
+
+	// Get request metadata for metrics
+	req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+	method := "unknown"
+	if m, err := req.Method(); err == nil {
+		method = m
+	}
+	category := method
+	networkId := req.NetworkId()
+	projectId := ""
+	if req.Network() != nil {
+		projectId = req.Network().ProjectId()
+	}
+	finality := req.Finality(ctx)
+	finalityStr := finality.String()
+
+	// Start punishment span
+	ctx, punishSpan := common.StartDetailSpan(ctx, "Consensus.CheckMisbehavior")
+	defer punishSpan.End()
 
 	// First, count results to find the most common one
 	resultCounts := make(map[string]int)
@@ -695,9 +959,15 @@ func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 		}
 	}
 
+	punishSpan.SetAttributes(
+		attribute.Int("responses.count", len(responses)),
+		attribute.Int("most_common.count", mostCommonResultCount),
+		attribute.Bool("has_clear_majority", mostCommonResultCount > len(responses)/2),
+	)
+
 	// Only track misbehaving upstreams if we have a clear majority (>50%)
 	if mostCommonResultCount > len(responses)/2 {
-		e.trackMisbehavingUpstreams(lg, responses, resultCounts, mostCommonResultHash, parentExecution)
+		e.trackMisbehavingUpstreams(ctx, lg, responses, resultCounts, mostCommonResultHash, parentExecution, projectId, networkId, category, finalityStr)
 	}
 }
 
@@ -745,7 +1015,11 @@ func (e *executor[R]) createRateLimiter(logger *zerolog.Logger, upstreamId strin
 	return actual.(ratelimiter.RateLimiter[any])
 }
 
-func (e *executor[R]) trackMisbehavingUpstreams(logger *zerolog.Logger, responses []*execResult[R], resultCounts map[string]int, mostCommonResultHash string, execution policy.ExecutionInternal[R]) {
+func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], resultCounts map[string]int, mostCommonResultHash string, execution policy.ExecutionInternal[R], projectId, networkId, category, finalityStr string) {
+	// Start tracking span
+	_, trackingSpan := common.StartDetailSpan(ctx, "Consensus.TrackMisbehavior")
+	defer trackingSpan.End()
+
 	// Count total valid responses
 	totalValidResponses := 0
 	for _, count := range resultCounts {
@@ -755,9 +1029,11 @@ func (e *executor[R]) trackMisbehavingUpstreams(logger *zerolog.Logger, response
 	// Only proceed with punishment if we have a clear majority (>50%)
 	mostCommonCount := resultCounts[mostCommonResultHash]
 	if mostCommonCount <= totalValidResponses/2 {
+		trackingSpan.SetAttributes(attribute.Bool("punishment.skipped", true))
 		return
 	}
 
+	misbehavingCount := 0
 	for _, response := range responses {
 		if response.err != nil {
 			continue
@@ -781,15 +1057,26 @@ func (e *executor[R]) trackMisbehavingUpstreams(logger *zerolog.Logger, response
 
 		// If this result doesn't match the most common result, punish the upstream
 		if resultHash != mostCommonResultHash {
-			limiter := e.createRateLimiter(logger, upstream.Config().Id)
+			misbehavingCount++
+			upstreamId := upstream.Config().Id
+
+			// Record misbehavior detection
+			telemetry.MetricConsensusMisbehaviorDetected.WithLabelValues(projectId, networkId, upstreamId, category, finalityStr).Inc()
+
+			limiter := e.createRateLimiter(logger, upstreamId)
 			if !limiter.TryAcquirePermit() {
-				e.handleMisbehavingUpstream(logger, upstream, upstream.Config().Id)
+				e.handleMisbehavingUpstream(logger, upstream, upstreamId, projectId, networkId)
 			}
 		}
 	}
+
+	trackingSpan.SetAttributes(
+		attribute.Int("misbehaving.count", misbehavingCount),
+		attribute.String("correct.hash", mostCommonResultHash),
+	)
 }
 
-func (e *executor[R]) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId string) {
+func (e *executor[R]) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId, projectId, networkId string) {
 	// Create a placeholder value to claim ownership atomically
 	placeholder := &struct{}{}
 
@@ -804,6 +1091,9 @@ func (e *executor[R]) handleMisbehavingUpstream(logger *zerolog.Logger, upstream
 	logger.Warn().
 		Str("upstream", upstreamId).
 		Msg("misbehaviour limit exhausted, punishing upstream")
+
+	// Record punishment metric
+	telemetry.MetricConsensusUpstreamPunished.WithLabelValues(projectId, networkId, upstreamId).Inc()
 
 	// Cordon the upstream first
 	upstream.Cordon("*", "misbehaving in consensus")
