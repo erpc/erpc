@@ -1048,12 +1048,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"address": "0x1234567890abcdef1234567890abcdef12345678",
-				"fromBlock": "0x4",
-				"toBlock": "0x7"
-			}],
+			"method": "eth_getBalance",
+			"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 			"id": 1
 		}`)
 
@@ -1061,7 +1057,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
@@ -1070,7 +1066,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444}]}`))
@@ -1813,12 +1809,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
 				"jsonrpc": "2.0",
-				"method": "eth_getLogs",
-				"params": [{
-					"address": "0x1234567890abcdef1234567890abcdef12345678",
-					"fromBlock": "0x4",
-					"toBlock": "0x7"
-				}],
+				"method": "eth_getBalance",
+				"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 				"id": 1
 			}`)
 
@@ -1826,7 +1818,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
@@ -1835,7 +1827,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
@@ -2026,12 +2018,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
 				"jsonrpc": "2.0",
-				"method": "eth_getLogs",
-				"params": [{
-					"address": "0x1234567890abcdef1234567890abcdef12345678",
-					"fromBlock": "0x0",
-					"toBlock": "0x1273c18"
-				}],
+				"method": "eth_getBalance",
+				"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 				"id": 1
 			}`)
 
@@ -2039,7 +2027,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
@@ -2048,7 +2036,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
@@ -2221,12 +2209,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
 				"jsonrpc": "2.0",
-				"method": "eth_getLogs",
-				"params": [{
-					"address": "0x1234567890abcdef1234567890abcdef12345678",
-					"fromBlock": "0x0",
-					"toBlock": "0x1273c18"
-				}],
+				"method": "eth_getBalance",
+				"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 				"id": 1
 			}`)
 
@@ -2234,7 +2218,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
@@ -2243,7 +2227,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
@@ -6074,7 +6058,7 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -6233,7 +6217,7 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -6382,14 +6366,14 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getBalance","params":["0x1234567890abcdef1234567890abcdef12345678"],"id": 1}`)
 
 		emptyResponse := []byte(`{"jsonrpc": "2.0","id": 1,"result":[]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(emptyResponse)
@@ -6397,7 +6381,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(emptyResponse)
@@ -9836,6 +9820,8 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			atomic.LoadInt32(&syncCalls),
 			"expected exactly two eth_syncing polls (bootstrap + leader)",
 		)
+
+		time.Sleep(100 * time.Millisecond)
 	})
 }
 
