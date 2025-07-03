@@ -15,6 +15,8 @@ import (
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
@@ -168,19 +170,38 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 		// TODO emit a custom prometheus metric to track CB root causes?
 	})
 
-	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
+	builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
+		ctx := exec.Context()
+		ctx, span := common.StartDetailSpan(ctx, "CircuitBreaker.HandleIf")
+		defer span.End()
+
 		// 5xx or other non-retryable server-side errors -> open the circuit
 		if common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			span.SetAttributes(
+				attribute.Bool("should_open", true),
+				attribute.String("reason", "server_side_exception"),
+				attribute.String("error_code", "ErrCodeEndpointServerSideException"),
+			)
 			return true
 		}
 
 		// 401 / 403 / RPC-RPC vendor auth -> open the circuit
 		if common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized) {
+			span.SetAttributes(
+				attribute.Bool("should_open", true),
+				attribute.String("reason", "unauthorized"),
+				attribute.String("error_code", "ErrCodeEndpointUnauthorized"),
+			)
 			return true
 		}
 
 		// remote vendor billing issue -> open the circuit
 		if common.HasErrorCode(err, common.ErrCodeEndpointBillingIssue) {
+			span.SetAttributes(
+				attribute.Bool("should_open", true),
+				attribute.String("reason", "billing_issue"),
+				attribute.String("error_code", "ErrCodeEndpointBillingIssue"),
+			)
 			return true
 		}
 
@@ -188,8 +209,19 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 		if result != nil && result.Request() != nil {
 			up := result.Request().LastUpstream()
 			if ups, ok := up.(common.EvmUpstream); ok {
-				if ups.EvmSyncingState() == common.EvmSyncingStateSyncing {
-					if result.IsResultEmptyish() {
+				syncState := ups.EvmSyncingState()
+				isEmpty := result.IsResultEmptyish()
+				span.SetAttributes(
+					attribute.String("upstream.id", ups.Id()),
+					attribute.String("upstream.sync_state", syncState.String()),
+					attribute.Bool("response.is_empty", isEmpty),
+				)
+				if syncState == common.EvmSyncingStateSyncing {
+					if isEmpty {
+						span.SetAttributes(
+							attribute.Bool("should_open", true),
+							attribute.String("reason", "syncing_with_empty_response"),
+						)
 						return true
 					}
 				}
@@ -197,6 +229,13 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 		}
 
 		// other errors must not open the circuit because it does not mean that the remote service is "bad"
+		span.SetAttributes(
+			attribute.Bool("should_open", false),
+			attribute.String("reason", "not_circuit_breaker_error"),
+		)
+		if err != nil {
+			span.SetAttributes(attribute.String("error", err.Error()))
+		}
 		return false
 	})
 
@@ -253,6 +292,10 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 	}
 
 	builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
+		ctx := event.Context()
+		ctx, span := common.StartDetailSpan(ctx, "HedgePolicy.OnHedge")
+		defer span.End()
+
 		var req *common.NormalizedRequest
 		var method string
 		r := event.Context().Value(common.RequestContextKey)
@@ -261,18 +304,34 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 			req, ok = r.(*common.NormalizedRequest)
 			if ok && req != nil {
 				if req.IsCompositeRequest() {
+					span.SetAttributes(
+						attribute.Bool("hedge", false),
+						attribute.String("reason", "composite_request"),
+						attribute.String("composite_type", req.CompositeType()),
+					)
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Str("compositeType", req.CompositeType()).Msgf("ignoring hedge for composite request")
 					return false
 				}
 
 				method, _ = req.Method()
+				span.SetAttributes(attribute.String("method", method))
 				if method != "" && evm.IsWriteMethod(method) {
+					span.SetAttributes(
+						attribute.Bool("hedge", false),
+						attribute.String("reason", "write_method"),
+					)
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
 					return false
 				}
 			}
 		}
 
+		span.SetAttributes(
+			attribute.Bool("hedge", true),
+			attribute.String("reason", "allowed"),
+			attribute.Int("attempts", event.Attempts()),
+			attribute.Int("hedges", event.Hedges()),
+		)
 		logger.Trace().Str("method", method).Interface("id", req.ID()).Msgf("attempting to hedge request")
 
 		// Continue with the next hedge
@@ -316,13 +375,29 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		emptyResultIgnore = []string{"eth_getLogs", "eth_call"}
 	}
 
-	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
+	builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
+		ctx := exec.Context()
+		ctx, span := common.StartDetailSpan(ctx, "RetryPolicy.HandleIf",
+			trace.WithAttributes(
+				attribute.String("scope", string(scope)),
+			))
+		defer span.End()
+
 		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "execution_exception"),
+				attribute.String("error_code", "ErrCodeEndpointExecutionException"),
+			)
 			return false
 		}
 
 		if result != nil && result.Request() != nil && result.Request().IsCompositeRequest() {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "composite_request"),
+			)
 			return false
 		}
 
@@ -330,6 +405,11 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		if result != nil {
 			if req := result.Request(); req != nil {
 				if method, _ := req.Method(); method != "" && evm.IsWriteMethod(method) {
+					span.SetAttributes(
+						attribute.Bool("retry", false),
+						attribute.String("reason", "write_method"),
+						attribute.String("write_method", method),
+					)
 					return false
 				}
 			}
@@ -337,11 +417,27 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 
 		// We are only short-circuiting retry if the error is not retryable towards the upstream or network
 		if scope == common.ScopeUpstream && err != nil {
-			if !common.IsRetryableTowardsUpstream(err) {
+			isRetryable := common.IsRetryableTowardsUpstream(err)
+			span.SetAttributes(
+				attribute.Bool("error.retryable_to_upstream", isRetryable),
+			)
+			if !isRetryable {
+				span.SetAttributes(
+					attribute.Bool("retry", false),
+					attribute.String("reason", "not_retryable_to_upstream"),
+				)
 				return false
 			}
 		} else if scope == common.ScopeNetwork && err != nil {
-			if !common.IsRetryableTowardNetwork(err) {
+			isRetryable := common.IsRetryableTowardNetwork(err)
+			span.SetAttributes(
+				attribute.Bool("error.retryable_to_network", isRetryable),
+			)
+			if !isRetryable {
+				span.SetAttributes(
+					attribute.Bool("retry", false),
+					attribute.String("reason", "not_retryable_to_network"),
+				)
 				return false
 			}
 		}
@@ -351,7 +447,13 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			if req == nil {
 				// If there's no request, we can't check directives or block availability
 				// Only retry if there's an error
-				return err != nil
+				shouldRetry := err != nil
+				span.SetAttributes(
+					attribute.Bool("retry", shouldRetry),
+					attribute.String("reason", "no_request_context"),
+					attribute.Bool("has_error", err != nil),
+				)
+				return shouldRetry
 			}
 			rds := req.Directives()
 
@@ -359,6 +461,10 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
 			if rds != nil && rds.RetryEmpty {
 				isEmpty := result.IsResultEmptyish()
+				span.SetAttributes(
+					attribute.Bool("directive.retry_empty", true),
+					attribute.Bool("response.is_empty", isEmpty),
+				)
 				if isEmpty {
 					ups := result.Upstream()
 					// has Retry-Empty directive + "empty" response + upstream can handle the block -> No Retry
@@ -366,18 +472,43 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						upCfg := ups.Config()
 						if upCfg != nil && upCfg.Type == common.UpstreamTypeEvm && upCfg.Evm != nil {
 							if ups, ok := ups.(common.EvmUpstream); ok {
-								if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
+								syncState := ups.EvmSyncingState()
+								span.SetAttributes(
+									attribute.String("upstream.id", ups.Id()),
+									attribute.String("upstream.sync_state", syncState.String()),
+								)
+								if syncState == common.EvmSyncingStateNotSyncing {
 									_, bn, ebn := evm.ExtractBlockReferenceFromRequest(context.TODO(), req)
 									if ebn == nil && bn > 0 {
 										method, _ := req.Method()
+										span.SetAttributes(
+											attribute.Int64("block_number", bn),
+											attribute.String("method", method),
+											attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
+										)
 										// Check if method is in ignore list - if so, do NOT retry
 										if slices.Contains(emptyResultIgnore, method) {
+											span.SetAttributes(
+												attribute.Bool("retry", false),
+												attribute.String("reason", "method_in_empty_ignore_list"),
+											)
 											return false
 										}
 										// Use EvmAssertBlockAvailability to check if the upstream can handle the block
 										if avail, err := ups.EvmAssertBlockAvailability(context.TODO(), method, emptyResultConfidence, false, bn); err == nil && avail {
 											// If the upstream can handle the block and returned empty, don't retry
+											span.SetAttributes(
+												attribute.Bool("block_available", true),
+												attribute.Bool("retry", false),
+												attribute.String("reason", "block_available_but_empty"),
+											)
 											return false
+										} else {
+											span.SetAttributes(
+												attribute.Bool("block_available", false),
+												attribute.Bool("retry", true),
+												attribute.String("reason", "block_not_available"),
+											)
 										}
 									}
 								}
@@ -385,13 +516,17 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						}
 					}
 					// Empty response and RetryEmpty is true, but block is not available or other conditions not met -> Retry
+					span.SetAttributes(
+						attribute.Bool("retry", true),
+						attribute.String("reason", "empty_response_retry_directive"),
+					)
 					return true
 				}
 			}
 
 			// For pending transactions retry on network-level to give a chance of receiving
 			// the full TX data when it is available.
-			if rds.RetryPending {
+			if rds != nil && rds.RetryPending {
 				req := result.Request()
 				if req != nil {
 					method, _ := req.Method()
@@ -403,6 +538,12 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						_, blkNum, err := evm.ExtractBlockReferenceFromRequest(context.TODO(), req)
 						if err == nil {
 							if blkNum == 0 {
+								span.SetAttributes(
+									attribute.Bool("retry", true),
+									attribute.String("reason", "pending_transaction"),
+									attribute.String("tx_method", method),
+									attribute.Bool("directive.retry_pending", true),
+								)
 								return true
 							}
 						}
@@ -412,7 +553,16 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		}
 
 		// 5xx -> Retry
-		return err != nil
+		shouldRetry := err != nil
+		span.SetAttributes(
+			attribute.Bool("retry", shouldRetry),
+			attribute.String("reason", "error_present"),
+			attribute.Bool("has_error", err != nil),
+		)
+		if err != nil {
+			span.SetAttributes(attribute.String("error", err.Error()))
+		}
+		return shouldRetry
 	})
 
 	return builder.Build(), nil

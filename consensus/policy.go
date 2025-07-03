@@ -123,7 +123,7 @@ func (c *config[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuil
 func (c *config[R]) Build() ConsensusPolicy[R] {
 	hCopy := *c
 	if !c.BaseAbortablePolicy.IsConfigured() {
-		c.AbortIf(func(r R, err error) bool {
+		c.AbortIf(func(exec failsafe.ExecutionAttempt[R], r R, err error) bool {
 			// We'll let the executor handle the actual consensus check
 			return false
 		})

@@ -75,6 +75,17 @@ const (
 	EvmSyncingStateNotSyncing
 )
 
+func (s EvmSyncingState) String() string {
+	switch s {
+	case EvmSyncingStateSyncing:
+		return "syncing"
+	case EvmSyncingStateNotSyncing:
+		return "not_syncing"
+	default:
+		return fmt.Sprintf("unknown(%d)", s)
+	}
+}
+
 type EvmStatePoller interface {
 	Bootstrap(ctx context.Context) error
 	Poll(ctx context.Context) error
