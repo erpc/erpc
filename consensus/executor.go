@@ -59,21 +59,56 @@ func (e *executor[R]) resultToJsonRpcResponse(result R, exec failsafe.Execution[
 
 // isConsensusValidError checks if an error is a valid consensus result (e.g., execution exception)
 func (e *executor[R]) isConsensusValidError(err error) bool {
-	// Execution exceptions are valid consensus results (e.g., smart contract reverts)
+	// Only execution exceptions should trigger short-circuit consensus
+	// This includes execution reverts and call exceptions
 	return common.HasErrorCode(err, common.ErrCodeEndpointExecutionException)
 }
 
-// errorToConsensusHash converts a consensus-valid error to a hash for consensus comparison
+// isAgreedUponError checks if an error should be considered for agreement after all upstreams respond
+// This includes a broader set of errors like invalid params, missing data, unsupported methods
+func (e *executor[R]) isAgreedUponError(err error) bool {
+	// Include common errors that indicate agreement on request issues
+	return common.HasErrorCode(err,
+		common.ErrCodeEndpointClientSideException, // Invalid params, bad requests
+		common.ErrCodeEndpointUnsupported,         // Method not supported
+		common.ErrCodeEndpointMissingData,         // Missing data
+	)
+}
+
+// errorToConsensusHash converts an error to a hash for consensus comparison
+// For errors with BaseError.Code, it uses the code
+// For JsonRpcExceptionInternal errors, it also includes the normalized code
 func (e *executor[R]) errorToConsensusHash(err error) string {
 	if err == nil {
 		return ""
 	}
 
-	var jrr *common.ErrJsonRpcExceptionInternal
-	if errors.As(err, &jrr) {
-		normalizedCode := jrr.NormalizedCode()
-		// TODO should we include "data" for reverted transactions?
-		return fmt.Sprintf("%d", normalizedCode)
+	// First check if this is a StandardError to get the base error code
+	if se, ok := err.(common.StandardError); ok {
+		baseErr := se.Base()
+		if baseErr != nil {
+			hash := string(baseErr.Code)
+
+			// For execution exceptions and other JSON-RPC errors, we need to look deeper
+			// to find the JsonRpcExceptionInternal and include its normalized code
+			if baseErr.Code == common.ErrCodeEndpointExecutionException {
+				// Look for JsonRpcExceptionInternal in the cause chain
+				var jre *common.ErrJsonRpcExceptionInternal
+				if errors.As(err, &jre) {
+					// Include the normalized code for more specific matching
+					hash = fmt.Sprintf("%s:%d", hash, jre.NormalizedCode())
+				}
+			}
+
+			return hash
+		}
+	}
+
+	// For other errors that might have JsonRpcExceptionInternal
+	var jre *common.ErrJsonRpcExceptionInternal
+	if errors.As(err, &jre) {
+		// Use normalized code for JSON-RPC errors
+		return fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
 	}
 
 	return ""
@@ -146,7 +181,7 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 
 		val = ctx.Value(common.UpstreamsContextKey)
 		upsList, ok := val.([]common.Upstream)
-		if !ok || upsList == nil || len(upsList) == 0 {
+		if !ok || len(upsList) == 0 {
 			lg.Warn().Object("request", originalReq).Interface("upstreams", upsList).Msg("unexpecued incompatible or empty list of upstreams in consensus policy")
 			common.SetTraceSpanError(consensusSpan, fmt.Errorf("invalid or empty upstreams list"))
 			telemetry.MetricConsensusTotal.WithLabelValues(projectId, networkId, category, "error", finalityStr).Inc()
@@ -195,7 +230,13 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 		// Determine outcome for metrics
 		outcome := "success"
 		if result.Error != nil {
-			if common.HasErrorCode(result.Error, common.ErrCodeConsensusDispute) {
+			// Check if this is a consensus-valid error (execution revert)
+			if e.isConsensusValidError(result.Error) {
+				outcome = "consensus_on_error"
+			} else if e.isAgreedUponError(result.Error) {
+				// Check if this is an agreed-upon error returned from consensus evaluation
+				outcome = "agreed_error"
+			} else if common.HasErrorCode(result.Error, common.ErrCodeConsensusDispute) {
 				outcome = "dispute"
 			} else if common.HasErrorCode(result.Error, common.ErrCodeConsensusLowParticipants) {
 				outcome = "low_participants"
@@ -211,7 +252,7 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 		telemetry.MetricConsensusDuration.WithLabelValues(projectId, networkId, category, outcome, finalityStr).Observe(duration)
 
 		// Update agreement rate (simplified moving average)
-		if outcome == "success" {
+		if outcome == "success" || outcome == "consensus_on_error" || outcome == "agreed_error" {
 			telemetry.MetricConsensusAgreementRate.WithLabelValues(projectId, networkId).Set(1.0)
 		} else {
 			telemetry.MetricConsensusAgreementRate.WithLabelValues(projectId, networkId).Set(0.0)
@@ -625,10 +666,10 @@ func (e *executor[R]) evaluateConsensus(
 	defer evalSpan.End()
 
 	// Count unique participants and responses
-	nonErrorParticipantCount := e.countUniqueParticipants(responses)
+	participantCount := e.countUniqueParticipants(responses)
 
 	lg.Debug().
-		Int("nonErrorParticipantCount", nonErrorParticipantCount).
+		Int("participantCount", participantCount).
 		Int("requiredParticipants", e.requiredParticipants).
 		Msg("counting unique participants")
 
@@ -641,7 +682,7 @@ func (e *executor[R]) evaluateConsensus(
 	}
 
 	evalSpan.SetAttributes(
-		attribute.Int("participants.non_error", nonErrorParticipantCount),
+		attribute.Int("participants.count", participantCount),
 		attribute.Int("participants.required", e.requiredParticipants),
 		attribute.Int("results.unique_count", len(resultCounts)),
 		attribute.Int("results.most_common_count", mostCommonResultCount),
@@ -694,6 +735,10 @@ func (e *executor[R]) evaluateConsensus(
 			// Consensus was reached on an error (e.g., all nodes agree on execution revert)
 			lg.Debug().Err(consensusError).Msg("consensus reached on error")
 			evalSpan.SetStatus(codes.Ok, "consensus achieved on error")
+
+			// Track this as a special type of successful consensus
+			telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "consensus_on_error", finalityStr).Inc()
+
 			return &failsafeCommon.PolicyResult[R]{
 				Error: consensusError,
 			}
@@ -709,11 +754,11 @@ func (e *executor[R]) evaluateConsensus(
 	}
 
 	// Check if we have low participants
-	isLowParticipants := e.isLowParticipants(nonErrorParticipantCount, len(responses), len(selectedUpstreams))
+	isLowParticipants := e.isLowParticipants(participantCount, len(responses), len(selectedUpstreams))
 
 	if isLowParticipants {
 		lg.Debug().
-			Int("nonErrorParticipantCount", nonErrorParticipantCount).
+			Int("participantCount", participantCount).
 			Int("responses", len(responses)).
 			Int("required", e.requiredParticipants).
 			Int("selectedUpstreams", len(selectedUpstreams)).
@@ -746,6 +791,27 @@ func (e *executor[R]) evaluateConsensus(
 		attribute.String("dispute.behavior", string(e.disputeBehavior)),
 	)
 
+	// Before declaring dispute, check if the most common result is an agreed-upon error
+	// If multiple upstreams agree on the same error (like invalid params), return that error
+	for _, r := range responses {
+		if r.err != nil && e.isAgreedUponError(r.err) {
+			errorHash := e.errorToConsensusHash(r.err)
+			if errorHash == mostCommonResultHash && mostCommonResultCount >= 2 {
+				// Multiple upstreams agree on this error, return it instead of dispute
+				lg.Debug().
+					Err(r.err).
+					Str("errorHash", errorHash).
+					Int("agreementCount", mostCommonResultCount).
+					Msg("consensus on agreed-upon error, returning agreed error")
+				evalSpan.SetStatus(codes.Ok, "consensus achieved on agreed-upon error")
+				telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "agreed_error", finalityStr).Inc()
+				return &failsafeCommon.PolicyResult[R]{
+					Error: r.err,
+				}
+			}
+		}
+	}
+
 	// Handle dispute according to behavior
 	result := e.handleDispute(lg, responses, exec)
 	if result.Error != nil {
@@ -755,15 +821,22 @@ func (e *executor[R]) evaluateConsensus(
 	return result
 }
 
-// countUniqueParticipants counts the number of unique non-error participants
+// countUniqueParticipants counts the number of unique participants that provided responses
 func (e *executor[R]) countUniqueParticipants(responses []*execResult[R]) int {
-	nonErrorParticipants := make(map[string]struct{})
+	uniqueParticipants := make(map[string]struct{})
 	for _, r := range responses {
-		if (r.err == nil || e.isConsensusValidError(r.err)) && r.upstream != nil && r.upstream.Config() != nil {
-			nonErrorParticipants[r.upstream.Config().Id] = struct{}{}
+		// Count all participants that provided a response (success or any error)
+		if r.upstream != nil && r.upstream.Config() != nil {
+			if r.err != nil {
+				if e.isConsensusValidError(r.err) {
+					uniqueParticipants[r.upstream.Config().Id] = struct{}{}
+				}
+			} else {
+				uniqueParticipants[r.upstream.Config().Id] = struct{}{}
+			}
 		}
 	}
-	return len(nonErrorParticipants)
+	return len(uniqueParticipants)
 }
 
 // countResponsesByHash counts responses by their hash and returns the counts, most common hash and count
@@ -773,36 +846,25 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 	for _, r := range responses {
 		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
 		if err != nil || resultHash == "" {
+			// Also try to hash agreed-upon errors
+			if r.err != nil && e.isAgreedUponError(r.err) {
+				if hash := e.errorToConsensusHash(r.err); hash != "" {
+					resultCounts[hash]++
+					continue
+				}
+			}
 			errorCount++
-			if r.err != nil && !e.isConsensusValidError(r.err) {
+			if r.err != nil && !e.isConsensusValidError(r.err) && !e.isAgreedUponError(r.err) {
 				lg.Debug().
 					Err(r.err).
-					Msg("response has non-consensus-valid error")
+					Msg("response has non-consensus/agreed-upon error")
 			} else if err != nil {
 				lg.Error().
 					Err(err).
-					Msg("error converting result/error to hash")
+					Msg("failed to hash result")
 			}
-			continue
-		}
-		resultCounts[resultHash]++
-		if lg.GetLevel() <= zerolog.DebugLevel {
-			upstreamId := "unknown"
-			if r.upstream != nil && r.upstream.Config() != nil {
-				upstreamId = r.upstream.Config().Id
-			}
-			lg.Debug().
-				Str("resultHash", resultHash).
-				Int("count", resultCounts[resultHash]).
-				Str("upstream", upstreamId).
-				Bool("isError", r.err != nil).
-				Interface("response", func() interface{} {
-					if r.err != nil {
-						return r.err
-					}
-					return e.resultToJsonRpcResponse(r.result, exec)
-				}()).
-				Msg("counting response")
+		} else {
+			resultCounts[resultHash]++
 		}
 	}
 
@@ -819,7 +881,9 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 	return resultCounts, mostCommonResultHash, mostCommonResultCount
 }
 
-// findResultByHash finds a result that matches the given hash
+// findResultByHash finds a successful result that matches the given hash.
+// This function is only called after error consensus has been handled,
+// so it only needs to look for successful results.
 func (e *executor[R]) findResultByHash(responses []*execResult[R], targetHash string, exec failsafe.Execution[R]) *R {
 	// First try to find a successful result with matching hash
 	for _, r := range responses {
@@ -834,31 +898,19 @@ func (e *executor[R]) findResultByHash(responses []*execResult[R], targetHash st
 		}
 	}
 
-	// If no successful result matches, check if the hash matches a consensus-valid error
-	// In this case, we return the result from a response with the matching error
-	for _, r := range responses {
-		if r.err != nil && e.isConsensusValidError(r.err) {
-			errorHash := e.errorToConsensusHash(r.err)
-			if errorHash == targetHash {
-				// Return the result even though there's an error, as the consensus agreed on this error
-				return &r.result
-			}
-		}
-	}
-
 	return nil
 }
 
 // isLowParticipants determines if we have low participants based on various conditions
-func (e *executor[R]) isLowParticipants(nonErrorParticipantCount, responseCount, selectedUpstreamCount int) bool {
+func (e *executor[R]) isLowParticipants(participantCount, responseCount, selectedUpstreamCount int) bool {
 	if selectedUpstreamCount < e.requiredParticipants {
 		return true
 	}
 
-	if nonErrorParticipantCount < e.requiredParticipants {
+	if participantCount < e.requiredParticipants {
 		// Check if we short-circuited and would have had enough participants
 		if responseCount < selectedUpstreamCount {
-			potentialUniqueParticipants := nonErrorParticipantCount + (selectedUpstreamCount - responseCount)
+			potentialUniqueParticipants := participantCount + (selectedUpstreamCount - responseCount)
 			return potentialUniqueParticipants < e.requiredParticipants
 		}
 		return true
@@ -904,7 +956,8 @@ func (e *executor[R]) handleLowParticipants(
 	errFn := func() error {
 		return common.NewErrConsensusLowParticipants(
 			"not enough participants",
-			e.extractParticipants(lg, responses, exec),
+			e.extractParticipants(responses, exec),
+			e.extractCauses(responses),
 		)
 	}
 
@@ -915,21 +968,24 @@ func (e *executor[R]) handleLowParticipants(
 		return e.handleAcceptMostCommon(lg, responses, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no valid results found",
-				e.extractParticipants(lg, responses, exec),
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
 			)
 		})
 	case common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader:
 		return e.handlePreferBlockHeadLeader(lg, responses, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no block head leader found",
-				e.extractParticipants(lg, responses, exec),
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
 			)
 		})
 	case common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader:
 		return e.handleOnlyBlockHeadLeader(lg, responses, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no block head leader found",
-				e.extractParticipants(lg, responses, exec),
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
 			)
 		})
 	default:
@@ -946,7 +1002,8 @@ func (e *executor[R]) handleDispute(
 	errFn := func() error {
 		return common.NewErrConsensusDispute(
 			"not enough agreement among responses",
-			e.extractParticipants(lg, responses, exec),
+			e.extractParticipants(responses, exec),
+			e.extractCauses(responses),
 		)
 	}
 
@@ -957,21 +1014,24 @@ func (e *executor[R]) handleDispute(
 		return e.handleAcceptMostCommon(lg, responses, func() error {
 			return common.NewErrConsensusDispute(
 				"no valid results found",
-				e.extractParticipants(lg, responses, exec),
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
 			)
 		})
 	case common.ConsensusDisputeBehaviorPreferBlockHeadLeader:
 		return e.handlePreferBlockHeadLeader(lg, responses, func() error {
 			return common.NewErrConsensusDispute(
 				"no block head leader found",
-				e.extractParticipants(lg, responses, exec),
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
 			)
 		})
 	case common.ConsensusDisputeBehaviorOnlyBlockHeadLeader:
 		return e.handleOnlyBlockHeadLeader(lg, responses, func() error {
 			return common.NewErrConsensusDispute(
 				"no block head leader found",
-				e.extractParticipants(lg, responses, exec),
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
 			)
 		})
 	default:
@@ -1042,7 +1102,7 @@ func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 	}
 }
 
-func (e *executor[R]) extractParticipants(lg *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R]) []common.ParticipantInfo {
+func (e *executor[R]) extractParticipants(responses []*execResult[R], exec failsafe.Execution[R]) []common.ParticipantInfo {
 	participants := make([]common.ParticipantInfo, 0, len(responses))
 	for _, resp := range responses {
 		participant := common.ParticipantInfo{}
@@ -1063,6 +1123,17 @@ func (e *executor[R]) extractParticipants(lg *zerolog.Logger, responses []*execR
 		participants = append(participants, participant)
 	}
 	return participants
+}
+
+// extractCauses extracts all errors from responses (including consensus-valid errors)
+func (e *executor[R]) extractCauses(responses []*execResult[R]) []error {
+	causes := make([]error, 0, len(responses))
+	for _, resp := range responses {
+		if resp.err != nil {
+			causes = append(causes, resp.err)
+		}
+	}
+	return causes
 }
 
 func (e *executor[R]) createRateLimiter(logger *zerolog.Logger, upstreamId string) ratelimiter.RateLimiter[any] {

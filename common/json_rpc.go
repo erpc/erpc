@@ -142,7 +142,7 @@ func (r *JsonRpcResponse) ID() interface{} {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
 
-	if r.idBytes == nil || len(r.idBytes) == 0 {
+	if len(r.idBytes) == 0 {
 		return nil
 	}
 
@@ -314,7 +314,7 @@ func (r *JsonRpcResponse) Size(ctx ...context.Context) (int, error) {
 		return 0, nil
 	}
 
-	if r.Result != nil && len(r.Result) > 0 {
+	if len(r.Result) > 0 {
 		return len(r.Result), nil
 	}
 
@@ -336,7 +336,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 
 	e.Interface("id", r.ID()).Int("resultSize", len(r.Result))
 
-	if r.errBytes != nil && len(r.errBytes) > 0 {
+	if len(r.errBytes) > 0 {
 		if IsSemiValidJson(r.errBytes) {
 			e.RawJSON("error", r.errBytes)
 		} else {
@@ -346,7 +346,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		e.Interface("error", r.Error)
 	}
 
-	if r.Result != nil && len(r.Result) > 0 {
+	if len(r.Result) > 0 {
 		if len(r.Result) < 300*1024 {
 			if IsSemiValidJson(r.Result) {
 				e.RawJSON("result", r.Result)
@@ -494,7 +494,7 @@ func (r *JsonRpcResponse) WriteResultTo(w io.Writer, trimSides bool) (n int64, e
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
-	if r.Result != nil && len(r.Result) > 0 {
+	if len(r.Result) > 0 {
 		if trimSides {
 			nn, err := w.Write(r.Result[1 : len(r.Result)-1])
 			return int64(nn), err
@@ -541,7 +541,7 @@ func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
-	if r.Result != nil && len(r.Result) > 0 {
+	if len(r.Result) > 0 {
 		return util.IsBytesEmptyish(r.Result)
 	}
 
@@ -732,7 +732,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 				return nil, err
 			}
 			// Skip if the canonicalized value is empty
-			if vj == nil || len(vj) == 0 {
+			if len(vj) == 0 {
 				continue
 			}
 
@@ -776,7 +776,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 				return nil, err
 			}
 			// Skip if the canonicalized value is empty
-			if b == nil || len(b) == 0 {
+			if len(b) == 0 {
 				continue
 			}
 

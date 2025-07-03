@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -21,6 +22,10 @@ import (
 var (
 	successResponse, _ = common.NewJsonRpcResponse(1, "0x7a", nil)
 )
+
+func init() {
+	util.ConfigureTestLogger()
+}
 
 func TestNetwork_ConsensusPolicy(t *testing.T) {
 	tests := []struct {
@@ -800,7 +805,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			defer func() {
 				cancel()
 				// Allow any hedge/consensus requests to complete before cleanup
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond)
 			}()
 
 			// Setup network with consensus policy
@@ -1172,4 +1177,399 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 
 func pointer[T any](v T) *T {
 	return &v
+}
+
+func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
+	// Helper to create JSON-RPC error response
+	createErrorResponse := func(code int, message string) map[string]interface{} {
+		return map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error": map[string]interface{}{
+				"code":    code,
+				"message": message,
+			},
+		}
+	}
+
+	tests := []struct {
+		name                 string
+		upstreams            []*common.UpstreamConfig
+		request              map[string]interface{}
+		mockResponses        []map[string]interface{}
+		requiredParticipants int
+		expectedError        bool
+		expectedErrorCode    *int // Expected JSON-RPC error code
+		expectedErrorMsg     string
+	}{
+		{
+			name:                 "consensus_on_invalid_params_error",
+			requiredParticipants: 3,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_call",
+				"params": []interface{}{}, // Invalid params
+			},
+			mockResponses: []map[string]interface{}{
+				createErrorResponse(-32602, "Invalid params"),
+				createErrorResponse(-32602, "Invalid params"),
+				createErrorResponse(-32602, "Invalid params"),
+			},
+			expectedError:     true,
+			expectedErrorCode: pointer(-32602),
+			expectedErrorMsg:  "Invalid params",
+		},
+		{
+			name:                 "consensus_on_method_not_found",
+			requiredParticipants: 3,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_unknownMethod",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				createErrorResponse(-32601, "Method not found"),
+				createErrorResponse(-32601, "Method not found"),
+				createErrorResponse(-32601, "Method not found"),
+			},
+			expectedError:     true,
+			expectedErrorCode: pointer(-32601),
+			expectedErrorMsg:  "Method not found",
+		},
+		{
+			name:                 "consensus_on_missing_data",
+			requiredParticipants: 3,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockByNumber",
+				"params": []interface{}{"0x999999999", false}, // Very old block
+			},
+			mockResponses: []map[string]interface{}{
+				createErrorResponse(-32014, "requested data is not available"),
+				createErrorResponse(-32014, "requested data is not available"),
+				createErrorResponse(-32014, "requested data is not available"),
+			},
+			expectedError:     true,
+			expectedErrorCode: pointer(-32014),
+			expectedErrorMsg:  "requested data is not available",
+		},
+		{
+			name:                 "consensus_on_execution_reverted",
+			requiredParticipants: 3,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_call",
+				"params": []interface{}{
+					map[string]interface{}{
+						"to":   "0x0000000000000000000000000000000000000000",
+						"data": "0x12345678",
+					},
+					"latest",
+				},
+			},
+			mockResponses: []map[string]interface{}{
+				createErrorResponse(3, "execution reverted"),
+				createErrorResponse(3, "execution reverted"),
+				createErrorResponse(3, "execution reverted"),
+			},
+			expectedError:     true,
+			expectedErrorCode: pointer(3),
+			expectedErrorMsg:  "execution reverted",
+		},
+		{
+			name:                 "mixed_errors_returns_dispute",
+			requiredParticipants: 3,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_call",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				createErrorResponse(-32602, "Invalid params"),
+				createErrorResponse(-32601, "Method not found"),
+				createErrorResponse(-32000, "Internal error"),
+			},
+			expectedError:     true,
+			expectedErrorCode: nil, // Should get dispute error, not specific JSON-RPC error
+			expectedErrorMsg:  "not enough participants",
+		},
+		{
+			name:                 "majority_agreement_on_error_with_one_success",
+			requiredParticipants: 3,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-agreed-error.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_call",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				createErrorResponse(-32602, "Invalid params"),
+				createErrorResponse(-32602, "Invalid params"),
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1234",
+				},
+			},
+			expectedError:     true,
+			expectedErrorCode: pointer(-32602),
+			expectedErrorMsg:  "Invalid params",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer func() {
+				cancel()
+				time.Sleep(100 * time.Millisecond)
+			}()
+
+			// Setup network infrastructure
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			require.NoError(t, err)
+
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1MB",
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx, &log.Logger, "prjA", tt.upstreams,
+				ssr, nil, vr, pr, nil, mt, 1*time.Second,
+			)
+
+			// Create network with consensus policy
+			ntw, err := NewNetwork(
+				ctx, &log.Logger, "prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 123,
+					},
+					Failsafe: []*common.FailsafeConfig{
+						{
+							MatchMethod: "*",
+							Consensus: &common.ConsensusPolicyConfig{
+								RequiredParticipants:    tt.requiredParticipants,
+								AgreementThreshold:      2, // Majority agreement
+								DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+								LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+							},
+						},
+					},
+				},
+				nil, upsReg, mt,
+			)
+			require.NoError(t, err)
+
+			err = upsReg.Bootstrap(ctx)
+			require.NoError(t, err)
+			err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			require.NoError(t, err)
+
+			// Setup mock responses
+			for i, upstream := range tt.upstreams {
+				gock.New(upstream.Endpoint).
+					Post("/").
+					Times(1).
+					Reply(200).
+					SetHeader("Content-Type", "application/json").
+					JSON(tt.mockResponses[i])
+			}
+
+			// Make request
+			reqBytes, err := json.Marshal(tt.request)
+			require.NoError(t, err)
+
+			fakeReq := common.NewNormalizedRequest(reqBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			// Verify results
+			if tt.expectedError {
+				assert.Error(t, err)
+				assert.Nil(t, resp)
+
+				if tt.expectedErrorCode != nil {
+					// Should get the specific JSON-RPC error
+					var jre *common.ErrJsonRpcExceptionInternal
+					if assert.True(t, errors.As(err, &jre), "expected JSON-RPC error but got %T: %v", err, err) {
+						assert.Equal(t, common.JsonRpcErrorNumber(*tt.expectedErrorCode), jre.NormalizedCode(),
+							"expected error code %d but got %d", *tt.expectedErrorCode, jre.NormalizedCode())
+						assert.Contains(t, jre.Message, tt.expectedErrorMsg)
+					}
+				} else {
+					// Should get consensus dispute error
+					assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants),
+						"expected consensus dispute error but got %v", err)
+					assert.Contains(t, err.Error(), tt.expectedErrorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, resp)
+			}
+		})
+	}
 }

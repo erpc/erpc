@@ -3100,3 +3100,140 @@ func TestConsensusOnExecutionException(t *testing.T) {
 			"expected execution exception error but got %v", result.Error)
 	})
 }
+
+// TestFindResultByHashWithErrorConsensus specifically tests the bug fix where
+// findResultByHash was incorrectly returning &r.result for error consensus cases
+func TestFindResultByHashWithErrorConsensus(t *testing.T) {
+	// Create logger
+	logger := log.Logger
+
+	// Create consensus policy
+	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		WithLogger(&logger).
+		Build()
+
+	// Create executor
+	testExecutor := &executor[*common.NormalizedResponse]{
+		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	}
+
+	// Create test responses with a mix of errors and successful results
+	successResp1 := createResponse("result1", nil)
+	successResp2 := createResponse("result2", nil)
+
+	// Create execution exception errors with different normalized codes
+	execError1 := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(
+			3, // original code
+			common.JsonRpcErrorEvmReverted,
+			"execution reverted",
+			nil,
+			nil,
+		),
+	)
+	// ... existing code ...
+	// Removed unused execError2 variable
+
+	// Create mock execution for context
+	mockExec := &mockExecution{
+		ctx: context.Background(),
+	}
+
+	t.Run("finds_successful_result_by_hash", func(t *testing.T) {
+		responses := []*execResult[*common.NormalizedResponse]{
+			{result: successResp1, err: nil},
+			{result: successResp2, err: nil},
+			{result: nil, err: execError1}, // This has nil result
+		}
+
+		// Get hash of successResp1
+		hash1, err := testExecutor.resultToHash(successResp1, mockExec)
+		require.NoError(t, err)
+
+		// Find result by hash
+		result := testExecutor.findResultByHash(responses, hash1, mockExec)
+		require.NotNil(t, result)
+		require.Equal(t, successResp1, *result)
+	})
+
+	t.Run("returns_nil_for_error_hash_after_fix", func(t *testing.T) {
+		// This test verifies the bug fix - previously findResultByHash would incorrectly
+		// return &r.result when r.err matched the consensus error hash
+
+		responses := []*execResult[*common.NormalizedResponse]{
+			{result: successResp1, err: nil},
+			{result: nil, err: execError1}, // result is nil when there's an error
+			{result: nil, err: execError1}, // another response with same error
+		}
+
+		// Get the error hash
+		errorHash := testExecutor.errorToConsensusHash(execError1)
+		require.NotEmpty(t, errorHash)
+
+		// Try to find result by error hash - should return nil after our fix
+		result := testExecutor.findResultByHash(responses, errorHash, mockExec)
+		require.Nil(t, result, "findResultByHash should return nil for error hash")
+	})
+
+	t.Run("returns_nil_when_no_match", func(t *testing.T) {
+		responses := []*execResult[*common.NormalizedResponse]{
+			{result: successResp1, err: nil},
+			{result: nil, err: execError1},
+		}
+
+		// Try with a hash that doesn't match any response
+		result := testExecutor.findResultByHash(responses, "non-existent-hash", mockExec)
+		require.Nil(t, result)
+	})
+
+	t.Run("error_consensus_handled_in_evaluateConsensus_not_findResultByHash", func(t *testing.T) {
+		// This test documents the intended behavior: error consensus is handled
+		// in evaluateConsensus before findResultByHash is called
+
+		// Create upstreams
+		upstreams := []common.Upstream{
+			common.NewFakeUpstream("upstream1", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream2", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+			common.NewFakeUpstream("upstream3", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100))),
+		}
+
+		// Create request
+		dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call"}`))
+
+		// Create context
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, common.RequestContextKey, dummyReq)
+		ctx = context.WithValue(ctx, common.UpstreamsContextKey, upstreams)
+
+		// Create consensus policy
+		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			WithRequiredParticipants(3).
+			WithAgreementThreshold(2).
+			WithLogger(&logger).
+			Build()
+
+		// Create executor
+		testExecutor := &executor[*common.NormalizedResponse]{
+			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		}
+
+		// Create mock execution
+		mockExec := &mockExecution{
+			ctx: ctx,
+		}
+
+		// All upstreams return the same error
+		result := testExecutor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: execError1,
+			}
+		})(mockExec)
+
+		// Verify error consensus is properly handled
+		require.NotNil(t, result.Error)
+		require.True(t, common.HasErrorCode(result.Error, common.ErrCodeEndpointExecutionException))
+
+		// The key point: findResultByHash was never called for this error consensus case
+		// because evaluateConsensus handled it directly
+	})
+}

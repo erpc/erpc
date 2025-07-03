@@ -167,7 +167,7 @@ func (e *BaseError) Unwrap() error {
 func (e *BaseError) Error() string {
 	var detailsStr string
 
-	if e.Details != nil && len(e.Details) > 0 {
+	if len(e.Details) > 0 {
 		s, er := SonicCfg.Marshal(e.Details)
 		if er == nil {
 			detailsStr = fmt.Sprintf("(%s)", s)
@@ -2315,11 +2315,12 @@ type ErrConsensusDispute struct{ BaseError }
 
 const ErrCodeConsensusDispute ErrorCode = "ErrConsensusDispute"
 
-var NewErrConsensusDispute = func(message string, participants []ParticipantInfo) error {
+var NewErrConsensusDispute = func(message string, participants []ParticipantInfo, causes []error) error {
 	return &ErrConsensusDispute{
 		BaseError{
 			Code:    ErrCodeConsensusDispute,
 			Message: message,
+			Cause:   errors.Join(causes...),
 			Details: map[string]interface{}{
 				"participants": participants,
 			},
@@ -2327,18 +2328,45 @@ var NewErrConsensusDispute = func(message string, participants []ParticipantInfo
 	}
 }
 
+func (e *ErrConsensusDispute) Errors() []error {
+	if e.Cause == nil {
+		return nil
+	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
+}
+
 type ErrConsensusLowParticipants struct{ BaseError }
 
 const ErrCodeConsensusLowParticipants ErrorCode = "ErrConsensusLowParticipants"
 
-var NewErrConsensusLowParticipants = func(message string, participants []ParticipantInfo) error {
+var NewErrConsensusLowParticipants = func(message string, participants []ParticipantInfo, causes []error) error {
 	return &ErrConsensusLowParticipants{
 		BaseError{
 			Code:    ErrCodeConsensusLowParticipants,
 			Message: message,
+			Cause:   errors.Join(causes...),
 			Details: map[string]interface{}{
 				"participants": participants,
 			},
 		},
 	}
+}
+
+func (e *ErrConsensusLowParticipants) Errors() []error {
+	if e.Cause == nil {
+		return nil
+	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
 }

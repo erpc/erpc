@@ -452,16 +452,16 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 				nw.Evm != nil && nw.Evm.ChainId == 9999 {
 				found = true
 				// Confirm the default failsafe timeout was set as "7s"
-				if nw.Failsafe == nil || len(nw.Failsafe) == 0 || nw.Failsafe[0].Timeout == nil || nw.Failsafe[0].Timeout.Duration.String() != "7s" {
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Timeout == nil || nw.Failsafe[0].Timeout.Duration.String() != "7s" {
 					t.Errorf("expected lazy loaded network to have Failsafe[0].Timeout.Duration = 7s, got %+v", nw.Failsafe)
 				}
-				if nw.Failsafe == nil || len(nw.Failsafe) == 0 || nw.Failsafe[0].Retry != nil {
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Retry != nil {
 					t.Errorf("expected lazy loaded network to have Failsafe[0].Retry = nil, got %+v", nw.Failsafe)
 				}
-				if nw.Failsafe == nil || len(nw.Failsafe) == 0 || nw.Failsafe[0].CircuitBreaker != nil {
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].CircuitBreaker != nil {
 					t.Errorf("expected lazy loaded network to have Failsafe[0].CircuitBreaker = nil, got %+v", nw.Failsafe)
 				}
-				if nw.Failsafe == nil || len(nw.Failsafe) == 0 || nw.Failsafe[0].Hedge != nil {
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Hedge != nil {
 					t.Errorf("expected lazy loaded network to have Failsafe[0].Hedge = nil, got %+v", nw.Failsafe)
 				}
 				break
