@@ -1078,6 +1078,68 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			mock.Anything, // ttl
 		)
 	})
+
+	t.Run("HandleNilResponseGracefully", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		// Create a policy with empty behavior set to "ignore"
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBalance",
+			Finality: common.DataFinalityStateFinalized,
+			Empty:    common.CacheEmptyBehaviorIgnore,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Pass nil response to test the nil check
+		err = cache.Set(context.Background(), req, nil)
+
+		// Should not panic and should complete without error
+		assert.NoError(t, err)
+
+		// Should not attempt to cache since response is nil (empty)
+		mockConnectors[0].AssertNotCalled(t, "Set")
+	})
+
+	t.Run("HandleNilResponseWithAllowEmptyPolicy", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		// Create a policy with empty behavior set to "allow"
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBalance",
+			Finality: common.DataFinalityStateFinalized,
+			Empty:    common.CacheEmptyBehaviorAllow,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Pass nil response to test the nil check
+		err = cache.Set(context.Background(), req, nil)
+
+		// Should not panic and should complete without error
+		assert.NoError(t, err)
+
+		// Should still not cache since we can't actually cache a nil response
+		mockConnectors[0].AssertNotCalled(t, "Set")
+	})
 }
 
 func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
@@ -1574,7 +1636,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 			require.NoError(t, err)
 
 			// Test both Set and Get matching
-			matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
+			matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized, false)
 			require.NoError(t, err)
 			matchesGet, err := policy.MatchesForGet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
 			require.NoError(t, err)

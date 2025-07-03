@@ -372,10 +372,12 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	} else {
 		finState = req.Finality(ctx)
 	}
-	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	isEmptyish := resp == nil || resp.IsResultEmptyish()
+	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState, isEmptyish)
 	span.SetAttributes(
 		attribute.String("block.finality", finState.String()),
 		attribute.Int("cache.policies_matched", len(policies)),
+		attribute.Bool("response.emptyish", isEmptyish),
 	)
 	if common.IsTracingDetailed {
 		span.SetAttributes(
@@ -585,7 +587,7 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -599,7 +601,7 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 				Msg("checking policy match for set")
 		}
 
-		match, err := policy.MatchesForSet(networkId, method, params, finality)
+		match, err := policy.MatchesForSet(networkId, method, params, finality, isEmptyish)
 		if err != nil {
 			return nil, err
 		}

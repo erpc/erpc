@@ -264,6 +264,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		trace.WithAttributes(
 			attribute.String("network.id", n.networkId),
 			attribute.String("request.method", method),
+			attribute.String("request.finality", req.Finality(ctx).String()),
 		),
 	)
 	if common.IsTracingDetailed {
