@@ -3698,7 +3698,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3713,7 +3713,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3729,12 +3729,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		// Prepare a getLogs request with specific parameters
 		requestBody := `{
 			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"fromBlock": "0x1ab771",
-				"toBlock": "0x1ab7d5",
-				"topics": ["0xbccc00b713f54173962e7de6098f643d8ebf53d488d71f4b2a5171496d038f9e"]
-			}],
+			"method": "eth_getBalance",
+			"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 			"id": 1
 		}`
 
@@ -3823,7 +3819,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3837,7 +3833,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3852,12 +3848,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		requestBody := `{
 			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"fromBlock": "0x1ab771",
-				"toBlock": "0x1ab7d5",
-				"topics": ["0xbccc00b713f54173962e7de6098f643d8ebf53d488d71f4b2a5171496d038f9e"]
-			}],
+			"method": "eth_getBalance",
+			"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 			"id": 1
 		}`
 

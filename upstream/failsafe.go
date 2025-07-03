@@ -1,8 +1,8 @@
 package upstream
 
 import (
-	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -466,6 +466,19 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 					attribute.Bool("response.is_empty", isEmpty),
 				)
 				if isEmpty {
+					method, _ := req.Method()
+					span.SetAttributes(
+						attribute.String("method", method),
+						attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
+					)
+					// Check if method is in ignore list - if so, do NOT retry
+					if slices.Contains(emptyResultIgnore, method) {
+						span.SetAttributes(
+							attribute.Bool("retry", false),
+							attribute.String("reason", "method_in_empty_ignore_list"),
+						)
+						return false
+					}
 					ups := result.Upstream()
 					// has Retry-Empty directive + "empty" response + upstream can handle the block -> No Retry
 					if err == nil && ups != nil {
@@ -477,25 +490,16 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 									attribute.String("upstream.id", ups.Id()),
 									attribute.String("upstream.sync_state", syncState.String()),
 								)
-								if syncState == common.EvmSyncingStateNotSyncing {
-									_, bn, ebn := evm.ExtractBlockReferenceFromRequest(context.TODO(), req)
+								if syncState != common.EvmSyncingStateSyncing {
+									str, bn, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req)
+									span.SetAttributes(
+										attribute.String("extracted_block_number", fmt.Sprintf("%d", bn)),
+										attribute.String("extracted_block_ref", fmt.Sprintf("%s", str)),
+										attribute.String("extracted_block_error", fmt.Sprintf("%v", ebn)),
+									)
 									if ebn == nil && bn > 0 {
-										method, _ := req.Method()
-										span.SetAttributes(
-											attribute.Int64("block_number", bn),
-											attribute.String("method", method),
-											attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
-										)
-										// Check if method is in ignore list - if so, do NOT retry
-										if slices.Contains(emptyResultIgnore, method) {
-											span.SetAttributes(
-												attribute.Bool("retry", false),
-												attribute.String("reason", "method_in_empty_ignore_list"),
-											)
-											return false
-										}
 										// Use EvmAssertBlockAvailability to check if the upstream can handle the block
-										if avail, err := ups.EvmAssertBlockAvailability(context.TODO(), method, emptyResultConfidence, false, bn); err == nil && avail {
+										if avail, err := ups.EvmAssertBlockAvailability(ctx, method, emptyResultConfidence, false, bn); err == nil && avail {
 											// If the upstream can handle the block and returned empty, don't retry
 											span.SetAttributes(
 												attribute.Bool("block_available", true),
@@ -535,7 +539,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						"eth_getTransactionByHash",
 						"eth_getTransactionByBlockHashAndIndex",
 						"eth_getTransactionByBlockNumberAndIndex":
-						_, blkNum, err := evm.ExtractBlockReferenceFromRequest(context.TODO(), req)
+						_, blkNum, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
 						if err == nil {
 							if blkNum == 0 {
 								span.SetAttributes(
