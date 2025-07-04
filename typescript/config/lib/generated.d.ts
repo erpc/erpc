@@ -382,6 +382,7 @@ export interface ConsensusPolicyConfig {
     disputeBehavior?: ConsensusDisputeBehavior;
     lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
     punishMisbehavior?: PunishMisbehaviorConfig;
+    disputeLogLevel?: string;
 }
 export interface PunishMisbehaviorConfig {
     disputeThreshold: number;
