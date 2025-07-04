@@ -1697,6 +1697,27 @@ func (e *ErrEndpointUnauthorized) ErrorStatusCode() int {
 	return 401
 }
 
+type ErrEndpointDuplicateNonce struct{ BaseError }
+
+const ErrCodeEndpointDuplicateNonce = "ErrEndpointDuplicateNonce"
+
+var NewErrEndpointDuplicateNonce = func(cause error) error {
+	return &ErrEndpointDuplicateNonce{
+		BaseError{
+			Code:    ErrCodeEndpointDuplicateNonce,
+			Message: "transaction with this nonce already exists in mempool or on-chain",
+			Cause:   cause,
+			Details: map[string]interface{}{
+				"retryableTowardNetwork": false,
+			},
+		},
+	}
+}
+
+func (e *ErrEndpointDuplicateNonce) ErrorStatusCode() int {
+	return http.StatusOK
+}
+
 type ErrEndpointUnsupported struct{ BaseError }
 
 const ErrCodeEndpointUnsupported = "ErrEndpointUnsupported"
@@ -1978,6 +1999,7 @@ const (
 	JsonRpcErrorEvmReverted JsonRpcErrorNumber = 3
 
 	// Normalized blockchain-specific codes by eRPC
+	JsonRpcErrorDuplicateNonce   JsonRpcErrorNumber = -32004
 	JsonRpcErrorCapacityExceeded JsonRpcErrorNumber = -32005
 	JsonRpcErrorEvmLargeRange    JsonRpcErrorNumber = -32012
 	JsonRpcErrorMissingData      JsonRpcErrorNumber = -32014

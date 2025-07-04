@@ -270,6 +270,22 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
+		// "Transaction mempool and nonce" errors
+		//----------------------------------------------------------------
+
+		if strings.Contains(msg, "transaction already in mempool") || strings.Contains(msg, "nonce too low") {
+			return common.NewErrEndpointDuplicateNonce(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorDuplicateNonce,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
+		//----------------------------------------------------------------
 		// "Not found" or "disabled" errors (missing data or unsupported)
 		//----------------------------------------------------------------
 

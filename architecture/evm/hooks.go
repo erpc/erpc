@@ -80,6 +80,8 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
 		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re, skipCacheRead)
+	case "eth_sendrawtransaction":
+		return upstreamPostForward_eth_sendRawTransaction(ctx, n, u, rq, rs, re, skipCacheRead)
 	}
 
 	return rs, re
