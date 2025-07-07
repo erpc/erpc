@@ -8085,7 +8085,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		statusCode, respBody := sendRequest(userRequest, nil, nil)
-		assert.Equal(t, http.StatusInternalServerError, statusCode, "status code should indicate failure")
+		assert.Equal(t, http.StatusPreconditionFailed, statusCode, "status code should indicate failure")
 
 		var respObj map[string]interface{}
 		err := sonic.UnmarshalString(respBody, &respObj)
@@ -8219,7 +8219,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}
 
 		statusCode, respBody := sendRequest(userRequest, nil, nil)
-		assert.Equal(t, http.StatusInternalServerError, statusCode, "status code should indicate failure")
+		assert.Equal(t, http.StatusConflict, statusCode, "status code should indicate failure")
 
 		var respObj map[string]interface{}
 		err := sonic.UnmarshalString(respBody, &respObj)

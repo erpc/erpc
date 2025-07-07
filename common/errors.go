@@ -2341,6 +2341,10 @@ func (e *ErrConsensusDispute) Errors() []error {
 	return errs.Unwrap()
 }
 
+func (e *ErrConsensusDispute) ErrorStatusCode() int {
+	return http.StatusConflict
+}
+
 type ErrConsensusLowParticipants struct{ BaseError }
 
 const ErrCodeConsensusLowParticipants ErrorCode = "ErrConsensusLowParticipants"
@@ -2369,4 +2373,8 @@ func (e *ErrConsensusLowParticipants) Errors() []error {
 	}
 
 	return errs.Unwrap()
+}
+
+func (e *ErrConsensusLowParticipants) ErrorStatusCode() int {
+	return http.StatusPreconditionFailed
 }
