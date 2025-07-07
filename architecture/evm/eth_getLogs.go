@@ -175,7 +175,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	if !available {
 		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found, because requested block (toBlock %d) is not available on the upstream node, ensure statePollerDebounce is low enough and or the requested block is older than the current chain head", toBlock),
+			fmt.Errorf("block not found for eth_getLogs, because requested toBlock %d is not available on the upstream node", toBlock),
+			up,
 		)
 	}
 	available, err = up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, fromBlock)
@@ -184,7 +185,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	if !available {
 		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found, because (fromBlock %d) is not available on the upstream node, ensure the requested block is within supported range", fromBlock),
+			fmt.Errorf("block not found for eth_getLogs, because fromBlock %d is not available on the upstream node", fromBlock),
+			up,
 		)
 	}
 

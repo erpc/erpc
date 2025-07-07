@@ -753,9 +753,7 @@ func (e *executor[R]) evaluateConsensus(
 		}
 	}
 
-	// Check if we have low participants
-	isLowParticipants := e.isLowParticipants(participantCount, len(responses), len(selectedUpstreams))
-
+	isLowParticipants := e.isLowParticipants(participantCount, len(selectedUpstreams))
 	if isLowParticipants {
 		lg.Debug().
 			Int("participantCount", participantCount).
@@ -901,18 +899,13 @@ func (e *executor[R]) findResultByHash(responses []*execResult[R], targetHash st
 	return nil
 }
 
-// isLowParticipants determines if we have low participants based on various conditions
-func (e *executor[R]) isLowParticipants(participantCount, responseCount, selectedUpstreamCount int) bool {
-	if selectedUpstreamCount < e.requiredParticipants {
+// isLowParticipants determines if we have enough valid responses from participants, or at least attempted upstreams is on par with required participants
+func (e *executor[R]) isLowParticipants(participantCount, selectedUpstreamCount int) bool {
+	if participantCount < e.agreementThreshold {
 		return true
 	}
 
-	if participantCount < e.requiredParticipants {
-		// Check if we short-circuited and would have had enough participants
-		if responseCount < selectedUpstreamCount {
-			potentialUniqueParticipants := participantCount + (selectedUpstreamCount - responseCount)
-			return potentialUniqueParticipants < e.requiredParticipants
-		}
+	if selectedUpstreamCount < e.requiredParticipants {
 		return true
 	}
 

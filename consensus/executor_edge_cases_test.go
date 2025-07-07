@@ -68,9 +68,8 @@ func TestHashCalculationError(t *testing.T) {
 		return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 	})(mockExec)
 
-	// Should handle hash calculation errors gracefully and return dispute error
 	assert.Error(t, result.Error)
-	assert.Contains(t, result.Error.Error(), "ErrConsensusDispute")
+	assert.Contains(t, result.Error.Error(), "ErrConsensusLowParticipants")
 }
 
 // TestContextCancellation tests behavior when context is cancelled during execution

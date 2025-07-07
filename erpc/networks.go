@@ -542,7 +542,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if err != nil {
 					effectiveReq.ErrorsByUpstream.Store(u, err)
 				} else if r.IsResultEmptyish(loopCtx) {
-					effectiveReq.ErrorsByUpstream.Store(u, common.NewErrEndpointMissingData(nil))
+					jr, err := r.JsonRpcResponse(loopCtx)
+					if jr == nil {
+						effectiveReq.ErrorsByUpstream.Store(u, common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", err), u))
+					} else {
+						effectiveReq.ErrorsByUpstream.Store(u, common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.Result), u))
+					}
 					effectiveReq.EmptyResponses.Store(u, true)
 				}
 

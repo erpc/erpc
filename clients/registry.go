@@ -85,7 +85,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						appCtx,
 						&lg,
 						manager.projectId,
-						cfg.Id,
+						ups,
 						parsedUrl,
 						cfg.JsonRpc,
 						proxyPool,
@@ -100,7 +100,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						appCtx,
 						&lg,
 						manager.projectId,
-						cfg.Id,
+						ups,
 						parsedUrl,
 					)
 					if err != nil {

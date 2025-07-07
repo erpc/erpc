@@ -1552,8 +1552,8 @@ cancelling the remaining slow upstream calls and returning immediately.`, called
 
 		// Verify results
 		assert.NotNil(t, result)
-		assert.Error(t, result.Error, "Should have consensus dispute error")
-		assert.Contains(t, result.Error.Error(), "not enough agreement")
+		assert.Error(t, result.Error, "Should have consensus low participants error")
+		assert.Contains(t, result.Error.Error(), "not enough participants")
 
 		// Count how many upstreams were called
 		calledCount := 0
