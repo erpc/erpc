@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1177,6 +1179,341 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 
 func pointer[T any](v T) *T {
 	return &v
+}
+
+// setupTestNetworkWithConsensusPolicy creates a test network with consensus policy for integration testing
+func setupTestNetworkWithConsensusPolicy(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig, consensusConfig *common.ConsensusPolicyConfig) *Network {
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1MB",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	upsReg := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "prjA", upstreams,
+		ssr, nil, vr, pr, nil, mt, 1*time.Second,
+	)
+
+	ntw, err := NewNetwork(
+		ctx, &log.Logger, "prjA",
+		&common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+			Failsafe: []*common.FailsafeConfig{
+				{
+					MatchMethod: "*",
+					Consensus:   consensusConfig,
+				},
+			},
+		},
+		nil, upsReg, mt,
+	)
+	require.NoError(t, err)
+
+	err = upsReg.Bootstrap(ctx)
+	require.NoError(t, err)
+	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+	require.NoError(t, err)
+
+	return ntw
+}
+
+// TestConsensusGoroutineCancellationIntegration tests the consensus goroutine cancellation behavior with real network
+func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Create upstreams
+	upstreams := []*common.UpstreamConfig{
+		{
+			Id:       "upstream1",
+			Endpoint: "http://upstream1.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		{
+			Id:       "upstream2",
+			Endpoint: "http://upstream2.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		{
+			Id:       "upstream3",
+			Endpoint: "http://upstream3.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		{
+			Id:       "upstream4",
+			Endpoint: "http://upstream4.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		{
+			Id:       "upstream5",
+			Endpoint: "http://upstream5.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+	}
+
+	// Mock responses - upstream2 and upstream3 return consensus result quickly
+	gock.New("http://upstream2.localhost").
+		Post("").
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			return strings.Contains(body, "eth_getBalance")
+		}).
+		Reply(200).
+		Delay(10 * time.Millisecond).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x1234567890",
+		})
+
+	gock.New("http://upstream3.localhost").
+		Post("").
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			return strings.Contains(body, "eth_getBalance")
+		}).
+		Reply(200).
+		Delay(10 * time.Millisecond).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x1234567890",
+		})
+
+	// Other upstreams are slow and should be cancelled
+	for _, host := range []string{"upstream1", "upstream4", "upstream5"} {
+		gock.New("http://" + host + ".localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(2 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x9876543210",
+			})
+	}
+
+	// Create network with consensus policy
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
+		RequiredParticipants:    5,
+		AgreementThreshold:      2, // Consensus with just 2 responses to trigger early short-circuit
+		DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+		PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+	})
+
+	// Make request
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+
+	// Execute with timeout to catch deadlocks
+	done := make(chan struct{})
+	var resp *common.NormalizedResponse
+	var err error
+
+	go func() {
+		defer close(done)
+		resp, err = network.Forward(ctx, req)
+	}()
+
+	select {
+	case <-done:
+		// Test completed successfully
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		// Verify consensus was achieved
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, `"0x1234567890"`, string(jrr.Result))
+
+		t.Log("Test passed: Consensus achieved without deadlock")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out - potential deadlock detected")
+	}
+}
+
+// TestConsensusShortCircuitIntegration tests that consensus short-circuits properly with real network
+func TestConsensusShortCircuitIntegration(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Create upstreams
+	upstreams := []*common.UpstreamConfig{
+		{
+			Id:       "upstream1",
+			Endpoint: "http://upstream1.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		{
+			Id:       "upstream2",
+			Endpoint: "http://upstream2.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		{
+			Id:       "upstream3",
+			Endpoint: "http://upstream3.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+	}
+
+	// Mock responses - all return the same result quickly
+	for _, upstream := range upstreams {
+		gock.New(upstream.Endpoint).
+			Post("").
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x7a",
+			})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
+		RequiredParticipants: 3,
+		AgreementThreshold:   2, // Should short-circuit after 2 matching responses
+		DisputeBehavior:      common.ConsensusDisputeBehaviorReturnError,
+		PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+	})
+
+	// Make request
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
+
+	start := time.Now()
+	resp, err := network.Forward(ctx, req)
+	duration := time.Since(start)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// Verify response
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, `"0x7a"`, string(jrr.Result))
+
+	// Should complete quickly due to short-circuit
+	assert.Less(t, duration, 500*time.Millisecond, "Should short-circuit quickly")
+
+	t.Logf("Consensus completed in %v (short-circuit working)", duration)
+}
+
+// TestConsensusInsufficientParticipants tests behavior when requiredParticipants > available upstreams
+func TestConsensusInsufficientParticipants(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Create only 2 upstreams but require 5 participants
+	upstreams := []*common.UpstreamConfig{
+		{
+			Id:       "upstream1",
+			Endpoint: "http://upstream1.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		{
+			Id:       "upstream2",
+			Endpoint: "http://upstream2.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+	}
+
+	// Mock responses - both return the same result
+	for _, upstream := range upstreams {
+		gock.New(upstream.Endpoint).
+			Post("").
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x7a",
+			})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
+		RequiredParticipants:    5, // More than available upstreams
+		AgreementThreshold:      2,
+		DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+		PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+	})
+
+	// Make request
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
+
+	resp, err := network.Forward(ctx, req)
+
+	// Should succeed with AcceptMostCommonValidResult behavior
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// Verify response
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, `"0x7a"`, string(jrr.Result))
+
+	t.Log("Test passed: Consensus handled insufficient participants gracefully")
 }
 
 func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {

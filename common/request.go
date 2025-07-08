@@ -75,6 +75,10 @@ type NormalizedRequest struct {
 	ErrorsByUpstream sync.Map
 	EmptyResponses   sync.Map
 
+	// New fields for centralized upstream management
+	upstreamList      []Upstream // Available upstreams for this request
+	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
+
 	lastValidResponse atomic.Pointer[NormalizedResponse]
 	lastUpstream      atomic.Value
 	evmBlockRef       atomic.Value
@@ -106,31 +110,6 @@ func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *Nor
 	nr.jsonRpcRequest.Store(jsonRpcRequest)
 	nr.compositeType.Store(CompositeTypeNone)
 	return nr
-}
-
-// Clone creates a deep copy of the request with same request method, and params, but different ID.
-// There will be new pointers for the rest of the fields but same initial values.
-// The last valid response will be set to nil.
-func (r *NormalizedRequest) Clone() (*NormalizedRequest, error) {
-	if r == nil {
-		return nil, NewErrInvalidRequest(fmt.Errorf("request is nil or body is nil"))
-	}
-	jrq, err := r.JsonRpcRequest()
-	if err != nil {
-		return nil, err
-	}
-	cloneJrq := jrq.Clone()
-	cloneJrq.ID = util.RandomID()
-	clone := NewNormalizedRequestFromJsonRpcRequest(cloneJrq)
-	clone.SetNetwork(r.network)
-	clone.SetCacheDal(r.cacheDal)
-	if r.directives != nil {
-		clone.SetDirectives(r.directives.Clone())
-	} else {
-		clone.SetDirectives(&RequestDirectives{})
-	}
-
-	return clone, nil
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
@@ -559,4 +538,89 @@ func (r *NormalizedRequest) Finality(ctx context.Context) DataFinalityState {
 	}
 
 	return DataFinalityStateUnknown
+}
+
+func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
+	if r == nil {
+		return
+	}
+	r.upstreamList = upstreams
+	if r.ConsumedUpstreams == nil {
+		r.ConsumedUpstreams = &sync.Map{}
+	}
+}
+
+func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
+	if r == nil || len(r.upstreamList) == 0 {
+		return nil, NewErrUpstreamsExhausted(r, nil, "", "", "", 0, 0, 0, 0, 0)
+	}
+
+	// Check if UseUpstream directive is set
+	if r.directives != nil && r.directives.UseUpstream != "" {
+		// Handle UseUpstream directive - find matching upstream
+		for _, upstream := range r.upstreamList {
+			match, err := WildcardMatch(r.directives.UseUpstream, upstream.Id())
+			if err != nil {
+				continue
+			}
+			if match {
+				// Check if this upstream has already been consumed
+				if _, consumed := r.ConsumedUpstreams.Load(upstream.Id()); !consumed {
+					// Reserve this upstream
+					r.ConsumedUpstreams.Store(upstream.Id(), true)
+					return upstream, nil
+				}
+			}
+		}
+		// If no matching upstream found or all consumed, return error
+		return nil, NewErrUpstreamsExhausted(r, &r.ErrorsByUpstream, "", "", "", 0, 0, 0, 0, len(r.upstreamList))
+	}
+
+	// Normal round-robin selection
+	startIdx := atomic.LoadUint32(&r.UpstreamIdx)
+	for i := 0; i < len(r.upstreamList); i++ {
+		idx := atomic.AddUint32(&r.UpstreamIdx, 1) - 1
+		upstream := r.upstreamList[idx%uint32(len(r.upstreamList))]
+
+		// Skip if already consumed (gave valid response or consensus-valid error)
+		if _, consumed := r.ConsumedUpstreams.Load(upstream.Id()); consumed {
+			continue
+		}
+
+		// Skip if already responded with non-retryable error
+		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
+			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
+				continue
+			}
+		}
+
+		// Skip if already responded empty
+		if _, isEmpty := r.EmptyResponses.Load(upstream); isEmpty {
+			continue
+		}
+
+		// Reserve this upstream
+		r.ConsumedUpstreams.Store(upstream.Id(), true)
+		return upstream, nil
+	}
+
+	// Check if we made a full loop without finding available upstream
+	currentIdx := atomic.LoadUint32(&r.UpstreamIdx)
+	if currentIdx-startIdx >= uint32(len(r.upstreamList)) {
+		return nil, NewErrUpstreamsExhausted(r, &r.ErrorsByUpstream, "", "", "", 0, 0, 0, 0, len(r.upstreamList))
+	}
+
+	return nil, NewErrUpstreamsExhausted(r, &r.ErrorsByUpstream, "", "", "", 0, 0, 0, 0, len(r.upstreamList))
+}
+
+func (r *NormalizedRequest) MarkUpstreamCompleted(upstream Upstream, hadValidResponse bool) {
+	if r == nil || upstream == nil || r.ConsumedUpstreams == nil {
+		return
+	}
+
+	if !hadValidResponse {
+		// Release reservation if response wasn't valid for consensus
+		r.ConsumedUpstreams.Delete(upstream.Id())
+	}
+	// If hadValidResponse is true, keep it marked as consumed
 }

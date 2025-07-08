@@ -335,6 +335,10 @@ func TestConsensusExecutor(t *testing.T) {
 				// Mutex to protect concurrent access to the response queue
 				var queueMutex sync.Mutex
 
+				// Track which execution index we're on
+				execIndex := 0
+				var execIndexMutex sync.Mutex
+
 				// Execute consensus – this mimics the actual execution of the policy as defined in networks.go
 				result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 					ctx := exec.Context()
@@ -342,12 +346,22 @@ func TestConsensusExecutor(t *testing.T) {
 						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("missing execution context")}
 					}
 
-					// Retrieve the cloned request to discover which upstream was selected for this execution.
-					req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-					upstreamID := ""
-					if req != nil && req.Directives() != nil {
-						upstreamID = req.Directives().UseUpstream
+					// Get the current execution index and increment for next call
+					execIndexMutex.Lock()
+					currentExecIndex := execIndex
+					execIndex++
+					execIndexMutex.Unlock()
+
+					// In the new architecture, consensus executor creates N goroutines (requiredParticipants)
+					// Each goroutine would internally use the network layer which calls NextUpstream()
+					// For testing, we simulate this by using the execution index to determine which upstream
+					upsList, _ := ctx.Value(common.UpstreamsContextKey).([]common.Upstream)
+					if currentExecIndex >= len(upsList) {
+						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: fmt.Errorf("execution index %d out of range", currentExecIndex)}
 					}
+
+					upstream := upsList[currentExecIndex]
+					upstreamID := upstream.Id()
 
 					queueMutex.Lock()
 					defer queueMutex.Unlock()
@@ -598,397 +612,56 @@ func pointer[T any](v T) *T {
 	return &v
 }
 
-// TestSelectUpstreams tests the selectUpstreams method with various configurations,
-// specifically focusing on OnlyBlockHeadLeader and PreferBlockHeadLeader behaviors
-func TestSelectUpstreams(t *testing.T) {
-	tests := []struct {
-		name                    string
-		requiredParticipants    int
-		lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
-		upstreams               []struct {
-			id          string
-			latestBlock int64
-			hasPoller   bool
-		}
-		expectedSelected []string // IDs of expected selected upstreams in order
-	}{
-		// OnlyBlockHeadLeader test cases
-		{
-			name:                    "OnlyBlockHeadLeader_leader_not_in_selected_set",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 100, true},
-				{"upstream2", 200, true},
-				{"upstream3", 300, true}, // This is the leader
-			},
-			expectedSelected: []string{"upstream3"}, // Only the leader should be selected
-		},
-		{
-			name:                    "OnlyBlockHeadLeader_leader_already_in_selected_set",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 300, true}, // This is the leader
-				{"upstream2", 200, true},
-				{"upstream3", 100, true},
-			},
-			expectedSelected: []string{"upstream1", "upstream2"}, // Leader already in selected set, no change
-		},
-		{
-			name:                    "OnlyBlockHeadLeader_no_leader_found",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 0, false}, // No poller
-				{"upstream2", 0, false}, // No poller
-				{"upstream3", 0, false}, // No poller
-			},
-			expectedSelected: []string{"upstream1", "upstream2"}, // Normal selection when no leader
-		},
-		{
-			name:                    "OnlyBlockHeadLeader_empty_upstream_list",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{},
-			expectedSelected: []string{}, // Empty result for empty input
-		},
-		// PreferBlockHeadLeader test cases
-		{
-			name:                    "PreferBlockHeadLeader_leader_not_in_selected_swap_last",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 100, true},
-				{"upstream2", 200, true},
-				{"upstream3", 300, true}, // This is the leader
-			},
-			expectedSelected: []string{"upstream1", "upstream3"}, // Leader swaps with last position
-		},
-		{
-			name:                    "PreferBlockHeadLeader_leader_already_in_selected_no_change",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 300, true}, // This is the leader
-				{"upstream2", 200, true},
-				{"upstream3", 100, true},
-			},
-			expectedSelected: []string{"upstream1", "upstream2"}, // No change as leader is already selected
-		},
-		{
-			name:                    "PreferBlockHeadLeader_single_upstream_selected_leader_not_selected",
-			requiredParticipants:    1,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 100, true},
-				{"upstream2", 300, true}, // This is the leader
-			},
-			expectedSelected: []string{"upstream2"}, // Leader replaces the single selected upstream
-		},
-		{
-			name:                    "PreferBlockHeadLeader_empty_selected_set_add_leader",
-			requiredParticipants:    0, // Will default to 2, but more upstreams than required
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 300, true}, // This is the leader
-			},
-			expectedSelected: []string{"upstream1"}, // Leader is added to empty set
-		},
-		{
-			name:                    "PreferBlockHeadLeader_no_evm_upstreams",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 0, false}, // Not EVM upstream (no poller)
-				{"upstream2", 0, false}, // Not EVM upstream (no poller)
-			},
-			expectedSelected: []string{"upstream1", "upstream2"}, // Normal selection when no leader found
-		},
-		// Edge cases
-		{
-			name:                    "Normal_behavior_no_leader_logic",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 100, true},
-				{"upstream2", 200, true},
-				{"upstream3", 300, true},
-			},
-			expectedSelected: []string{"upstream1", "upstream2"}, // Normal selection, first N upstreams
-		},
-		{
-			name:                    "OnlyBlockHeadLeader_multiple_leaders_same_block",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 100, true},
-				{"upstream2", 300, true}, // Tied for leader
-				{"upstream3", 300, true}, // Tied for leader
-			},
-			expectedSelected: []string{"upstream1", "upstream2"}, // Leader already in selected set (upstream2), no change
-		},
-		{
-			name:                    "PreferBlockHeadLeader_all_upstreams_required",
-			requiredParticipants:    3,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", 100, true},
-				{"upstream2", 200, true},
-				{"upstream3", 300, true}, // This is the leader
-			},
-			expectedSelected: []string{"upstream1", "upstream2", "upstream3"}, // All selected, leader already included
-		},
-		{
-			name:                    "OnlyBlockHeadLeader_negative_block_numbers",
-			requiredParticipants:    2,
-			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-			}{
-				{"upstream1", -1, true},  // Invalid block
-				{"upstream2", 0, true},   // Invalid block
-				{"upstream3", 100, true}, // Valid leader
-			},
-			expectedSelected: []string{"upstream3"}, // Only valid leader selected
-		},
-	}
+// Helper to manage upstream selection in tests that simulates the new architecture
+// where the request manages upstream selection internally
+type testUpstreamSelector struct {
+	upstreams []common.Upstream
+	execIndex int
+	execMutex sync.Mutex
+	// Optional: map specific execution indices to specific upstreams
+	// If nil, uses round-robin based on execution index
+	execIndexToUpstreamIndex map[int]int
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create the upstream list
-			var upsList []common.Upstream
-			for _, upCfg := range tt.upstreams {
-				var upstream common.Upstream
-				if upCfg.hasPoller {
-					upstream = common.NewFakeUpstream(
-						upCfg.id,
-						common.WithEvmStatePoller(
-							common.NewFakeEvmStatePoller(upCfg.latestBlock, upCfg.latestBlock),
-						),
-					)
-				} else {
-					upstream = common.NewFakeUpstream(upCfg.id)
-				}
-				upsList = append(upsList, upstream)
-			}
-
-			// Create executor with the test configuration
-			log := log.Logger
-			executor := &executor[*common.NormalizedResponse]{
-				consensusPolicy: &consensusPolicy[*common.NormalizedResponse]{
-					config: &config[*common.NormalizedResponse]{
-						requiredParticipants:    tt.requiredParticipants,
-						lowParticipantsBehavior: tt.lowParticipantsBehavior,
-						logger:                  &log,
-					},
-					logger: &log,
-				},
-			}
-
-			// Call selectUpstreams
-			selected := executor.selectUpstreams(upsList)
-
-			// Verify the selected upstreams match expectations
-			require.Len(t, selected, len(tt.expectedSelected), "Wrong number of selected upstreams")
-
-			for i, expectedId := range tt.expectedSelected {
-				assert.Equal(t, expectedId, selected[i].Id(),
-					"Mismatch at position %d: expected %s, got %s",
-					i, expectedId, selected[i].Id())
-			}
-		})
+func newTestUpstreamSelector(upstreams []common.Upstream) *testUpstreamSelector {
+	return &testUpstreamSelector{
+		upstreams: upstreams,
+		execIndex: 0,
 	}
 }
 
-// TestFindBlockHeadLeaderUpstream tests the findBlockHeadLeaderUpstream function
-func TestFindBlockHeadLeaderUpstream(t *testing.T) {
-	tests := []struct {
-		name      string
-		upstreams []struct {
-			id          string
-			latestBlock int64
-			hasPoller   bool
-			isEvm       bool
+func (s *testUpstreamSelector) withMapping(mapping map[int]int) *testUpstreamSelector {
+	s.execIndexToUpstreamIndex = mapping
+	return s
+}
+
+func (s *testUpstreamSelector) getNextUpstream() (common.Upstream, int) {
+	s.execMutex.Lock()
+	defer s.execMutex.Unlock()
+
+	currentExecIndex := s.execIndex
+	s.execIndex++
+
+	// If we have a specific mapping, use it
+	if s.execIndexToUpstreamIndex != nil {
+		if upstreamIndex, ok := s.execIndexToUpstreamIndex[currentExecIndex]; ok {
+			if upstreamIndex < len(s.upstreams) {
+				return s.upstreams[upstreamIndex], upstreamIndex
+			}
 		}
-		expectedLeaderId string
-	}{
-		{
-			name: "single_leader",
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-				isEvm       bool
-			}{
-				{"upstream1", 100, true, true},
-				{"upstream2", 200, true, true},
-				{"upstream3", 150, true, true},
-			},
-			expectedLeaderId: "upstream2",
-		},
-		{
-			name: "multiple_tied_leaders",
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-				isEvm       bool
-			}{
-				{"upstream1", 200, true, true},
-				{"upstream2", 200, true, true},
-				{"upstream3", 100, true, true},
-			},
-			expectedLeaderId: "upstream1", // First one wins
-		},
-		{
-			name: "no_evm_upstreams",
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-				isEvm       bool
-			}{
-				{"upstream1", 100, false, false},
-				{"upstream2", 200, false, false},
-			},
-			expectedLeaderId: "", // No leader
-		},
-		{
-			name: "mixed_upstream_types",
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-				isEvm       bool
-			}{
-				{"upstream1", 100, false, false}, // Not EVM
-				{"upstream2", 50, true, true},    // EVM with lower block
-				{"upstream3", 150, true, true},   // EVM with higher block
-			},
-			expectedLeaderId: "upstream3",
-		},
-		{
-			name: "upstream_without_poller",
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-				isEvm       bool
-			}{
-				{"upstream1", 100, false, true}, // EVM but no poller
-				{"upstream2", 50, true, true},   // EVM with poller
-			},
-			expectedLeaderId: "upstream2",
-		},
-		{
-			name: "empty_list",
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-				isEvm       bool
-			}{},
-			expectedLeaderId: "",
-		},
-		{
-			name: "negative_and_zero_blocks",
-			upstreams: []struct {
-				id          string
-				latestBlock int64
-				hasPoller   bool
-				isEvm       bool
-			}{
-				{"upstream1", -100, true, true},
-				{"upstream2", 0, true, true},
-				{"upstream3", 50, true, true},
-			},
-			expectedLeaderId: "upstream3", // Only positive block counts
-		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create the upstream list
-			var upsList []common.Upstream
-			for _, upCfg := range tt.upstreams {
-				var upstream common.Upstream
-				if upCfg.isEvm && upCfg.hasPoller {
-					upstream = common.NewFakeUpstream(
-						upCfg.id,
-						common.WithEvmStatePoller(
-							common.NewFakeEvmStatePoller(upCfg.latestBlock, upCfg.latestBlock),
-						),
-					)
-				} else {
-					upstream = common.NewFakeUpstream(upCfg.id)
-				}
-				upsList = append(upsList, upstream)
-			}
-
-			// Call findBlockHeadLeaderUpstream
-			leader := findBlockHeadLeaderUpstream(upsList)
-
-			// Verify the result
-			if tt.expectedLeaderId == "" {
-				assert.Nil(t, leader, "Expected no leader, but got %v", leader)
-			} else {
-				require.NotNil(t, leader, "Expected leader %s, but got nil", tt.expectedLeaderId)
-				assert.Equal(t, tt.expectedLeaderId, leader.Id(),
-					"Expected leader %s, but got %s", tt.expectedLeaderId, leader.Id())
-			}
-		})
+	// Otherwise use round-robin
+	upstreamIndex := currentExecIndex % len(s.upstreams)
+	if currentExecIndex < len(s.upstreams) {
+		upstreamIndex = currentExecIndex
 	}
+
+	if upstreamIndex >= len(s.upstreams) {
+		return nil, -1
+	}
+
+	return s.upstreams[upstreamIndex], upstreamIndex
 }
 
 // TestConsensusMisbehaviorTracking tests the misbehavior tracking behavior in both
@@ -1039,18 +712,16 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 			}
 			responses[4] = createResponse("minority-result", upstreams[4])
 
+			// Create upstream selector for this test
+			selector := newTestUpstreamSelector(upstreams)
+
 			// Create the inner function
 			innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-				ctx := exec.Context()
-				req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-				upstreamId := req.Directives().UseUpstream
-
-				// Find the upstream index
-				upstreamIndex := -1
-				for i, up := range upstreams {
-					if up.Id() == upstreamId {
-						upstreamIndex = i
-						break
+				// Get the next upstream based on execution index
+				upstream, upstreamIndex := selector.getNextUpstream()
+				if upstream == nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: fmt.Errorf("no upstream available"),
 					}
 				}
 
@@ -1158,20 +829,21 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 		for iteration := 0; iteration < 2; iteration++ {
 			respondedUpstreams = sync.Map{} // Reset for each iteration
 
+			// Create upstream selector for this test iteration
+			selector := newTestUpstreamSelector(upstreams)
+
 			// Create the inner function
 			innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 				ctx := exec.Context()
-				req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-				upstreamId := req.Directives().UseUpstream
 
-				// Find the upstream index
-				upstreamIndex := -1
-				for i, up := range upstreams {
-					if up.Id() == upstreamId {
-						upstreamIndex = i
-						break
+				// Get the next upstream based on execution index
+				upstream, upstreamIndex := selector.getNextUpstream()
+				if upstream == nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: fmt.Errorf("no upstream available"),
 					}
 				}
+				upstreamId := upstream.Id()
 
 				// Response pattern for short-circuit on consensus reached:
 				// With threshold 3, after getting 3 "majority-result" responses,
@@ -1335,23 +1007,24 @@ func TestConsensusShortCircuit(t *testing.T) {
 			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 		}
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		// Create the inner function that simulates upstream calls
 		innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			// Extract which upstream this is for
 			ctx := exec.Context()
-			req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamId := req.Directives().UseUpstream
 
-			upstreamsCalled.Store(upstreamId, true)
-
-			// Find the upstream index
-			upstreamIndex := -1
-			for i, up := range upstreams {
-				if up.Id() == upstreamId {
-					upstreamIndex = i
-					break
+			// Get the next upstream based on execution index
+			upstream, upstreamIndex := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
 				}
 			}
+			upstreamId := upstream.Id()
+
+			upstreamsCalled.Store(upstreamId, true)
 
 			// Simulate delay for upstream-3 and upstream-4
 			if upstreamIndex >= 3 {
@@ -1463,27 +1136,28 @@ cancelling the remaining slow upstream calls and returning immediately.`, called
 			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 		}
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		// Create the inner function that simulates upstream calls
 		innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			// Extract which upstream this is for
 			ctx := exec.Context()
-			req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamId := req.Directives().UseUpstream
+
+			// Get the next upstream based on execution index
+			upstream, upstreamIndex := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
+			}
+			upstreamId := upstream.Id()
 
 			upstreamsCalled.Store(upstreamId, true)
 
 			callOrderMutex.Lock()
 			callOrder = append(callOrder, upstreamId)
 			callOrderMutex.Unlock()
-
-			// Find the upstream index
-			upstreamIndex := -1
-			for i, up := range upstreams {
-				if up.Id() == upstreamId {
-					upstreamIndex = i
-					break
-				}
-			}
 
 			// Simulate responses:
 			// upstream-0: returns "result-A" quickly
@@ -1821,15 +1495,22 @@ func TestConsensusGoroutineLeakWithShortCircuit(t *testing.T) {
 		doneChan := make(chan struct{})
 		var result *failsafeCommon.PolicyResult[*common.NormalizedResponse]
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		go func() {
 			defer close(doneChan)
 			result = executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 				ctx := exec.Context()
-				req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-				upstreamID := ""
-				if req != nil && req.Directives() != nil {
-					upstreamID = req.Directives().UseUpstream
+
+				// Get the next upstream based on execution index
+				upstream, _ := selector.getNextUpstream()
+				if upstream == nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: fmt.Errorf("no upstream available"),
+					}
 				}
+				upstreamID := upstream.Id()
 
 				// Get the delay for this upstream
 				delay := mockExec.responseDelays[upstreamID]
@@ -2080,15 +1761,22 @@ func TestConsensusGoroutineLeakWithNilResponses(t *testing.T) {
 		doneChan := make(chan struct{})
 		var result *failsafeCommon.PolicyResult[*common.NormalizedResponse]
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		go func() {
 			defer close(doneChan)
 			result = executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 				ctx := exec.Context()
-				req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-				upstreamID := ""
-				if req != nil && req.Directives() != nil {
-					upstreamID = req.Directives().UseUpstream
+
+				// Get the next upstream based on execution index
+				upstream, _ := selector.getNextUpstream()
+				if upstream == nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: fmt.Errorf("no upstream available"),
+					}
 				}
+				upstreamID := upstream.Id()
 
 				// Get behavior for this upstream
 				delay, shouldReturnNil, resultValue := mockExec.behavior(upstreamID)
@@ -2345,16 +2033,23 @@ func TestConsensusExactDrainResponsesBug(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		goroutinesBefore := runtime.NumGoroutine()
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		// Execute with timeout
 		done := make(chan bool)
 		go func() {
 			result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 				ctx := exec.Context()
-				req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-				upstreamID := ""
-				if req != nil && req.Directives() != nil {
-					upstreamID = req.Directives().UseUpstream
+
+				// Get the next upstream based on execution index
+				upstream, _ := selector.getNextUpstream()
+				if upstream == nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: fmt.Errorf("no upstream available"),
+					}
 				}
+				upstreamID := upstream.Id()
 
 				delay, shouldReturnNil, resultValue := mockExec.behavior(upstreamID)
 
@@ -2634,16 +2329,23 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 		}
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		// Create the inner function that tracks execution
 		innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			atomic.AddInt32(&goroutinesStarted, 1)
 
 			ctx := exec.Context()
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := ""
-			if req != nil && req.Directives() != nil {
-				upstreamID = req.Directives().UseUpstream
+
+			// Get the next upstream based on execution index
+			upstream, _ := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
 			}
+			upstreamID := upstream.Id()
 
 			executionMu.Lock()
 			executionOrder = append(executionOrder, fmt.Sprintf("%s-started", upstreamID))
@@ -2791,13 +2493,20 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 		}
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			ctx := exec.Context()
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := ""
-			if req != nil && req.Directives() != nil {
-				upstreamID = req.Directives().UseUpstream
+
+			// Get the next upstream based on execution index
+			upstream, _ := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
 			}
+			upstreamID := upstream.Id()
 
 			// Upstream 0: returns nil (error case)
 			if upstreamID == "upstream-0" {
@@ -2992,19 +2701,37 @@ func TestConsensusOnExecutionException(t *testing.T) {
 			ctx: ctx,
 		}
 
+		// Create upstream selector with specific mapping to ensure each upstream gets its expected error
+		selector := newTestUpstreamSelector(upstreams).withMapping(map[int]int{
+			0: 0, // First call -> upstream1
+			1: 1, // Second call -> upstream2
+			2: 2, // Third call -> upstream3
+		})
+
 		// Execute with upstreams returning different execution exceptions
 		result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			ctx := exec.Context()
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := req.Directives().UseUpstream
+			// Get the next upstream based on execution index
+			upstream, _ := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
+			}
+			upstreamID := upstream.Id()
 
 			mu.Lock()
 			calledUpstreams[upstreamID] = true
 			mu.Unlock()
 
 			if err, ok := upstreamErrors[upstreamID]; ok {
+				// Create a response with the upstream set, even though we're returning an error
+				// This is needed for the consensus executor to track participants
+				resp := common.NewNormalizedResponse().
+					SetUpstream(upstream)
+
 				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-					Error: err,
+					Result: resp,
+					Error:  err,
 				}
 			}
 
@@ -3073,11 +2800,19 @@ func TestConsensusOnExecutionException(t *testing.T) {
 			"upstream3": {resp: successResp, err: nil},    // success
 		}
 
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		// Execute
 		result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			ctx := exec.Context()
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := req.Directives().UseUpstream
+			// Get the next upstream based on execution index
+			upstream, _ := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
+			}
+			upstreamID := upstream.Id()
 
 			if resp, ok := upstreamResponses[upstreamID]; ok {
 				if resp.err != nil {

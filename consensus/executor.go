@@ -200,23 +200,13 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 			Int("upstreamsCount", len(upsList)).
 			Msg("consensus policy received upstreams")
 
-		// Pick the upstreams that will participate in the consensus round.
-		_, selectionSpan := common.StartDetailSpan(ctx, "Consensus.SelectUpstreams")
-		selectedUpstreams := e.selectUpstreams(upsList)
-		selectionSpan.SetAttributes(
-			attribute.Int("upstreams.total", len(upsList)),
-			attribute.Int("upstreams.selected", len(selectedUpstreams)),
-			attribute.Int("required_participants", e.requiredParticipants),
-		)
-		selectionSpan.End()
-
 		parentExecution := exec.(policy.ExecutionInternal[R])
 
 		// Phase 1: Fire off requests and collect responses
-		responses := e.collectResponses(ctx, &lg, originalReq, selectedUpstreams, parentExecution, innerFn)
+		responses := e.collectResponses(ctx, &lg, originalReq, parentExecution, innerFn)
 
 		// Phase 2: Evaluate consensus
-		result := e.evaluateConsensus(ctx, &lg, responses, selectedUpstreams, exec)
+		result := e.evaluateConsensus(ctx, &lg, responses, exec)
 
 		// Phase 3: Track misbehaving upstreams (only if we have a clear majority)
 		e.checkAndPunishMisbehavingUpstreams(ctx, &lg, responses, parentExecution)
@@ -269,7 +259,6 @@ func (e *executor[R]) collectResponses(
 	ctx context.Context,
 	lg *zerolog.Logger,
 	originalReq *common.NormalizedRequest,
-	selectedUpstreams []common.Upstream,
 	parentExecution policy.ExecutionInternal[R],
 	innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R],
 ) []*execResult[R] {
@@ -290,7 +279,7 @@ func (e *executor[R]) collectResponses(
 	// Start collection span
 	ctx, collectionSpan := common.StartDetailSpan(ctx, "Consensus.CollectResponses",
 		trace.WithAttributes(
-			attribute.Int("upstreams.selected", len(selectedUpstreams)),
+			attribute.Int("participants.required", e.requiredParticipants),
 		),
 	)
 	defer collectionSpan.End()
@@ -300,45 +289,28 @@ func (e *executor[R]) collectResponses(
 	defer cancelRemaining()
 
 	// Channel to collect responses - buffered to prevent blocking
-	responseChan := make(chan *execResult[R], len(selectedUpstreams))
+	responseChan := make(chan *execResult[R], e.requiredParticipants)
 
-	// Start all upstream requests
-	actualGoroutineCount := 0
-	for execIdx, up := range selectedUpstreams {
-		cloneReq, err := originalReq.Clone()
-		if err != nil {
-			lg.Error().Err(err).Msg("error cloning request")
-			// Send nil result immediately to maintain expected count
-			go func(idx int) {
-				select {
-				case responseChan <- nil:
-				case <-cancellableCtx.Done():
-				}
-			}(execIdx)
-			actualGoroutineCount++
-			continue
-		}
-		cloneReq.Directives().UseUpstream = up.Id()
-
+	// Start required number of participants
+	actualGoroutineCount := e.requiredParticipants
+	for execIdx := 0; execIdx < e.requiredParticipants; execIdx++ {
 		lg.Debug().
-			Interface("id", cloneReq.ID()).
+			Interface("id", originalReq.ID()).
 			Int("index", execIdx).
-			Str("upstream", up.Id()).
-			Object("request", cloneReq).
-			Msg("prepared cloned request for consensus execution")
+			Msg("launching consensus participant")
 
+		// Use the original request directly - no cloning!
 		execution := parentExecution.CopyForCancellableWithValue(
 			common.RequestContextKey,
-			cloneReq,
+			originalReq,
 		).(policy.ExecutionInternal[R])
 
 		// Fire off the request
-		go func(consensusExec policy.ExecutionInternal[R], execIdx int, upstream common.Upstream) {
+		go func(consensusExec policy.ExecutionInternal[R], execIdx int) {
 			// Start a span for this consensus attempt
 			attemptCtx, attemptSpan := common.StartDetailSpan(cancellableCtx, "Consensus.Attempt",
 				trace.WithAttributes(
 					attribute.Int("attempt.index", execIdx),
-					attribute.String("upstream.id", upstream.Id()),
 				),
 			)
 			defer attemptSpan.End()
@@ -348,7 +320,6 @@ func (e *executor[R]) collectResponses(
 				if r := recover(); r != nil {
 					lg.Error().
 						Int("index", execIdx).
-						Str("upstream", upstream.Id()).
 						Interface("panic", r).
 						Msg("panic in consensus execution")
 
@@ -361,9 +332,8 @@ func (e *executor[R]) collectResponses(
 					// Send error result
 					select {
 					case responseChan <- &execResult[R]{
-						err:      panicErr,
-						index:    execIdx,
-						upstream: upstream,
+						err:   panicErr,
+						index: execIdx,
 					}:
 					case <-cancellableCtx.Done():
 						// Still try to send nil to unblock collector
@@ -378,7 +348,7 @@ func (e *executor[R]) collectResponses(
 			// Check cancellation before execution
 			select {
 			case <-attemptCtx.Done():
-				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("skipping execution, context cancelled")
+				lg.Debug().Int("index", execIdx).Msg("skipping execution, context cancelled")
 				attemptSpan.SetAttributes(attribute.Bool("cancelled_before_execution", true))
 				attemptSpan.SetStatus(codes.Error, "cancelled before execution")
 				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "before_execution", finalityStr).Inc()
@@ -397,7 +367,7 @@ func (e *executor[R]) collectResponses(
 			// The execution should inherit the cancellable context from the parent
 			// Double-check the context hasn't been cancelled before executing
 			if attemptCtx.Err() != nil {
-				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("context cancelled before execution")
+				lg.Debug().Int("index", execIdx).Msg("context cancelled before execution")
 				attemptSpan.SetAttributes(attribute.Bool("cancelled_before_execution", true))
 				attemptSpan.SetStatus(codes.Error, "cancelled before execution")
 				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "before_execution", finalityStr).Inc()
@@ -414,7 +384,7 @@ func (e *executor[R]) collectResponses(
 			// Check cancellation again after execution
 			select {
 			case <-attemptCtx.Done():
-				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("discarding result, context cancelled after execution")
+				lg.Debug().Int("index", execIdx).Msg("discarding result, context cancelled after execution")
 				attemptSpan.SetAttributes(attribute.Bool("cancelled_after_execution", true))
 				attemptSpan.SetStatus(codes.Error, "cancelled after execution")
 				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "after_execution", finalityStr).Inc()
@@ -437,6 +407,15 @@ func (e *executor[R]) collectResponses(
 				return
 			}
 
+			// Extract upstream from response (if available)
+			var upstream common.Upstream
+			if resp, ok := any(result.Result).(*common.NormalizedResponse); ok {
+				upstream = resp.Upstream()
+				if upstream != nil {
+					attemptSpan.SetAttributes(attribute.String("upstream.id", upstream.Id()))
+				}
+			}
+
 			// Set attempt result attributes
 			if result.Error != nil {
 				common.SetTraceSpanError(attemptSpan, result.Error)
@@ -454,7 +433,7 @@ func (e *executor[R]) collectResponses(
 			}:
 			case <-attemptCtx.Done():
 				// Context cancelled, still try to send nil to unblock collector
-				lg.Debug().Int("index", execIdx).Str("upstream", upstream.Id()).Msg("discarding response due to context cancellation")
+				lg.Debug().Int("index", execIdx).Msg("discarding response due to context cancellation")
 				attemptSpan.SetAttributes(attribute.Bool("response_discarded", true))
 				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "after_execution", finalityStr).Inc()
 				select {
@@ -463,12 +442,11 @@ func (e *executor[R]) collectResponses(
 					// Already cancelled, safe to exit
 				}
 			}
-		}(execution, execIdx, up)
-		actualGoroutineCount++
+		}(execution, execIdx)
 	}
 
 	// Collect responses with short-circuit logic
-	responses := make([]*execResult[R], 0, len(selectedUpstreams))
+	responses := make([]*execResult[R], 0, e.requiredParticipants)
 	var shortCircuited bool
 	var shortCircuitReason string
 
@@ -482,7 +460,7 @@ collectLoop:
 			}
 
 			// Check if we should short-circuit (only if we have a non-nil response)
-			if resp != nil && !shortCircuited && e.checkShortCircuit(lg, responses, selectedUpstreams, parentExecution) {
+			if resp != nil && !shortCircuited && e.checkShortCircuit(lg, responses, parentExecution) {
 				shortCircuited = true
 
 				// Determine short-circuit reason
@@ -549,7 +527,7 @@ func (e *executor[R]) hasConsensus(responses []*execResult[R], exec policy.Execu
 }
 
 // checkShortCircuit determines if we can exit early based on current responses
-func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], selectedUpstreams []common.Upstream, exec policy.ExecutionInternal[R]) bool {
+func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
 	// Count results by hash
 	resultCounts := make(map[string]int)
 	for _, r := range responses {
@@ -579,7 +557,7 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	}
 
 	// Check if consensus is impossible
-	remainingResponses := len(selectedUpstreams) - len(responses)
+	remainingResponses := e.requiredParticipants - len(responses)
 
 	// Count unique participants so far
 	uniqueParticipants := make(map[string]struct{})
@@ -638,7 +616,6 @@ func (e *executor[R]) evaluateConsensus(
 	ctx context.Context,
 	lg *zerolog.Logger,
 	responses []*execResult[R],
-	selectedUpstreams []common.Upstream,
 	exec failsafe.Execution[R],
 ) *failsafeCommon.PolicyResult[R] {
 	// Get request metadata for metrics
@@ -660,7 +637,7 @@ func (e *executor[R]) evaluateConsensus(
 	ctx, evalSpan := common.StartDetailSpan(ctx, "Consensus.Evaluate",
 		trace.WithAttributes(
 			attribute.Int("responses.count", len(responses)),
-			attribute.Int("selected_upstreams.count", len(selectedUpstreams)),
+			attribute.Int("participants.required", e.requiredParticipants),
 		),
 	)
 	defer evalSpan.End()
@@ -691,7 +668,7 @@ func (e *executor[R]) evaluateConsensus(
 
 	lg.Debug().
 		Int("totalResponses", len(responses)).
-		Int("required", len(selectedUpstreams)).
+		Int("required", len(responses)).
 		Int("errorCount", len(responses)-len(resultCounts)).
 		Interface("responseCounts", resultCounts).
 		Msg("consensus check")
@@ -753,13 +730,12 @@ func (e *executor[R]) evaluateConsensus(
 		}
 	}
 
-	isLowParticipants := e.isLowParticipants(participantCount, len(selectedUpstreams))
+	isLowParticipants := e.isLowParticipants(participantCount)
 	if isLowParticipants {
 		lg.Debug().
 			Int("participantCount", participantCount).
 			Int("responses", len(responses)).
 			Int("required", e.requiredParticipants).
-			Int("selectedUpstreams", len(selectedUpstreams)).
 			Msg("handling low participants")
 
 		evalSpan.SetAttributes(
@@ -899,13 +875,13 @@ func (e *executor[R]) findResultByHash(responses []*execResult[R], targetHash st
 	return nil
 }
 
-// isLowParticipants determines if we have enough valid responses from participants, or at least attempted upstreams is on par with required participants
-func (e *executor[R]) isLowParticipants(participantCount, selectedUpstreamCount int) bool {
+// isLowParticipants determines if we have enough valid responses from participants
+func (e *executor[R]) isLowParticipants(participantCount int) bool {
 	if participantCount < e.agreementThreshold {
 		return true
 	}
 
-	if selectedUpstreamCount < e.requiredParticipants {
+	if participantCount < e.requiredParticipants {
 		return true
 	}
 
@@ -1380,74 +1356,4 @@ func (e *executor[R]) handleOnlyBlockHeadLeader(logger *zerolog.Logger, response
 	return &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}
-}
-
-// selectUpstreams chooses which upstreams will participate in the consensus round based
-// on the configured policy and the currently available upstream list. The logic is
-// adapted from the former Network.runConsensus implementation so that the decision
-// lives entirely inside the consensus executor.
-func (e *executor[R]) selectUpstreams(upsList []common.Upstream) []common.Upstream {
-	if len(upsList) == 0 {
-		return nil
-	}
-
-	required := e.requiredParticipants
-	if required <= 0 {
-		required = 2
-	}
-
-	selected := upsList
-	if len(selected) > required {
-		selected = selected[:required]
-	}
-
-	// If behaviour cares about block-head leader, make sure it is in the set.
-	if e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader ||
-		e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader {
-		leader := findBlockHeadLeaderUpstream(upsList)
-		if leader != nil {
-			found := false
-			for _, u := range selected {
-				if u == leader {
-					found = true
-					break
-				}
-			}
-			if !found {
-				if e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader {
-					selected = []common.Upstream{leader}
-				} else { // prefer -> swap last
-					if len(selected) > 0 {
-						selected[len(selected)-1] = leader
-					} else {
-						selected = []common.Upstream{leader}
-					}
-				}
-			}
-		}
-	}
-
-	return selected
-}
-
-// findBlockHeadLeaderUpstream inspects the provided upstream list and returns the
-// upstream with the highest latest block number (best head). When no suitable
-// upstream can be found it returns nil.
-func findBlockHeadLeaderUpstream(ups []common.Upstream) common.Upstream {
-	var leader common.Upstream
-	var highest int64
-	for _, u := range ups {
-		if evmUp, ok := u.(common.EvmUpstream); ok {
-			sp := evmUp.EvmStatePoller()
-			if sp == nil {
-				continue
-			}
-			lb := sp.LatestBlock()
-			if lb > highest {
-				highest = lb
-				leader = u
-			}
-		}
-	}
-	return leader
 }

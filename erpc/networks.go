@@ -7,7 +7,6 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -327,6 +326,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
+	// Set upstreams on the request
+	req.SetUpstreams(upsList)
+
 	// 3) Check if we should handle this method on this network
 	if err := n.shouldHandleMethod(method, upsList); err != nil {
 		if mlx != nil {
@@ -454,9 +456,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
 			// This mimicks a round-robin behavior, for example when doing hedge or retries.
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
-			ln := len(upsList)
 
-			for range upsList {
+			for {
 				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
 				if ctxErr := loopCtx.Err(); ctxErr != nil {
 					cause := context.Cause(loopCtx)
@@ -470,50 +471,27 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						return nil, ctxErr
 					}
 				}
-				// Pick next upstream in a round-robin fashion using atomic counter.
-				idx := int(atomic.AddUint32(&effectiveReq.UpstreamIdx, 1)-1) % ln
-				u := upsList[idx]
+
+				// Get next available upstream
+				u, err := effectiveReq.NextUpstream()
+				if err != nil {
+					// No more available upstreams
+					loopSpan.SetAttributes(
+						attribute.Bool("upstreams_exhausted", true),
+						attribute.String("error", err.Error()),
+					)
+					loopSpan.End()
+					break
+				}
+
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
 				ulg := lg.With().Str("upstreamId", u.Id()).Logger()
 				ulg.Debug().
 					Interface("id", effectiveReq.ID()).
-					Int("index", idx).
-					Int("upstreams", ln).
 					Str("ptr", fmt.Sprintf("%p", effectiveReq)).
 					Str("selectedUpstream", u.Id()).
-					Interface("availableUpstreams", func() []string {
-						ids := make([]string, len(upsList))
-						for i, up := range upsList {
-							ids[i] = up.Id()
-						}
-						return ids
-					}()).
 					Msg("selected upstream from list")
-				ulg.Trace().Int("index", idx).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
-				if _, respondedEmptyBefore := effectiveReq.EmptyResponses.Load(u); respondedEmptyBefore {
-					loopSpan.SetAttributes(
-						attribute.Bool("skipped", true),
-						attribute.String("skipped_reason", "upstream already responded empty"),
-					)
-					ulg.Debug().Msgf("upstream already responded empty no reason to retry, skipping")
-					loopSpan.End()
-					continue
-				}
-				if prevErr, exists := effectiveReq.ErrorsByUpstream.Load(u); exists {
-					pe := prevErr.(error)
-					if !common.IsRetryableTowardsUpstream(pe) {
-						// Do not even try this upstream if we already know
-						// the previous error was not retryable. e.g. Billing issues
-						// Or there was a rate-limit error.
-						loopSpan.SetAttributes(
-							attribute.Bool("skipped", true),
-							attribute.String("skipped_reason", "upstream already responded with non-retryable error"),
-						)
-						ulg.Debug().Msgf("upstream already responded with non-retryable error, skipping")
-						loopSpan.End()
-						continue
-					}
-				}
+
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
 				if hedges > 0 {
@@ -528,6 +506,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
 				}
+
+				// Mark upstream as completed based on response type
+				hadValidResponse := err == nil || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException)
+				effectiveReq.MarkUpstreamCompleted(u, hadValidResponse)
 
 				isClientErr := common.IsClientError(err)
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {

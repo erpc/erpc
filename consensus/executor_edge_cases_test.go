@@ -51,19 +51,21 @@ func TestHashCalculationError(t *testing.T) {
 		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 	}
 
+	// Create upstream selector for this test
+	selector := newTestUpstreamSelector(upstreams)
+
 	result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-		ctx := exec.Context()
-		req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-		upstreamID := ""
-		if req != nil && req.Directives() != nil {
-			upstreamID = req.Directives().UseUpstream
+		// Get the next upstream based on execution index
+		upstream, upstreamIndex := selector.getNextUpstream()
+		if upstream == nil {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: fmt.Errorf("no upstream available"),
+			}
 		}
 
 		// Return the invalid response
-		for _, resp := range responses {
-			if resp.Upstream() != nil && resp.Upstream().Id() == upstreamID {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-			}
+		if upstreamIndex < len(responses) {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 		}
 		return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 	})(mockExec)
@@ -113,6 +115,9 @@ func TestContextCancellation(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		result = executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			// Cancel context after a small delay
 			go func() {
@@ -123,17 +128,16 @@ func TestContextCancellation(t *testing.T) {
 			// Simulate slow response
 			time.Sleep(50 * time.Millisecond)
 
-			ctx := exec.Context()
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := ""
-			if req != nil && req.Directives() != nil {
-				upstreamID = req.Directives().UseUpstream
+			// Get the next upstream based on execution index
+			upstream, upstreamIndex := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
 			}
 
-			for _, resp := range responses {
-				if resp.Upstream() != nil && resp.Upstream().Id() == upstreamID {
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-				}
+			if upstreamIndex < len(responses) {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 			}
 			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 		})(mockExec)
@@ -218,12 +222,16 @@ func TestLargeScaleConsensus(t *testing.T) {
 			// Track responses collected
 			responsesCollected := atomic.Int32{}
 
+			// Create upstream selector for this test
+			selector := newTestUpstreamSelector(upstreams)
+
 			result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-				ctx := exec.Context()
-				req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-				upstreamID := ""
-				if req != nil && req.Directives() != nil {
-					upstreamID = req.Directives().UseUpstream
+				// Get the next upstream based on execution index
+				upstream, upstreamIndex := selector.getNextUpstream()
+				if upstream == nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: fmt.Errorf("no upstream available"),
+					}
 				}
 
 				responsesCollected.Add(1)
@@ -231,10 +239,9 @@ func TestLargeScaleConsensus(t *testing.T) {
 				// Simulate network delay
 				time.Sleep(2 * time.Millisecond)
 
-				for i, resp := range responses {
-					if upstreams[i].Id() == upstreamID {
-						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-					}
+				// Return the response for this upstream
+				if upstreamIndex < len(responses) {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 				}
 				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 			})(mockExec)
@@ -335,23 +342,28 @@ func TestMixedErrorScenarios(t *testing.T) {
 				consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 			}
 
+			// Create upstream selector for this test
+			selector := newTestUpstreamSelector(upstreams)
+
 			result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-				ctx := exec.Context()
-				req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-				upstreamID := ""
-				if req != nil && req.Directives() != nil {
-					upstreamID = req.Directives().UseUpstream
+				// Get the next upstream based on execution index
+				upstream, upstreamIndex := selector.getNextUpstream()
+				if upstream == nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: fmt.Errorf("no upstream available"),
+					}
 				}
 
-				for i, up := range upstreams {
-					if up.Id() == upstreamID {
-						if responses[i] == nil {
-							return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-								Error: fmt.Errorf("error from %s", upstreamID),
-							}
+				if upstreamIndex < len(responses) {
+					if responses[upstreamIndex] == nil {
+						// Create a response with upstream set for error tracking
+						resp := common.NewNormalizedResponse().SetUpstream(upstream)
+						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+							Result: resp,
+							Error:  fmt.Errorf("error from %s", upstream.Id()),
 						}
-						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[i]}
 					}
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 				}
 				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no upstream found")}
 			})(mockExec)
@@ -397,22 +409,24 @@ func TestGoroutineLeakDetection(t *testing.T) {
 		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 	}
 
+	// Create upstream selector for this test
+	selector := newTestUpstreamSelector(upstreams)
+
 	// Execute consensus
 	result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-		ctx := exec.Context()
-		req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-		upstreamID := ""
-		if req != nil && req.Directives() != nil {
-			upstreamID = req.Directives().UseUpstream
+		// Get the next upstream based on execution index
+		upstream, upstreamIndex := selector.getNextUpstream()
+		if upstream == nil {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: fmt.Errorf("no upstream available"),
+			}
 		}
 
 		// Simulate some work
 		time.Sleep(5 * time.Millisecond)
 
-		for i, resp := range responses {
-			if upstreams[i].Id() == upstreamID {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-			}
+		if upstreamIndex < len(responses) {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 		}
 		return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 	})(mockExec)
@@ -464,13 +478,18 @@ func TestPanicRecovery(t *testing.T) {
 	upstreamsCalled := make(map[string]bool)
 	var mu sync.Mutex
 
+	// Create upstream selector for this test
+	selector := newTestUpstreamSelector(upstreams)
+
 	result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-		ctx := exec.Context()
-		req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-		upstreamID := ""
-		if req != nil && req.Directives() != nil {
-			upstreamID = req.Directives().UseUpstream
+		// Get the next upstream based on execution index
+		upstream, upstreamIndex := selector.getNextUpstream()
+		if upstream == nil {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: fmt.Errorf("no upstream available"),
+			}
 		}
+		upstreamID := upstream.Id()
 
 		mu.Lock()
 		upstreamsCalled[upstreamID] = true
@@ -481,10 +500,8 @@ func TestPanicRecovery(t *testing.T) {
 			panic("simulated panic in handler")
 		}
 
-		for _, resp := range responses {
-			if resp.Upstream() != nil && resp.Upstream().Id() == upstreamID {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-			}
+		if upstreamIndex < len(responses) {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 		}
 		return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 	})(mockExec)
@@ -568,22 +585,24 @@ func TestResponseChannelSaturation(t *testing.T) {
 		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 	}
 
+	// Create upstream selector for this test
+	selector := newTestUpstreamSelector(upstreams)
+
 	// Execute with very slow response processing to test channel saturation
 	result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-		ctx := exec.Context()
-		req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-		upstreamID := ""
-		if req != nil && req.Directives() != nil {
-			upstreamID = req.Directives().UseUpstream
+		// Get the next upstream based on execution index
+		upstream, upstreamIndex := selector.getNextUpstream()
+		if upstream == nil {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: fmt.Errorf("no upstream available"),
+			}
 		}
 
 		// Simulate very slow processing
 		time.Sleep(100 * time.Millisecond)
 
-		for i, resp := range responses {
-			if upstreams[i].Id() == upstreamID {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-			}
+		if upstreamIndex < len(responses) {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 		}
 		return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 	})(mockExec)
@@ -591,161 +610,6 @@ func TestResponseChannelSaturation(t *testing.T) {
 	// Should handle channel saturation gracefully
 	assert.NoError(t, result.Error)
 	assert.NotNil(t, result.Result)
-}
-
-// TestGoroutineCancellationResponseHandlingBug tests the bug where goroutines exit without sending messages
-func TestGoroutineCancellationResponseHandlingBug(t *testing.T) {
-	// This test reproduces the bug where goroutines exit without sending messages
-	// when context is cancelled and the response channel send would block
-
-	// Create upstreams
-	upstreams := []common.Upstream{
-		common.NewFakeUpstream("upstream1"),
-		common.NewFakeUpstream("upstream2"),
-		common.NewFakeUpstream("upstream3"),
-		common.NewFakeUpstream("upstream4"),
-		common.NewFakeUpstream("upstream5"),
-	}
-
-	// Create a request
-	dummyReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_test","id":1}`))
-
-	// Create execution context
-	ctx := context.Background()
-	ctx = context.WithValue(ctx, common.RequestContextKey, dummyReq)
-	ctx = context.WithValue(ctx, common.UpstreamsContextKey, upstreams)
-
-	// Track goroutine completion
-	var goroutinesStarted int32
-	var goroutinesCompleted int32
-	var messagesSentToChannel int32
-
-	mockExec := &mockExecutionWithGoroutineTracking{
-		ctx: ctx,
-		onGoroutineStart: func() {
-			atomic.AddInt32(&goroutinesStarted, 1)
-		},
-		onGoroutineComplete: func() {
-			atomic.AddInt32(&goroutinesCompleted, 1)
-		},
-	}
-
-	// Create consensus policy that will reach consensus with 2 out of 5
-	log := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(5).
-		WithAgreementThreshold(2). // Consensus with just 2 responses to trigger early short-circuit
-		WithLogger(&log).
-		Build()
-
-	// Create executor
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
-	}
-
-	// Use a channel to coordinate the test
-	readyToRespond := make(chan struct{})
-	responseSent := make(chan struct{}, 5)
-
-	// Execute consensus with instrumented innerFn that simulates the actual bug scenario
-	result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-		// Signal that a goroutine has started
-		mockExec.onGoroutineStart()
-		defer mockExec.onGoroutineComplete()
-
-		ctx := exec.Context()
-		if ctx == nil {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("missing execution context")}
-		}
-
-		req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-		upstreamID := ""
-		if req != nil && req.Directives() != nil {
-			upstreamID = req.Directives().UseUpstream
-		}
-
-		// Simulate different response times to trigger short-circuit
-		switch upstreamID {
-		case "upstream2", "upstream3":
-			// These two will respond quickly with the same result to trigger consensus
-			select {
-			case <-readyToRespond:
-			case <-ctx.Done():
-				return nil
-			}
-
-			// Create response
-			jrr, _ := common.NewJsonRpcResponse(1, "consensus_result", nil)
-			resp := common.NewNormalizedResponse().
-				WithJsonRpcResponse(jrr).
-				SetUpstream(upstreams[1]) // Just use any upstream
-
-			responseSent <- struct{}{}
-			atomic.AddInt32(&messagesSentToChannel, 1)
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-
-		default:
-			// These will be slow and should be cancelled
-			// Wait for cancellation
-			select {
-			case <-time.After(500 * time.Millisecond):
-				// Should not reach here if cancelled properly
-				jrr, _ := common.NewJsonRpcResponse(1, "slow_result", nil)
-				resp := common.NewNormalizedResponse().
-					WithJsonRpcResponse(jrr).
-					SetUpstream(upstreams[0])
-
-				responseSent <- struct{}{}
-				atomic.AddInt32(&messagesSentToChannel, 1)
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-			case <-ctx.Done():
-				// Context cancelled - this is where the bug occurs
-				// The actual code tries to send nil with a non-blocking select
-				// which can fail silently
-				return nil
-			}
-		}
-	})(mockExec)
-
-	// Signal that goroutines can start responding
-	close(readyToRespond)
-
-	// Wait for result
-	require.NoError(t, result.Error)
-
-	// Wait a bit to ensure all goroutines have completed
-	time.Sleep(100 * time.Millisecond)
-
-	// Count how many responses were actually sent
-	actualResponsesSent := 0
-	for {
-		select {
-		case <-responseSent:
-			actualResponsesSent++
-		default:
-			goto done
-		}
-	}
-done:
-
-	started := atomic.LoadInt32(&goroutinesStarted)
-	completed := atomic.LoadInt32(&goroutinesCompleted)
-	sentToChannel := atomic.LoadInt32(&messagesSentToChannel)
-
-	t.Logf("Goroutines started: %d, completed: %d, messages sent to channel: %d, responses received: %d",
-		started, completed, sentToChannel, actualResponsesSent)
-
-	// All goroutines should complete
-	assert.Equal(t, started, completed, "All started goroutines should complete")
-
-	// The bug: The collector expects 5 messages (one from each goroutine)
-	// but due to non-blocking selects with default cases, some goroutines
-	// may exit without sending their nil message when cancelled
-	// This can cause drainResponses to hang or timeout
-
-	// To truly demonstrate the bug, we'd need to patch the actual executor code
-	// to show that goroutines can exit without sending messages
-	t.Log("Bug scenario: When context is cancelled, goroutines may exit without sending nil due to non-blocking select with default case")
 }
 
 // TestNonBlockingSelectBug tests the non-blocking select bug
@@ -872,17 +736,29 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 
 	go func() {
 		defer close(done)
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams).withMapping(map[int]int{
+			0: 0, // upstream1 (slow)
+			1: 1, // upstream2 (consensus)
+			2: 2, // upstream3 (consensus)
+			3: 3, // upstream4 (slow)
+			4: 4, // upstream5 (slow)
+		})
+
 		result = executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			ctx := exec.Context()
 			if ctx == nil {
 				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("missing execution context")}
 			}
 
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := ""
-			if req != nil && req.Directives() != nil {
-				upstreamID = req.Directives().UseUpstream
+			// Get the next upstream based on execution index
+			upstream, _ := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
 			}
+			upstreamID := upstream.Id()
 
 			// For specific upstreams, respond quickly with consensus result
 			switch upstreamID {
@@ -891,7 +767,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 				jrr, _ := common.NewJsonRpcResponse(1, "consensus_result", nil)
 				resp := common.NewNormalizedResponse().
 					WithJsonRpcResponse(jrr).
-					SetUpstream(upstreams[1]) // Use any upstream
+					SetUpstream(upstream)
 				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
 			default:
 				// Other upstreams wait for context cancellation
@@ -905,7 +781,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 					jrr, _ := common.NewJsonRpcResponse(1, "slow_result", nil)
 					resp := common.NewNormalizedResponse().
 						WithJsonRpcResponse(jrr).
-						SetUpstream(upstreams[0])
+						SetUpstream(upstream)
 					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
 				}
 			}
@@ -981,27 +857,32 @@ func TestCloneFailureGoroutineLeak(t *testing.T) {
 
 	go func() {
 		defer close(done)
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			ctx := exec.Context()
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := ""
-			if req != nil && req.Directives() != nil {
-				upstreamID = req.Directives().UseUpstream
+			// Get the next upstream based on execution index
+			upstream, upstreamIndex := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
 			}
 
 			executionCount.Add(1)
 
 			// Simulate the scenario where upstream2 would fail to clone
 			// by returning an error for it
-			for i, up := range upstreams {
-				if up.Id() == upstreamID {
-					if responses[i] == nil {
-						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-							Error: errors.New("simulated clone failure"),
-						}
+			if upstreamIndex < len(responses) {
+				if responses[upstreamIndex] == nil {
+					// Create a response with upstream set for error tracking
+					resp := common.NewNormalizedResponse().SetUpstream(upstream)
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Result: resp,
+						Error:  errors.New("simulated clone failure"),
 					}
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[i]}
 				}
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 			}
 			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 		})(mockExec)
@@ -1079,13 +960,20 @@ func TestCancellationRaceCondition(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
+		// Create upstream selector for this test
+		selector := newTestUpstreamSelector(upstreams)
+
 		result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			ctx := exec.Context()
-			req, _ := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-			upstreamID := ""
-			if req != nil && req.Directives() != nil {
-				upstreamID = req.Directives().UseUpstream
+
+			// Get the next upstream based on execution index
+			upstream, upstreamIndex := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
 			}
+			upstreamID := upstream.Id()
 
 			// Notify that execution started
 			select {
@@ -1109,10 +997,8 @@ func TestCancellationRaceCondition(t *testing.T) {
 			// Track that this upstream actually executed
 			executedUpstreams.Store(upstreamID, true)
 
-			for i, resp := range responses {
-				if upstreams[i].Id() == upstreamID {
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
-				}
+			if upstreamIndex < len(responses) {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[upstreamIndex]}
 			}
 			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errors.New("no response")}
 		})(mockExecWithCtx)
