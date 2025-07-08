@@ -182,6 +182,7 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, 
 					nil,
 					details,
 				),
+				req.LastUpstream(),
 			)
 		}
 	}

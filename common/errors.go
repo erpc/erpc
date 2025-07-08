@@ -1891,12 +1891,29 @@ type ErrEndpointMissingData struct{ BaseError }
 
 const ErrCodeEndpointMissingData = "ErrEndpointMissingData"
 
-var NewErrEndpointMissingData = func(cause error) error {
+var NewErrEndpointMissingData = func(cause error, upstream Upstream) error {
+	details := map[string]interface{}{}
+	if upstream != nil {
+		details["upstreamId"] = upstream.Id()
+		if evmUps, ok := upstream.(EvmUpstream); ok {
+			if statePoller := evmUps.EvmStatePoller(); statePoller != nil {
+				details["latestBlock"] = statePoller.LatestBlock()
+				details["finalizedBlock"] = statePoller.FinalizedBlock()
+			}
+		}
+		if cfg := upstream.Config(); cfg != nil {
+			if cfg.Evm != nil {
+				details["maxAvailableRecentBlocks"] = cfg.Evm.MaxAvailableRecentBlocks
+			}
+		}
+	}
+
 	return &ErrEndpointMissingData{
 		BaseError{
 			Code:    ErrCodeEndpointMissingData,
-			Message: "remote endpoint does not have this data/block or not synced yet",
+			Message: "remote endpoint does not have this data",
 			Cause:   cause,
+			Details: details,
 		},
 	}
 }

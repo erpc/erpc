@@ -17,7 +17,7 @@ func init() {
 	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
 }
 
-func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
+func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
 	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
 		var details map[string]interface{} = make(map[string]interface{})
 		details["statusCode"] = r.StatusCode
@@ -195,6 +195,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
+				upstream,
 			)
 		}
 
@@ -304,6 +305,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						nil,
 						details,
 					),
+					upstream,
 				)
 			} else {
 				// by default, we retry this type of client-side exception, as the root cause
@@ -501,7 +503,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	return nil
 }
 
-func ExtractGrpcError(st *status.Status, upstreamId string) error {
+func ExtractGrpcError(st *status.Status, upstream common.Upstream) error {
 	if st == nil || st.Code() == codes.OK {
 		return nil
 	}
@@ -510,7 +512,11 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 	details := make(map[string]interface{})
 	details["grpcCode"] = st.Code().String()
 	details["grpcMessage"] = st.Message()
-	details["upstreamId"] = upstreamId
+	upsId := "n/a"
+	if upstream != nil {
+		upsId = upstream.Id()
+	}
+	details["upstreamId"] = upsId
 
 	// Try to extract BDS error details using FromGRPCStatus
 	bdsErr, hasBdsError := bdscommon.FromGRPCStatus(st)
@@ -552,6 +558,7 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 					nil,
 					details,
 				),
+				upstream,
 			)
 
 		case bdscommon.ErrorCode_INVALID_PARAMETER, bdscommon.ErrorCode_INVALID_REQUEST:
@@ -683,6 +690,7 @@ func ExtractGrpcError(st *status.Status, upstreamId string) error {
 				nil,
 				details,
 			),
+			upstream,
 		)
 
 	case codes.Internal, codes.Unknown, codes.Unavailable:

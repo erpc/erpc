@@ -90,7 +90,8 @@ func NewEvmStatePoller(
 	tracker *health.Tracker,
 	sharedState data.SharedStateRegistry,
 ) *EvmStatePoller {
-	lg := logger.With().Str("component", "evmStatePoller").Logger()
+	networkId := up.NetworkId()
+	lg := logger.With().Str("component", "evmStatePoller").Str("networkId", networkId).Logger()
 
 	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)

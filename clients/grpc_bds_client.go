@@ -37,6 +37,7 @@ type GenericGrpcBdsClient struct {
 	rpcClient evm.RPCQueryServiceClient
 
 	projectId       string
+	upstream        common.Upstream
 	upstreamId      string
 	appCtx          context.Context
 	logger          *zerolog.Logger
@@ -47,15 +48,20 @@ func NewGrpcBdsClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	projectId string,
-	upstreamId string,
+	upstream common.Upstream,
 	parsedUrl *url.URL,
 ) (GrpcBdsClient, error) {
+	upsId := "n/a"
+	if upstream != nil {
+		upsId = upstream.Id()
+	}
 	client := &GenericGrpcBdsClient{
 		Url:             parsedUrl,
 		appCtx:          appCtx,
 		logger:          logger,
 		projectId:       projectId,
-		upstreamId:      upstreamId,
+		upstream:        upstream,
+		upstreamId:      upsId,
 		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
 		headers:         make(map[string]string),
 	}
@@ -700,7 +706,7 @@ func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 	}
 
 	// Pass to the EVM error normalizer
-	return evmArch.ExtractGrpcError(st, c.upstreamId)
+	return evmArch.ExtractGrpcError(st, c.upstream)
 }
 
 func (c *GenericGrpcBdsClient) shutdown() {

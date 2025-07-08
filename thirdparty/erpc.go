@@ -194,7 +194,7 @@ func (v *ErpcVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logg
 		return client.(clients.HttpJsonRpcClient), nil
 	}
 
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", nil, parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}

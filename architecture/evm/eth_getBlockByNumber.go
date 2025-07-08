@@ -239,6 +239,7 @@ func enforceNonNullBlock(nr *common.NormalizedResponse) (*common.NormalizedRespo
 				nil,
 				details,
 			),
+			nr.Upstream(),
 		)
 	}
 	return nr, nil

@@ -34,6 +34,7 @@ type GenericHttpJsonRpcClient struct {
 	proxyPool *ProxyPool
 
 	projectId       string
+	upstream        common.Upstream
 	upstreamId      string
 	appCtx          context.Context
 	logger          *zerolog.Logger
@@ -62,17 +63,22 @@ func NewGenericHttpJsonRpcClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	projectId string,
-	upstreamId string,
+	upstream common.Upstream,
 	parsedUrl *url.URL,
 	jsonRpcCfg *common.JsonRpcUpstreamConfig,
 	proxyPool *ProxyPool,
 ) (HttpJsonRpcClient, error) {
+	upsId := "n/a"
+	if upstream != nil {
+		upsId = upstream.Id()
+	}
 	client := &GenericHttpJsonRpcClient{
 		Url:             parsedUrl,
 		appCtx:          appCtx,
 		logger:          logger,
 		projectId:       projectId,
-		upstreamId:      upstreamId,
+		upstream:        upstream,
+		upstreamId:      upsId,
 		proxyPool:       proxyPool,
 		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
 	}
@@ -746,7 +752,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 				}
 				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", util.B2Str(jr.Result[:maxTraceSize])).Str("tail", util.B2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
 			} else {
-				if jr.Result != nil && len(jr.Result) > 0 {
+				if len(jr.Result) > 0 {
 					if common.IsSemiValidJson(jr.Result) {
 						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 					} else {
@@ -776,7 +782,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 
 	// TODO Distinguish between different architectures as a property on GenericHttpJsonRpcClient during initialization
 	// TODO Move the logic to evm package as a post-response hook?
-	if e := evm.ExtractJsonRpcError(r, nr, jr); e != nil {
+	if e := evm.ExtractJsonRpcError(r, nr, jr, c.upstream); e != nil {
 		return e
 	}
 
