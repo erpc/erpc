@@ -87,7 +87,6 @@ func TestConsensusExecutor(t *testing.T) {
 				"upstream3",
 			},
 		},
-
 		{
 			name:                 "dispute_with_return_error",
 			requiredParticipants: 3,
@@ -127,60 +126,6 @@ func TestConsensusExecutor(t *testing.T) {
 				"result2",
 				"result3",
 			},
-		},
-		{
-			name:                 "dispute_with_prefer_block_head_leader",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorPreferBlockHeadLeader),
-			disputeThreshold:     1,
-			responses: []*struct {
-				response                  string
-				upstreamId                string
-				upstreamLatestBlockNumber int64
-			}{
-				{"result1", "upstream1", 1},
-				{"result2", "upstream2", 1},
-				{"result3", "upstream3", 3},
-			},
-			expectedError:  nil,
-			expectedResult: []string{"result3"},
-		},
-		{
-			name:                 "dispute_with_only_block_head_leader",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
-			disputeThreshold:     1,
-			responses: []*struct {
-				response                  string
-				upstreamId                string
-				upstreamLatestBlockNumber int64
-			}{
-				{"result1", "upstream1", 1},
-				{"result2", "upstream2", 1},
-				{"result3", "upstream3", 3},
-			},
-			expectedError:  nil,
-			expectedResult: []string{"result3"},
-		},
-		{
-			name:                 "dispute_with_only_block_head_leader",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
-			disputeThreshold:     1,
-			responses: []*struct {
-				response                  string
-				upstreamId                string
-				upstreamLatestBlockNumber int64
-			}{
-				{"result1", "upstream1", 1},
-				{"result2", "upstream2", 1},
-				{"result3", "upstream3", 3},
-			},
-			expectedError:  nil,
-			expectedResult: []string{"result3"},
 		},
 		{
 			name:                    "low_participants_with_return_error",

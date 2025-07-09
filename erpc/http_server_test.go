@@ -3316,7 +3316,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		wg.Wait()
 	})
 
-	t.Run("CorrectResponseonEvmRevertData", func(t *testing.T) {
+	t.Run("CorrectResponseOnEvmRevertData", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(500 * time.Second).Ptr(),
@@ -3329,6 +3329,16 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},

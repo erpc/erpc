@@ -451,12 +451,12 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			span.SetAttributes(
 				attribute.Bool("error.retryable_to_network", isRetryable),
 			)
-			if !isRetryable {
+			if isRetryable {
 				span.SetAttributes(
-					attribute.Bool("retry", false),
-					attribute.String("reason", "not_retryable_to_network"),
+					attribute.Bool("retry", true),
+					attribute.String("reason", "retryable_to_network"),
 				)
-				return false
+				return true
 			}
 		}
 
@@ -693,6 +693,16 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 				}
 				be.Details = dts
 			}
+		}
+		return err
+	}
+
+	if joinedErr, ok := execErr.(interface{ Unwrap() []error }); ok {
+		errs := joinedErr.Unwrap()
+		if len(errs) == 1 {
+			err = errs[0]
+		} else {
+			err = common.NewErrFailsafeRetryExceeded(scope, execErr, startTime)
 		}
 		return err
 	}

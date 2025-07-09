@@ -179,27 +179,6 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 			Str("networkId", networkId).
 			Logger()
 
-		val = ctx.Value(common.UpstreamsContextKey)
-		upsList, ok := val.([]common.Upstream)
-		if !ok || len(upsList) == 0 {
-			lg.Warn().Object("request", originalReq).Interface("upstreams", upsList).Msg("unexpecued incompatible or empty list of upstreams in consensus policy")
-			common.SetTraceSpanError(consensusSpan, fmt.Errorf("invalid or empty upstreams list"))
-			telemetry.MetricConsensusTotal.WithLabelValues(projectId, networkId, category, "error", finalityStr).Inc()
-			telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "invalid_upstreams", finalityStr).Inc()
-			return innerFn(exec)
-		}
-
-		lg.Debug().
-			Interface("upstreams", func() []string {
-				ids := make([]string, len(upsList))
-				for i, up := range upsList {
-					ids[i] = up.Id()
-				}
-				return ids
-			}()).
-			Int("upstreamsCount", len(upsList)).
-			Msg("consensus policy received upstreams")
-
 		parentExecution := exec.(policy.ExecutionInternal[R])
 
 		// Phase 1: Fire off requests and collect responses
@@ -974,7 +953,7 @@ func (e *executor[R]) handleLowParticipants(
 			)
 		})
 	case common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader:
-		return e.handlePreferBlockHeadLeader(lg, responses, func() error {
+		return e.handlePreferBlockHeadLeader(exec.Context(), lg, responses, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no block head leader found",
 				e.extractParticipants(responses, exec),
@@ -982,7 +961,7 @@ func (e *executor[R]) handleLowParticipants(
 			)
 		})
 	case common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader:
-		return e.handleOnlyBlockHeadLeader(lg, responses, func() error {
+		return e.handleOnlyBlockHeadLeader(exec.Context(), lg, responses, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no block head leader found",
 				e.extractParticipants(responses, exec),
@@ -1020,7 +999,7 @@ func (e *executor[R]) handleDispute(
 			)
 		})
 	case common.ConsensusDisputeBehaviorPreferBlockHeadLeader:
-		return e.handlePreferBlockHeadLeader(lg, responses, func() error {
+		return e.handlePreferBlockHeadLeader(exec.Context(), lg, responses, func() error {
 			return common.NewErrConsensusDispute(
 				"no block head leader found",
 				e.extractParticipants(responses, exec),
@@ -1028,7 +1007,7 @@ func (e *executor[R]) handleDispute(
 			)
 		})
 	case common.ConsensusDisputeBehaviorOnlyBlockHeadLeader:
-		return e.handleOnlyBlockHeadLeader(lg, responses, func() error {
+		return e.handleOnlyBlockHeadLeader(exec.Context(), lg, responses, func() error {
 			return common.NewErrConsensusDispute(
 				"no block head leader found",
 				e.extractParticipants(responses, exec),
@@ -1292,47 +1271,47 @@ func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, responses [
 	}
 }
 
-func (e *executor[R]) findBlockHeadLeader(responses []*execResult[R]) (int64, *execResult[R]) {
-	var highestBlock int64
-	var highestBlockResult *execResult[R]
+func (e *executor[R]) findBlockHeadLeaderResult(ctx context.Context, responses []*execResult[R]) *execResult[R] {
+	var network common.Network
 	for _, r := range responses {
-		if r.err == nil {
-			upstream := r.upstream
-			if upstream != nil {
-				if evmUpstream, ok := upstream.(common.EvmUpstream); ok {
-					statePoller := evmUpstream.EvmStatePoller()
-					if statePoller != nil {
-						latestBlock := statePoller.LatestBlock()
-						if latestBlock > highestBlock {
-							highestBlock = latestBlock
-							highestBlockResult = r
-						}
-					}
-				} else {
-					e.logger.Warn().
-						Str("upstream", upstream.Config().Id).
-						Msg("upstream does not support block head leader detection")
+		if resp, ok := any(r.result).(*common.NormalizedResponse); ok {
+			if req := resp.Request(); req != nil {
+				if n := req.Network(); n != nil && n.Id() != "" {
+					network = n
+					break
 				}
 			}
 		}
 	}
-	return highestBlock, highestBlockResult
-}
+	if network == nil {
+		return nil
+	}
 
-func (e *executor[R]) handlePreferBlockHeadLeader(logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
-	_, highestBlockResult := e.findBlockHeadLeader(responses)
-
-	if highestBlockResult != nil {
-		logger.Debug().Msg("sending block head leader result")
-
-		if highestBlockResult.err != nil {
-			return &failsafeCommon.PolicyResult[R]{
-				Error: highestBlockResult.err,
+	leaderUpstream := network.EvmLeaderUpstream(ctx)
+	if leaderUpstream == nil {
+		return nil
+	}
+	for _, r := range responses {
+		if r.err == nil {
+			if r.upstream == leaderUpstream {
+				return r
 			}
 		}
+	}
+	return nil
+}
 
+func (e *executor[R]) handlePreferBlockHeadLeader(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
+	blockLeaderResult := e.findBlockHeadLeaderResult(ctx, responses)
+	if blockLeaderResult != nil {
+		logger.Debug().Msg("sending block head leader result")
+		if blockLeaderResult.err != nil {
+			return &failsafeCommon.PolicyResult[R]{
+				Error: blockLeaderResult.err,
+			}
+		}
 		return &failsafeCommon.PolicyResult[R]{
-			Result: highestBlockResult.result,
+			Result: blockLeaderResult.result,
 		}
 	}
 
@@ -1340,19 +1319,15 @@ func (e *executor[R]) handlePreferBlockHeadLeader(logger *zerolog.Logger, respon
 	return e.handleAcceptMostCommon(logger, responses, errFn)
 }
 
-func (e *executor[R]) handleOnlyBlockHeadLeader(logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
-	_, highestBlockResult := e.findBlockHeadLeader(responses)
-
-	if highestBlockResult != nil {
+func (e *executor[R]) handleOnlyBlockHeadLeader(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
+	blockLeaderResult := e.findBlockHeadLeaderResult(ctx, responses)
+	if blockLeaderResult != nil {
 		logger.Debug().Msg("sending block head leader result")
 		return &failsafeCommon.PolicyResult[R]{
-			Result: highestBlockResult.result,
+			Result: blockLeaderResult.result,
 		}
 	}
-
-	// If no block head leader found, return error
-	logger.Debug().Msg("sending no block head leader error")
-
+	logger.Debug().Msg("no block head leader found, returning error")
 	return &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}

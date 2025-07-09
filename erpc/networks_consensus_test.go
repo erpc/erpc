@@ -633,8 +633,10 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:                    "only_block_head_leader_selects_highest_block_upstream",
-			requiredParticipants:    2,
+			agreementThreshold:      pointer(2),
+			requiredParticipants:    3,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader),
+			disputeBehavior:         pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -669,12 +671,12 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0x7a",
+					"result":  "0x5a",
 				},
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0x7a",
+					"result":  "0x6a",
 				},
 				{
 					"jsonrpc": "2.0",
@@ -683,16 +685,17 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				},
 			},
 			expectedCalls: []int{
-				0, // test1 should NOT be called
-				0, // test2 should NOT be called
-				1, // test3 (leader) should be called
+				1, // test1 should NOT be used
+				1, // test2 should NOT be used
+				1, // test3 (leader) should be used
 			},
 			expectedResponse: common.NewNormalizedResponse().
 				WithJsonRpcResponse(successResponse),
 		},
 		{
 			name:                    "prefer_block_head_leader_includes_leader_in_participants",
-			requiredParticipants:    2,
+			agreementThreshold:      pointer(2),
+			requiredParticipants:    3,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
 			upstreams: []*common.UpstreamConfig{
 				{
@@ -738,12 +741,15 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0x7a",
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "internal error",
+					},
 				},
 			},
 			expectedCalls: []int{
-				1, // test1 should be called
-				0, // test2 should NOT be called (replaced by leader)
+				1, // test1 should be used
+				1, // test2 should NOT be used
 				1, // test3 (leader) should be called
 			},
 			expectedResponse: common.NewNormalizedResponse().
@@ -970,7 +976,9 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			if tt.expectedError != nil {
 				assert.Error(t, err, "expected error but got nil")
 				assert.True(t, common.HasErrorCode(err, *tt.expectedError), "expected error code %s, got %s", *tt.expectedError, err)
-				assert.Contains(t, err.Error(), *tt.expectedMsg, "expected error message %s, got %s", *tt.expectedMsg, err.Error())
+				if err != nil {
+					assert.Contains(t, err.Error(), *tt.expectedMsg, "expected error message %s, got %s", *tt.expectedMsg, err.Error())
+				}
 				assert.Nil(t, resp, "expected nil response")
 			} else {
 				assert.NoError(t, err)

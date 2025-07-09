@@ -207,6 +207,22 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	return minBlock
 }
 
+func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
+	var leader common.Upstream
+	var leaderLastBlock int64 = 0
+	upsList := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	for _, u := range upsList {
+		if statePoller := u.EvmStatePoller(); statePoller != nil {
+			lastBlock := statePoller.LatestBlock()
+			if lastBlock > leaderLastBlock {
+				leader = u
+				leaderLastBlock = lastBlock
+			}
+		}
+	}
+	return leader
+}
+
 func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(context.Background())
