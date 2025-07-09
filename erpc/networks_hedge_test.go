@@ -612,7 +612,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		// Should get error since all requests failed
 		require.Error(t, err)
 		require.Nil(t, resp)
-		assert.Contains(t, err.Error(), "ErrUpstreamsExhausted")
+		assert.Contains(t, err.Error(), "ErrEndpointServerSideException")
 	})
 
 	t.Run("HedgePolicy_ContextCancellationDuringHedge", func(t *testing.T) {

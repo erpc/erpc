@@ -344,7 +344,7 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 			return false
 		}
 		jrr, err := result.JsonRpcResponse()
-		if err != nil {
+		if jrr == nil || err != nil {
 			return false
 		}
 		if jrr.Error != nil {
@@ -700,11 +700,10 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 	if joinedErr, ok := execErr.(interface{ Unwrap() []error }); ok {
 		errs := joinedErr.Unwrap()
 		if len(errs) == 1 {
-			err = errs[0]
-		} else {
-			err = common.NewErrFailsafeRetryExceeded(scope, execErr, startTime)
+			return errs[0]
+		} else if len(errs) > 1 {
+			return common.NewErrUpstreamsExhaustedWithCause(execErr)
 		}
-		return err
 	}
 
 	// For unknown errors we return as is so we're not wrongly wrapping with an inappropriate error type.

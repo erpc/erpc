@@ -565,9 +565,7 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			}
 			if match {
 				// Check if this upstream has already been consumed
-				if _, consumed := r.ConsumedUpstreams.Load(upstream.Id()); !consumed {
-					// Reserve this upstream
-					r.ConsumedUpstreams.Store(upstream.Id(), true)
+				if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream.Id(), true); !loaded {
 					return upstream, nil
 				}
 			}
@@ -583,7 +581,7 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	for attempts := 0; attempts < upstreamCount; attempts++ {
 		// Get current index and increment atomically
 		idx := atomic.AddUint32(&r.UpstreamIdx, 1) - 1
-		upstream := r.upstreamList[idx%uint32(upstreamCount)]
+		upstream := r.upstreamList[idx%uint32(upstreamCount)] // #nosec G115
 
 		// Skip if already consumed (gave valid response or consensus-valid error)
 		if _, consumed := r.ConsumedUpstreams.Load(upstream.Id()); consumed {
@@ -603,8 +601,9 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		}
 
 		// Reserve this upstream
-		r.ConsumedUpstreams.Store(upstream.Id(), true)
-		return upstream, nil
+		if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream.Id(), true); !loaded {
+			return upstream, nil
+		}
 	}
 
 	// All upstreams exhausted

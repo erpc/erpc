@@ -233,7 +233,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			t.Error("Expected an upstream timeout error, got nil")
 		} else {
 			summary := common.ErrorSummary(lastErr)
-			if !strings.Contains(summary, "upstream timeout") {
+			if !strings.Contains(summary, "exceeded on upstream-level") {
 				t.Errorf("Expected upstream timeout error, got: %v", lastErr)
 			}
 		}

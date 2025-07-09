@@ -5970,15 +5970,15 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 				},
 			})
 
-		// Mock failing responses for second range (both attempts)
+		// Mock failing responses for other ranges
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Times(2). // Will be called twice due to retry
+			Times(6).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
-					strings.Contains(body, `"toBlock":"0x111181ff"`)
+					!(strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+						strings.Contains(body, `"toBlock":"0x111180ff"`))
 			}).
 			Reply(503).
 			JSON(map[string]interface{}{
@@ -5989,9 +5989,6 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 					"message": "Server error",
 				},
 			})
-
-		// We don't need to mock the third range because the request should fail after
-		// the second range fails all retry attempts
 
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -6034,6 +6031,13 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 								ChainId: 1,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceGetLogsBlockRange: util.BoolPtr(true),
+								},
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
 								},
 							},
 						},
@@ -6547,7 +6551,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ReturnsMissingDataIfAllUpstreamsReturnNull", func(t *testing.T) {
 		util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 		defer util.ResetGock()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
@@ -6596,78 +6602,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      999,
 			"method":  "eth_getBlockByNumber",
-			"params": ["latest", false]
+			"params": ["0x777", false]
 		}`
 
-		// Mock poller calls for "rpc1" => we say "eth_syncing" = false, and eth_getBlockByNumber("latest") = 0x100
 		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x775"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x775"}}`))
-
-		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
-		// for the method "eth_getBlockByNumber('latest')".
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result":  nil,
-			})
-		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -6694,8 +6632,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		assert.Contains(t, body, "block not found")
 		assert.Contains(t, body, "-32014")
-
-		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
 
 	t.Run("FailFastIfSharedStateIsTooSlow", func(t *testing.T) {
@@ -8240,7 +8176,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		errResp, ok := respObj["error"].(map[string]interface{})
 		assert.True(t, ok, "error should be present")
 		assert.Equal(t, float64(-32603), errResp["code"], "error code should be -32603")
-		assert.Equal(t, "not enough participants", errResp["message"], "error message should be 'not enough participants'")
+		assert.Contains(t, errResp["message"], "not enough participants", "error message should be 'not enough participants'")
 	})
 
 	t.Run("ShouldHandleConsensusFailureDueToDispute", func(t *testing.T) {

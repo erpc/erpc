@@ -49,6 +49,23 @@ func ErrorSummary(err interface{}) string {
 		} else {
 			s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
 		}
+	} else if e, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := e.Unwrap()
+		if len(errs) == 1 {
+			s = ErrorSummary(errs[0])
+		} else if len(errs) > 0 {
+			parts := []string{}
+			for _, err := range errs {
+				if se, ok := err.(StandardError); ok {
+					parts = append(parts, se.CodeChain())
+				} else {
+					parts = append(parts, err.Error())
+				}
+			}
+			s = strings.Join(parts, ", ")
+		} else {
+			s = "UnknownMultipleErrors"
+		}
 	} else if e, ok := err.(error); ok {
 		if errorLabelMode == ErrorLabelModeCompact {
 			if errors.Is(e, context.DeadlineExceeded) {
@@ -777,6 +794,16 @@ var NewErrUpstreamsExhausted = func(
 	}
 
 	return e
+}
+
+func NewErrUpstreamsExhaustedWithCause(cause error) error {
+	return &ErrUpstreamsExhausted{
+		BaseError{
+			Code:    ErrCodeUpstreamsExhausted,
+			Message: "all upstream attempts failed",
+			Cause:   cause,
+		},
+	}
 }
 
 func (e *ErrUpstreamsExhausted) IsObjectNull() bool {
@@ -2394,4 +2421,35 @@ func (e *ErrConsensusLowParticipants) Errors() []error {
 
 func (e *ErrConsensusLowParticipants) ErrorStatusCode() int {
 	return http.StatusPreconditionFailed
+}
+
+func (e *ErrConsensusLowParticipants) DeepestMessage() string {
+	return fmt.Sprintf("%s: %s: %s", e.Code, e.Message, e.SummarizeParticipants())
+}
+
+func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
+	if e.Details == nil {
+		return ""
+	}
+	participants, ok := e.Details["participants"].([]ParticipantInfo)
+	if !ok {
+		return ""
+	}
+	parts := []string{}
+	for _, p := range participants {
+		if p.ErrSummary == "" {
+			if p.Upstream != "" && p.ResultHash != "" {
+				parts = append(parts, fmt.Sprintf("%s = %s", p.Upstream, p.ResultHash))
+			} else if p.Upstream != "" {
+				parts = append(parts, fmt.Sprintf("%s = NoResult", p.Upstream))
+			}
+		} else {
+			if p.Upstream != "" {
+				parts = append(parts, fmt.Sprintf("%s = %s", p.Upstream, p.ErrSummary))
+			} else {
+				parts = append(parts, p.ErrSummary)
+			}
+		}
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
