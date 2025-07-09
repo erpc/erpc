@@ -1455,6 +1455,25 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								BatchMaxWait:  common.Duration(5 * time.Millisecond),
 							},
 						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: nil,
+									Retry:   nil,
+									Hedge:   nil,
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+								BatchMaxWait:  common.Duration(5 * time.Millisecond),
+							},
+						},
 					},
 				},
 			},
@@ -1480,7 +1499,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					"id":      111,
 					"result":  "0x111_SLOW",
 				}})
-		gock.New("http://rpc1.localhost").
+		gock.New("http://rpc2.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -1856,7 +1875,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.Contains(t, body, ErrHandlerTimeout.Error())
 	})
 
-	t.Run("HedgeDiscardsSlowerCall_FirstRequestCancelled", func(t *testing.T) {
+	t.Run("HedgeDiscardsSlowerCallFirstRequestCancelled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
@@ -1892,6 +1911,17 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								SupportsBatch: &common.FALSE,
 							},
 						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
 					},
 				},
 			},
@@ -1919,7 +1949,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Mock #2 (faster) – "hedge request"
-		gock.New("http://rpc1.localhost").
+		gock.New("http://rpc2.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -1951,7 +1981,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
 	})
 
-	t.Run("HedgeDiscardsSlowerCall_SecondRequestCancelled", func(t *testing.T) {
+	t.Run("HedgeDiscardsSlowerCallSecondRequestCancelled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
@@ -1987,6 +2017,17 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								SupportsBatch: &common.FALSE,
 							},
 						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
 					},
 				},
 			},
@@ -2014,7 +2055,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Mock #2 (slower) – "hedge request"
-		gock.New("http://rpc1.localhost").
+		gock.New("http://rpc2.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)

@@ -539,7 +539,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.SetUpstream(u)
 				}
 
-				if err == nil || isClientErr || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				if !common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
 					if err == nil {
 						loopSpan.SetStatus(codes.Ok, "")
 					} else {
@@ -890,6 +890,8 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 }
 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
+	mlx.mu.Lock()
+	defer mlx.mu.Unlock()
 	n.inFlightRequests.Delete(mlx.hash)
 }
 
