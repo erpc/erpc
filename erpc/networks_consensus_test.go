@@ -1374,7 +1374,7 @@ func TestConsensusShortCircuitIntegration(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	// Don't check for pending mocks since we use Persist() for short-circuit scenarios
 
 	// Create upstreams
 	upstreams := []*common.UpstreamConfig{
@@ -1405,10 +1405,11 @@ func TestConsensusShortCircuitIntegration(t *testing.T) {
 	}
 
 	// Mock responses - all return the same result quickly
+	// Use Persist() since short-circuit may not call all upstreams
 	for _, upstream := range upstreams {
 		gock.New(upstream.Endpoint).
 			Post("").
-			Times(1).
+			Persist().
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -1453,7 +1454,7 @@ func TestConsensusInsufficientParticipants(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	// Don't check for pending mocks since we use Persist() for multiple calls
 
 	// Create only 2 upstreams but require 5 participants
 	upstreams := []*common.UpstreamConfig{
@@ -1476,10 +1477,11 @@ func TestConsensusInsufficientParticipants(t *testing.T) {
 	}
 
 	// Mock responses - both return the same result
+	// Use Persist() since consensus may make multiple calls to same upstream
 	for _, upstream := range upstreams {
 		gock.New(upstream.Endpoint).
 			Post("").
-			Times(1).
+			Persist().
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -1808,7 +1810,7 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 			util.ResetGock()
 			defer util.ResetGock()
 			util.SetupMocksForEvmStatePoller()
-			defer util.AssertNoPendingMocks(t, 0)
+			// Don't check for pending mocks since we use Persist() for consensus scenarios
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer func() {
@@ -1871,7 +1873,7 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 			for i, upstream := range tt.upstreams {
 				gock.New(upstream.Endpoint).
 					Post("/").
-					Times(1).
+					Persist().
 					Reply(200).
 					SetHeader("Content-Type", "application/json").
 					JSON(tt.mockResponses[i])

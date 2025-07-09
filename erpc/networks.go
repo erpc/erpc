@@ -385,11 +385,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// 5) Actual forwarding logic
 
 	// This is the only way to pass additional values to failsafe policy executors context
-	ectx := context.WithValue(
-		context.WithValue(ctx, common.RequestContextKey, req),
-		common.UpstreamsContextKey,
-		upsList,
-	)
+	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
 	failsafeExecutor := n.getFailsafeExecutor(req)
 	if failsafeExecutor == nil {
@@ -399,6 +395,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	resp, execErr := failsafeExecutor.executor.
 		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			lg.Trace().
+				Int("attempt", exec.Attempts()).
+				Int("retry", exec.Retries()).
+				Int("hedge", exec.Hedges()).
+				Msgf("execution attempt for network forwarding")
+
 			execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
 				trace.WithAttributes(
 					attribute.String("network.id", n.networkId),
@@ -451,12 +453,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 
 			var err error
-
-			// We should try all upstreams at least once, but using "i" we make sure
-			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
-			// This mimicks a round-robin behavior, for example when doing hedge or retries.
-			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
-
 			for {
 				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
 				if ctxErr := loopCtx.Err(); ctxErr != nil {

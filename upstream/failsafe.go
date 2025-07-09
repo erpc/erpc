@@ -291,7 +291,7 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		builder = builder.WithMaxHedges(cfg.MaxCount)
 	}
 
-	builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
+	builder = builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
 		ctx := event.Context()
 		ctx, span := common.StartDetailSpan(ctx, "HedgePolicy.OnHedge")
 		defer span.End()
@@ -338,6 +338,24 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		return true
 	})
 
+	// We will only cancel other hedged requests if we have non-error non-empty response, otherwise we'll wait for other in-flight requests to complete.
+	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
+		if err != nil || result == nil || result.IsObjectNull() {
+			return false
+		}
+		jrr, err := result.JsonRpcResponse()
+		if err != nil {
+			return false
+		}
+		if jrr.Error != nil {
+			return false
+		}
+		if jrr.IsResultEmptyish() {
+			return false
+		}
+		return true
+	})
+
 	return builder.Build(), nil
 }
 
@@ -375,7 +393,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		emptyResultIgnore = []string{"eth_getLogs", "eth_call"}
 	}
 
-	builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
+	builder = builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
 		ctx := exec.Context()
 		ctx, span := common.StartDetailSpan(ctx, "RetryPolicy.HandleIf",
 			trace.WithAttributes(

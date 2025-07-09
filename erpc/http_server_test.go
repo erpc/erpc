@@ -1230,7 +1230,107 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 }
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
-	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingDisabled", func(t *testing.T) {
+	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(100 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x111111",
+			})
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(20 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x222222")
+	})
+
+	t.Run("SimpleHedgePolicyAvoidSameUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
+
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
@@ -1272,11 +1372,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
@@ -1311,7 +1406,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222")
+		assert.Contains(t, body, "0x111111")
 	})
 
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {

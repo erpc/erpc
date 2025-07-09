@@ -552,7 +552,7 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	if r == nil || len(r.upstreamList) == 0 {
-		return nil, NewErrUpstreamsExhausted(r, nil, "", "", "", 0, 0, 0, 0, 0)
+		return nil, fmt.Errorf("no upstreams available for this request")
 	}
 
 	// Check if UseUpstream directive is set
@@ -573,14 +573,17 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			}
 		}
 		// If no matching upstream found or all consumed, return error
-		return nil, NewErrUpstreamsExhausted(r, &r.ErrorsByUpstream, "", "", "", 0, 0, 0, 0, len(r.upstreamList))
+		return nil, fmt.Errorf("no more non-consumed matching upstreams left")
 	}
 
 	// Normal round-robin selection
-	startIdx := atomic.LoadUint32(&r.UpstreamIdx)
-	for i := 0; i < len(r.upstreamList); i++ {
+	upstreamCount := len(r.upstreamList)
+
+	// Try all upstreams starting from current index
+	for attempts := 0; attempts < upstreamCount; attempts++ {
+		// Get current index and increment atomically
 		idx := atomic.AddUint32(&r.UpstreamIdx, 1) - 1
-		upstream := r.upstreamList[idx%uint32(len(r.upstreamList))]
+		upstream := r.upstreamList[idx%uint32(upstreamCount)]
 
 		// Skip if already consumed (gave valid response or consensus-valid error)
 		if _, consumed := r.ConsumedUpstreams.Load(upstream.Id()); consumed {
@@ -604,13 +607,8 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		return upstream, nil
 	}
 
-	// Check if we made a full loop without finding available upstream
-	currentIdx := atomic.LoadUint32(&r.UpstreamIdx)
-	if currentIdx-startIdx >= uint32(len(r.upstreamList)) {
-		return nil, NewErrUpstreamsExhausted(r, &r.ErrorsByUpstream, "", "", "", 0, 0, 0, 0, len(r.upstreamList))
-	}
-
-	return nil, NewErrUpstreamsExhausted(r, &r.ErrorsByUpstream, "", "", "", 0, 0, 0, 0, len(r.upstreamList))
+	// All upstreams exhausted
+	return nil, fmt.Errorf("no more good upstreams left")
 }
 
 func (r *NormalizedRequest) MarkUpstreamCompleted(upstream Upstream, hadValidResponse bool) {
