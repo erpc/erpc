@@ -361,7 +361,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	// 4) Iterate over upstreams and forward the request until success or fatal failure
+	// 4) Prepare the request
+	if err := n.prepareRequest(ctx, req); err != nil {
+		if mlx != nil {
+			mlx.Close(ctx, nil, err)
+		}
+		return nil, err
+	}
+
+	// 5) Iterate over upstreams and forward the request until success or fatal failure
 	tryForward := func(
 		u common.Upstream,
 		req *common.NormalizedRequest,
@@ -397,9 +405,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		return resp, err
 	}
-
-	// 5) Actual forwarding logic
-
 	// This is the only way to pass additional values to failsafe policy executors context
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
@@ -699,6 +704,33 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	return resp, nil
+}
+
+func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
+	switch n.Architecture() {
+	case common.ArchitectureEvm:
+		jsonRpcReq, err := nr.JsonRpcRequest(ctx)
+		if err != nil {
+			return common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorParseException,
+				"failed to unmarshal json-rpc request",
+				err,
+				nil,
+			)
+		}
+		evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
+	default:
+		return common.NewErrJsonRpcExceptionInternal(
+			0,
+			common.JsonRpcErrorServerSideException,
+			fmt.Sprintf("unsupported architecture: %s for network: %s", n.Architecture(), n.Id()),
+			nil,
+			nil,
+		)
+	}
+
+	return nil
 }
 
 func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {

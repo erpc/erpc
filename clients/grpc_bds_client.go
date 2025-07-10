@@ -172,7 +172,9 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 
 func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	var params []interface{}
+	jrReq.RLock()
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
 	}
@@ -253,7 +255,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 
 func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	var params []interface{}
+	jrReq.RLock()
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
 	}
@@ -323,7 +327,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 
 func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	var params []map[string]interface{}
+	jrReq.RLock()
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
 	}
@@ -442,7 +448,9 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
+	jrReq.RLock()
 	err = jsonRpcResp.SetID(jrReq.ID)
+	jrReq.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
@@ -460,7 +468,9 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 
 func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	var params []interface{}
+	jrReq.RLock()
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
 	}
@@ -523,7 +533,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, r
 
 func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	var params []interface{}
+	jrReq.RLock()
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
 	}
@@ -617,7 +629,9 @@ func (c *GenericGrpcBdsClient) handleChainId(ctx context.Context, req *common.No
 
 func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	var params []interface{}
+	jrReq.RLock()
 	paramsBytes, err := sonic.Marshal(jrReq.Params)
+	jrReq.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal params: %w", err)
 	}
