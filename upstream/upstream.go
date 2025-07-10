@@ -371,11 +371,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	// Prepare and normalize the request object
 	//
 	nrq.SetLastUpstream(u)
-	err = u.prepareRequest(ctx, nrq)
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return nil, err
-	}
 
 	//
 	// Send the request based on client type
@@ -829,56 +824,6 @@ func (u *Upstream) IgnoreMethod(method string) {
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
 	u.cfgMu.Unlock()
 	u.supportedMethods.Store(method, false)
-}
-
-func (u *Upstream) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
-	cfg := u.Config()
-	switch cfg.Type {
-	case common.UpstreamTypeEvm:
-		// TODO Move the logic to evm package as a pre-request hook?
-		if u.Client == nil {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("client not initialized for evm upstream: %s", cfg.Id),
-				nil,
-				nil,
-			)
-		}
-
-		clientType := u.Client.GetType()
-		if clientType == clients.ClientTypeHttpJsonRpc || clientType == clients.ClientTypeGrpcBds {
-			jsonRpcReq, err := nr.JsonRpcRequest(ctx)
-			if err != nil {
-				return common.NewErrJsonRpcExceptionInternal(
-					0,
-					common.JsonRpcErrorParseException,
-					"failed to unmarshal json-rpc request",
-					err,
-					nil,
-				)
-			}
-			evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
-		} else {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("unsupported evm client type: %s upstream: %s", u.Client.GetType(), cfg.Id),
-				nil,
-				nil,
-			)
-		}
-	default:
-		return common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorServerSideException,
-			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Type, cfg.Id),
-			nil,
-			nil,
-		)
-	}
-
-	return nil
 }
 
 func (u *Upstream) initRateLimitAutoTuner() {
