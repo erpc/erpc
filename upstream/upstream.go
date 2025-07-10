@@ -819,6 +819,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 	if ai == nil || !*ai {
 		return
 	}
+	u.logger.Warn().Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
 
 	u.cfgMu.Lock()
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)

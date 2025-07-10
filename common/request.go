@@ -621,3 +621,39 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(upstream Upstream, hadValidRes
 	}
 	// If hadValidResponse is true, keep it marked as consumed
 }
+
+// Release clears circular references to allow GC
+func (r *NormalizedRequest) Release() {
+	if r == nil {
+		return
+	}
+
+	// Clear the response reference to break circular dependency
+	if resp := r.lastValidResponse.Load(); resp != nil {
+		r.lastValidResponse.Store(nil)
+		// Also clear the back-reference if it exists
+		if resp != nil {
+			resp.request = nil
+		}
+	}
+
+	// Clear any other references that might prevent GC
+	r.ErrorsByUpstream.Range(func(key, value interface{}) bool {
+		r.ErrorsByUpstream.Delete(key)
+		return true
+	})
+	
+	r.EmptyResponses.Range(func(key, value interface{}) bool {
+		r.EmptyResponses.Delete(key)
+		return true
+	})
+
+	// Clear upstream references
+	r.upstreamList = nil
+	if r.ConsumedUpstreams != nil {
+		r.ConsumedUpstreams.Range(func(key, value interface{}) bool {
+			r.ConsumedUpstreams.Delete(key)
+			return true
+		})
+	}
+}

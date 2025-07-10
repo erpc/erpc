@@ -177,7 +177,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 
 	// Parse the JSON data into an ast.Node
 	searcher := ast.NewSearcher(util.B2Str(data))
-	searcher.CopyReturn = false
+	searcher.CopyReturn = true
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
 
@@ -186,7 +186,10 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawID, err := idNode.Raw(); err == nil {
 			r.idMu.Lock()
 			defer r.idMu.Unlock()
-			r.idBytes = util.S2Bytes(rawID)
+			// Copy the ID bytes to avoid holding reference to the original buffer
+			idBytes := []byte(rawID)
+			r.idBytes = make([]byte, len(idBytes))
+			copy(r.idBytes, idBytes)
 		}
 	}
 
@@ -194,7 +197,10 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawResult, err := resultNode.Raw(); err == nil {
 			r.resultMu.Lock()
 			defer r.resultMu.Unlock()
-			r.Result = util.S2Bytes(rawResult)
+			// Copy the result bytes to avoid holding reference to the original buffer
+			resultBytes := []byte(rawResult)
+			r.Result = make([]byte, len(resultBytes))
+			copy(r.Result, resultBytes)
 			// Copy to heap instead of storing local variable address
 			r.cachedNode = new(ast.Node)
 			*r.cachedNode = resultNode
@@ -212,6 +218,9 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 	} else if err := r.ParseError(util.B2Str(data)); err != nil {
 		return err
 	}
+
+	// Clear the data buffer reference to allow GC
+	data = nil
 
 	return nil
 }
@@ -245,7 +254,10 @@ func (r *JsonRpcResponse) ParseError(raw string) error {
 	// Check if the error is well-formed and has necessary fields
 	if rpcErr.Code != 0 || rpcErr.Message != "" {
 		r.Error = &rpcErr
-		r.errBytes = util.S2Bytes(raw)
+		// Copy the error bytes to avoid holding reference to the original buffer
+		errBytesTemp := []byte(raw)
+		r.errBytes = make([]byte, len(errBytesTemp))
+		copy(r.errBytes, errBytesTemp)
 		return nil
 	}
 
@@ -374,7 +386,7 @@ func (r *JsonRpcResponse) ensureCachedNode() error {
 		srchr := ast.NewSearcher(util.B2Str(r.Result))
 		srchr.ValidateJSON = false
 		srchr.ConcurrentRead = false
-		srchr.CopyReturn = false
+		srchr.CopyReturn = true
 		n, err := srchr.GetByPath()
 		if err != nil {
 			r.resultMu.RUnlock()
