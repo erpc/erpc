@@ -193,6 +193,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			method,
 			strconv.FormatInt(int64(resp.Attempts()), 10),
 			finality.String(),
+			strconv.FormatBool(resp.IsResultEmptyish(ctx)),
 		).Inc()
 		if lg.GetLevel() == zerolog.TraceLevel {
 			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
