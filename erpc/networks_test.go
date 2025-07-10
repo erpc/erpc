@@ -395,8 +395,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
-		} else if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
-			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
+		} else if !strings.Contains(common.ErrorSummary(err), "ErrEndpointServerSideException") {
+			t.Errorf("Expected %v, got %v", "ErrEndpointServerSideException", err)
 		}
 	})
 
@@ -518,8 +518,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected an error, got nil")
 		}
 
-		if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
-			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
+		if !strings.Contains(common.ErrorSummary(err), "ErrEndpointServerSideException") {
+			t.Errorf("Expected %v, got %v", "ErrEndpointServerSideException", err)
 		}
 	})
 
@@ -538,7 +538,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"error":{"code":-32016,"message":"unauthorized rpc1"}}`))
 
 		gock.New("http://rpc2.localhost").
-			Times(2).
+			Times(1).
 			Post("").
 			Reply(503).
 			JSON([]byte(`{"error":"random rpc2 unavailable"}`))
@@ -694,7 +694,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"error":"random rpc1 unavailable"}`))
 
 		gock.New("http://rpc2.localhost").
-			Times(3).
+			Times(2).
 			Post("").
 			Reply(503).
 			JSON([]byte(`{"error":"random rpc2 unavailable"}`))
@@ -4342,8 +4342,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
-		if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
-			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
+		if !strings.Contains(common.ErrorSummary(err), "ErrFailsafeRetryExceeded") {
+			t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
 		}
 	})
 
@@ -5480,8 +5480,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if lastErr == nil {
 			t.Fatalf("Expected an error, got nil, resp: %v", resp)
 		}
-		if !strings.Contains(lastErr.Error(), "ErrUpstreamsExhausted") {
-			t.Errorf("Expected error message to contain 'ErrUpstreamsExhausted', got %v", lastErr.Error())
+		if !strings.Contains(lastErr.Error(), "ErrFailsafeCircuitBreakerOpen") {
+			t.Errorf("Expected error message to contain 'ErrFailsafeCircuitBreakerOpen', got %v", lastErr.Error())
 		}
 	})
 
@@ -8049,7 +8049,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8102,7 +8102,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
 		req := common.NewNormalizedRequest(requestBytes)
 		req.SetNetwork(network)
 		resp, err := network.Forward(ctx, req)
@@ -8146,7 +8146,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8190,7 +8190,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, "", 0, common.EvmNodeTypeArchive, 0)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, "", 0, common.EvmNodeTypeArchive, 0, nil)
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8252,7 +8252,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -8312,7 +8312,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -8345,7 +8345,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -8379,7 +8379,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 	t.Run("SkipToUpstreamWithCorrectLatestBlockToCoverBlockRangeEnd", func(t *testing.T) {
 		util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 		defer util.ResetGock()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock eth_getLogs request with a block range
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x22228880","toBlock":"0x22228887","address":"0x0000000000000000000000000000000000000000"}]}`)
@@ -8407,6 +8409,14 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			128,                       // rpc1 max recent blocks
 			common.EvmNodeTypeFull,    // rpc2 type
 			1000,                      // rpc2 max recent blocks
+			&common.FailsafeConfig{
+				MatchMethod: "*",
+				Hedge:       nil,
+				Timeout:     nil,
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			},
 		)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -8422,9 +8432,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
-
-		if jrr.Result == nil {
+		} else if jrr == nil || jrr.Result == nil {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -8435,13 +8443,13 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		if fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
-
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
 
-	t.Run("SkipDueToMaxAvailableRecentBlocksWhenLowerEndTooEarly", func(t *testing.T) {
+	t.Run("FailsDueToMaxAvailableRecentBlocksWhenLowerEndTooEarlWithNoRetry", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock eth_getLogs request with fromBlock that's too early compared to maxAvailableRecentBlocks
 		// Latest block is 0x11118888, with 128 max recent blocks, so anything before 0x11118888-128 is too early
@@ -8451,7 +8459,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		defer cancel()
 
 		// Setup network with a Full node that has limited block history (128 blocks)
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -8464,13 +8472,63 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, resp)
 		assert.Contains(t, err.Error(), "block not found")
+	})
 
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	t.Run("SkipsDueToMaxAvailableRecentBlocksWhenLowerEndTooEarlWithRetry", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Mock eth_getLogs request with fromBlock that's too early compared to maxAvailableRecentBlocks
+		// Latest block is 0x11118888, with 128 max recent blocks, so anything before 0x11118888-128 is too early
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11117000","toBlock":"0x11118800","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
+
+		// Setup network with a Full node that has limited block history (128 blocks)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, &common.FailsafeConfig{
+			MatchMethod: "*",
+			Hedge:       nil,
+			Timeout:     nil,
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+		})
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify that the request was skipped with appropriate error
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		assert.NotNil(t, jrr.Result)
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+		assert.NoError(t, err)
+		assert.Equal(t, "rpc2", fromHost)
 	})
 
 	t.Run("BypassMaxAvailableRecentBlocksIfLowerEndStillInRange", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock eth_getLogs request with fromBlock that's within the maxAvailableRecentBlocks range
 		// Latest block is 0x11118888, with 128 max recent blocks, so anything after 0x11118888-128 is fine
@@ -8490,7 +8548,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		defer cancel()
 
 		// Setup network with a Full node that has limited block history (128 blocks)
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -8511,8 +8569,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		assert.NoError(t, err)
 		assert.Equal(t, "rpc1", fromHost)
-
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
 
 	t.Run("SplitIntoSubRequestsIfRangeTooBig", func(t *testing.T) {
@@ -8644,7 +8700,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		defer cancel()
 
 		// Setup network with a node that has a small GetLogsAutoSplittingRangeThreshold
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		// Configure a small GetLogsAutoSplittingRangeThreshold to force splitting
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -8917,7 +8973,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		defer cancel()
 
 		// Setup network with a node that has GetLogsAutoSplittingRangeThreshold = 1
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120, nil)
 
 		// Configure GetLogsAutoSplittingRangeThreshold = 1 to force splitting into individual blocks
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -9010,7 +9066,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		defer cancel()
 
 		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -9092,7 +9148,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		defer cancel()
 
 		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -9168,7 +9224,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		// Configure network for splitting
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -9917,7 +9973,15 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 	return network
 }
 
-func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.Context, nodeType1 common.EvmNodeType, maxRecentBlocks1 int64, nodeType2 common.EvmNodeType, maxRecentBlocks2 int64) *Network {
+func setupTestNetworkWithFullAndArchiveNodeUpstreams(
+	t *testing.T,
+	ctx context.Context,
+	nodeType1 common.EvmNodeType,
+	maxRecentBlocks1 int64,
+	nodeType2 common.EvmNodeType,
+	maxRecentBlocks2 int64,
+	failsafeConfig *common.FailsafeConfig,
+) *Network {
 	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
@@ -9980,11 +10044,13 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		120*time.Second,
 	)
 
-	fsCfg := &common.FailsafeConfig{
-		MatchMethod: "*",
-		Hedge:       nil,
-		Timeout:     nil,
-		Retry:       nil,
+	if failsafeConfig == nil {
+		failsafeConfig = &common.FailsafeConfig{
+			MatchMethod: "*",
+			Hedge:       nil,
+			Timeout:     nil,
+			Retry:       nil,
+		}
 	}
 
 	networkConfig := &common.NetworkConfig{
@@ -9992,7 +10058,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		Evm: &common.EvmNetworkConfig{
 			ChainId: 123,
 		},
-		Failsafe: []*common.FailsafeConfig{fsCfg},
+		Failsafe: []*common.FailsafeConfig{failsafeConfig},
 	}
 	network, err := NewNetwork(
 		ctx,

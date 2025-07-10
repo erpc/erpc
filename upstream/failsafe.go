@@ -291,7 +291,7 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		builder = builder.WithMaxHedges(cfg.MaxCount)
 	}
 
-	builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
+	builder = builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
 		ctx := event.Context()
 		ctx, span := common.StartDetailSpan(ctx, "HedgePolicy.OnHedge")
 		defer span.End()
@@ -338,6 +338,21 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		return true
 	})
 
+	// We will only cancel other hedged requests if we have non-error response, otherwise we'll wait for other in-flight requests to complete.
+	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
+		if err != nil || result == nil || result.IsObjectNull() {
+			return false
+		}
+		jrr, err := result.JsonRpcResponse()
+		if jrr == nil || err != nil {
+			return false
+		}
+		if jrr.Error != nil {
+			return false
+		}
+		return true
+	})
+
 	return builder.Build(), nil
 }
 
@@ -375,7 +390,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		emptyResultIgnore = []string{"eth_getLogs", "eth_call"}
 	}
 
-	builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
+	builder = builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
 		ctx := exec.Context()
 		ctx, span := common.StartDetailSpan(ctx, "RetryPolicy.HandleIf",
 			trace.WithAttributes(
@@ -433,12 +448,12 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			span.SetAttributes(
 				attribute.Bool("error.retryable_to_network", isRetryable),
 			)
-			if !isRetryable {
+			if isRetryable {
 				span.SetAttributes(
-					attribute.Bool("retry", false),
-					attribute.String("reason", "not_retryable_to_network"),
+					attribute.Bool("retry", true),
+					attribute.String("reason", "retryable_to_network"),
 				)
-				return false
+				return true
 			}
 		}
 
@@ -677,6 +692,15 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 			}
 		}
 		return err
+	}
+
+	if joinedErr, ok := execErr.(interface{ Unwrap() []error }); ok {
+		errs := joinedErr.Unwrap()
+		if len(errs) == 1 {
+			return errs[0]
+		} else if len(errs) > 1 {
+			return common.NewErrUpstreamsExhaustedWithCause(execErr)
+		}
 	}
 
 	// For unknown errors we return as is so we're not wrongly wrapping with an inappropriate error type.

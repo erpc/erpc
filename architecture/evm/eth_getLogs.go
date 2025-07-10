@@ -139,7 +139,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	// check if the number of addresses is beyond the hard limit
+	jrq.RLock()
 	addresses, hasAddresses := filter["address"].([]interface{})
+	jrq.RUnlock()
 	if hasAddresses && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedAddresses > 0 &&
 		int64(len(addresses)) > cfg.Evm.GetLogsMaxAllowedAddresses {
 		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedAddresses(
@@ -150,7 +152,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	// check if the number of topics is beyond the hard limit
+	jrq.RLock()
 	topics, hasTopics := filter["topics"].([]interface{})
+	jrq.RUnlock()
 	if hasTopics && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedTopics > 0 &&
 		int64(len(topics)) > cfg.Evm.GetLogsMaxAllowedTopics {
 		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedTopics(
@@ -203,6 +207,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 			var subRequests []ethGetLogsSubRequest
 			sb := fromBlock
+			jrq.RLock()
 			for sb <= toBlock {
 				eb := min(sb+cfg.Evm.GetLogsAutoSplittingRangeThreshold-1, toBlock)
 				subRequests = append(subRequests, ethGetLogsSubRequest{
@@ -213,6 +218,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				})
 				sb = eb + 1
 			}
+			jrq.RUnlock()
 			logger.Debug().
 				Int64("requestRange", requestRange).
 				Int64("maxBlockRange", cfg.Evm.GetLogsAutoSplittingRangeThreshold).
