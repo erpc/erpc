@@ -206,7 +206,7 @@ var (
 		Namespace: "erpc",
 		Name:      "network_successful_request_total",
 		Help:      "Total number of successful requests for a network.",
-	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality"})
+	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish"})
 
 	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
