@@ -1001,6 +1001,7 @@ type EvmNetworkConfig struct {
 	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
 	FallbackStatePollerDebounce Duration            `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce" tstype:"Duration"`
 	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	IntentionalBlockLag         int64               `yaml:"intentionalBlockLag,omitempty" json:"intentionalBlockLag"`
 }
 
 type EvmIntegrityConfig struct {

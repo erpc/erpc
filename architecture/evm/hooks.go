@@ -23,6 +23,8 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *co
 	switch strings.ToLower(method) {
 	case "eth_blocknumber":
 		return networkPreForward_eth_blockNumber(ctx, network, nq)
+	case "eth_getblockbynumber":
+		return networkPreForward_eth_getBlockByNumber(ctx, network, nq)
 	case "eth_call":
 		return networkPreForward_eth_call(ctx, network, nq)
 	case "eth_chainid":
