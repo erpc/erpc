@@ -20,9 +20,47 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	defer span.End()
 
 	ncfg := network.Config()
-	if ncfg == nil ||
-		ncfg.Evm == nil ||
-		ncfg.Evm.Integrity == nil ||
+	if ncfg == nil || ncfg.Evm == nil {
+		return false, nil, nil
+	}
+
+	if ncfg.Evm.IntentionalBlockLag > 0 {
+		latestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		if latestBlockNumber <= 0 {
+			return false, nil, nil
+		}
+
+		laggedBlockNumber := latestBlockNumber - ncfg.Evm.IntentionalBlockLag
+		if laggedBlockNumber < 0 {
+			laggedBlockNumber = 0
+		}
+
+		hbk, err := common.NormalizeHex(laggedBlockNumber)
+		if err != nil {
+			common.SetTraceSpanError(span, err)
+			return false, nil, err
+		}
+
+		jrr, err := common.NewJsonRpcResponse(nq.ID(), hbk, nil)
+		if err != nil {
+			common.SetTraceSpanError(span, err)
+			return false, nil, err
+		}
+
+		resp := common.NewNormalizedResponse().
+			WithRequest(nq).
+			WithJsonRpcResponse(jrr)
+
+		network.Logger().Debug().
+			Int64("originalLatest", latestBlockNumber).
+			Int64("laggedBlock", laggedBlockNumber).
+			Int64("intentionalBlockLag", ncfg.Evm.IntentionalBlockLag).
+			Msg("applied intentional block lag to eth_blockNumber request")
+
+		return true, resp, nil
+	}
+
+	if ncfg.Evm.Integrity == nil ||
 		ncfg.Evm.Integrity.EnforceHighestBlock == nil ||
 		!*ncfg.Evm.Integrity.EnforceHighestBlock {
 		// If integrity check for highest block is disabled, skip this hook.

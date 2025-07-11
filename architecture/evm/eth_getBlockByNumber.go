@@ -39,6 +39,82 @@ func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransacti
 	return common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{bkt, includeTransactions}), nil
 }
 
+func networkPreForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ctx, span := common.StartDetailSpan(ctx, "Network.PreForwardHook.eth_getBlockByNumber", trace.WithAttributes(
+		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
+		attribute.String("network.id", network.Id()),
+	))
+	defer span.End()
+
+	ncfg := network.Config()
+	if ncfg == nil || ncfg.Evm == nil || ncfg.Evm.IntentionalBlockLag <= 0 {
+		return false, nil, nil
+	}
+
+	rqj, err := nq.JsonRpcRequest(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+
+	rqj.RLock()
+	defer rqj.RUnlock()
+
+	if len(rqj.Params) < 1 {
+		return false, nil, nil
+	}
+
+	blockParam, ok := rqj.Params[0].(string)
+	if !ok || blockParam != "latest" {
+		return false, nil, nil
+	}
+
+	latestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+	if latestBlockNumber <= 0 {
+		return false, nil, nil
+	}
+
+	laggedBlockNumber := latestBlockNumber - ncfg.Evm.IntentionalBlockLag
+	if laggedBlockNumber < 0 {
+		laggedBlockNumber = 0
+	}
+
+	var includeTransactions bool
+	if len(rqj.Params) > 1 {
+		includeTransactions, _ = rqj.Params[1].(bool)
+	}
+
+	laggedRequest, err := BuildGetBlockByNumberRequest(laggedBlockNumber, includeTransactions)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	err = laggedRequest.SetID(nq.ID())
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	laggedNq := common.NewNormalizedRequestFromJsonRpcRequest(laggedRequest)
+	laggedNq.SetNetwork(network)
+
+	laggedNq.SetDirectives(nq.Directives())
+
+	resp, err = network.Forward(ctx, laggedNq)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return true, nil, err
+	}
+
+	network.Logger().Debug().
+		Int64("originalLatest", latestBlockNumber).
+		Int64("laggedBlock", laggedBlockNumber).
+		Int64("intentionalBlockLag", ncfg.Evm.IntentionalBlockLag).
+		Msg("applied intentional block lag to eth_getBlockByNumber request")
+
+	return true, resp, nil
+}
+
 func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward.eth_getBlockByNumber", trace.WithAttributes(
 		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
