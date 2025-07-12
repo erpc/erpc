@@ -393,7 +393,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil && !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
 			if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
-				lg.Warn().Err(err).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
 				go u.IgnoreMethod(method)
 			}
 
@@ -907,6 +906,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Network.WaitForMultiplexResult")
 	defer span.End()
+
 	// Check if result is already available
 	mlx.mu.RLock()
 	if mlx.resp != nil || mlx.err != nil {

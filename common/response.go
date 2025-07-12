@@ -28,6 +28,10 @@ type NormalizedResponse struct {
 	evmBlockNumber  atomic.Value
 	evmBlockRef     atomic.Value
 	finality        atomic.Value // Cached finality state
+
+	// parseOnce ensures JsonRpcResponse is parsed only once
+	parseOnce sync.Once
+	parseErr  error
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -231,22 +235,31 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 		return nil, nil
 	}
 
+	// Check if already parsed
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
-		return jrr, nil
+		return jrr, r.parseErr
 	}
 
-	jrr := &JsonRpcResponse{}
-
-	if r.body != nil {
-		err := jrr.ParseFromStream(ctx, r.body, r.expectedSize)
-		if err != nil {
-			return nil, err
+	// Ensure parsing happens only once
+	r.parseOnce.Do(func() {
+		if r.body != nil {
+			jrr := &JsonRpcResponse{}
+			err := jrr.ParseFromStream(ctx, r.body, r.expectedSize)
+			if err != nil {
+				r.parseErr = err
+				return
+			}
+			r.jsonRpcResponse.Store(jrr)
+		} else {
+			// No body to parse - this shouldn't happen in normal flow
+			// but we need to handle it gracefully
+			r.parseErr = fmt.Errorf("no body available to parse JsonRpcResponse")
 		}
-		r.jsonRpcResponse.Store(jrr)
-		return jrr, nil
-	}
+	})
 
-	return nil, nil
+	// Return the parsed response or error
+	jrr := r.jsonRpcResponse.Load()
+	return jrr, r.parseErr
 }
 
 func (r *NormalizedResponse) WithBody(body io.ReadCloser) *NormalizedResponse {
@@ -299,11 +312,10 @@ func (r *NormalizedResponse) IsObjectNull(ctx ...context.Context) bool {
 		defer span.End()
 	}
 
-	jrr.resultMu.RLock()
-	defer jrr.resultMu.RUnlock()
-
 	jrr.errMu.RLock()
 	defer jrr.errMu.RUnlock()
+	jrr.resultMu.RLock()
+	defer jrr.resultMu.RUnlock()
 
 	if len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == 0 {
 		return true
@@ -351,6 +363,8 @@ func (r *NormalizedResponse) Release() {
 		}
 		r.body = nil
 	}
+
+	r.jsonRpcResponse.Store(nil)
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
@@ -440,23 +454,40 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	r.SetEvmBlockRef(resp.EvmBlockRef())
 	r.SetEvmBlockNumber(resp.EvmBlockNumber())
 
-	if ejrr := resp.jsonRpcResponse.Load(); ejrr != nil {
-		// We need to use request ID because response ID can be different for multiplexed requests
-		// where we only sent 1 actual request to the upstream.
-		jrr, err := ejrr.Clone()
+	// Try to load the already–parsed JsonRpcResponse from the original response.
+	ejrr := resp.jsonRpcResponse.Load()
+
+	// If the original response has not yet been parsed (common with multiplexed
+	// requests), parse it now so that we can clone a *complete* JsonRpcResponse.
+	if ejrr == nil {
+		parsedJrr, err := resp.JsonRpcResponse(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to parse original response: %w", err)
 		}
-		jrq := req.jsonRpcRequest.Load()
-		if jrq == nil {
-			return nil, fmt.Errorf("request jsonRpcRequest is nil")
-		}
-		err = jrr.SetID(jrq.ID)
-		if err != nil {
-			return nil, err
-		}
-		r.WithJsonRpcResponse(jrr)
+		// Use the parsed response directly instead of loading from atomic pointer
+		// This avoids race conditions where the parsing might have failed
+		ejrr = parsedJrr
 	}
+
+	if ejrr == nil {
+		return nil, fmt.Errorf("cannot copy original response since jsonRpcResponse is nil")
+	}
+
+	// Use request ID because the multiplexed upstream call may carry a
+	// different ID.
+	jrr, err := ejrr.Clone()
+	if err != nil {
+		return nil, err
+	}
+
+	jrq := req.jsonRpcRequest.Load()
+	if jrq == nil {
+		return nil, fmt.Errorf("request jsonRpcRequest is nil")
+	}
+	if err := jrr.SetID(jrq.ID); err != nil {
+		return nil, err
+	}
+	r.WithJsonRpcResponse(jrr)
 
 	return r, nil
 }

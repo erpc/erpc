@@ -331,10 +331,10 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		return
 	}
 
-	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
 	r.errMu.RLock()
 	defer r.errMu.RUnlock()
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
 
 	e.Interface("id", r.ID()).Int("resultSize", len(r.Result))
 
@@ -405,10 +405,8 @@ func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
 func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 	r.idMu.RLock()
 	defer r.idMu.RUnlock()
-
 	r.errMu.RLock()
 	defer r.errMu.RUnlock()
-
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
@@ -513,19 +511,41 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		return nil, nil
 	}
 
+	r.idMu.RLock()
+	defer r.idMu.RUnlock()
+	r.errMu.RLock()
+	defer r.errMu.RUnlock()
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
 	clone := &JsonRpcResponse{
 		id:         r.id,
-		idBytes:    r.idBytes,
 		Error:      r.Error,
-		errBytes:   r.errBytes,
-		Result:     r.Result,
 		cachedNode: r.cachedNode,
+	}
+
+	// Deep copy byte slices to avoid shared references
+	if r.idBytes != nil {
+		clone.idBytes = make([]byte, len(r.idBytes))
+		copy(clone.idBytes, r.idBytes)
+	}
+
+	if r.errBytes != nil {
+		clone.errBytes = make([]byte, len(r.errBytes))
+		copy(clone.errBytes, r.errBytes)
+	}
+
+	if r.Result != nil {
+		clone.Result = make([]byte, len(r.Result))
+		copy(clone.Result, r.Result)
 	}
 
 	// Copy the canonical hash if it exists
 	if cached := r.canonicalHash.Load(); cached != nil {
 		clone.canonicalHash.Store(cached)
 	}
+
+	clone.resultWriter = r.resultWriter
 
 	return clone, nil
 }

@@ -3283,19 +3283,24 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Times(3).
-			Reply(200).
-			Delay(4000 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x123456",
-			})
+		// Create 3 separate mocks that will handle the first 3 unique requests
+		// The rest should be served from the multiplexer
+		for i := 0; i < 3; i++ {
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Times(1).
+				Reply(200).
+				Delay(4000 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1, // Default ID, will be replaced by the actual request ID
+					"result":  "0x123456",
+				})
+		}
 
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
