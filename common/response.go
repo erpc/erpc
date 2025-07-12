@@ -299,11 +299,10 @@ func (r *NormalizedResponse) IsObjectNull(ctx ...context.Context) bool {
 		defer span.End()
 	}
 
-	jrr.resultMu.RLock()
-	defer jrr.resultMu.RUnlock()
-
 	jrr.errMu.RLock()
 	defer jrr.errMu.RUnlock()
+	jrr.resultMu.RLock()
+	defer jrr.resultMu.RUnlock()
 
 	if len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == 0 {
 		return true
@@ -351,6 +350,8 @@ func (r *NormalizedResponse) Release() {
 		}
 		r.body = nil
 	}
+
+	r.jsonRpcResponse.Store(nil)
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
@@ -440,23 +441,37 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	r.SetEvmBlockRef(resp.EvmBlockRef())
 	r.SetEvmBlockNumber(resp.EvmBlockNumber())
 
-	if ejrr := resp.jsonRpcResponse.Load(); ejrr != nil {
-		// We need to use request ID because response ID can be different for multiplexed requests
-		// where we only sent 1 actual request to the upstream.
-		jrr, err := ejrr.Clone()
-		if err != nil {
+	// Try to load the already–parsed JsonRpcResponse from the original response.
+	ejrr := resp.jsonRpcResponse.Load()
+
+	// If the original response has not yet been parsed (common with multiplexed
+	// requests), parse it now so that we can clone a *complete* JsonRpcResponse.
+	if ejrr == nil {
+		if _, err := resp.JsonRpcResponse(ctx); err != nil {
 			return nil, err
 		}
-		jrq := req.jsonRpcRequest.Load()
-		if jrq == nil {
-			return nil, fmt.Errorf("request jsonRpcRequest is nil")
-		}
-		err = jrr.SetID(jrq.ID)
-		if err != nil {
-			return nil, err
-		}
-		r.WithJsonRpcResponse(jrr)
+		ejrr = resp.jsonRpcResponse.Load()
 	}
+
+	if ejrr == nil {
+		return nil, fmt.Errorf("cannot copy original response since jsonRpcResponse is nil")
+	}
+
+	// Use request ID because the multiplexed upstream call may carry a
+	// different ID.
+	jrr, err := ejrr.Clone()
+	if err != nil {
+		return nil, err
+	}
+
+	jrq := req.jsonRpcRequest.Load()
+	if jrq == nil {
+		return nil, fmt.Errorf("request jsonRpcRequest is nil")
+	}
+	if err := jrr.SetID(jrq.ID); err != nil {
+		return nil, err
+	}
+	r.WithJsonRpcResponse(jrr)
 
 	return r, nil
 }
