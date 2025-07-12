@@ -9394,6 +9394,141 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		pendings := gock.Pending()
 		assert.True(t, len(pendings) == 0, "Expected no pending mocks")
 	})
+	t.Run("IntentionalBlockLag_BlockNumber", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}, &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId:             123,
+				IntentionalBlockLag: 100,
+			},
+		})
+
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+		upsList[0].EvmStatePoller().SuggestLatestBlock(200)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network)
+
+		handled, resp, err := evm.HandleNetworkPreForward(ctx, network, req)
+		assert.True(t, handled, "Expected intentional block lag to handle the request")
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		var blockNumberHex string
+		err = sonic.Unmarshal(jrr.Result, &blockNumberHex)
+		assert.NoError(t, err)
+
+		blockNumber, err := common.HexToInt64(blockNumberHex)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(100), blockNumber, "Expected block number to be lagged by 100 blocks (200 - 100 = 100)")
+
+		expectedHex, err := common.NormalizeHex(100)
+		assert.NoError(t, err)
+		assert.Equal(t, expectedHex, blockNumberHex, "Expected correct hex format for lagged block number")
+	})
+
+	t.Run("IntentionalBlockLag_GetBlockByNumber_Latest", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") &&
+					strings.Contains(body, `"0x64"`) && // The lagged block number (100 in hex)
+					strings.Contains(body, "false")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number":     "0x64", // Block 100 (200 - 100 lag)
+					"hash":       "0xabc123",
+					"parentHash": "0xdef456",
+					"timestamp":  "0x12345678",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}, &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId:             123,
+				IntentionalBlockLag: 100,
+			},
+		})
+
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+		upsList[0].EvmStatePoller().SuggestLatestBlock(200)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network)
+
+		handled, resp, err := evm.HandleNetworkPreForward(ctx, network, req)
+		assert.True(t, handled, "Expected intentional block lag to handle the request")
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// Verify the response contains the lagged block data
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		// Parse the result to verify it's the lagged block
+		var blockResult map[string]interface{}
+		err = sonic.Unmarshal(jrr.Result, &blockResult)
+		assert.NoError(t, err)
+
+		blockNumber := blockResult["number"].(string)
+		assert.Equal(t, "0x64", blockNumber, "Expected block number to be lagged by 100 blocks (200 - 100 = 100, which is 0x64 in hex)")
+
+		blockHash := blockResult["hash"].(string)
+		assert.Equal(t, "0xabc123", blockHash, "Expected correct block hash from lagged block")
+
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
 }
 
 func TestNetwork_ThunderingHerdProtection(t *testing.T) {
