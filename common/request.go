@@ -88,6 +88,7 @@ type NormalizedRequest struct {
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
 
 	finality atomic.Value // Cached finality state
+	userId   atomic.Value // User ID from authentication
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -548,6 +549,23 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 	if r.ConsumedUpstreams == nil {
 		r.ConsumedUpstreams = &sync.Map{}
 	}
+}
+
+func (r *NormalizedRequest) SetUserId(userId string) {
+	if r == nil {
+		return
+	}
+	r.userId.Store(userId)
+}
+
+func (r *NormalizedRequest) UserId() string {
+	if r == nil {
+		return ""
+	}
+	if userId := r.userId.Load(); userId != nil {
+		return userId.(string)
+	}
+	return ""
 }
 
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {

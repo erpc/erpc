@@ -358,11 +358,17 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
+					// For admin requests, we don't set userId since it's not user-specific
 				} else {
-					if err := project.AuthenticateConsumer(requestCtx, method, ap); err != nil {
+					authResult, err := project.AuthenticateConsumer(requestCtx, method, ap)
+					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
+					}
+					// Set the user ID from authentication result
+					if authResult != nil {
+						nq.SetUserId(authResult.UserId)
 					}
 				}
 

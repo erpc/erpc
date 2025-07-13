@@ -20,43 +20,43 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
 		Help:      "Total number of actual requests to upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "attempt", "composite", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "attempt", "composite", "finality", "user_id"})
 
 	MetricUpstreamErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_errors_total",
 		Help:      "Total number of errors for actual requests towards upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "error", "severity", "composite", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "error", "severity", "composite", "finality", "user_id"})
 
 	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed rate limited requests before sending to upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "user_id"})
 
 	MetricUpstreamRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_remote_rate_limited_total",
 		Help:      "Total number of remote rate limited requests by upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "user_id"})
 
 	MetricUpstreamSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_skipped_total",
 		Help:      "Total number of requests skipped by upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user_id"})
 
 	MetricUpstreamMissingDataErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_missing_data_error_total",
 		Help:      "Total number of requests where upstream is missing data or not synced yet.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user_id"})
 
 	MetricUpstreamEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_empty_response_total",
 		Help:      "Total number of empty responses from upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user_id"})
 
 	MetricUpstreamBlockHeadLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -170,49 +170,49 @@ var (
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed (locally) rate limited requests towards the network.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user_id"})
 
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_received_total",
 		Help:      "Total number of requests received for a network.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user_id"})
 
 	MetricNetworkMultiplexedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_multiplexed_request_total",
 		Help:      "Total number of multiplexed requests for a network.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user_id"})
 
 	MetricNetworkHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedged_request_total",
 		Help:      "Total number of hedged requests towards a network.",
-	}, []string{"project", "network", "upstream", "category", "attempt", "finality"})
+	}, []string{"project", "network", "upstream", "category", "attempt", "finality", "user_id"})
 
 	MetricNetworkHedgeDiscardsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedge_discards_total",
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
-	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality"})
+	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user_id"})
 
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
 		Help:      "Total number of failed requests for a network.",
-	}, []string{"project", "network", "category", "attempt", "error", "severity", "finality"})
+	}, []string{"project", "network", "category", "attempt", "error", "severity", "finality", "user_id"})
 
 	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_successful_request_total",
 		Help:      "Total number of successful requests for a network.",
-	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish"})
+	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user_id"})
 
 	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "project_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed (locally) rate limited requests towards the project.",
-	}, []string{"project", "category"})
+	}, []string{"project", "category", "user_id"})
 
 	MetricRateLimiterBudgetMaxCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -224,49 +224,49 @@ var (
 		Namespace: "erpc",
 		Name:      "auth_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed (locally) rate limited requests due to auth config for a project.",
-	}, []string{"project", "strategy", "category"})
+	}, []string{"project", "strategy", "category", "user_id"})
 
 	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_success_total",
 		Help:      "Total number of cache set operations.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheSetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_error_total",
 		Help:      "Total number of cache set errors.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user_id"})
 
 	MetricCacheSetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_skipped_total",
 		Help:      "Total number of cache set skips.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheGetSuccessHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_total",
 		Help:      "Total number of cache get hits.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheGetSuccessMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_miss_total",
 		Help:      "Total number of cache get misses.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheGetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_error_total",
 		Help:      "Total number of cache get errors.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user_id"})
 
 	MetricCacheGetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_skipped_total",
 		Help:      "Total number of cache get skips (i.e. no matching policy found).",
-	}, []string{"project", "network", "category"})
+	}, []string{"project", "network", "category", "user_id"})
 
 	MetricCacheSetOriginalBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -452,56 +452,56 @@ func SetHistogramBuckets(bucketsStr string) error {
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
 		Buckets:   buckets,
-	}, []string{"project", "vendor", "network", "upstream", "category", "composite", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "composite", "finality", "user_id"})
 
 	MetricNetworkRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user_id"})
 
 	MetricCacheSetSuccessDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_success_duration_seconds",
 		Help:      "Duration of cache set operations.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheSetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_error_duration_seconds",
 		Help:      "Duration of cache set errors.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user_id"})
 
 	MetricCacheGetSuccessHitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_duration_seconds",
 		Help:      "Duration of cache get hits.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheGetSuccessMissDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_miss_duration_seconds",
 		Help:      "Duration of cache get misses.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheGetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_error_duration_seconds",
 		Help:      "Duration of cache get errors.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user_id"})
 
 	MetricConsensusDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "consensus_duration_seconds",
 		Help:      "Duration of consensus operations.",
 		Buckets:   slowHistogramBuckets,
-	}, []string{"project", "network", "category", "outcome", "finality"})
+	}, []string{"project", "network", "category", "outcome", "finality", "user_id"})
 
 	return nil
 }

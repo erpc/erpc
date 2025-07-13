@@ -103,7 +103,7 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 	return shouldApply
 }
 
-func (a *Authorizer) acquireRateLimitPermit(method string) error {
+func (a *Authorizer) acquireRateLimitPermit(method string, userId string) error {
 	if a.cfg.RateLimitBudget == "" {
 		return nil
 	}
@@ -116,7 +116,7 @@ func (a *Authorizer) acquireRateLimitPermit(method string) error {
 		return nil
 	}
 
-	lg := a.logger.With().Str("method", method).Logger()
+	lg := a.logger.With().Str("method", method).Str("userId", userId).Logger()
 
 	rules, errRules := rlb.GetRulesByMethod(method)
 	if errRules != nil {
@@ -132,6 +132,7 @@ func (a *Authorizer) acquireRateLimitPermit(method string) error {
 					a.projectId,
 					string(a.cfg.Type),
 					method,
+					userId,
 				).Inc()
 				return common.NewErrAuthRateLimitRuleExceeded(
 					a.projectId,

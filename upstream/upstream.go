@@ -352,6 +352,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
 						u,
 						method,
+						nrq.UserId(),
 					)
 					err = common.NewErrUpstreamRateLimitRuleExceeded(
 						cfg.Id,
@@ -386,8 +387,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				method,
 			)
 			finality := nrq.Finality(ctx)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType(), finality.String()).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality)
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType(), finality.String(), nrq.UserId()).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			isSuccess := false
@@ -419,12 +420,12 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			if errCall != nil {
 				isSuccess = false
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String()).Inc()
+					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String(), nrq.UserId()).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String()).Inc()
+					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String(), nrq.UserId()).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.recordRemoteRateLimit(method)
+						u.recordRemoteRateLimit(method, nrq.UserId())
 					}
 					severity := common.ClassifySeverity(errCall)
 					if severity == common.SeverityCritical {
@@ -435,7 +436,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 							method,
 						)
 					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType(), finality.String()).Inc()
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType(), finality.String(), nrq.UserId()).Inc()
 				}
 
 				timer.ObserveDuration(false)
@@ -464,7 +465,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				}
 			} else {
 				if nrs.IsResultEmptyish() {
-					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String()).Inc()
+					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String(), nrq.UserId()).Inc()
 				}
 			}
 
@@ -854,10 +855,11 @@ func (u *Upstream) recordRequestSuccess(method string) {
 	}
 }
 
-func (u *Upstream) recordRemoteRateLimit(method string) {
+func (u *Upstream) recordRemoteRateLimit(method string, userId string) {
 	u.metricsTracker.RecordUpstreamRemoteRateLimited(
 		u,
 		method,
+		userId,
 	)
 
 	if u.rateLimiterAutoTuner != nil {

@@ -102,15 +102,16 @@ func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
 	}, nil
 }
 
-func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) error {
+func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) (*auth.AuthResult, error) {
 	if p.consumerAuthRegistry != nil {
-		err := p.consumerAuthRegistry.Authenticate(ctx, method, ap)
+		authResult, err := p.consumerAuthRegistry.Authenticate(ctx, method, ap)
 		if err != nil {
-			return err
+			return nil, err
 		}
+		return authResult, nil
 	}
 
-	return nil
+	return &auth.AuthResult{UserId: ""}, nil
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -138,11 +139,12 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			network.networkId,
 			method,
 			reqFinality.String(),
+			nq.UserId(),
 		).Observe(v)
 	}))
 	defer timer.ObserveDuration()
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String()).Inc()
+	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String(), nq.UserId()).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
@@ -194,6 +196,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			strconv.FormatInt(int64(resp.Attempts()), 10),
 			finality.String(),
 			strconv.FormatBool(resp.IsResultEmptyish(ctx)),
+			nq.UserId(),
 		).Inc()
 		if lg.GetLevel() == zerolog.TraceLevel {
 			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
@@ -219,6 +222,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			common.ErrorFingerprint(err),
 			string(common.ClassifySeverity(err)),
 			finality.String(),
+			nq.UserId(),
 		).Inc()
 	}
 
@@ -270,6 +274,7 @@ func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) 
 				telemetry.MetricProjectRequestSelfRateLimited.WithLabelValues(
 					p.Config.Id,
 					method,
+					req.UserId(),
 				).Inc()
 				return common.NewErrProjectRateLimitRuleExceeded(
 					p.Config.Id,
