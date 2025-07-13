@@ -217,8 +217,8 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 
 		// Record metrics
 		duration := time.Since(startTime).Seconds()
-		telemetry.MetricConsensusTotal.WithLabelValues(projectId, networkId, category, outcome, finalityStr).Inc()
-		telemetry.MetricConsensusDuration.WithLabelValues(projectId, networkId, category, outcome, finalityStr).Observe(duration)
+		telemetry.MetricConsensusTotal.WithLabelValues(projectId, networkId, category, outcome, finalityStr, originalReq.UserId()).Inc()
+		telemetry.MetricConsensusDuration.WithLabelValues(projectId, networkId, category, outcome, finalityStr, originalReq.UserId()).Observe(duration)
 
 		// Update agreement rate (simplified moving average)
 		if outcome == "success" || outcome == "consensus_on_error" || outcome == "agreed_error" {
@@ -306,7 +306,7 @@ func (e *executor[R]) collectResponses(
 					common.SetTraceSpanError(attemptSpan, panicErr)
 
 					// Record panic metric
-					telemetry.MetricConsensusPanics.WithLabelValues(projectId, networkId, category, finalityStr).Inc()
+					telemetry.MetricConsensusPanics.WithLabelValues(projectId, networkId, category, finalityStr, originalReq.UserId()).Inc()
 
 					// Send error result
 					select {

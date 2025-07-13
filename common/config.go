@@ -1083,6 +1083,7 @@ type AuthStrategyConfig struct {
 	IgnoreMethods   []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods,omitempty"`
 	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
 	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	UserId          string   `yaml:"userId,omitempty" json:"userId,omitempty"`
 
 	Type    AuthType               `yaml:"type" json:"type" tstype:"TsAuthType"`
 	Network *NetworkStrategyConfig `yaml:"network,omitempty" json:"network,omitempty"`

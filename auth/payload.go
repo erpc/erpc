@@ -11,6 +11,10 @@ type AuthPayload struct {
 	Network *NetworkPayload
 }
 
+type AuthResult struct {
+	UserId string
+}
+
 type SecretPayload struct {
 	Value string
 }
