@@ -64,7 +64,7 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 		// Store the final result
 		m.resp = resp
 		m.err = err
-		
+
 		// Signal completion
 		close(m.done)
 	})

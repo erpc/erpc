@@ -3,10 +3,12 @@ package evm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -335,48 +337,32 @@ func getMethodConfig(method string, req *common.NormalizedRequest) (cfg *common.
 }
 
 func parseCompositeBlockParam(param interface{}) (string, int64, error) {
+	blockNumberStr, blockHash, err := util.ParseBlockParameter(param)
+	if err != nil {
+		return "", 0, err
+	}
+
 	var blockRef string
 	var blockNumber int64
 
-	switch v := param.(type) {
-	case string:
-		if strings.HasPrefix(v, "0x") {
-			if len(v) == 66 { // Block hash
-				blockRef = v
-			} else {
-				// Could be block number in hex
-				bni, err := common.HexToInt64(v)
-				if err != nil {
-					return blockRef, blockNumber, err
-				}
-				blockNumber = bni
+	// If we got a block hash, use it as the block reference
+	if blockHash != nil {
+		blockRef = fmt.Sprintf("0x%x", blockHash)
+		return blockRef, blockNumber, nil
+	}
+
+	// If we got a block number string, process it
+	if blockNumberStr != "" {
+		if strings.HasPrefix(blockNumberStr, "0x") {
+			// Parse hex block number to int64
+			bni, err := common.HexToInt64(blockNumberStr)
+			if err != nil {
+				return blockRef, blockNumber, err
 			}
+			blockNumber = bni
 		} else {
 			// Block tag ('latest', 'earliest', 'pending')
-			blockRef = v
-		}
-	case map[string]interface{}:
-		// Extract blockHash if present
-		if blockHashValue, exists := v["blockHash"]; exists {
-			if bh, ok := blockHashValue.(string); ok {
-				blockRef = bh
-			}
-		}
-		// Extract blockNumber if present
-		if blockNumberValue, exists := v["blockNumber"]; exists {
-			if bns, ok := blockNumberValue.(string); ok {
-				bni, err := common.HexToInt64(bns)
-				if err != nil {
-					return blockRef, blockNumber, err
-				}
-				blockNumber = bni
-			}
-		}
-		// Extract blockTag if present
-		if blockTagValue, exists := v["blockTag"]; exists {
-			if bt, ok := blockTagValue.(string); ok {
-				blockRef = bt
-			}
+			blockRef = blockNumberStr
 		}
 	}
 
