@@ -272,13 +272,13 @@ var (
 		Namespace: "erpc",
 		Name:      "cache_set_original_bytes_total",
 		Help:      "Total number of original (uncompressed) bytes for cache set operations.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCacheSetCompressedBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_compressed_bytes_total",
 		Help:      "Total number of compressed bytes for cache set operations.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user_id"})
 
 	MetricCORSRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -332,7 +332,7 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_total",
 		Help:      "Total number of consensus operations attempted.",
-	}, []string{"project", "network", "category", "outcome", "finality"}) // outcome: success, consensus_on_error, agreed_error, dispute, low_participants, error
+	}, []string{"project", "network", "category", "outcome", "finality", "user_id"}) // outcome: success, consensus_on_error, agreed_error, dispute, low_participants, error
 
 	MetricConsensusAgreementRate = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -382,7 +382,7 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_panics_total",
 		Help:      "Total number of panic recoveries in consensus.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user_id"})
 
 	MetricConsensusCancellations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

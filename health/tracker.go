@@ -292,10 +292,16 @@ func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState, userId string) *Timer {
+func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState, userId ...string) *Timer {
 	if compositeType == "" {
 		compositeType = "none"
 	}
+
+	uid := ""
+	if len(userId) > 0 {
+		uid = userId[0]
+	}
+
 	return &Timer{
 		start:         time.Now(),
 		upstream:      upstream,
@@ -303,11 +309,17 @@ func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method s
 		compositeType: compositeType,
 		finality:      finality,
 		tracker:       t,
-		userId:        userId,
+		userId:        uid,
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState, userId string) {
+func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState, userId ...string) {
+	// Derive user identifier (optional)
+	uid := ""
+	if len(userId) > 0 {
+		uid = userId[0]
+	}
+
 	if comp == "" {
 		comp = "none"
 	}
@@ -323,7 +335,7 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		}
 	}
 	telemetry.MetricUpstreamRequestDuration.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, comp, finality.String(), userId).
+		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, comp, finality.String(), uid).
 		Observe(sec)
 }
 
@@ -336,7 +348,11 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string, userId string) {
+func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string, userId ...string) {
+	uid := ""
+	if len(userId) > 0 {
+		uid = userId[0]
+	}
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).SelfRateLimitedTotal.Add(1)
 	}
@@ -344,11 +360,15 @@ func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method strin
 		t.getNtwMetrics(nk).SelfRateLimitedTotal.Add(1)
 	}
 	telemetry.MetricUpstreamSelfRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId).
+		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, uid).
 		Inc()
 }
 
-func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method string, userId string) {
+func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method string, userId ...string) {
+	uid := ""
+	if len(userId) > 0 {
+		uid = userId[0]
+	}
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).RemoteRateLimitedTotal.Add(1)
 	}
@@ -356,7 +376,7 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method str
 		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
 	}
 	telemetry.MetricUpstreamRemoteRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId).
+		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, uid).
 		Inc()
 }
 
