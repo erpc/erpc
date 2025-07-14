@@ -75,7 +75,7 @@ type NormalizedRequest struct {
 	upstreamMutex    sync.Mutex
 	UpstreamIdx      uint32
 	ErrorsByUpstream sync.Map
-	EmptyResponses   sync.Map
+	EmptyResponses   sync.Map // TODO we can potentially remove this map entirely, only use is to report "wrong empty responses"
 
 	// New fields for centralized upstream management
 	upstreamList      []Upstream // Available upstreams for this request
@@ -631,7 +631,9 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 	r.upstreamMutex.Lock()
 	defer r.upstreamMutex.Unlock()
 
-	isFinal := resp != nil && (err == nil || !IsRetryableTowardsUpstream(err))
+	hasResponse := resp != nil && !resp.IsObjectNull(ctx)
+	// We can re-use the same upstream on next rotation if there's no response or the error is retryable towards the upstream
+	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
 
 	if err != nil {
 		r.ErrorsByUpstream.Store(upstream, err)
@@ -643,10 +645,9 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.Result), upstream))
 		}
 		r.EmptyResponses.Store(upstream, true)
-		isFinal = false
 	}
 
-	if !isFinal {
+	if canReUse {
 		r.ConsumedUpstreams.Delete(upstream)
 	}
 }

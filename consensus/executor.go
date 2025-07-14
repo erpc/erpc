@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 	"strconv"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
