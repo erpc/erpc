@@ -12,6 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	evmArch "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -186,24 +187,10 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		return nil, fmt.Errorf("insufficient params for eth_getBlockByNumber")
 	}
 
-	var blockNumber string
-
-	// Handle different parameter types for block number
-	switch v := params[0].(type) {
-	case string:
-		blockNumber = v
-	case float64:
-		// JSON numbers are parsed as float64
-		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
-	case int64:
-		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
-	case uint64:
-		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", v)
-	default:
-		return nil, fmt.Errorf("invalid block number parameter type: %T", params[0])
+	// Parse the block parameter (could be number, hash, or object with blockHash)
+	blockNumber, blockHash, err := util.ParseBlockParameter(params[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse block parameter: %w", err)
 	}
 
 	includeTransactions, ok := params[1].(bool)
@@ -211,6 +198,51 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		return nil, fmt.Errorf("invalid includeTransactions parameter")
 	}
 
+	// If we have a blockHash, use GetBlockByHash instead
+	if blockHash != nil {
+		grpcReq := &evm.GetBlockByHashRequest{
+			BlockHash:           blockHash,
+			IncludeTransactions: includeTransactions,
+		}
+
+		c.logger.Debug().
+			Str("blockHash", hex.EncodeToString(blockHash)).
+			Interface("originalParam", params[0]).
+			Bool("includeTransactions", includeTransactions).
+			Msg("calling gRPC GetBlockByHash (from eth_getBlockByNumber with blockHash)")
+
+		grpcResp, err := c.rpcClient.GetBlockByHash(ctx, grpcReq)
+		if err != nil {
+			return nil, fmt.Errorf("gRPC call failed: %w", err)
+		}
+
+		var result interface{}
+		if grpcResp.Block != nil {
+			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
+		}
+
+		jsonRpcResp := &common.JsonRpcResponse{}
+		err = jsonRpcResp.SetID(jrReq.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set ID: %w", err)
+		}
+
+		if result != nil {
+			resultBytes, err := sonic.Marshal(result)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal result: %w", err)
+			}
+			jsonRpcResp.Result = resultBytes
+		} else {
+			jsonRpcResp.Result = []byte("null")
+		}
+
+		return common.NewNormalizedResponse().
+			WithRequest(req).
+			WithJsonRpcResponse(jsonRpcResp), nil
+	}
+
+	// Otherwise, use GetBlockByNumber
 	grpcReq := &evm.GetBlockByNumberRequest{
 		BlockNumber:         blockNumber,
 		IncludeTransactions: includeTransactions,
@@ -643,28 +675,19 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 		return nil, fmt.Errorf("insufficient params for eth_getBlockReceipts")
 	}
 
-	var blockNumber string
-
-	// Handle different parameter types
-	switch v := params[0].(type) {
-	case string:
-		blockNumber = v
-	case float64:
-		// JSON numbers are parsed as float64
-		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
-	case int64:
-		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
-	case uint64:
-		// Convert to hex format
-		blockNumber = fmt.Sprintf("0x%x", v)
-	default:
-		return nil, fmt.Errorf("invalid block number parameter type: %T", params[0])
+	// Parse the block parameter (could be number, hash, or object with blockHash)
+	blockNumber, blockHash, err := util.ParseBlockParameter(params[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse block parameter: %w", err)
 	}
 
-	grpcReq := &evm.GetBlockReceiptsRequest{
-		BlockNumber: blockNumber,
+	grpcReq := &evm.GetBlockReceiptsRequest{}
+
+	// If we got a block hash, use it directly
+	if blockHash != nil {
+		grpcReq.BlockHash = blockHash
+	} else {
+		grpcReq.BlockNumber = &blockNumber
 	}
 
 	c.logger.Debug().
