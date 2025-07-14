@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"strconv"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -1179,7 +1180,14 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 			upstreamId := upstream.Config().Id
 
 			// Record misbehavior detection
-			telemetry.MetricConsensusMisbehaviorDetected.WithLabelValues(projectId, networkId, upstreamId, category, finalityStr).Inc()
+			emptyish := "n/a"
+			if response != nil {
+				res, ok := any(response.result).(*common.NormalizedResponse)
+				if ok {
+					emptyish = strconv.FormatBool(res.IsObjectNull(ctx) || res.IsResultEmptyish(ctx))
+				}
+			}
+			telemetry.MetricConsensusMisbehaviorDetected.WithLabelValues(projectId, networkId, upstreamId, category, finalityStr, emptyish).Inc()
 
 			limiter := e.createRateLimiter(logger, upstreamId)
 			if !limiter.TryAcquirePermit() {

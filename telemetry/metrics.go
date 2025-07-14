@@ -358,7 +358,7 @@ var (
 		Namespace: "erpc",
 		Name:      "consensus_misbehavior_detected_total",
 		Help:      "Total number of misbehaving upstream detections.",
-	}, []string{"project", "network", "upstream", "category", "finality"})
+	}, []string{"project", "network", "upstream", "category", "finality", "emptyish"})
 
 	MetricConsensusUpstreamPunished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
