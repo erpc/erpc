@@ -401,6 +401,7 @@ export interface ConsensusPolicyConfig {
   lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
   punishMisbehavior?: PunishMisbehaviorConfig;
   disputeLogLevel?: string; // "trace", "debug", "info", "warn", "error"
+  ignoreFields?: { [key: string]: string[]};
 }
 export interface PunishMisbehaviorConfig {
   disputeThreshold: number /* uint */;

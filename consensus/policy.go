@@ -30,6 +30,7 @@ type ConsensusPolicyBuilder[R any] interface {
 	OnDispute(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R]
+	WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R]
 
 	// Build returns a new ConsensusPolicy using the builder's configuration.
 	Build() ConsensusPolicy[R]
@@ -46,6 +47,7 @@ type config[R any] struct {
 	timeout                 time.Duration
 	logger                  *zerolog.Logger
 	disputeLogLevel         zerolog.Level
+	ignoreFields            map[string][]string
 
 	onAgreement       func(event failsafe.ExecutionEvent[R])
 	onDispute         func(event failsafe.ExecutionEvent[R])
@@ -117,6 +119,11 @@ func (c *config[R]) OnLowParticipants(listener func(failsafe.ExecutionEvent[R]))
 
 func (c *config[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R] {
 	c.disputeLogLevel = level
+	return c
+}
+
+func (c *config[R]) WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R] {
+	c.ignoreFields = ignoreFields
 	return c
 }
 

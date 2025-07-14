@@ -40,6 +40,20 @@ func (e *executor[R]) resultToHash(result R, exec failsafe.Execution[R]) (string
 	if jr == nil {
 		return "", fmt.Errorf("no json-rpc response available on result")
 	}
+
+	// Check if this consensus policy has ignore fields configured
+	if e.consensusPolicy.ignoreFields != nil {
+		// Extract method from the request context
+		val := exec.Context().Value(common.RequestContextKey)
+		if originalReq, ok := val.(*common.NormalizedRequest); ok && originalReq != nil {
+			if method, err := originalReq.Method(); err == nil {
+				if fields, ok := e.consensusPolicy.ignoreFields[method]; ok && len(fields) > 0 {
+					return jr.CanonicalHashWithIgnoredFields(fields, exec.Context())
+				}
+			}
+		}
+	}
+
 	return jr.CanonicalHash()
 }
 
@@ -1179,6 +1193,9 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 			misbehavingCount++
 			upstreamId := upstream.Config().Id
 
+			// Log warning with detailed comparison
+			e.logMisbehavingUpstreamWarning(ctx, logger, response, responses, mostCommonResultHash, upstreamId, execution)
+
 			// Record misbehavior detection
 			emptyish := "n/a"
 			if response != nil {
@@ -1204,6 +1221,73 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 		attribute.Int("misbehaving.count", misbehavingCount),
 		attribute.String("correct.hash", mostCommonResultHash),
 	)
+}
+
+func (e *executor[R]) logMisbehavingUpstreamWarning(ctx context.Context, logger *zerolog.Logger, misbehavingResponse *execResult[R], allResponses []*execResult[R], correctHash string, upstreamId string, execution policy.ExecutionInternal[R]) {
+	// Extract the original request from context
+	req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+
+	// Find a correct response to compare against
+	var correctResponse *execResult[R]
+	for _, r := range allResponses {
+		if r.err == nil {
+			if hash, err := e.resultToHash(r.result, execution); err == nil && hash == correctHash {
+				correctResponse = r
+				break
+			}
+		} else if e.isConsensusValidError(r.err) {
+			if hash := e.errorToConsensusHash(r.err); hash == correctHash {
+				correctResponse = r
+				break
+			}
+		}
+	}
+
+	// Build the warning log
+	evt := logger.Warn().
+		Str("upstream", upstreamId).
+		Object("request", req)
+
+	// Add request method if available
+	if method, err := req.Method(); err == nil {
+		evt = evt.Str("method", method)
+	}
+
+	// Add misbehaving response details
+	if misbehavingResponse.err != nil {
+		evt = evt.AnErr("misbehaving_error", misbehavingResponse.err)
+		evt = evt.Str("misbehaving_error_hash", e.errorToConsensusHash(misbehavingResponse.err))
+	} else {
+		if jr := e.resultToJsonRpcResponse(misbehavingResponse.result, execution); jr != nil {
+			evt = evt.Object("misbehaving_response", jr)
+		}
+		if hash, err := e.resultToHash(misbehavingResponse.result, execution); err == nil {
+			evt = evt.Str("misbehaving_response_hash", hash)
+		}
+	}
+
+	// Add correct response details for comparison
+	if correctResponse != nil {
+		evt = evt.Str("correct_upstream", "unknown")
+		if correctResponse.upstream != nil && correctResponse.upstream.Config() != nil {
+			evt = evt.Str("correct_upstream", correctResponse.upstream.Config().Id)
+		}
+
+		if correctResponse.err != nil {
+			evt = evt.AnErr("correct_error", correctResponse.err)
+			evt = evt.Str("correct_error_hash", e.errorToConsensusHash(correctResponse.err))
+		} else {
+			if jr := e.resultToJsonRpcResponse(correctResponse.result, execution); jr != nil {
+				evt = evt.Object("correct_response", jr)
+			}
+			if hash, err := e.resultToHash(correctResponse.result, execution); err == nil {
+				evt = evt.Str("correct_response_hash", hash)
+			}
+		}
+	}
+
+	evt = evt.Str("correct_hash", correctHash)
+	evt.Msg("upstream response disagrees with consensus")
 }
 
 func (e *executor[R]) handleMisbehavingUpstream(logger *zerolog.Logger, upstream common.Upstream, upstreamId, projectId, networkId string) {

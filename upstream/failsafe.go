@@ -613,6 +613,11 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	builder = builder.WithLowParticipantsBehavior(cfg.LowParticipantsBehavior)
 	builder = builder.WithLogger(logger)
 
+	// Set ignore fields if configured
+	if cfg.IgnoreFields != nil {
+		builder = builder.WithIgnoreFields(cfg.IgnoreFields)
+	}
+
 	// Parse dispute log level if specified
 	if cfg.DisputeLogLevel != "" {
 		level, err := zerolog.ParseLevel(cfg.DisputeLogLevel)
