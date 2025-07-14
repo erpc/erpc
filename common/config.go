@@ -834,6 +834,7 @@ type ConsensusPolicyConfig struct {
 	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`
 	PunishMisbehavior       *PunishMisbehaviorConfig         `yaml:"punishMisbehavior,omitempty" json:"punishMisbehavior"`
 	DisputeLogLevel         string                           `yaml:"disputeLogLevel,omitempty" json:"disputeLogLevel"` // "trace", "debug", "info", "warn", "error"
+	IgnoreFields            map[string][]string              `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -845,6 +846,14 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 
 	if c.PunishMisbehavior != nil {
 		copied.PunishMisbehavior = c.PunishMisbehavior.Copy()
+	}
+
+	if c.IgnoreFields != nil {
+		copied.IgnoreFields = make(map[string][]string, len(c.IgnoreFields))
+		for method, fields := range c.IgnoreFields {
+			copied.IgnoreFields[method] = make([]string, len(fields))
+			copy(copied.IgnoreFields[method], fields)
+		}
 	}
 
 	return copied

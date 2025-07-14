@@ -379,6 +379,9 @@ export interface ConsensusPolicyConfig {
     lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
     punishMisbehavior?: PunishMisbehaviorConfig;
     disputeLogLevel?: string;
+    ignoreFields?: {
+        [key: string]: string[];
+    };
 }
 export interface PunishMisbehaviorConfig {
     disputeThreshold: number;
