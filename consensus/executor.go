@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 	"strconv"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -1184,7 +1184,11 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 			if response != nil {
 				res, ok := any(response.result).(*common.NormalizedResponse)
 				if ok {
-					emptyish = strconv.FormatBool(res.IsObjectNull(ctx) || res.IsResultEmptyish(ctx))
+					emptyish = strconv.FormatBool(
+						res == nil ||
+							res.IsObjectNull(ctx) ||
+							res.IsResultEmptyish(ctx),
+					)
 				}
 			}
 			telemetry.MetricConsensusMisbehaviorDetected.WithLabelValues(projectId, networkId, upstreamId, category, finalityStr, emptyish).Inc()
