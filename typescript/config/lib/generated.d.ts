@@ -442,6 +442,7 @@ export interface EvmNetworkConfig {
     fallbackFinalityDepth?: number;
     fallbackStatePollerDebounce?: Duration;
     integrity?: EvmIntegrityConfig;
+    intentionalBlockLag?: number;
 }
 export interface EvmIntegrityConfig {
     enforceHighestBlock?: boolean;
