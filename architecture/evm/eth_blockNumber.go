@@ -148,3 +148,89 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 
 	return true, resp, nil
 }
+
+// upstreamPreForward_eth_blockNumber applies intentional block lag to eth_blockNumber requests at the upstream level
+func upstreamPreForward_eth_blockNumber(ctx context.Context, network common.Network, upstream common.Upstream, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook.eth_blockNumber", trace.WithAttributes(
+		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
+		attribute.String("upstream.id", upstream.Id()),
+		attribute.String("network.id", network.Id()),
+	))
+	defer span.End()
+
+	upsCfg := upstream.Config()
+	if upsCfg == nil || upsCfg.Evm == nil || upsCfg.Evm.IntentionalBlockLag <= 0 {
+		return false, nil, nil
+	}
+
+	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_blockNumber","params":[]}`))
+
+	prJrq, err := pr.JsonRpcRequest(ctx)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	if err := prJrq.SetID(nq.ID()); err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	actualResp, err := upstream.Forward(ctx, pr, true)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	jrr, err := actualResp.JsonRpcResponse()
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	if jrr.Error != nil {
+		return true, actualResp, nil
+	}
+
+	var blockNumberHex string
+	err = common.SonicCfg.Unmarshal(jrr.Result, &blockNumberHex)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	blockNumber, err := common.HexToInt64(blockNumberHex)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	laggedBlockNumber := blockNumber - upsCfg.Evm.IntentionalBlockLag
+	if laggedBlockNumber < 0 {
+		laggedBlockNumber = 0
+	}
+
+	hbk, err := common.NormalizeHex(laggedBlockNumber)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	newJrr, err := common.NewJsonRpcResponse(nq.ID(), hbk, nil)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	resp = common.NewNormalizedResponse().
+		WithRequest(nq).
+		WithJsonRpcResponse(newJrr)
+
+	upstream.Logger().Debug().
+		Int64("originalLatest", blockNumber).
+		Int64("laggedBlock", laggedBlockNumber).
+		Int64("intentionalBlockLag", upsCfg.Evm.IntentionalBlockLag).
+		Msg("applied intentional block lag to eth_blockNumber request at upstream level")
+
+	return true, resp, nil
+}

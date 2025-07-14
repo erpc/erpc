@@ -63,6 +63,10 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	}
 
 	switch strings.ToLower(method) {
+	case "eth_blocknumber":
+		return upstreamPreForward_eth_blockNumber(ctx, n, u, r)
+	case "eth_getblockbynumber":
+		return upstreamPreForward_eth_getBlockByNumber(ctx, n, u, r)
 	case "eth_getlogs":
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)
 	default:

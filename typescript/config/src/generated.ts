@@ -348,6 +348,7 @@ export interface EvmUpstreamConfig {
   getLogsMaxAllowedTopics?: number /* int64 */;
   getLogsSplitOnError?: boolean;
   skipWhenSyncing?: boolean;
+  intentionalBlockLag?: number /* int64 */;
 }
 export interface FailsafeConfig {
   matchMethod?: string;

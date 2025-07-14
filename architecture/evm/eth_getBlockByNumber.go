@@ -365,3 +365,116 @@ func pickHighestBlock(ctx context.Context, x *common.NormalizedResponse, y *comm
 	}
 	return y, nil
 }
+
+// upstreamPreForward_eth_getBlockByNumber applies intentional block lag to eth_getBlockByNumber requests at the upstream level
+func upstreamPreForward_eth_getBlockByNumber(ctx context.Context, network common.Network, upstream common.Upstream, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook.eth_getBlockByNumber", trace.WithAttributes(
+		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
+		attribute.String("upstream.id", upstream.Id()),
+		attribute.String("network.id", network.Id()),
+	))
+	defer span.End()
+
+	upsCfg := upstream.Config()
+	if upsCfg == nil || upsCfg.Evm == nil || upsCfg.Evm.IntentionalBlockLag <= 0 {
+		return false, nil, nil
+	}
+
+	rqj, err := nq.JsonRpcRequest(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+
+	rqj.RLock()
+	defer rqj.RUnlock()
+
+	if len(rqj.Params) < 1 {
+		return false, nil, nil
+	}
+
+	blockParam, ok := rqj.Params[0].(string)
+	if !ok || blockParam != "latest" {
+		return false, nil, nil
+	}
+
+	blockNumReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_blockNumber","params":[]}`))
+
+	blockNumJrq, err := blockNumReq.JsonRpcRequest(ctx)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	if err := blockNumJrq.SetID(nq.ID()); err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	blockNumResp, err := upstream.Forward(ctx, blockNumReq, true)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	jrr, err := blockNumResp.JsonRpcResponse()
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	if jrr.Error != nil {
+		return false, nil, fmt.Errorf("failed to get block number: %v", jrr.Error)
+	}
+
+	var blockNumberHex string
+	err = common.SonicCfg.Unmarshal(jrr.Result, &blockNumberHex)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	latestBlockNumber, err := common.HexToInt64(blockNumberHex)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	laggedBlockNumber := latestBlockNumber - upsCfg.Evm.IntentionalBlockLag
+	if laggedBlockNumber < 0 {
+		laggedBlockNumber = 0
+	}
+
+	var includeTransactions bool
+	if len(rqj.Params) > 1 {
+		includeTransactions, _ = rqj.Params[1].(bool)
+	}
+
+	laggedRequest, err := BuildGetBlockByNumberRequest(laggedBlockNumber, includeTransactions)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	err = laggedRequest.SetID(nq.ID())
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return false, nil, err
+	}
+
+	laggedNq := common.NewNormalizedRequestFromJsonRpcRequest(laggedRequest)
+
+	// Forward the lagged request to the upstream
+	resp, err = upstream.Forward(ctx, laggedNq, true)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return true, nil, err
+	}
+
+	upstream.Logger().Debug().
+		Int64("originalLatest", latestBlockNumber).
+		Int64("laggedBlock", laggedBlockNumber).
+		Int64("intentionalBlockLag", upsCfg.Evm.IntentionalBlockLag).
+		Msg("applied intentional block lag to eth_getBlockByNumber request at upstream level")
+
+	return true, resp, nil
+}
