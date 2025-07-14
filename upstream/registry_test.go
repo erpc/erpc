@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -770,6 +771,80 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 	}
 }
 
+func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
+	util.ConfigureTestLogger()
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_call"
+
+	// Create registry with existing test upstreams
+	ctx := context.Background()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Second)
+
+	// Get the existing upstreams
+	upstreams := registry.GetAllUpstreams()
+	assert.Len(t, upstreams, 3)
+
+	// Find our test upstreams
+	var workingUpstream, failingUpstream *Upstream
+	for _, ups := range upstreams {
+		if ups.Id() == "upstream-a" {
+			workingUpstream = ups
+		} else if ups.Id() == "upstream-b" {
+			failingUpstream = ups
+		}
+	}
+	assert.NotNil(t, workingUpstream)
+	assert.NotNil(t, failingUpstream)
+
+	// Simulate metrics: one upstream has real latency, another has zero latency (100% error rate)
+	// Working upstream: some latency, low error rate
+	simulateRequestsWithLatency(metricsTracker, workingUpstream, method, 10, 0.1) // 100ms latency
+	simulateRequests(metricsTracker, workingUpstream, method, 10, 1)              // 10% error rate
+
+	// Failing upstream: zero latency (no successful requests), high error rate
+	simulateRequests(metricsTracker, failingUpstream, method, 10, 10) // 100% error rate
+	// No latency simulation for failing upstream - it will have zero latency
+
+	// Initialize scores by calling GetSortedUpstreams first
+	_, err := registry.GetSortedUpstreams(context.Background(), networkID, method)
+	assert.NoError(t, err)
+
+	// Refresh scores
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	// Get sorted upstreams for this specific method
+	sortedUpstreams, err := registry.GetSortedUpstreams(context.Background(), networkID, method)
+	assert.NoError(t, err)
+	assert.Len(t, sortedUpstreams, 3)
+
+	// Verify scores: working upstream should have higher score than failing one
+	registry.upstreamsMu.RLock()
+	workingScore := registry.upstreamScores["upstream-a"][networkID][method]
+	failingScore := registry.upstreamScores["upstream-b"][networkID][method]
+	registry.upstreamsMu.RUnlock()
+
+	assert.Greater(t, workingScore, failingScore, "Working upstream should have higher score than failing upstream")
+
+	t.Logf("Working upstream (upstream-a) score: %f", workingScore)
+	t.Logf("Failing upstream (upstream-b) score: %f", failingScore)
+
+	// Working upstream should be ranked higher than failing upstream
+	workingRank := -1
+	failingRank := -1
+	for i, ups := range sortedUpstreams {
+		if ups.Id() == "upstream-a" {
+			workingRank = i
+		} else if ups.Id() == "upstream-b" {
+			failingRank = i
+		}
+	}
+	assert.Less(t, workingRank, failingRank, "Working upstream should be ranked higher (lower index) than failing upstream")
+}
+
 func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
 	metricsTracker := health.NewTracker(logger, projectID, windowSize)
 	metricsTracker.Bootstrap(ctx)
@@ -832,7 +907,7 @@ func simulateRequests(tracker *health.Tracker, upstream common.Upstream, method 
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, method)
+			tracker.RecordUpstreamFailure(upstream, method, fmt.Errorf("test problem"))
 		}
 	}
 }
@@ -868,7 +943,7 @@ func simulateRequestsWithLatency(tracker *health.Tracker, upstream common.Upstre
 func simulateFailedRequests(tracker *health.Tracker, upstream common.Upstream, method string, count int) {
 	for i := 0; i < count; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
-		tracker.RecordUpstreamFailure(upstream, method)
+		tracker.RecordUpstreamFailure(upstream, method, fmt.Errorf("test problem"))
 	}
 }
 

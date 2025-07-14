@@ -71,6 +71,8 @@ type NormalizedRequest struct {
 	directives     *RequestDirectives
 	jsonRpcRequest atomic.Pointer[JsonRpcRequest]
 
+	// Upstream selection fields - protected by upstreamMutex
+	upstreamMutex    sync.Mutex
 	UpstreamIdx      uint32
 	ErrorsByUpstream sync.Map
 	EmptyResponses   sync.Map
@@ -544,6 +546,9 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 	if r == nil {
 		return
 	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
 	r.upstreamList = upstreams
 	if r.ConsumedUpstreams == nil {
 		r.ConsumedUpstreams = &sync.Map{}
@@ -551,7 +556,15 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 }
 
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
-	if r == nil || len(r.upstreamList) == 0 {
+	if r == nil {
+		return nil, fmt.Errorf("unexpected uninitialized request")
+	}
+
+	// Lock for 100% guaranteed sequential upstream selection
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	if len(r.upstreamList) == 0 {
 		return nil, fmt.Errorf("no upstreams available for this request")
 	}
 
@@ -574,14 +587,15 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		return nil, fmt.Errorf("no more non-consumed matching upstreams left")
 	}
 
-	// Normal round-robin selection
 	upstreamCount := len(r.upstreamList)
 
-	// Try all upstreams starting from current index
+	// Try all upstreams starting from current index with guaranteed sequential access
 	for attempts := 0; attempts < upstreamCount; attempts++ {
-		// Get current index and increment atomically
-		idx := atomic.AddUint32(&r.UpstreamIdx, 1) - 1
-		upstream := r.upstreamList[idx%uint32(upstreamCount)] // #nosec G115
+		// Get current index and increment - this is now atomic within the mutex
+		idx := r.UpstreamIdx % uint32(upstreamCount)
+		r.UpstreamIdx++ // Guaranteed increment for next caller
+
+		upstream := r.upstreamList[idx]
 
 		// Skip if already consumed (gave valid response or consensus-valid error)
 		if _, consumed := r.ConsumedUpstreams.Load(upstream.Id()); consumed {
@@ -600,24 +614,42 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			continue
 		}
 
-		// Reserve this upstream
+		// Try to reserve this upstream atomically
+		// If LoadOrStore returns loaded=false, we successfully reserved it
 		if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream.Id(), true); !loaded {
+			// Successfully reserved this upstream
 			return upstream, nil
 		}
+		// If we reach here, another goroutine reserved this upstream, continue to next
 	}
 
 	// All upstreams exhausted
 	return nil, fmt.Errorf("no more good upstreams left")
 }
 
-func (r *NormalizedRequest) MarkUpstreamCompleted(upstream Upstream, hadValidResponse bool) {
-	if r == nil || upstream == nil || r.ConsumedUpstreams == nil {
-		return
+func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream Upstream, resp *NormalizedResponse, err error) {
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	if err != nil {
+		r.ErrorsByUpstream.Store(upstream, err)
+	} else if resp != nil && resp.IsResultEmptyish(ctx) {
+		jr, err := resp.JsonRpcResponse(ctx)
+		if jr == nil {
+			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", err), upstream))
+		} else {
+			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.Result), upstream))
+		}
+		r.EmptyResponses.Store(upstream, true)
 	}
 
+	hadValidResponse := err == nil || HasErrorCode(err, ErrCodeEndpointExecutionException)
 	if !hadValidResponse {
-		// Release reservation if response wasn't valid for consensus
+		// Release reservation if response isn't final.
+		// Final in this context means that the response is either:
+		// - a valid response
+		// - a consensus-valid error (eg. reverted tx)
+		// - a non-retryable error (eg. method not found)
 		r.ConsumedUpstreams.Delete(upstream.Id())
 	}
-	// If hadValidResponse is true, keep it marked as consumed
 }

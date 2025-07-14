@@ -660,7 +660,18 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 			qn = cfg.Routing.ScoreLatencyQuantile
 		}
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, method)
-		respLatencies = append(respLatencies, metrics.ResponseQuantiles.GetQuantile(qn).Seconds())
+		latency := metrics.ResponseQuantiles.GetQuantile(qn).Seconds()
+
+		// Handle zero latency values: if an upstream has zero latency, it likely means
+		// it has no successful requests (100% error rate), so we should treat this as
+		// invalid data rather than the best possible latency.
+		// We'll use a sentinel value that will be handled in normalization.
+		if latency == 0.0 && metrics.ErrorRate() > 0.5 {
+			// If latency is zero and error rate is high, treat as invalid latency
+			latency = -1.0 // Sentinel value for invalid latency
+		}
+
+		respLatencies = append(respLatencies, latency)
 		blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
 		finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
 		errorRates = append(errorRates, metrics.ErrorRate())
@@ -668,7 +679,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
 	}
 
-	normRespLatencies := normalizeValuesLog(respLatencies)
+	normRespLatencies := normalizeValuesLogWithInvalid(respLatencies)
 	normErrorRates := normalizeValues(errorRates)
 	normThrottledRates := normalizeValues(throttledRates)
 	normTotalRequests := normalizeValues(totalRequests)
@@ -847,6 +858,91 @@ func normalizeValuesLog(values []float64) []float64 {
 			norm = 1.0
 		}
 		normalized[i] = norm
+	}
+
+	return normalized
+}
+
+func normalizeValuesLogWithInvalid(values []float64) []float64 {
+	if len(values) == 0 {
+		return []float64{}
+	}
+
+	// Separate valid and invalid values
+	var validValues []float64
+	var invalidIndices []int
+
+	for i, v := range values {
+		if v < 0 {
+			// Negative values are our sentinel for invalid latency
+			invalidIndices = append(invalidIndices, i)
+		} else {
+			validValues = append(validValues, v)
+		}
+	}
+
+	normalized := make([]float64, len(values))
+
+	// If all values are invalid, return all 1.0 (worst possible score)
+	if len(validValues) == 0 {
+		for i := range normalized {
+			normalized[i] = 1.0
+		}
+		return normalized
+	}
+
+	// If all values are valid, use standard log normalization
+	if len(invalidIndices) == 0 {
+		return normalizeValuesLog(values)
+	}
+
+	// Mixed case: normalize valid values and assign worst score to invalid ones
+	dataMin := validValues[0]
+	dataMax := validValues[0]
+	for i := 1; i < len(validValues); i++ {
+		if validValues[i] < dataMin {
+			dataMin = validValues[i]
+		}
+		if validValues[i] > dataMax {
+			dataMax = validValues[i]
+		}
+	}
+
+	// If all valid values are the same
+	if dataMin == dataMax {
+		for i, v := range values {
+			if v < 0 {
+				normalized[i] = 1.0 // Worst score for invalid values
+			} else if dataMin == 0.0 {
+				normalized[i] = 0.0 // All valid values are 0
+			} else {
+				normalized[i] = 0.5 // All valid values are the same positive value
+			}
+		}
+		return normalized
+	}
+
+	// Apply log(v+1) transformation and scale to [0, 1] for valid values
+	logMinOffset := math.Log(dataMin + 1.0)
+	logMaxOffset := math.Log(dataMax + 1.0)
+	denom := logMaxOffset - logMinOffset
+
+	for i, v := range values {
+		if v < 0 {
+			// Invalid latency gets worst possible score
+			normalized[i] = 1.0
+		} else {
+			logVOffset := math.Log(v + 1.0)
+			norm := (logVOffset - logMinOffset) / denom
+
+			// Clamp to [0, 1] as a safeguard
+			if norm < 0.0 {
+				norm = 0.0
+			} else if norm > 1.0 {
+				norm = 1.0
+			}
+			normalized[i] = norm
+		}
 	}
 
 	return normalized

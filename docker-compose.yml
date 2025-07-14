@@ -8,19 +8,19 @@ services:
   #   volumes:
   #     - ./erpc.yaml:/erpc.yaml
 
-  monitoring:
-    build: ./monitoring
-    ports:
-      - "3000:3000"  # Grafana
-      - "9090:9090"  # Prometheus
-    environment:
-      - SERVICE_ENDPOINT=host.docker.internal
-      - SERVICE_PORT=4001
-    volumes:
-      - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini
-      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
-      - prometheus_data:/prometheus
-      - grafana_data:/var/lib/grafana
+  # monitoring:
+  #   build: ./monitoring
+  #   ports:
+  #     - "3000:3000"  # Grafana
+  #     - "9090:9090"  # Prometheus
+  #   environment:
+  #     - SERVICE_ENDPOINT=host.docker.internal
+  #     - SERVICE_PORT=4001
+  #   volumes:
+  #     - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini
+  #     - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
+  #     - prometheus_data:/prometheus
+  #     - grafana_data:/var/lib/grafana
 
   redis:
     container_name: erpc-redis
@@ -31,20 +31,20 @@ services:
     networks:
       erpc:
 
-  # jaeger:
-  #   container_name: erpc-jaeger
-  #   image: jaegertracing/all-in-one:latest
-  #   restart: always
-  #   ports:
-  #     - "16686:16686"    # Jaeger UI
-  #     - "4317:4317"      # OTLP gRPC
-  #     - "4318:4318"      # OTLP HTTP
-  #   environment:
-  #     - COLLECTOR_OTLP_ENABLED=true
-  #     - COLLECTOR_FILTER_PROCESSOR_ENABLED=true
-  #     - COLLECTOR_FILTER_PROCESSOR_MAX_DURATION=1s
-  #   networks:
-  #     erpc:
+  jaeger:
+    container_name: erpc-jaeger
+    image: jaegertracing/all-in-one:latest
+    restart: always
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "4317:4317"      # OTLP gRPC
+      - "4318:4318"      # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - COLLECTOR_FILTER_PROCESSOR_ENABLED=true
+      - COLLECTOR_FILTER_PROCESSOR_MAX_DURATION=1s
+    networks:
+      erpc:
 
   # postgresql:
   #   container_name: erpc-postgresql
