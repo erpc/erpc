@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	// "fmt"
 	"sync"
 	"testing"
@@ -287,7 +288,7 @@ func simulateRequestMetrics(tracker *Tracker, upstream common.Upstream, method s
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, method)
+			tracker.RecordUpstreamFailure(upstream, method, fmt.Errorf("test problem"))
 		}
 	}
 }

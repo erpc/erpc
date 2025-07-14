@@ -10353,9 +10353,9 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		// Create metrics to make excluded upstream have high error rate
 		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*")
-		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*")
+		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", fmt.Errorf("test problem"))
 		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*")
-		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*")
+		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*", fmt.Errorf("test problem"))
 
 		// Create good metrics for included upstream
 		metricsTracker.RecordUpstreamRequest(includedUpstream, "*")

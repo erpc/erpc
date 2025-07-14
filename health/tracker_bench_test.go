@@ -72,7 +72,7 @@ func BenchmarkRecordUpstreamFailure(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			tracker.RecordUpstreamFailure(ups, meth)
+			tracker.RecordUpstreamFailure(ups, meth, fmt.Errorf("test problem"))
 		}
 	})
 }
@@ -114,7 +114,7 @@ func BenchmarkTrackerMixed(b *testing.B) {
 				tracker.RecordUpstreamRequest(ups, meth)
 			case 1:
 				// Record a failure
-				tracker.RecordUpstreamFailure(ups, meth)
+				tracker.RecordUpstreamFailure(ups, meth, fmt.Errorf("test problem"))
 			case 2:
 				// Record a random duration (5ms–50ms)
 				dur := time.Duration(5+rng.Intn(45)) * time.Millisecond
@@ -302,7 +302,7 @@ func BenchmarkFullRequestFlow(b *testing.B) {
 			// Randomly record different types of outcomes
 			switch rand.Intn(4) {
 			case 0:
-				tracker.RecordUpstreamFailure(ups, method)
+				tracker.RecordUpstreamFailure(ups, method, fmt.Errorf("test problem"))
 			case 1:
 				tracker.RecordUpstreamSelfRateLimited(ups, method)
 			case 2:

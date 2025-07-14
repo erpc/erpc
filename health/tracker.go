@@ -325,7 +325,18 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		Observe(sec)
 }
 
-func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string) {
+func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
+	// We want to ignore errors that should not affect the scores:
+	if common.HasErrorCode(
+		err,
+		common.ErrCodeEndpointExecutionException,
+		common.ErrCodeUpstreamExcludedByPolicy,
+		common.ErrCodeUpstreamRequestSkipped,
+		common.ErrCodeUpstreamShadowing,
+	) {
+		return
+	}
+
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).ErrorsTotal.Add(1)
 	}

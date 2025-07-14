@@ -400,11 +400,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				} else {
 					isSuccess = false
 				}
-				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Object("response", nrs).Msgf("upstream request ended with response")
-				} else {
-					lg.Debug().Err(errCall).Msgf("upstream request ended with non-nil response")
-				}
+				lg.Debug().Err(errCall).Object("response", nrs).Msgf("upstream request ended with non-nil response")
 			} else {
 				if errCall != nil {
 					if lg.GetLevel() == zerolog.TraceLevel && errors.Is(errCall, context.Canceled) {
@@ -427,14 +423,15 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						u.recordRemoteRateLimit(method)
 					}
 					severity := common.ClassifySeverity(errCall)
-					if severity == common.SeverityCritical {
-						// We only consider a subset of errors in metrics tracker (which is used for score calculation)
-						// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
-						u.metricsTracker.RecordUpstreamFailure(
-							u,
-							method,
-						)
-					}
+					// if severity == common.SeverityCritical {
+					// We only consider a subset of errors in metrics tracker (which is used for score calculation)
+					// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
+					u.metricsTracker.RecordUpstreamFailure(
+						u,
+						method,
+						errCall,
+					)
+					// }
 					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType(), finality.String()).Inc()
 				}
 

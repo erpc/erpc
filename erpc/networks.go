@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -332,6 +333,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
+	if common.IsTracingDetailed {
+		names := make([]string, len(upsList))
+		for i, u := range upsList {
+			names[i] = u.Id()
+		}
+		upstreamSpan.SetAttributes(
+			attribute.String("upstreams.list", strings.Join(names, ", ")),
+		)
+	}
 	upstreamSpan.End()
 
 	if err != nil {
@@ -523,9 +533,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					err = e
 				}
 
-				// Mark upstream as completed based on response type
-				hadValidResponse := err == nil || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException)
-				effectiveReq.MarkUpstreamCompleted(u, hadValidResponse)
+				effectiveReq.MarkUpstreamCompleted(loopCtx, u, r, err)
 
 				isClientErr := common.IsClientError(err)
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
@@ -535,18 +543,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					err := common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 					common.SetTraceSpanError(loopSpan, err)
 					return nil, err
-				}
-
-				if err != nil {
-					effectiveReq.ErrorsByUpstream.Store(u, err)
-				} else if r.IsResultEmptyish(loopCtx) {
-					jr, err := r.JsonRpcResponse(loopCtx)
-					if jr == nil {
-						effectiveReq.ErrorsByUpstream.Store(u, common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", err), u))
-					} else {
-						effectiveReq.ErrorsByUpstream.Store(u, common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.Result), u))
-					}
-					effectiveReq.EmptyResponses.Store(u, true)
 				}
 
 				if err != nil {
@@ -691,7 +687,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if mt := upstream.MetricsTracker(); mt != nil {
 					// We would like to penalize the upstream if another upstream responded with data,
 					// but this upstream responded empty.
-					mt.RecordUpstreamFailure(upstream, method)
+					if r, ok := value.(error); ok {
+						mt.RecordUpstreamFailure(upstream, method, r)
+					} else {
+						mt.RecordUpstreamFailure(upstream, method, common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish"), upstream))
+					}
 				}
 			}
 			return true
