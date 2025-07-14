@@ -3,7 +3,6 @@ package health
 import (
 	"context"
 	"fmt"
-	// "fmt"
 	"sync"
 	"testing"
 	"time"

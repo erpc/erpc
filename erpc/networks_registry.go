@@ -82,7 +82,7 @@ func NewNetwork(
 			if err != nil {
 				return nil, err
 			}
-			policyArray := upstream.ToPolicyArray(pls, "timeout", "consensus", "retry", "hedge")
+			policyArray := upstream.ToPolicyArray(pls, "timeout", "consensus", "hedge", "retry")
 
 			var timeoutDuration *time.Duration
 			if fsCfg.Timeout != nil {

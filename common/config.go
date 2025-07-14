@@ -593,18 +593,15 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 }
 
 type ScoreMultiplierConfig struct {
-	Network         string  `yaml:"network" json:"network"`
-	Method          string  `yaml:"method" json:"method"`
-	Overall         float64 `yaml:"overall" json:"overall"`
-	ErrorRate       float64 `yaml:"errorRate" json:"errorRate"`
-	RespLatency     float64 `yaml:"respLatency" json:"respLatency"`
-	TotalRequests   float64 `yaml:"totalRequests" json:"totalRequests"`
-	ThrottledRate   float64 `yaml:"throttledRate" json:"throttledRate"`
-	BlockHeadLag    float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
-	FinalizationLag float64 `yaml:"finalizationLag" json:"finalizationLag"`
-
-	// @deprecated use RespLatency instead
-	DeprecatedP90Latency float64 `yaml:"p90latency" json:"p90latency"`
+	Network         string   `yaml:"network" json:"network"`
+	Method          string   `yaml:"method" json:"method"`
+	Overall         *float64 `yaml:"overall" json:"overall"`
+	ErrorRate       *float64 `yaml:"errorRate" json:"errorRate"`
+	RespLatency     *float64 `yaml:"respLatency" json:"respLatency"`
+	TotalRequests   *float64 `yaml:"totalRequests" json:"totalRequests"`
+	ThrottledRate   *float64 `yaml:"throttledRate" json:"throttledRate"`
+	BlockHeadLag    *float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
+	FinalizationLag *float64 `yaml:"finalizationLag" json:"finalizationLag"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {

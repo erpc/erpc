@@ -917,25 +917,25 @@ func (c *SelectionPolicyConfig) Validate() error {
 }
 
 func (p *ScoreMultiplierConfig) Validate() error {
-	if p.Overall <= 0 {
+	if p.Overall == nil || *p.Overall <= 0 {
 		return fmt.Errorf("priorityMultipliers.*.overall multiplier must be greater than 0")
 	}
-	if p.ErrorRate < 0 {
+	if p.ErrorRate == nil || *p.ErrorRate < 0 {
 		return fmt.Errorf("priorityMultipliers.*.errorRate multiplier must be greater than or equal to 0")
 	}
-	if p.RespLatency < 0 {
+	if p.RespLatency == nil || *p.RespLatency < 0 {
 		return fmt.Errorf("priorityMultipliers.*.respLatency multiplier must be greater than or equal to 0")
 	}
-	if p.TotalRequests < 0 {
+	if p.TotalRequests == nil || *p.TotalRequests < 0 {
 		return fmt.Errorf("priorityMultipliers.*.totalRequests multiplier must be greater than or equal to 0")
 	}
-	if p.ThrottledRate < 0 {
+	if p.ThrottledRate == nil || *p.ThrottledRate < 0 {
 		return fmt.Errorf("priorityMultipliers.*.throttledRate multiplier must be greater than or equal to 0")
 	}
-	if p.BlockHeadLag < 0 {
+	if p.BlockHeadLag == nil || *p.BlockHeadLag < 0 {
 		return fmt.Errorf("priorityMultipliers.*.blockHeadLag multiplier must be greater than or equal to 0")
 	}
-	if p.FinalizationLag < 0 {
+	if p.FinalizationLag == nil || *p.FinalizationLag < 0 {
 		return fmt.Errorf("priorityMultipliers.*.finalizationLag multiplier must be greater than or equal to 0")
 	}
 	return nil
