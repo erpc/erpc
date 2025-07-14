@@ -738,36 +738,39 @@ func (u *UpstreamsRegistry) calculateScore(
 	score := 0.0
 
 	// Higher score for lower total requests (to balance the load)
-	if mul.TotalRequests > 0 {
-		score += expCurve(1-normTotalRequests) * mul.TotalRequests
+	if mul.TotalRequests != nil && *mul.TotalRequests > 0 {
+		score += expCurve(1-normTotalRequests) * *mul.TotalRequests
 	}
 
 	// Higher score for lower latency
-	if mul.RespLatency > 0 {
-		score += expCurve(1-normRespLatency) * mul.RespLatency
+	if mul.RespLatency != nil && *mul.RespLatency > 0 {
+		score += expCurve(1-normRespLatency) * *mul.RespLatency
 	}
 
 	// Higher score for lower error rate
-	if mul.ErrorRate > 0 {
-		score += expCurve(1-normErrorRate) * mul.ErrorRate
+	if mul.ErrorRate != nil && *mul.ErrorRate > 0 {
+		score += expCurve(1-normErrorRate) * *mul.ErrorRate
 	}
 
 	// Higher score for lower throttled rate
-	if mul.ThrottledRate > 0 {
-		score += expCurve(1-normThrottledRate) * mul.ThrottledRate
+	if mul.ThrottledRate != nil && *mul.ThrottledRate > 0 {
+		score += expCurve(1-normThrottledRate) * *mul.ThrottledRate
 	}
 
 	// Higher score for lower block head lag
-	if mul.BlockHeadLag > 0 {
-		score += expCurve(1-normBlockHeadLag) * mul.BlockHeadLag
+	if mul.BlockHeadLag != nil && *mul.BlockHeadLag > 0 {
+		score += expCurve(1-normBlockHeadLag) * *mul.BlockHeadLag
 	}
 
 	// Higher score for lower finalization lag
-	if mul.FinalizationLag > 0 {
-		score += expCurve(1-normFinalizationLag) * mul.FinalizationLag
+	if mul.FinalizationLag != nil && *mul.FinalizationLag > 0 {
+		score += expCurve(1-normFinalizationLag) * *mul.FinalizationLag
 	}
 
-	return score * mul.Overall
+	if mul.Overall != nil && *mul.Overall > 0 {
+		score *= *mul.Overall
+	}
+	return score
 }
 
 func expCurve(x float64) float64 {

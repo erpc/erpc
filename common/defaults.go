@@ -1944,14 +1944,14 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	Network: "*",
 	Method:  "*",
 
-	ErrorRate:       4.0,
-	RespLatency:     8.0,
-	TotalRequests:   1.0,
-	ThrottledRate:   3.0,
-	BlockHeadLag:    2.0,
-	FinalizationLag: 1.0,
+	ErrorRate:       util.Float64Ptr(4.0),
+	RespLatency:     util.Float64Ptr(8.0),
+	TotalRequests:   util.Float64Ptr(1.0),
+	ThrottledRate:   util.Float64Ptr(3.0),
+	BlockHeadLag:    util.Float64Ptr(2.0),
+	FinalizationLag: util.Float64Ptr(1.0),
 
-	Overall: 1.0,
+	Overall: util.Float64Ptr(1.0),
 }
 
 func (s *ScoreMultiplierConfig) SetDefaults() error {
@@ -1961,28 +1961,25 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	if s.Method == "" {
 		s.Method = DefaultScoreMultiplier.Method
 	}
-	if s.ErrorRate == 0 {
+	if s.ErrorRate == nil {
 		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
 	}
-	if s.DeprecatedP90Latency > 0 {
-		s.RespLatency = s.DeprecatedP90Latency
-	}
-	if s.RespLatency == 0 {
+	if s.RespLatency == nil {
 		s.RespLatency = DefaultScoreMultiplier.RespLatency
 	}
-	if s.TotalRequests == 0 {
+	if s.TotalRequests == nil {
 		s.TotalRequests = DefaultScoreMultiplier.TotalRequests
 	}
-	if s.ThrottledRate == 0 {
+	if s.ThrottledRate == nil {
 		s.ThrottledRate = DefaultScoreMultiplier.ThrottledRate
 	}
-	if s.BlockHeadLag == 0 {
+	if s.BlockHeadLag == nil {
 		s.BlockHeadLag = DefaultScoreMultiplier.BlockHeadLag
 	}
-	if s.FinalizationLag == 0 {
+	if s.FinalizationLag == nil {
 		s.FinalizationLag = DefaultScoreMultiplier.FinalizationLag
 	}
-	if s.Overall == 0 {
+	if s.Overall == nil {
 		s.Overall = DefaultScoreMultiplier.Overall
 	}
 

@@ -550,8 +550,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:   "evm:1",
 						Method:    "eth_call",
-						Overall:   2.0, // Double the weight for this specific method
-						ErrorRate: 8.0, // Heavily penalize errors
+						Overall:   util.Float64Ptr(2.0), // Double the weight for this specific method
+						ErrorRate: util.Float64Ptr(8.0), // Heavily penalize errors
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -567,8 +567,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:   "evm:1",
 						Method:    "eth_call",
-						Overall:   1.0,
-						ErrorRate: 2.0,
+						Overall:   util.Float64Ptr(1.0),
+						ErrorRate: util.Float64Ptr(2.0),
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -596,8 +596,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getLogs",
-						Overall:     3.0, // Heavily prefer for historical queries
-						RespLatency: 2.0, // Latency less important for historical data
+						Overall:     util.Float64Ptr(3.0), // Heavily prefer for historical queries
+						RespLatency: util.Float64Ptr(2.0), // Latency less important for historical data
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -613,8 +613,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getLogs",
-						Overall:     1.0,
-						RespLatency: 2.0,
+						Overall:     util.Float64Ptr(1.0),
+						RespLatency: util.Float64Ptr(2.0),
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -642,8 +642,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getBalance",
-						Overall:     1.0,
-						RespLatency: 8.0, // Heavily weight latency
+						Overall:     util.Float64Ptr(1.0),
+						RespLatency: util.Float64Ptr(8.0), // Heavily weight latency
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -659,8 +659,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getBalance",
-						Overall:     1.0,
-						RespLatency: 8.0, // Same latency weight
+						Overall:     util.Float64Ptr(1.0),
+						RespLatency: util.Float64Ptr(8.0), // Same latency weight
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -688,8 +688,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:      "evm:1",
 						Method:       "eth_getBlockByNumber",
-						Overall:      1.0,
-						BlockHeadLag: 5.0, // Heavily weight block lag
+						Overall:      util.Float64Ptr(1.0),
+						BlockHeadLag: util.Float64Ptr(5.0), // Heavily weight block lag
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -706,8 +706,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:      "evm:1",
 						Method:       "eth_getBlockByNumber",
-						Overall:      1.0,
-						BlockHeadLag: 5.0, // Same block lag weight
+						Overall:      util.Float64Ptr(1.0),
+						BlockHeadLag: util.Float64Ptr(5.0), // Same block lag weight
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64

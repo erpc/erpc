@@ -578,7 +578,7 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			}
 			if match {
 				// Check if this upstream has already been consumed
-				if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream.Id(), true); !loaded {
+				if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
 					return upstream, nil
 				}
 			}
@@ -592,13 +592,13 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	// Try all upstreams starting from current index with guaranteed sequential access
 	for attempts := 0; attempts < upstreamCount; attempts++ {
 		// Get current index and increment - this is now atomic within the mutex
-		idx := r.UpstreamIdx % uint32(upstreamCount)
-		r.UpstreamIdx++ // Guaranteed increment for next caller
+		idx := r.UpstreamIdx % uint32(upstreamCount) // #nosec G115
+		r.UpstreamIdx++                              // Guaranteed increment for next caller
 
 		upstream := r.upstreamList[idx]
 
 		// Skip if already consumed (gave valid response or consensus-valid error)
-		if _, consumed := r.ConsumedUpstreams.Load(upstream.Id()); consumed {
+		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
 			continue
 		}
 
@@ -616,7 +616,7 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 
 		// Try to reserve this upstream atomically
 		// If LoadOrStore returns loaded=false, we successfully reserved it
-		if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream.Id(), true); !loaded {
+		if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
 			// Successfully reserved this upstream
 			return upstream, nil
 		}
@@ -631,6 +631,8 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 	r.upstreamMutex.Lock()
 	defer r.upstreamMutex.Unlock()
 
+	isFinal := resp != nil && (err == nil || !IsRetryableTowardsUpstream(err))
+
 	if err != nil {
 		r.ErrorsByUpstream.Store(upstream, err)
 	} else if resp != nil && resp.IsResultEmptyish(ctx) {
@@ -641,15 +643,10 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.Result), upstream))
 		}
 		r.EmptyResponses.Store(upstream, true)
+		isFinal = false
 	}
 
-	hadValidResponse := err == nil || HasErrorCode(err, ErrCodeEndpointExecutionException)
-	if !hadValidResponse {
-		// Release reservation if response isn't final.
-		// Final in this context means that the response is either:
-		// - a valid response
-		// - a consensus-valid error (eg. reverted tx)
-		// - a non-retryable error (eg. method not found)
-		r.ConsumedUpstreams.Delete(upstream.Id())
+	if !isFinal {
+		r.ConsumedUpstreams.Delete(upstream)
 	}
 }

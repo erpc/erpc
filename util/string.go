@@ -18,6 +18,10 @@ func BoolPtr(b bool) *bool {
 	return &b
 }
 
+func Float64Ptr(f float64) *float64 {
+	return &f
+}
+
 func ParseByteSize(size string) (int, error) {
 	size = strings.TrimSpace(strings.ToUpper(size))
 

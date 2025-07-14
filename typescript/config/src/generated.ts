@@ -310,17 +310,13 @@ export interface RoutingConfig {
 export interface ScoreMultiplierConfig {
   network: string;
   method: string;
-  overall: number /* float64 */;
-  errorRate: number /* float64 */;
-  respLatency: number /* float64 */;
-  totalRequests: number /* float64 */;
-  throttledRate: number /* float64 */;
-  blockHeadLag: number /* float64 */;
-  finalizationLag: number /* float64 */;
-  /**
-   * @deprecated use RespLatency instead
-   */
-  p90latency: number /* float64 */;
+  overall?: number /* float64 */;
+  errorRate?: number /* float64 */;
+  respLatency?: number /* float64 */;
+  totalRequests?: number /* float64 */;
+  throttledRate?: number /* float64 */;
+  blockHeadLag?: number /* float64 */;
+  finalizationLag?: number /* float64 */;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
