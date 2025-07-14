@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
@@ -13,7 +14,6 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -114,6 +114,7 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method strin
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	start := time.Now()
 	ctx, span := common.StartDetailSpan(ctx, "Project.Forward")
 	defer span.End()
 
@@ -131,16 +132,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	// Get initial finality from request
 	reqFinality := nq.Finality(ctx)
-
-	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
-		telemetry.MetricNetworkRequestDuration.WithLabelValues(
-			p.Config.Id,
-			network.networkId,
-			method,
-			reqFinality.String(),
-		).Observe(v)
-	}))
-	defer timer.ObserveDuration()
 
 	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String()).Inc()
 	lg := p.Logger.With().
@@ -200,6 +191,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		} else {
 			lg.Info().Msgf("successfully forwarded request for network")
 		}
+		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+			p.Config.Id,
+			network.networkId,
+			vendor,
+			upstreamId,
+			method,
+			finality.String(),
+		).Observe(time.Since(start).Seconds())
 		return resp, err
 	} else {
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
@@ -220,6 +219,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			string(common.ClassifySeverity(err)),
 			finality.String(),
 		).Inc()
+		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+			p.Config.Id,
+			network.networkId,
+			"<error>",
+			"<error>",
+			method,
+			finality.String(),
+		).Observe(time.Since(start).Seconds())
 	}
 
 	return nil, err
