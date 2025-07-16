@@ -224,7 +224,8 @@ func (s *HttpServer) handleHealthCheck(
 				}
 			}
 
-			if inclusionStrategy == "any" {
+			switch inclusionStrategy {
+			case "any":
 				if len(belowThresholdErrorRates) == 0 && len(allErrorRates) == 0 {
 					projectHealthy = false
 					projectDetails["status"] = "ERROR"
@@ -237,7 +238,7 @@ func (s *HttpServer) handleHealthCheck(
 					projectDetails["status"] = "OK"
 					projectDetails["message"] = fmt.Sprintf("%d / %d upstreams have low error rates", len(belowThresholdErrorRates), len(allErrorRates))
 				}
-			} else if inclusionStrategy == "all" {
+			case "all":
 				if len(belowThresholdErrorRates) == len(allErrorRates) {
 					projectDetails["status"] = "OK"
 					projectDetails["message"] = fmt.Sprintf("%d / %d upstreams have low error rates", len(belowThresholdErrorRates), len(allErrorRates))
@@ -254,6 +255,39 @@ func (s *HttpServer) handleHealthCheck(
 			projectHealthy = results.healthy
 			projectDetails["status"] = results.status
 			projectDetails["message"] = results.message
+
+		case common.EvalAllActiveUpstreams:
+			// Check if all configured upstreams are initialized and not cordoned
+			totalConfiguredUpstreams := staticUpsCount
+			totalInitializedUpstreams := len(filteredUpstreams)
+			activeUpstreams := 0
+			cordonedUpstreams := 0
+			uninitializedUpstreams := totalConfiguredUpstreams - totalInitializedUpstreams
+
+			for _, ups := range filteredUpstreams {
+				if metricsTracker.IsCordoned(ups, "*") {
+					cordonedUpstreams++
+				} else {
+					activeUpstreams++
+				}
+			}
+
+			if totalConfiguredUpstreams == 0 {
+				projectHealthy = false
+				projectDetails["status"] = "ERROR"
+				projectDetails["message"] = "no upstreams configured"
+			} else if uninitializedUpstreams > 0 {
+				projectHealthy = false
+				projectDetails["status"] = "ERROR"
+				projectDetails["message"] = fmt.Sprintf("%d / %d upstreams are active (%d uninitialized, %d cordoned)", activeUpstreams, totalConfiguredUpstreams, uninitializedUpstreams, cordonedUpstreams)
+			} else if activeUpstreams == totalInitializedUpstreams {
+				projectDetails["status"] = "OK"
+				projectDetails["message"] = fmt.Sprintf("all %d upstreams are active (initialized and not cordoned)", totalConfiguredUpstreams)
+			} else {
+				projectHealthy = false
+				projectDetails["status"] = "ERROR"
+				projectDetails["message"] = fmt.Sprintf("%d / %d upstreams are active (%d cordoned)", activeUpstreams, totalConfiguredUpstreams, cordonedUpstreams)
+			}
 
 		default:
 			// Unknown evaluation strategy
