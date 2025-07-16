@@ -293,6 +293,7 @@ jobs:
             VERSION=main
             COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
           tags: |
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ steps.short_sha.outputs.SHORT_SHA }}
             ghcr.io/${{ steps.tag_param.outputs.repo }}:main
 
       # Build release images if this is a release commit
