@@ -2,9 +2,11 @@ package clients
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	_ "github.com/blockchain-data-standards/manifesto/common"
@@ -17,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -75,9 +78,38 @@ func NewGrpcBdsClient(
 		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
 	}
 
+	// Determine whether to use TLS based on port or URL scheme
+	var transportCredentials credentials.TransportCredentials
+	port := parsedUrl.Port()
+	portNum, portErr := strconv.Atoi(port)
+
+	// Use TLS if:
+	// 1. Port is 443 (standard HTTPS port)
+	// 2. URL scheme suggests TLS (grpcs://, grpc+tls://, etc.)
+	// 3. URL scheme is grpc:// but uses port 443
+	useTLS := false
+	if portErr == nil && portNum == 443 {
+		useTLS = true
+	} else if strings.HasPrefix(parsedUrl.Scheme, "grpcs") || strings.Contains(parsedUrl.Scheme, "tls") {
+		useTLS = true
+	}
+
+	if useTLS {
+		// Use TLS credentials with system's trusted CA certificates
+		transportCredentials = credentials.NewTLS(&tls.Config{
+			ServerName: parsedUrl.Hostname(),
+			MinVersion: tls.VersionTLS12,
+		})
+		logger.Debug().Str("target", target).Msg("using TLS credentials for gRPC connection")
+	} else {
+		// Use insecure credentials
+		transportCredentials = insecure.NewCredentials()
+		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
+	}
+
 	// Create gRPC connection
 	conn, err := grpc.NewClient(target,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)), // 100MB max message size
 	)
 	if err != nil {
