@@ -116,6 +116,7 @@ const (
 	EvalAllErrorRateBelow100    = "all:errorRateBelow100"
 	EvalEvmAnyChainId           = "any:evm:eth_chainId"
 	EvalEvmAllChainId           = "all:evm:eth_chainId"
+	EvalAllActiveUpstreams      = "all:activeUpstreams"
 )
 
 type TracingProtocol string
