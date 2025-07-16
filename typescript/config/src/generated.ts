@@ -94,6 +94,7 @@ export const EvalAnyErrorRateBelow100 = "any:errorRateBelow100";
 export const EvalAllErrorRateBelow100 = "all:errorRateBelow100";
 export const EvalEvmAnyChainId = "any:evm:eth_chainId";
 export const EvalEvmAllChainId = "all:evm:eth_chainId";
+export const EvalAllActiveUpstreams = "all:activeUpstreams";
 export type TracingProtocol = string;
 export const TracingProtocolHttp: TracingProtocol = "http";
 export const TracingProtocolGrpc: TracingProtocol = "grpc";

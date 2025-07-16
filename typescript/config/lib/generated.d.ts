@@ -64,6 +64,7 @@ export declare const EvalAnyErrorRateBelow100 = "any:errorRateBelow100";
 export declare const EvalAllErrorRateBelow100 = "all:errorRateBelow100";
 export declare const EvalEvmAnyChainId = "any:evm:eth_chainId";
 export declare const EvalEvmAllChainId = "all:evm:eth_chainId";
+export declare const EvalAllActiveUpstreams = "all:activeUpstreams";
 export type TracingProtocol = string;
 export declare const TracingProtocolHttp: TracingProtocol;
 export declare const TracingProtocolGrpc: TracingProtocol;
