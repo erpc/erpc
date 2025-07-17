@@ -141,3 +141,9 @@ type ActionFactory interface {
 	CreateAction(config *ActionConfig) (Action, error)
 	GetSupportedTypes() []string
 }
+
+// MatchResult represents the result of evaluating matchers
+type MatchResult struct {
+	Matched bool
+	Action  common.MatcherAction
+}
