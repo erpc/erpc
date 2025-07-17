@@ -179,6 +179,16 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 	switch bnp {
 	case "latest":
 		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+
+		// Apply intentional block lag to the highest block number for enforcement
+		// This ensures we don't override a correctly lagged response
+		if ncfg.Evm.IntentionalBlockLag > 0 {
+			highestBlockNumber = highestBlockNumber - ncfg.Evm.IntentionalBlockLag
+			if highestBlockNumber < 0 {
+				highestBlockNumber = 0
+			}
+		}
+
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
