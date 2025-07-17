@@ -28,7 +28,7 @@ configs := []*common.MatcherConfig{
 }
 
 // Create a matcher
-matcher := matchers.NewMatcher(configs)
+matcher := matchers.NewConfigMatcher(configs)
 
 // Check if a request matches
 result := matcher.MatchRequest("evm:1", "eth_getLogs", params, common.DataFinalityStateUnfinalized)
