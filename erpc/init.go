@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -53,7 +54,26 @@ func Init(
 	}
 
 	//
-	// 3) Initialize eRPC
+	// 3) Initialize automatic GC
+	//
+	if cfg.GcInterval != nil {
+		logger.Info().Msgf("initializing automatic GC with interval: %s", cfg.GcInterval.Duration())
+		go func() {
+			ticker := time.NewTicker(cfg.GcInterval.Duration())
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					runtime.GC()
+				case <-appCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	//
+	// 4) Initialize eRPC
 	//
 	logger.Info().Msg("initializing eRPC core")
 	var evmJsonRpcCache *evm.EvmJsonRpcCache
@@ -78,7 +98,7 @@ func Init(
 	}
 
 	//
-	// 4) Expose Transports
+	// 5) Expose Transports
 	//
 	logger.Info().Msg("initializing transports")
 	if cfg.Server != nil {

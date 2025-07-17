@@ -27,6 +27,7 @@ var (
 // Config represents the configuration of the application.
 type Config struct {
 	LogLevel     string             `yaml:"logLevel,omitempty" json:"logLevel" tstype:"LogLevel"`
+	GcInterval   *Duration           `yaml:"gcInterval,omitempty" json:"gcInterval" tstype:"Duration"`
 	ClusterKey   string             `yaml:"clusterKey,omitempty" json:"clusterKey"`
 	Server       *ServerConfig      `yaml:"server,omitempty" json:"server"`
 	HealthCheck  *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
