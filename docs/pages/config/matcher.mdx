@@ -1,52 +1,631 @@
 ---
-description: Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values...
+description: Matchers provide a unified, extensible framework for matching and routing decisions throughout erpc...
 ---
 
-# Matcher syntax
+import { Callout, Tabs, Tab } from 'nextra/components'
 
-Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values.
+# Matchers
 
-Matchers are used in the following configurations:
-- [Upstream](/config/projects/upstreams)'s allowMethods or ignoreMethods.
-- [Cache policy](/config/database/evm-json-rpc-cache#cache-policies) patterns for network/method/params.
-- [Aliasing](/operation/url#domain-aliasing) rules for `Host` header.
-- [Failsafe](/config/failsafe) `matchMethod` patterns.
+The **Matchers** component provides a unified, extensible framework for matching and routing decisions throughout erpc. It allows you to define complex rules that can match requests, upstreams, and networks based on various criteria and execute corresponding actions.
 
-## Examples
+## Overview
 
-```js
-// Match one exact method OR any eth_ method
-arbtrace_transaction | eth_*
+The matchers system consists of three main components:
 
-// Match all methods expect those prefixed with alchemy_*
-!alchemy_*
+1. **Matchers**: Define matching criteria (e.g., method patterns, finality states, metrics)
+2. **Actions**: Define what to do when a match occurs (e.g., route to specific upstreams, skip cache)
+3. **Rules**: Combine matchers and actions with priority and enable/disable controls
 
-// Match a number between 1 and 100
->=1 & <=100
+## Key Features
 
-// Match some block tags AND any numeric blocks higher than 1000 (also with hex example)
-(latest | safe | finalized) | >=1000
-(latest | safe | finalized) | >=0x4096
+- **Unified Matching Logic**: All matching logic is centralized in one component
+- **Extensibility**: Easy to add new matcher types and actions
+- **Composability**: Complex rules can be built from simple matchers using AND, OR, NOT logic
+- **Performance**: Rules are evaluated once and cached per request
+- **Flexibility**: Supports both declarative (YAML) and programmatic (JavaScript) rules
+- **Priority System**: Rules are evaluated in priority order
 
-// Match only numeric values (e.g. ignore block tags)
-0x*
+## Configuration
+
+Routing rules can be configured at the network level:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="MatchersConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        
+        # Routing rules configuration
+        routingRules:
+          rules:
+            # Route unfinalized eth_getLogs to specific upstreams
+            - id: unfinalized-logs-routing
+              priority: 100
+              enabled: true
+              match:
+                type: and
+                config:
+                  matchers:
+                    - type: method
+                      config:
+                        pattern: "eth_getLogs"
+                    - type: finality
+                      config:
+                        states: ["unfinalized"]
+              actions:
+                - type: routeToUpstream
+                  config:
+                    pattern: "alchemy-*|infura-*"
+                    exclusive: true
+            
+            # Skip cache for recent blocks
+            - id: skip-cache-recent-blocks
+              priority: 90
+              match:
+                type: and
+                config:
+                  matchers:
+                    - type: method
+                      config:
+                        pattern: "eth_getBlockByNumber|eth_getBlockReceipts"
+                    - type: blockRange
+                      config:
+                        minBlock: -10  # Last 10 blocks
+              actions:
+                - type: skipCache
+            
+            # Exclude slow upstreams
+            - id: exclude-slow-upstreams
+              priority: 80
+              match:
+                type: metric
+                config:
+                  field: p99ResponseTime
+                  operator: ">"
+                  value: 5.0
+              actions:
+                - type: excludeUpstream
+                  config:
+                    pattern: "*"
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      
+      routingRules: {
+        rules: [
+          {
+            id: "unfinalized-logs-routing",
+            priority: 100,
+            enabled: true,
+            match: {
+              type: "and",
+              config: {
+                matchers: [
+                  {
+                    type: "method",
+                    config: { pattern: "eth_getLogs" }
+                  },
+                  {
+                    type: "finality",
+                    config: { states: ["unfinalized"] }
+                  }
+                ]
+              }
+            },
+            actions: [
+              {
+                type: "routeToUpstream",
+                config: {
+                  pattern: "alchemy-*|infura-*",
+                  exclusive: true
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }]
+  }]
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+## Matcher Types
+
+### Composite Matchers
+
+#### `and`
+Matches when all sub-matchers match.
+
+```yaml
+match:
+  type: and
+  config:
+    matchers:
+      - type: method
+        config:
+          pattern: "eth_getLogs"
+      - type: finality
+        config:
+          states: ["unfinalized"]
 ```
 
-## Operations
+#### `or`
+Matches when any sub-matcher matches.
 
-### Wildcards
-- `*` - matches any number of characters
-- `<empty>` - matches an empty string
+```yaml
+match:
+  type: or
+  config:
+    matchers:
+      - type: method
+        config:
+          pattern: "eth_getLogs"
+      - type: method
+        config:
+          pattern: "eth_getBlockByNumber"
+```
 
-### Logical Operations
-- `|` - OR operation
-- `&` - AND operation
-- `!` - NOT operation
-- `()` - grouping/nesting operations
+#### `not`
+Matches when the sub-matcher doesn't match.
 
-### Numeric Comparisons (for hex values)
-- `>` - greater than
-- `<` - less than
-- `>=` - greater than or equal
-- `<=` - less than or equal
-- `=` - equal to
+```yaml
+match:
+  type: not
+  config:
+    matcher:
+      type: method
+      config:
+        pattern: "debug_*"
+```
+
+### Field-Specific Matchers
+
+#### `method`
+Matches RPC methods using pattern matching with wildcard support.
+
+```yaml
+match:
+  type: method
+  config:
+    pattern: "eth_*"  # Matches all eth_ methods
+```
+
+```yaml
+match:
+  type: method
+  config:
+    pattern: "eth_getLogs|eth_getBlockByNumber"  # Matches specific methods
+```
+
+#### `finality`
+Matches data finality states.
+
+```yaml
+match:
+  type: finality
+  config:
+    states: ["unfinalized", "realtime"]
+```
+
+**Available states:**
+- `finalized`: Data from confirmed finalized blocks
+- `unfinalized`: Data from recent blocks that could be reorged
+- `realtime`: Data updated on every new block (e.g., gas price)
+- `unknown`: When block number cannot be determined
+
+#### `network`
+Matches network IDs using pattern matching.
+
+```yaml
+match:
+  type: network
+  config:
+    pattern: "evm:1"  # Ethereum mainnet
+```
+
+#### `param`
+Matches specific parameters in requests.
+
+```yaml
+match:
+  type: param
+  config:
+    index: 0  # First parameter
+    pattern: "0x*"  # Hex addresses
+```
+
+**Object parameter matching:**
+```yaml
+match:
+  type: param
+  config:
+    index: 0
+    pattern:
+      address: "0x*"
+      topics: ["*"]
+```
+
+#### `blockRange`
+Matches block ranges.
+
+```yaml
+match:
+  type: blockRange
+  config:
+    minBlock: 1000000
+    maxBlock: 2000000
+```
+
+**Recent blocks (negative values):**
+```yaml
+match:
+  type: blockRange
+  config:
+    minBlock: -10  # Last 10 blocks
+```
+
+#### `metric`
+Matches upstream metrics for performance-based routing.
+
+```yaml
+match:
+  type: metric
+  config:
+    field: errorRate
+    operator: ">"
+    value: 0.1  # 10% error rate
+```
+
+**Available fields:**
+- `errorRate`: Error rate (0.0 to 1.0)
+- `blockHeadLag`: Blocks behind chain head
+- `p99ResponseTime`: 99th percentile response time (seconds)
+- `totalRequests`: Total request count
+- `rateLimitedCount`: Rate limited request count
+- `successRate`: Success rate (0.0 to 1.0)
+- `avgResponseTime`: Average response time (seconds)
+- `consecutiveErrors`: Consecutive error count
+
+**Available operators:** `>`, `<`, `>=`, `<=`, `=`
+
+#### `upstream`
+Matches upstream properties.
+
+```yaml
+match:
+  type: upstream
+  config:
+    idPattern: "alchemy-*"
+    group: "premium"
+    vendorName: "alchemy"
+```
+
+#### `script`
+Allows JavaScript-based custom matching logic.
+
+```yaml
+match:
+  type: script
+  config:
+    script: |
+      (input) => {
+        if (input.type === 'request') {
+          return input.method === 'eth_call' && 
+                 input.params[0].to === '0x...';
+        }
+        return false;
+      }
+```
+
+**Input object properties:**
+- **Request input**: `type`, `method`, `params`, `finality`, `network`, `blockNumber`, `blockRef`, `headers`
+- **Upstream input**: `type`, `id`, `vendor`, `network`, `method`, `config`, `metrics`
+- **Network input**: `type`, `networkId`, `architecture`, `chainId`, `method`
+
+## Action Types
+
+### Routing Actions
+
+#### `routeToUpstream`
+Routes requests to specific upstreams.
+
+```yaml
+actions:
+  - type: routeToUpstream
+    config:
+      pattern: "alchemy-*|infura-*"
+      exclusive: true  # Only use these upstreams
+```
+
+#### `excludeUpstream`
+Excludes specific upstreams from routing.
+
+```yaml
+actions:
+  - type: excludeUpstream
+    config:
+      pattern: "slow-node-*"
+```
+
+#### `setDirective`
+Sets request directives.
+
+```yaml
+actions:
+  - type: setDirective
+    config:
+      directive: "retryEmpty"
+      value: true
+```
+
+**Available directives:**
+- `retryEmpty`: Retry if response is empty
+- `retryPending`: Retry if response is pending
+- `skipCacheRead`: Skip cache read
+- `useUpstream`: Use specific upstream pattern
+
+### Caching Actions
+
+#### `skipCache`
+Skips cache for the request.
+
+```yaml
+actions:
+  - type: skipCache
+```
+
+#### `cachePolicy`
+Applies cache policy settings.
+
+```yaml
+actions:
+  - type: cachePolicy
+    config:
+      ttl: "5m"
+      storage: "redis"
+```
+
+### Monitoring Actions
+
+#### `metric`
+Records custom metrics.
+
+```yaml
+actions:
+  - type: metric
+    config:
+      metricName: "custom_routing_decision"
+      labels:
+        rule: "unfinalized-logs"
+        upstream: "alchemy"
+      value: 1.0
+```
+
+#### `log`
+Logs custom messages.
+
+```yaml
+actions:
+  - type: log
+    config:
+      level: "info"
+      message: "Routing unfinalized logs to archive nodes"
+```
+
+### Performance Actions
+
+#### `priority`
+Modifies upstream priority/scoring.
+
+```yaml
+actions:
+  - type: priority
+    config:
+      scoreMultiplier: 1.5
+      priority: 100
+```
+
+#### `timeout`
+Sets custom timeout for requests.
+
+```yaml
+actions:
+  - type: timeout
+    config:
+      timeout: "30s"
+```
+
+## Use Cases
+
+### 1. Unfinalized Data Routing
+
+Route unfinalized `eth_getLogs` requests to archive nodes:
+
+```yaml
+- id: unfinalized-logs-routing
+  priority: 100
+  match:
+    type: and
+    config:
+      matchers:
+        - type: method
+          config:
+            pattern: "eth_getLogs"
+        - type: finality
+          config:
+            states: ["unfinalized"]
+  actions:
+    - type: routeToUpstream
+      config:
+        pattern: "archive-*"
+        exclusive: true
+```
+
+### 2. Performance-Based Routing
+
+Exclude slow upstreams based on response time:
+
+```yaml
+- id: exclude-slow-upstreams
+  priority: 90
+  match:
+    type: metric
+    config:
+      field: p99ResponseTime
+      operator: ">"
+      value: 5.0
+  actions:
+    - type: excludeUpstream
+      config:
+        pattern: "*"
+```
+
+### 3. Method-Based Upstream Selection
+
+Route debug/trace methods to specialized nodes:
+
+```yaml
+- id: debug-trace-routing
+  priority: 80
+  match:
+    type: method
+    config:
+      pattern: "debug_*|trace_*"
+  actions:
+    - type: routeToUpstream
+      config:
+        pattern: "debug-node-*"
+        exclusive: true
+```
+
+### 4. Cache Optimization
+
+Skip cache for recent blocks:
+
+```yaml
+- id: skip-cache-recent-blocks
+  priority: 70
+  match:
+    type: and
+    config:
+      matchers:
+        - type: method
+          config:
+            pattern: "eth_getBlockByNumber"
+        - type: blockRange
+          config:
+            minBlock: -5  # Last 5 blocks
+  actions:
+    - type: skipCache
+```
+
+### 5. Complex JavaScript Logic
+
+Custom routing based on transaction value:
+
+```yaml
+- id: high-value-tx-routing
+  priority: 60
+  match:
+    type: script
+    config:
+      script: |
+        (input) => {
+          if (input.method === 'eth_sendRawTransaction') {
+            // Parse transaction and check value
+            const tx = parseTransaction(input.params[0]);
+            return tx.value > 1000000000000000000; // > 1 ETH
+          }
+          return false;
+        }
+  actions:
+    - type: routeToUpstream
+      config:
+        pattern: "premium-*"
+        exclusive: true
+```
+
+## Rule Priority
+
+Rules are evaluated in priority order (higher numbers first). This allows you to:
+
+1. **Override general rules** with specific ones
+2. **Layer routing decisions** from specific to general
+3. **Implement fallback logic** with lower priority rules
+
+```yaml
+rules:
+  - id: specific-contract-routing
+    priority: 100  # Highest priority
+    match:
+      type: script
+      config:
+        script: |
+          (input) => input.params[0].to === '0x...'
+    actions:
+      - type: routeToUpstream
+        config:
+          pattern: "dedicated-node"
+  
+  - id: general-method-routing
+    priority: 50   # Lower priority
+    match:
+      type: method
+      config:
+        pattern: "eth_call"
+    actions:
+      - type: routeToUpstream
+        config:
+          pattern: "general-*"
+```
+
+## Best Practices
+
+### 1. Rule Organization
+
+- Use descriptive IDs for rules
+- Group related rules with similar priorities
+- Document complex JavaScript matchers
+- Use consistent naming patterns
+
+### 2. Performance Considerations
+
+- Place more specific rules at higher priorities
+- Avoid overly complex JavaScript matchers
+- Use built-in matchers when possible
+- Monitor rule evaluation performance
+
+### 3. Testing and Validation
+
+- Test rules with various input scenarios
+- Validate JavaScript syntax before deployment
+- Monitor rule match rates and effectiveness
+- Use logging actions for debugging
+
+### 4. Maintenance
+
+- Regularly review and update rules
+- Remove unused or ineffective rules
+- Keep JavaScript matchers simple and focused
+- Document rule purposes and expected behavior
+
+<Callout type="info">
+  Rules are evaluated on every request, so keep them efficient and focused on your specific routing needs.
+</Callout>
+
+<Callout type="warning">
+  JavaScript matchers have access to request data but should not perform heavy computations or external calls.
+</Callout>
