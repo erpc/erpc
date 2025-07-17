@@ -29,7 +29,7 @@ func ExampleUpstreamMatching(req *common.NormalizedRequest, upstreamConfigs []*c
 			ConvertLegacyFailsafeConfig(failsafe)
 
 			// Create matcher from failsafe config
-			matcher := NewMatcher(failsafe.Matchers)
+			matcher := NewConfigMatcher(failsafe.Matchers)
 
 			// Check if request matches
 			result := matcher.MatchRequest(networkId, method, params, finality)
@@ -52,7 +52,7 @@ func ExampleUpstreamMatching(req *common.NormalizedRequest, upstreamConfigs []*c
 
 // Example of how to use matchers for cache decisions
 func ExampleCacheMatching(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool, cacheConfigs []*common.MatcherConfig) bool {
-	matcher := NewMatcher(cacheConfigs)
+	matcher := NewConfigMatcher(cacheConfigs)
 	result := matcher.MatchForCache(networkId, method, params, finality, isEmptyish)
 
 	// Only cache if matched with include action
@@ -61,7 +61,7 @@ func ExampleCacheMatching(networkId, method string, params []interface{}, finali
 
 // Example of how to use matchers for authentication
 func ExampleAuthMatching(method string, authConfigs []*common.MatcherConfig) bool {
-	matcher := NewMatcher(authConfigs)
+	matcher := NewConfigMatcher(authConfigs)
 	result := matcher.MatchRequest("", method, nil, 0)
 
 	// Require auth if matched with include action

@@ -7,20 +7,20 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-// Matcher handles matching logic for requests and responses
-type Matcher struct {
+// ConfigMatcher handles matching logic for requests and responses using MatcherConfig
+type ConfigMatcher struct {
 	configs []*common.MatcherConfig
 }
 
-// NewMatcher creates a new matcher with the given configs
-func NewMatcher(configs []*common.MatcherConfig) *Matcher {
-	return &Matcher{
+// NewConfigMatcher creates a new matcher with the given configs
+func NewConfigMatcher(configs []*common.MatcherConfig) *ConfigMatcher {
+	return &ConfigMatcher{
 		configs: configs,
 	}
 }
 
 // MatchRequest evaluates if a request matches based on the configs
-func (m *Matcher) MatchRequest(networkId, method string, params []interface{}, finality common.DataFinalityState) MatchResult {
+func (m *ConfigMatcher) MatchRequest(networkId, method string, params []interface{}, finality common.DataFinalityState) MatchResult {
 	if len(m.configs) == 0 {
 		return MatchResult{Matched: true, Action: common.MatcherInclude}
 	}
@@ -36,7 +36,7 @@ func (m *Matcher) MatchRequest(networkId, method string, params []interface{}, f
 }
 
 // MatchForCache evaluates if a response should be cached
-func (m *Matcher) MatchForCache(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) MatchResult {
+func (m *ConfigMatcher) MatchForCache(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) MatchResult {
 	if len(m.configs) == 0 {
 		return MatchResult{Matched: true, Action: common.MatcherInclude}
 	}
@@ -51,7 +51,7 @@ func (m *Matcher) MatchForCache(networkId, method string, params []interface{}, 
 }
 
 // matchConfig checks if all fields in the config match
-func (m *Matcher) matchConfig(config *common.MatcherConfig, networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) bool {
+func (m *ConfigMatcher) matchConfig(config *common.MatcherConfig, networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) bool {
 	// Match network
 	if config.Network != "" {
 		match, err := common.WildcardMatch(config.Network, networkId)
@@ -87,7 +87,7 @@ func (m *Matcher) matchConfig(config *common.MatcherConfig, networkId, method st
 }
 
 // matchConfigWithEmpty includes empty behavior matching for cache operations
-func (m *Matcher) matchConfigWithEmpty(config *common.MatcherConfig, networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) bool {
+func (m *ConfigMatcher) matchConfigWithEmpty(config *common.MatcherConfig, networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) bool {
 	// First check basic matching
 	if !m.matchConfig(config, networkId, method, params, finality, isEmptyish) {
 		return false

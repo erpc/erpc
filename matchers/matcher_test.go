@@ -97,7 +97,7 @@ func TestMatcher_MatchRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matcher := NewMatcher(tt.configs)
+			matcher := NewConfigMatcher(tt.configs)
 			result := matcher.MatchRequest(tt.network, tt.method, tt.params, tt.finality)
 			assert.Equal(t, tt.expected, result)
 		})

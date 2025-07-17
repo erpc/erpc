@@ -55,7 +55,7 @@ func ShouldMatchFailsafe(cfg *common.FailsafeConfig, method string, finality com
 	}
 
 	// Create a matcher and check
-	matcher := NewMatcher(cfg.Matchers)
+	matcher := NewConfigMatcher(cfg.Matchers)
 	result := matcher.MatchRequest("", method, nil, finality)
 
 	return result.Matched && result.Action == common.MatcherInclude
