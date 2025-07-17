@@ -360,3 +360,32 @@ func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string)
 
 	return false
 }
+
+func (p *PolicyEvaluator) GetLastEvalTime(upstreamId string, method string) time.Time {
+	p.upstreamsMu.RLock()
+	defer p.upstreamsMu.RUnlock()
+
+	var state *upstreamState
+
+	if p.config.EvalPerMethod {
+		if methodStates, exists := p.methodStates[method]; exists {
+			state = methodStates[upstreamId]
+		}
+		// If no method-specific state, try global state
+		if state == nil {
+			if methodStates, exists := p.methodStates["*"]; exists {
+				state = methodStates[upstreamId]
+			}
+		}
+	} else {
+		state = p.globalState[upstreamId]
+	}
+
+	if state == nil {
+		return time.Time{}
+	}
+
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.lastEvalTime
+}
