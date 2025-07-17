@@ -586,6 +586,16 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		return 0, err
 	}
 
+	// Apply intentionalBlockLag for 'latest' tag at lowest level so poller sees lagged value as well
+	if blockTag == "latest" {
+		if cfg := e.upstream.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.IntentionalBlockLag > 0 {
+			blockNum = blockNum - cfg.Evm.IntentionalBlockLag
+			if blockNum < 0 {
+				blockNum = 0
+			}
+		}
+	}
+
 	return blockNum, nil
 }
 
