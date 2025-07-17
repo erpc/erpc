@@ -179,6 +179,16 @@ func (s *HttpServer) handleHealthCheck(
 			if !s.isSimpleMode() {
 				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
 				upstreamsDetails[ups.Id()]["metrics"] = mts
+
+				// Add last evaluation time from selection policy evaluator
+				if network, err := project.GetNetwork(ups.NetworkId()); err == nil && network != nil {
+					if network.selectionPolicyEvaluator != nil {
+						lastEvalTime := network.selectionPolicyEvaluator.GetLastEvalTime(ups.Id(), "*")
+						if !lastEvalTime.IsZero() {
+							upstreamsDetails[ups.Id()]["lastEvaluation"] = lastEvalTime.Format(time.RFC3339)
+						}
+					}
+				}
 			}
 		}
 
@@ -258,11 +268,36 @@ func (s *HttpServer) handleHealthCheck(
 
 		case common.EvalAllActiveUpstreams:
 			// Check if all configured upstreams are initialized and not cordoned
-			totalConfiguredUpstreams := staticUpsCount
 			totalInitializedUpstreams := len(filteredUpstreams)
 			activeUpstreams := 0
 			cordonedUpstreams := 0
-			uninitializedUpstreams := totalConfiguredUpstreams - totalInitializedUpstreams
+
+			// Count static upstreams for this specific network
+			networkStaticUpsCount := 0
+			if architecture != "" && chainId != "" {
+				// Count only static upstreams that match the specific network
+				for _, upsConfig := range project.Config.Upstreams {
+					switch common.NetworkArchitecture(architecture) {
+					case common.ArchitectureEvm:
+						if cid, err := strconv.ParseInt(chainId, 10, 64); err == nil {
+							if upsConfig.Evm != nil && upsConfig.Evm.ChainId == cid {
+								networkStaticUpsCount++
+							}
+						}
+					}
+				}
+			} else {
+				// When checking all networks, use total static upstream count
+				networkStaticUpsCount = staticUpsCount
+			}
+
+			var hasUninitializedUpstreams bool
+			if networkStaticUpsCount > 0 {
+				hasUninitializedUpstreams = networkStaticUpsCount > totalInitializedUpstreams
+			} else {
+				// For provider-based setups, ignore uninitialized upstream check
+				hasUninitializedUpstreams = false
+			}
 
 			for _, ups := range filteredUpstreams {
 				if metricsTracker.IsCordoned(ups, "*") {
@@ -272,21 +307,21 @@ func (s *HttpServer) handleHealthCheck(
 				}
 			}
 
-			if totalConfiguredUpstreams == 0 {
+			if networkStaticUpsCount == 0 && staticProvidersCount == 0 {
 				projectHealthy = false
 				projectDetails["status"] = "ERROR"
 				projectDetails["message"] = "no upstreams configured"
-			} else if uninitializedUpstreams > 0 {
+			} else if hasUninitializedUpstreams {
 				projectHealthy = false
 				projectDetails["status"] = "ERROR"
-				projectDetails["message"] = fmt.Sprintf("%d / %d upstreams are active (%d uninitialized, %d cordoned)", activeUpstreams, totalConfiguredUpstreams, uninitializedUpstreams, cordonedUpstreams)
-			} else if activeUpstreams == totalInitializedUpstreams {
+				projectDetails["message"] = fmt.Sprintf("only %d / %d upstreams are initialized (%d active, %d cordoned)", totalInitializedUpstreams, networkStaticUpsCount, activeUpstreams, cordonedUpstreams)
+			} else if activeUpstreams >= totalInitializedUpstreams {
 				projectDetails["status"] = "OK"
-				projectDetails["message"] = fmt.Sprintf("all %d upstreams are active (initialized and not cordoned)", totalConfiguredUpstreams)
+				projectDetails["message"] = fmt.Sprintf("all %d upstreams are active (initialized and not cordoned)", totalInitializedUpstreams)
 			} else {
 				projectHealthy = false
 				projectDetails["status"] = "ERROR"
-				projectDetails["message"] = fmt.Sprintf("%d / %d upstreams are active (%d cordoned)", activeUpstreams, totalConfiguredUpstreams, cordonedUpstreams)
+				projectDetails["message"] = fmt.Sprintf("%d / %d upstreams are active (%d cordoned)", activeUpstreams, totalInitializedUpstreams, cordonedUpstreams)
 			}
 
 		default:

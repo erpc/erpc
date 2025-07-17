@@ -116,13 +116,15 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 }
 
 // Reset zeroes out counters for the next window.
+// Note: blockHeadLag and finalizationLag are NOT reset because they are
+// state metrics that represent current conditions, not cumulative counts.
 func (m *TrackedMetrics) Reset() {
 	m.ErrorsTotal.Store(0)
 	m.RequestsTotal.Store(0)
 	m.SelfRateLimitedTotal.Store(0)
 	m.RemoteRateLimitedTotal.Store(0)
-	m.BlockHeadLag.Store(0)
-	m.FinalizationLag.Store(0)
+	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
+	// DO NOT reset m.FinalizationLag - it's a state metric, not cumulative
 	m.ResponseQuantiles.Reset()
 
 	// Optionally uncordon
