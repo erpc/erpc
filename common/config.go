@@ -707,9 +707,30 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	return copied
 }
 
+// MatcherConfig represents configuration for matching requests/responses
+type MatcherConfig struct {
+	Network  string             `yaml:"network,omitempty" json:"network"`
+	Method   string             `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}      `yaml:"params,omitempty" json:"params"`
+	Finality DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty    CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	Action   MatcherAction      `yaml:"action,omitempty" json:"action"`
+}
+
+// MatcherAction represents the action to take when a matcher matches
+type MatcherAction string
+
+const (
+	MatcherInclude MatcherAction = "include"
+	MatcherExclude MatcherAction = "exclude"
+)
+
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	// Deprecated: Use Matchers instead
+	MatchMethod string `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	// Deprecated: Use Matchers instead
 	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
