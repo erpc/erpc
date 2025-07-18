@@ -25,7 +25,8 @@ func (m *ConfigMatcher) MatchRequest(networkId, method string, params []interfac
 		return common.MatchResult{Matched: true, Action: common.MatcherInclude}
 	}
 
-	for _, config := range m.configs {
+	for i := len(m.configs) - 1; i >= 0; i-- {
+		config := m.configs[i]
 		if m.matchConfig(config, networkId, method, params, finality, false) {
 			return common.MatchResult{Matched: true, Action: config.Action}
 		}
@@ -41,7 +42,8 @@ func (m *ConfigMatcher) MatchForCache(networkId, method string, params []interfa
 		return common.MatchResult{Matched: true, Action: common.MatcherInclude}
 	}
 
-	for _, config := range m.configs {
+	for i := len(m.configs) - 1; i >= 0; i-- {
+		config := m.configs[i]
 		if m.matchConfigWithEmpty(config, networkId, method, params, finality, isEmptyish) {
 			return common.MatchResult{Matched: true, Action: config.Action}
 		}
