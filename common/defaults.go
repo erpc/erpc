@@ -1779,7 +1779,6 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 		}
 	}
 
-	// Convert legacy MatchMethod/MatchFinality to new Matchers format
 	f.EnsureMatchers()
 
 	return nil

@@ -795,7 +795,6 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	return copied
 }
 
-// EnsureMatchers converts legacy MatchMethod/MatchFinality to new Matchers format if needed
 func (f *FailsafeConfig) EnsureMatchers() {
 	if f == nil {
 		return
