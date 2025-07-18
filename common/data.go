@@ -58,27 +58,6 @@ func (f *DataFinalityState) UnmarshalYAML(unmarshal func(interface{}) error) err
 	return fmt.Errorf("invalid data finality state: %s", s)
 }
 
-// DataFinalityStateArray is a custom type for handling both single values and arrays
-type DataFinalityStateArray []DataFinalityState
-
-func (f *DataFinalityStateArray) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// Try to unmarshal as a single value first
-	var single DataFinalityState
-	if err := unmarshal(&single); err == nil {
-		*f = DataFinalityStateArray{single}
-		return nil
-	}
-
-	// If that fails, try to unmarshal as an array
-	var array []DataFinalityState
-	if err := unmarshal(&array); err != nil {
-		return err
-	}
-
-	*f = DataFinalityStateArray(array)
-	return nil
-}
-
 type CacheEmptyBehavior int
 
 const (
