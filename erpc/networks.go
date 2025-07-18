@@ -239,7 +239,6 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 	// Try to find a matching executor using the new matcher system
 	for _, fe := range n.failsafeExecutors {
 		if fe.config != nil && len(fe.config.Matchers) > 0 {
-			// Use the matchers system
 			matcher := matchers.NewConfigMatcher(fe.config.Matchers)
 			result := matcher.MatchRequest(networkId, method, params, finality)
 			if result.Matched && result.Action == common.MatcherInclude {

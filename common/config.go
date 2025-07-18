@@ -708,12 +708,12 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type MatcherConfig struct {
-	Network  string              `yaml:"network,omitempty" json:"network"`
-	Method   string              `yaml:"method,omitempty" json:"method"`
-	Params   []interface{}       `yaml:"params,omitempty" json:"params"`
-	Finality []DataFinalityState `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState[]"`
-	Empty    CacheEmptyBehavior  `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
-	Action   MatcherAction       `yaml:"action,omitempty" json:"action"`
+	Network  string                 `yaml:"network,omitempty" json:"network"`
+	Method   string                 `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}          `yaml:"params,omitempty" json:"params"`
+	Finality DataFinalityStateSlice `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState[]"`
+	Empty    CacheEmptyBehavior     `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	Action   MatcherAction          `yaml:"action,omitempty" json:"action"`
 }
 
 type MatcherAction string
@@ -819,7 +819,7 @@ func (f *FailsafeConfig) ConvertFailsafeLegacyMatchers() {
 		// Convert MatchFinality - include all finality states in a single matcher
 		if len(f.MatchFinality) > 0 {
 			// Convert the slice to DataFinalityStateArray and assign to matcher
-			matcher.Finality = f.MatchFinality
+			matcher.Finality = DataFinalityStateSlice(f.MatchFinality)
 		}
 
 		// Add the matcher (with or without finality states)
