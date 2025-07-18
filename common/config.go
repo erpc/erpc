@@ -795,6 +795,54 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	return copied
 }
 
+// EnsureMatchers converts legacy MatchMethod/MatchFinality to new Matchers format if needed
+func (f *FailsafeConfig) EnsureMatchers() {
+	if f == nil {
+		return
+	}
+
+	// If we already have matchers, don't convert legacy fields
+	if len(f.Matchers) > 0 {
+		return
+	}
+
+	// Convert legacy fields to new matcher format
+	if f.MatchMethod != "" || len(f.MatchFinality) > 0 {
+		matcher := &MatcherConfig{
+			Action: MatcherInclude, // Default action for legacy configs
+		}
+
+		// Convert MatchMethod
+		if f.MatchMethod != "" {
+			matcher.Method = f.MatchMethod
+		}
+
+		// Convert MatchFinality - for legacy configs, we need to create separate matchers for each finality
+		if len(f.MatchFinality) > 0 {
+			// Create one matcher per finality state
+			for _, finality := range f.MatchFinality {
+				finalityMatcher := &MatcherConfig{
+					Method:   matcher.Method,
+					Finality: finality,
+					Action:   MatcherInclude,
+				}
+				f.Matchers = append(f.Matchers, finalityMatcher)
+			}
+		} else {
+			// No specific finality, add the general matcher
+			f.Matchers = append(f.Matchers, matcher)
+		}
+	}
+
+	// If no matchers exist at all, create a default catch-all matcher
+	if len(f.Matchers) == 0 {
+		f.Matchers = append(f.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
+	}
+}
+
 type RetryPolicyConfig struct {
 	MaxAttempts           int                   `yaml:"maxAttempts" json:"maxAttempts"`
 	Delay                 Duration              `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
