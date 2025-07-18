@@ -33,7 +33,7 @@ func (m *ConfigMatcher) MatchRequest(networkId, method string, params []interfac
 	}
 
 	// Default behavior if no matchers match
-	return common.MatchResult{Matched: false, Action: common.MatcherExclude}
+	return common.MatchResult{Matched: true, Action: common.MatcherInclude}
 }
 
 // MatchForCache evaluates if a response should be cached
