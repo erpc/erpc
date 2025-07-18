@@ -795,7 +795,7 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	return copied
 }
 
-func (f *FailsafeConfig) EnsureMatchers() {
+func (f *FailsafeConfig) ConvertFailsafeLegacyMatchers() {
 	if f == nil {
 		return
 	}
