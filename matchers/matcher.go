@@ -20,34 +20,34 @@ func NewConfigMatcher(configs []*common.MatcherConfig) *ConfigMatcher {
 }
 
 // MatchRequest evaluates if a request matches based on the configs
-func (m *ConfigMatcher) MatchRequest(networkId, method string, params []interface{}, finality common.DataFinalityState) MatchResult {
+func (m *ConfigMatcher) MatchRequest(networkId, method string, params []interface{}, finality common.DataFinalityState) common.MatchResult {
 	if len(m.configs) == 0 {
-		return MatchResult{Matched: true, Action: common.MatcherInclude}
+		return common.MatchResult{Matched: true, Action: common.MatcherInclude}
 	}
 
 	for _, config := range m.configs {
 		if m.matchConfig(config, networkId, method, params, finality, false) {
-			return MatchResult{Matched: true, Action: config.Action}
+			return common.MatchResult{Matched: true, Action: config.Action}
 		}
 	}
 
 	// Default behavior if no matchers match
-	return MatchResult{Matched: false, Action: common.MatcherExclude}
+	return common.MatchResult{Matched: false, Action: common.MatcherExclude}
 }
 
 // MatchForCache evaluates if a response should be cached
-func (m *ConfigMatcher) MatchForCache(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) MatchResult {
+func (m *ConfigMatcher) MatchForCache(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) common.MatchResult {
 	if len(m.configs) == 0 {
-		return MatchResult{Matched: true, Action: common.MatcherInclude}
+		return common.MatchResult{Matched: true, Action: common.MatcherInclude}
 	}
 
 	for _, config := range m.configs {
 		if m.matchConfigWithEmpty(config, networkId, method, params, finality, isEmptyish) {
-			return MatchResult{Matched: true, Action: config.Action}
+			return common.MatchResult{Matched: true, Action: config.Action}
 		}
 	}
 
-	return MatchResult{Matched: false, Action: common.MatcherExclude}
+	return common.MatchResult{Matched: false, Action: common.MatcherExclude}
 }
 
 // matchConfig checks if all fields in the config match

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
@@ -707,7 +708,6 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	return copied
 }
 
-// MatcherConfig represents configuration for matching requests/responses
 type MatcherConfig struct {
 	Network  string             `yaml:"network,omitempty" json:"network"`
 	Method   string             `yaml:"method,omitempty" json:"method"`
@@ -717,7 +717,6 @@ type MatcherConfig struct {
 	Action   MatcherAction      `yaml:"action,omitempty" json:"action"`
 }
 
-// MatcherAction represents the action to take when a matcher matches
 type MatcherAction string
 
 const (
@@ -725,12 +724,17 @@ const (
 	MatcherExclude MatcherAction = "exclude"
 )
 
+type MatchResult struct {
+	Matched bool
+	Action  MatcherAction
+}
+
 type FailsafeConfig struct {
 	// Deprecated: Use Matchers instead
 	MatchMethod string `yaml:"matchMethod,omitempty" json:"matchMethod"`
 	// Deprecated: Use Matchers instead
 	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
-	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers"`
+	Matchers       []*matchers.MatcherConfig   `yaml:"matchers,omitempty" json:"matchers"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
