@@ -18,6 +18,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
@@ -253,7 +254,33 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 	for _, fe := range u.failsafeExecutors {
 		if fe.config != nil {
 			// Use new matching logic if config is available
-			if fe.config.MatchesRequest(networkId, method, params, finality) {
+			if len(fe.config.Matchers) > 0 {
+				matcher := matchers.NewConfigMatcher(fe.config.Matchers)
+				result := matcher.MatchRequest(networkId, method, params, finality)
+				if result.Matched && result.Action == common.MatcherInclude {
+					return fe
+				}
+			} else {
+				// Fallback to legacy matching
+				if fe.config.MatchMethod != "" && fe.config.MatchMethod != "*" {
+					matched, err := common.WildcardMatch(fe.config.MatchMethod, method)
+					if err != nil || !matched {
+						continue
+					}
+				}
+				// Match finality (empty array means any finality)
+				if len(fe.config.MatchFinality) > 0 {
+					found := false
+					for _, expectedFinality := range fe.config.MatchFinality {
+						if expectedFinality == finality {
+							found = true
+							break
+						}
+					}
+					if !found {
+						continue
+					}
+				}
 				return fe
 			}
 		} else {
