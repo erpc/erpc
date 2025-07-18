@@ -77,8 +77,15 @@ func (m *ConfigMatcher) matchConfig(config *common.MatcherConfig, networkId, met
 	}
 
 	// Match finality (only if specified)
-	if config.Finality != 0 {
-		if config.Finality != finality {
+	if len(config.Finality) > 0 {
+		matched := false
+		for _, f := range config.Finality {
+			if f == finality {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return false
 		}
 	}
