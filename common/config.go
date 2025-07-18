@@ -816,21 +816,14 @@ func (f *FailsafeConfig) ConvertFailsafeLegacyMatchers() {
 			matcher.Method = f.MatchMethod
 		}
 
-		// Convert MatchFinality - for legacy configs, we need to create separate matchers for each finality
+		// Convert MatchFinality - include all finality states in a single matcher
 		if len(f.MatchFinality) > 0 {
-			// Create one matcher per finality state
-			for _, finality := range f.MatchFinality {
-				finalityMatcher := &MatcherConfig{
-					Method:   matcher.Method,
-					Finality: DataFinalityStateArray{finality},
-					Action:   MatcherInclude,
-				}
-				f.Matchers = append(f.Matchers, finalityMatcher)
-			}
-		} else {
-			// No specific finality, add the general matcher
-			f.Matchers = append(f.Matchers, matcher)
+			// Convert the slice to DataFinalityStateArray and assign to matcher
+			matcher.Finality = f.MatchFinality
 		}
+
+		// Add the matcher (with or without finality states)
+		f.Matchers = append(f.Matchers, matcher)
 	}
 
 	// If no matchers exist at all, create a default catch-all matcher
