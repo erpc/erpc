@@ -697,9 +697,33 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	return copied
 }
 
+type MatcherConfig struct {
+	Network  string                 `yaml:"network,omitempty" json:"network"`
+	Method   string                 `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}          `yaml:"params,omitempty" json:"params"`
+	Finality DataFinalityStateSlice `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState[]"`
+	Empty    CacheEmptyBehavior     `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	Action   MatcherAction          `yaml:"action,omitempty" json:"action"`
+}
+
+type MatcherAction string
+
+const (
+	MatcherInclude MatcherAction = "include"
+	MatcherExclude MatcherAction = "exclude"
+)
+
+type MatchResult struct {
+	Matched bool
+	Action  MatcherAction
+}
+
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	// Deprecated: Use Matchers instead
+	MatchMethod string `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	// Deprecated: Use Matchers instead
 	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
@@ -719,6 +743,23 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	if c.MatchFinality != nil {
 		copied.MatchFinality = make([]DataFinalityState, len(c.MatchFinality))
 		copy(copied.MatchFinality, c.MatchFinality)
+	}
+
+	// Deep copy the Matchers array
+	if c.Matchers != nil {
+		copied.Matchers = make([]*MatcherConfig, len(c.Matchers))
+		for i, matcher := range c.Matchers {
+			if matcher != nil {
+				matcherCopy := &MatcherConfig{}
+				*matcherCopy = *matcher
+				// Deep copy the Params slice
+				if matcher.Params != nil {
+					matcherCopy.Params = make([]interface{}, len(matcher.Params))
+					copy(matcherCopy.Params, matcher.Params)
+				}
+				copied.Matchers[i] = matcherCopy
+			}
+		}
 	}
 
 	if c.Retry != nil {
@@ -742,6 +783,46 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	}
 
 	return copied
+}
+
+func (f *FailsafeConfig) ConvertFailsafeLegacyMatchers() {
+	if f == nil {
+		return
+	}
+
+	// If we already have matchers, don't convert legacy fields
+	if len(f.Matchers) > 0 {
+		return
+	}
+
+	// Convert legacy fields to new matcher format
+	if f.MatchMethod != "" || len(f.MatchFinality) > 0 {
+		matcher := &MatcherConfig{
+			Action: MatcherInclude, // Default action for legacy configs
+		}
+
+		// Convert MatchMethod
+		if f.MatchMethod != "" {
+			matcher.Method = f.MatchMethod
+		}
+
+		// Convert MatchFinality - include all finality states in a single matcher
+		if len(f.MatchFinality) > 0 {
+			// Convert the slice to DataFinalityStateArray and assign to matcher
+			matcher.Finality = DataFinalityStateSlice(f.MatchFinality)
+		}
+
+		// Add the matcher (with or without finality states)
+		f.Matchers = append(f.Matchers, matcher)
+	}
+
+	// If no matchers exist at all, create a default catch-all matcher
+	if len(f.Matchers) == 0 {
+		f.Matchers = append(f.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
+	}
 }
 
 type RetryPolicyConfig struct {

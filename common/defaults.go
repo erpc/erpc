@@ -1757,6 +1757,8 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 		}
 	}
 
+	f.ConvertFailsafeLegacyMatchers()
+
 	return nil
 }
 

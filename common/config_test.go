@@ -242,6 +242,32 @@ failsafe:
 			DataFinalityStateRealtime,
 		}, nc.Failsafe[0].MatchFinality)
 	})
+
+	t.Run("FailsafeConfig with matchers", func(t *testing.T) {
+		yamlData := `
+architecture: "evm"
+evm:
+  chainId: 1
+failsafe:
+  - matchers:
+    - network: "evm:1"
+      method: "eth_*"
+      finality: "finalized"
+      action: "include"
+    retry:
+      maxAttempts: 3
+`
+		var nc NetworkConfig
+		err := yaml.Unmarshal([]byte(yamlData), &nc)
+		assert.NoError(t, err)
+
+		assert.Len(t, nc.Failsafe, 1)
+		assert.Len(t, nc.Failsafe[0].Matchers, 1)
+		assert.Equal(t, "evm:1", nc.Failsafe[0].Matchers[0].Network)
+		assert.Equal(t, "eth_*", nc.Failsafe[0].Matchers[0].Method)
+		assert.Equal(t, DataFinalityStateFinalized, nc.Failsafe[0].Matchers[0].Finality)
+		assert.Equal(t, MatcherInclude, nc.Failsafe[0].Matchers[0].Action)
+	})
 }
 
 func TestNetworkConfigFailsafeBackwardCompatibility(t *testing.T) {

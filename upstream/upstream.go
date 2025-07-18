@@ -7,7 +7,6 @@ import (
 	"math"
 	"net"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
@@ -30,8 +30,9 @@ import (
 
 // FailsafeExecutor wraps a failsafe executor with method and finality filters
 type FailsafeExecutor struct {
-	method     string
-	finalities []common.DataFinalityState
+	config     *common.FailsafeConfig     // Store the original config for matching
+	method     string                     // Legacy field for backward compatibility
+	finalities []common.DataFinalityState // Legacy field for backward compatibility
 	executor   failsafe.Executor[*common.NormalizedResponse]
 	timeout    *time.Duration
 }
@@ -89,6 +90,7 @@ func NewUpstream(
 				method = "*"
 			}
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+				config:     fsCfg,
 				method:     method,
 				finalities: fsCfg.MatchFinality,
 				executor:   failsafe.NewExecutor(policiesArray...),
@@ -98,6 +100,7 @@ func NewUpstream(
 	}
 
 	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+		config:     nil, // Default executor has no config
 		method:     "*", // "*" means match any method
 		finalities: nil, // nil means match any finality
 		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
@@ -239,41 +242,34 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
 	method, _ := req.Method()
 	finality := req.Finality(context.Background())
+	networkId := "" // For upstream-level matching, network is usually not relevant
 
-	// First, try to find a specific match for both method and finality
+	// Get params from JsonRpcRequest
+	var params []interface{}
+	if jrpcReq, err := req.JsonRpcRequest(); err == nil && jrpcReq != nil {
+		params = jrpcReq.Params
+	}
+
+	// Try to find a matching executor using the new matcher system
 	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) > 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && slices.Contains(fe.finalities, finality) {
+		if fe.config != nil && len(fe.config.Matchers) > 0 {
+			// Use the matchers system
+			matcher := matchers.NewConfigMatcher(fe.config.Matchers)
+			result := matcher.MatchRequest(networkId, method, params, finality)
+			if result.Matched && result.Action == common.MatcherInclude {
+				return fe
+			}
+		} else {
+			// Default executor (no config or no matchers)
+			if fe.config == nil || (fe.method == "*" && len(fe.finalities) == 0) {
 				return fe
 			}
 		}
 	}
 
-	// Then, try to find a match for method only (empty finalities means any finality)
-	for _, fe := range u.failsafeExecutors {
-		if fe.method != "*" && (len(fe.finalities) == 0) {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched {
-				return fe
-			}
-		}
-	}
-
-	// Then, try to find a match for finality only
-	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) > 0 {
-			if slices.Contains(fe.finalities, finality) {
-				return fe
-			}
-		}
-	}
-
-	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
-	for _, fe := range u.failsafeExecutors {
-		if fe.method == "*" && (len(fe.finalities) == 0) {
-			return fe
-		}
+	// If no specific match found, return the default executor (should be the last one)
+	if len(u.failsafeExecutors) > 0 {
+		return u.failsafeExecutors[len(u.failsafeExecutors)-1]
 	}
 
 	return nil
