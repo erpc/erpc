@@ -708,12 +708,12 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type MatcherConfig struct {
-	Network  string             `yaml:"network,omitempty" json:"network"`
-	Method   string             `yaml:"method,omitempty" json:"method"`
-	Params   []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty    CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
-	Action   MatcherAction      `yaml:"action,omitempty" json:"action"`
+	Network  string              `yaml:"network,omitempty" json:"network"`
+	Method   string              `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}       `yaml:"params,omitempty" json:"params"`
+	Finality []DataFinalityState `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState[]"`
+	Empty    CacheEmptyBehavior  `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	Action   MatcherAction       `yaml:"action,omitempty" json:"action"`
 }
 
 type MatcherAction string
@@ -822,7 +822,7 @@ func (f *FailsafeConfig) EnsureMatchers() {
 			for _, finality := range f.MatchFinality {
 				finalityMatcher := &MatcherConfig{
 					Method:   matcher.Method,
-					Finality: finality,
+					Finality: DataFinalityStateArray{finality},
 					Action:   MatcherInclude,
 				}
 				f.Matchers = append(f.Matchers, finalityMatcher)
