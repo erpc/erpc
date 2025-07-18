@@ -238,40 +238,16 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 
 	// Try to find a matching executor using the new matcher system
 	for _, fe := range n.failsafeExecutors {
-		if fe.config != nil {
-			// Use new matching logic if config is available
-			if len(fe.config.Matchers) > 0 {
-				matcher := matchers.NewConfigMatcher(fe.config.Matchers)
-				result := matcher.MatchRequest(networkId, method, params, finality)
-				if result.Matched && result.Action == common.MatcherInclude {
-					return fe
-				}
-			} else {
-				// Fallback to legacy matching
-				if fe.config.MatchMethod != "" && fe.config.MatchMethod != "*" {
-					matched, err := common.WildcardMatch(fe.config.MatchMethod, method)
-					if err != nil || !matched {
-						continue
-					}
-				}
-				// Match finality (empty array means any finality)
-				if len(fe.config.MatchFinality) > 0 {
-					found := false
-					for _, expectedFinality := range fe.config.MatchFinality {
-						if expectedFinality == finality {
-							found = true
-							break
-						}
-					}
-					if !found {
-						continue
-					}
-				}
+		if fe.config != nil && len(fe.config.Matchers) > 0 {
+			// Use the matchers system
+			matcher := matchers.NewConfigMatcher(fe.config.Matchers)
+			result := matcher.MatchRequest(networkId, method, params, finality)
+			if result.Matched && result.Action == common.MatcherInclude {
 				return fe
 			}
 		} else {
-			// Fallback to legacy matching for default executor
-			if fe.method == "*" && len(fe.finalities) == 0 {
+			// Default executor (no config or no matchers)
+			if fe.config == nil || (fe.method == "*" && len(fe.finalities) == 0) {
 				return fe
 			}
 		}
