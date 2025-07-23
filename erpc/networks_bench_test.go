@@ -269,7 +269,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
-		Failsafe: fsCfg, // ensures we do internal upstream-level retries
+		Failsafe: []*common.FailsafeConfig{fsCfg}, // ensures we do internal upstream-level retries
 	}
 
 	vr := thirdparty.NewVendorsRegistry()
@@ -318,7 +318,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 			Evm: &common.EvmNetworkConfig{
 				ChainId: 123,
 			},
-			Failsafe: fsCfg, // ensures we do network-level failsafe
+			Failsafe: []*common.FailsafeConfig{fsCfg}, // ensures we do network-level failsafe
 		},
 		rlr,
 		upsReg,

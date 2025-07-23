@@ -41,6 +41,7 @@ type Upstream interface {
 	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion bool) (*NormalizedResponse, error)
 	Cordon(method string, reason string)
 	Uncordon(method string)
+	IgnoreMethod(method string)
 }
 
 // UniqueUpstreamKey returns a unique hash for an upstream.

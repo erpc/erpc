@@ -10,11 +10,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type JsonRpcResponse struct {
@@ -43,6 +46,10 @@ type JsonRpcResponse struct {
 	resultWriter util.ByteWriter
 	resultMu     sync.RWMutex
 	cachedNode   *ast.Node
+
+	// canonicalHash caches the canonical hash of the Result to avoid recomputing it.
+	// It is populated lazily on the first call to CanonicalHash using atomic.Value for thread-safe access.
+	canonicalHash atomic.Value
 }
 
 func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
@@ -137,7 +144,7 @@ func (r *JsonRpcResponse) ID() interface{} {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
 
-	if r.idBytes == nil || len(r.idBytes) == 0 {
+	if len(r.idBytes) == 0 {
 		return nil
 	}
 
@@ -304,19 +311,34 @@ func (r *JsonRpcResponse) PeekStringByPath(ctx context.Context, path ...interfac
 	return n.String()
 }
 
+func (r *JsonRpcResponse) Size(ctx ...context.Context) (int, error) {
+	if r == nil {
+		return 0, nil
+	}
+
+	if len(r.Result) > 0 {
+		return len(r.Result), nil
+	}
+
+	if r.resultWriter != nil {
+		return r.resultWriter.Size(ctx...)
+	}
+	return 0, nil
+}
+
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	if r == nil {
 		return
 	}
 
-	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
 	r.errMu.RLock()
 	defer r.errMu.RUnlock()
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
 
 	e.Interface("id", r.ID()).Int("resultSize", len(r.Result))
 
-	if r.errBytes != nil && len(r.errBytes) > 0 {
+	if len(r.errBytes) > 0 {
 		if IsSemiValidJson(r.errBytes) {
 			e.RawJSON("error", r.errBytes)
 		} else {
@@ -326,7 +348,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		e.Interface("error", r.Error)
 	}
 
-	if r.Result != nil && len(r.Result) > 0 {
+	if len(r.Result) > 0 {
 		if len(r.Result) < 300*1024 {
 			if IsSemiValidJson(r.Result) {
 				e.RawJSON("result", r.Result)
@@ -383,10 +405,8 @@ func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
 func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 	r.idMu.RLock()
 	defer r.idMu.RUnlock()
-
 	r.errMu.RLock()
 	defer r.errMu.RUnlock()
-
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
@@ -474,7 +494,7 @@ func (r *JsonRpcResponse) WriteResultTo(w io.Writer, trimSides bool) (n int64, e
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
-	if r.Result != nil && len(r.Result) > 0 {
+	if len(r.Result) > 0 {
 		if trimSides {
 			nn, err := w.Write(r.Result[1 : len(r.Result)-1])
 			return int64(nn), err
@@ -491,37 +511,81 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		return nil, nil
 	}
 
-	return &JsonRpcResponse{
+	r.idMu.RLock()
+	defer r.idMu.RUnlock()
+	r.errMu.RLock()
+	defer r.errMu.RUnlock()
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
+	clone := &JsonRpcResponse{
 		id:         r.id,
-		idBytes:    r.idBytes,
 		Error:      r.Error,
-		errBytes:   r.errBytes,
-		Result:     r.Result,
 		cachedNode: r.cachedNode,
-	}, nil
+	}
+
+	// Deep copy byte slices to avoid shared references
+	if r.idBytes != nil {
+		clone.idBytes = make([]byte, len(r.idBytes))
+		copy(clone.idBytes, r.idBytes)
+	}
+
+	if r.errBytes != nil {
+		clone.errBytes = make([]byte, len(r.errBytes))
+		copy(clone.errBytes, r.errBytes)
+	}
+
+	if r.Result != nil {
+		clone.Result = make([]byte, len(r.Result))
+		copy(clone.Result, r.Result)
+	}
+
+	// Copy the canonical hash if it exists
+	if cached := r.canonicalHash.Load(); cached != nil {
+		clone.canonicalHash.Store(cached)
+	}
+
+	clone.resultWriter = r.resultWriter
+
+	return clone, nil
 }
 
 func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
+	var span trace.Span
 	if len(ctx) > 0 {
-		_, span := StartDetailSpan(ctx[0], "JsonRpcResponse.IsResultEmptyish")
+		_, span = StartDetailSpan(ctx[0], "JsonRpcResponse.IsResultEmptyish")
 		defer span.End()
 	}
 
 	if r == nil {
+		if span != nil {
+			span.SetAttributes(attribute.Bool("resultEmptyish", true))
+		}
 		return true
 	}
 
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
-	if r.Result != nil && len(r.Result) > 0 {
-		return util.IsBytesEmptyish(r.Result)
+	if len(r.Result) > 0 {
+		e := util.IsBytesEmptyish(r.Result)
+		if span != nil {
+			span.SetAttributes(attribute.Bool("resultEmptyish", e))
+		}
+		return e
 	}
 
 	if r.resultWriter != nil {
-		return r.resultWriter.IsResultEmptyish()
+		e := r.resultWriter.IsResultEmptyish()
+		if span != nil {
+			span.SetAttributes(attribute.Bool("resultEmptyish", e))
+		}
+		return e
 	}
 
+	if span != nil {
+		span.SetAttributes(attribute.Bool("resultEmptyish", true))
+	}
 	return true
 }
 
@@ -530,12 +594,18 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 		return "", nil
 	}
 
+	// Fast-path: if already computed, return immediately
+	if cached := r.canonicalHash.Load(); cached != nil {
+		return cached.(string), nil
+	}
+
+	// Compute hash
 	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
+	resultCopy := r.Result
+	r.resultMu.RUnlock()
 
 	var obj interface{}
-	err := json.Unmarshal(r.Result, &obj)
-	if err != nil {
+	if err := json.Unmarshal(resultCopy, &obj); err != nil {
 		return "", err
 	}
 
@@ -545,55 +615,305 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 	}
 
 	b := sha256.Sum256(canonical)
+	hash := fmt.Sprintf("%x", b)
 
-	return fmt.Sprintf("%x", b), nil
+	// Store the computed hash atomically
+	r.canonicalHash.Store(hash)
+
+	return hash, nil
+}
+
+// CanonicalHashWithIgnoredFields calculates the canonical hash while ignoring specified field paths
+func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, ctx ...context.Context) (string, error) {
+	if r == nil {
+		return "", nil
+	}
+
+	// Compute hash with ignored fields (no caching for this variant)
+	r.resultMu.RLock()
+	resultCopy := r.Result
+	r.resultMu.RUnlock()
+
+	var obj interface{}
+	if err := json.Unmarshal(resultCopy, &obj); err != nil {
+		return "", err
+	}
+
+	// Remove ignored fields before canonicalization
+	if len(ignoreFields) > 0 {
+		obj = removeFieldsByPaths(obj, ignoreFields)
+	}
+
+	canonical, err := canonicalize(obj)
+	if err != nil {
+		return "", err
+	}
+
+	b := sha256.Sum256(canonical)
+	hash := fmt.Sprintf("%x", b)
+
+	return hash, nil
+}
+
+// removeFieldsByPaths removes fields from an object based on dot-separated paths
+// Supports:
+// - Simple fields: "status"
+// - Nested fields: "receipt.status"
+// - Array wildcards: "logs.*.blockTimestamp"
+func removeFieldsByPaths(obj interface{}, paths []string) interface{} {
+	if obj == nil || len(paths) == 0 {
+		return obj
+	}
+
+	// Parse paths into a tree structure for efficient removal
+	pathTree := make(map[string]interface{})
+	for _, path := range paths {
+		parts := strings.Split(path, ".")
+		current := pathTree
+		for i, part := range parts {
+			if i == len(parts)-1 {
+				current[part] = true // Leaf node
+			} else {
+				if _, exists := current[part]; !exists {
+					current[part] = make(map[string]interface{})
+				}
+				if next, ok := current[part].(map[string]interface{}); ok {
+					current = next
+				}
+			}
+		}
+	}
+
+	return removeFieldsRecursive(obj, pathTree)
+}
+
+// removeFieldsRecursive recursively removes fields based on the path tree
+func removeFieldsRecursive(obj interface{}, pathTree map[string]interface{}) interface{} {
+	switch v := obj.(type) {
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for key, value := range v {
+			// Check if this key should be removed or has nested removals
+			if pathNode, exists := pathTree[key]; exists {
+				if pathNode == true {
+					// This field should be removed entirely
+					continue
+				} else if nestedTree, ok := pathNode.(map[string]interface{}); ok {
+					// Apply nested removals
+					result[key] = removeFieldsRecursive(value, nestedTree)
+				}
+			} else if wildcardTree, exists := pathTree["*"]; exists {
+				// Handle wildcard for arrays
+				if nestedTree, ok := wildcardTree.(map[string]interface{}); ok {
+					result[key] = removeFieldsRecursive(value, nestedTree)
+				}
+			} else {
+				// Keep the field as-is
+				result[key] = value
+			}
+		}
+		return result
+
+	case []interface{}:
+		// Handle array wildcards
+		if wildcardTree, exists := pathTree["*"]; exists {
+			if nestedTree, ok := wildcardTree.(map[string]interface{}); ok {
+				result := make([]interface{}, len(v))
+				for i, item := range v {
+					result[i] = removeFieldsRecursive(item, nestedTree)
+				}
+				return result
+			}
+		}
+		return v
+
+	default:
+		// Primitive types or other types are returned as-is
+		return v
+	}
 }
 
 func canonicalize(v interface{}) ([]byte, error) {
+	// Check if the value is emptyish before processing
+	if isEmptyishValue(v) {
+		return nil, nil
+	}
+
 	switch val := v.(type) {
 	case map[string]interface{}:
-		keys := make([]string, 0, len(val))
-		for k := range val {
+		// Filter out empty values from the map
+		filtered := make(map[string]interface{})
+		for k, v := range val {
+			if !isEmptyishValue(v) {
+				filtered[k] = v
+			}
+		}
+
+		// If the filtered map is empty, return nil
+		if len(filtered) == 0 {
+			return nil, nil
+		}
+
+		keys := make([]string, 0, len(filtered))
+		for k := range filtered {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 
 		var buf bytes.Buffer
 		buf.WriteByte('{')
-		for i, k := range keys {
-			kj, _ := json.Marshal(k)
-			vj, err := canonicalize(val[k])
+		first := true
+		for _, k := range keys {
+			vj, err := canonicalize(filtered[k])
 			if err != nil {
 				return nil, err
 			}
+			// Skip if the canonicalized value is empty
+			if len(vj) == 0 {
+				continue
+			}
+
+			if !first {
+				buf.WriteByte(',')
+			}
+			first = false
+
+			kj, _ := json.Marshal(k)
 			buf.Write(kj)
 			buf.WriteByte(':')
 			buf.Write(vj)
-			if i < len(keys)-1 {
-				buf.WriteByte(',')
-			}
 		}
 		buf.WriteByte('}')
-		return buf.Bytes(), nil
+		b := buf.Bytes()
+		if util.IsBytesEmptyish(b) {
+			return nil, nil
+		}
+		return b, nil
 
 	case []interface{}:
+		// Filter out empty values from the array
+		var filtered []interface{}
+		for _, item := range val {
+			if !isEmptyishValue(item) {
+				filtered = append(filtered, item)
+			}
+		}
+
+		// If the filtered array is empty, return nil
+		if len(filtered) == 0 {
+			return nil, nil
+		}
+
 		var buf bytes.Buffer
 		buf.WriteByte('[')
-		for i, item := range val {
+		first := true
+		for _, item := range filtered {
 			b, err := canonicalize(item)
 			if err != nil {
 				return nil, err
 			}
-			buf.Write(b)
-			if i < len(val)-1 {
+			// Skip if the canonicalized value is empty
+			if len(b) == 0 {
+				continue
+			}
+
+			if !first {
 				buf.WriteByte(',')
 			}
+			first = false
+			buf.Write(b)
 		}
 		buf.WriteByte(']')
-		return buf.Bytes(), nil
+		b := buf.Bytes()
+		if util.IsBytesEmptyish(b) {
+			return nil, nil
+		}
+		return b, nil
+
+	case string:
+		valb := util.S2Bytes(val)
+		if util.IsBytesEmptyish(valb) {
+			return nil, nil
+		}
+		return removeLeadingZeroes(valb), nil
+
+	case []byte:
+		if util.IsBytesEmptyish(val) {
+			return nil, nil
+		}
+		return removeLeadingZeroes(val), nil
 
 	default:
-		return json.Marshal(val)
+		b, err := json.Marshal(val)
+		if err != nil {
+			return nil, err
+		}
+		if util.IsBytesEmptyish(b) {
+			return nil, nil
+		}
+		return removeLeadingZeroes(b), nil
+	}
+}
+
+func removeLeadingZeroes(b []byte) []byte {
+	if len(b) > 2 && b[0] == '0' && (b[1] == 'x' || b[1] == 'X') {
+		b = bytes.TrimLeft(b[2:], "0")
+	} else if len(b) > 3 && b[0] == '"' && b[1] == '0' && b[2] == 'x' && b[3] == '0' {
+		b = bytes.TrimLeft(b[3:], "0")
+		if len(b) == 1 {
+			return nil
+		}
+	}
+	return b
+}
+
+// isEmptyishValue checks if a value should be considered empty for canonicalization
+func isEmptyishValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+
+	switch val := v.(type) {
+	case string:
+		// Empty string
+		if val == "" {
+			return true
+		}
+		// Check for hex values that are all zeros (0x, 0x0, 0x00, 0x000, etc.)
+		if strings.HasPrefix(val, "0x") {
+			// Remove the 0x prefix and check if the rest is all zeros
+			hexPart := val[2:]
+			if hexPart == "" {
+				return true // "0x" is empty
+			}
+			// Check if all remaining characters are zeros
+			for _, c := range hexPart {
+				if c != '0' {
+					return false
+				}
+			}
+			return true // All zeros after 0x
+		}
+		return false
+	case []interface{}:
+		// Empty arrays are considered empty
+		return len(val) == 0
+	case map[string]interface{}:
+		// Empty objects are considered empty
+		return len(val) == 0
+	case float64:
+		// Don't treat 0 as emptyish - it's a valid value for many fields
+		return val == 0
+	case bool:
+		// Booleans are never emptyish
+		return false
+	default:
+		// For other types, marshal and check
+		b, err := json.Marshal(val)
+		if err != nil {
+			return false
+		}
+		return util.IsBytesEmptyish(b)
 	}
 }
 
@@ -609,6 +929,8 @@ type JsonRpcRequest struct {
 	ID      interface{}   `json:"id,omitempty"`
 	Method  string        `json:"method"`
 	Params  []interface{} `json:"params"`
+
+	cacheHash atomic.Value
 }
 
 func NewJsonRpcRequest(method string, params []interface{}) *JsonRpcRequest {
@@ -629,6 +951,54 @@ func (r *JsonRpcRequest) RLockWithTrace(ctx context.Context) {
 	_, span := StartDetailSpan(ctx, "JsonRpcRequest.RLock")
 	defer span.End()
 	r.RLock()
+}
+
+func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
+	r.RLock()
+	defer r.RUnlock()
+
+	// Deep copy the params to avoid concurrent access issues
+	var clonedParams []interface{}
+	if r.Params != nil {
+		clonedParams = make([]interface{}, len(r.Params))
+		for i, param := range r.Params {
+			clonedParams[i] = deepCopyValue(param)
+		}
+	}
+
+	return &JsonRpcRequest{
+		JSONRPC: r.JSONRPC,
+		ID:      r.ID,
+		Method:  r.Method,
+		Params:  clonedParams,
+	}
+}
+
+// deepCopyValue creates a deep copy of a value to avoid concurrent access issues
+func deepCopyValue(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+
+	switch val := v.(type) {
+	case map[string]interface{}:
+		// Deep copy map
+		newMap := make(map[string]interface{}, len(val))
+		for k, v := range val {
+			newMap[k] = deepCopyValue(v)
+		}
+		return newMap
+	case []interface{}:
+		// Deep copy slice
+		newSlice := make([]interface{}, len(val))
+		for i, v := range val {
+			newSlice[i] = deepCopyValue(v)
+		}
+		return newSlice
+	default:
+		// Primitive types are safe to copy directly
+		return val
+	}
 }
 
 func (r *JsonRpcRequest) SetID(id interface{}) error {
@@ -698,25 +1068,25 @@ func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
 		_, span := StartDetailSpan(ctx[0], "Request.GenerateCacheHash")
 		defer span.End()
 	}
-
 	if r == nil {
 		return "", nil
 	}
 
-	r.RLock()
-	defer r.RUnlock()
+	if ch := r.cacheHash.Load(); ch != nil {
+		return ch.(string), nil
+	}
 
 	hasher := sha256.New()
-
 	for _, p := range r.Params {
 		err := hashValue(hasher, p)
 		if err != nil {
 			return "", err
 		}
 	}
-
 	b := sha256.Sum256(hasher.Sum(nil))
-	return fmt.Sprintf("%s:%x", r.Method, b), nil
+	ch := fmt.Sprintf("%s:%x", r.Method, b)
+	r.cacheHash.Store(ch)
+	return ch, nil
 }
 
 func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {

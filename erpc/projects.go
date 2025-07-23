@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
@@ -13,7 +14,6 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -114,6 +114,7 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method strin
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	start := time.Now()
 	ctx, span := common.StartDetailSpan(ctx, "Project.Forward")
 	defer span.End()
 
@@ -129,16 +130,10 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	method, _ := nq.Method()
 
-	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
-		telemetry.MetricNetworkRequestDuration.WithLabelValues(
-			p.Config.Id,
-			network.networkId,
-			method,
-		).Observe(v)
-	}))
-	defer timer.ObserveDuration()
+	// Get initial finality from request
+	reqFinality := nq.Finality(ctx)
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method).Inc()
+	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String()).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
@@ -150,22 +145,60 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	resp, err := p.doForward(ctx, network, nq)
 
+	shadowUpstreams := network.ShadowUpstreams()
+	if len(shadowUpstreams) > 0 {
+		cloneResp, err := common.CopyResponseForRequest(ctx, resp, nq)
+		if err != nil {
+			lg.Error().Err(err).Msgf("failed to copy response for shadow requests")
+		} else {
+			go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)
+		}
+	}
+
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
 
-	if err == nil {
+	// Get finality from response if available, otherwise use request finality
+	finality := reqFinality
+	if resp != nil {
+		finality = resp.Finality(ctx)
+	}
+
+	if err == nil && resp != nil {
+		upstream := resp.Upstream()
+		vendor := "n/a"
+		upstreamId := "n/a"
+		if resp.FromCache() {
+			vendor = "<cache>"
+			upstreamId = "<cache>"
+		} else if upstream != nil {
+			vendor = upstream.VendorName()
+			upstreamId = upstream.Id()
+		}
 		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
 			p.Config.Id,
 			network.networkId,
+			vendor,
+			upstreamId,
 			method,
-			strconv.Itoa(resp.Attempts()),
+			strconv.FormatInt(int64(resp.Attempts()), 10),
+			finality.String(),
+			strconv.FormatBool(resp.IsResultEmptyish(ctx)),
 		).Inc()
 		if lg.GetLevel() == zerolog.TraceLevel {
 			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
 		} else {
 			lg.Info().Msgf("successfully forwarded request for network")
 		}
+		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+			p.Config.Id,
+			network.networkId,
+			vendor,
+			upstreamId,
+			method,
+			finality.String(),
+		).Observe(time.Since(start).Seconds())
 		return resp, err
 	} else {
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
@@ -181,10 +214,19 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			network.projectId,
 			network.networkId,
 			method,
-			strconv.Itoa(resp.Attempts()),
+			strconv.FormatInt(int64(resp.Attempts()), 10),
 			common.ErrorFingerprint(err),
 			string(common.ClassifySeverity(err)),
+			finality.String(),
 		).Inc()
+		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+			p.Config.Id,
+			network.networkId,
+			"<error>",
+			"<error>",
+			method,
+			finality.String(),
+		).Observe(time.Since(start).Seconds())
 	}
 
 	return nil, err

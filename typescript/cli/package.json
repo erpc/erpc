@@ -1,6 +1,6 @@
 {
   "name": "@erpc-cloud/cli",
-  "version": "0.0.50",
+  "version": "0.0.53",
   "description": "Library providing the erpc CLI",
   "bin": "./dist/bin.js",
   "repository": {

@@ -29,6 +29,8 @@ type ConsensusPolicyBuilder[R any] interface {
 	OnAgreement(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	OnDispute(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
+	WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R]
+	WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R]
 
 	// Build returns a new ConsensusPolicy using the builder's configuration.
 	Build() ConsensusPolicy[R]
@@ -44,6 +46,8 @@ type config[R any] struct {
 	punishMisbehavior       *common.PunishMisbehaviorConfig
 	timeout                 time.Duration
 	logger                  *zerolog.Logger
+	disputeLogLevel         zerolog.Level
+	ignoreFields            map[string][]string
 
 	onAgreement       func(event failsafe.ExecutionEvent[R])
 	onDispute         func(event failsafe.ExecutionEvent[R])
@@ -61,8 +65,9 @@ func NewConsensusPolicyBuilder[R any]() ConsensusPolicyBuilder[R] {
 type consensusPolicy[R any] struct {
 	*config[R]
 	logger                          *zerolog.Logger
-	misbehavingUpstreamsLimiter     sync.Map // [string, *ratelimiter.Limiter]
-	misbehavingUpstreamsSitoutTimer sync.Map // [string, *time.Timer]
+	misbehavingUpstreamsLimiter     *sync.Map // [string, *ratelimiter.Limiter]
+	misbehavingUpstreamsSitoutTimer *sync.Map // [string, *time.Timer]
+	disputeLogLevel                 zerolog.Level
 }
 
 var _ ConsensusPolicy[any] = &consensusPolicy[any]{}
@@ -112,10 +117,20 @@ func (c *config[R]) OnLowParticipants(listener func(failsafe.ExecutionEvent[R]))
 	return c
 }
 
+func (c *config[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R] {
+	c.disputeLogLevel = level
+	return c
+}
+
+func (c *config[R]) WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R] {
+	c.ignoreFields = ignoreFields
+	return c
+}
+
 func (c *config[R]) Build() ConsensusPolicy[R] {
 	hCopy := *c
 	if !c.BaseAbortablePolicy.IsConfigured() {
-		c.AbortIf(func(r R, err error) bool {
+		c.AbortIf(func(exec failsafe.ExecutionAttempt[R], r R, err error) bool {
 			// We'll let the executor handle the actual consensus check
 			return false
 		})
@@ -123,11 +138,18 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 
 	log := c.logger.With().Str("component", "consensus").Logger()
 
+	// Set default dispute log level if not specified
+	disputeLevel := c.disputeLogLevel
+	if disputeLevel == 0 {
+		disputeLevel = zerolog.WarnLevel
+	}
+
 	return &consensusPolicy[R]{
 		config:                          &hCopy,
 		logger:                          &log,
-		misbehavingUpstreamsLimiter:     sync.Map{},
-		misbehavingUpstreamsSitoutTimer: sync.Map{},
+		misbehavingUpstreamsLimiter:     &sync.Map{},
+		misbehavingUpstreamsSitoutTimer: &sync.Map{},
+		disputeLogLevel:                 disputeLevel,
 	}
 }
 
@@ -153,6 +175,12 @@ func (p *consensusPolicy[R]) WithLogger(logger *zerolog.Logger) ConsensusPolicy[
 	pCopy := *p
 	lg := logger.With().Str("component", "consensus").Logger()
 	pCopy.logger = &lg
+	return &pCopy
+}
+
+func (p *consensusPolicy[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicy[R] {
+	pCopy := *p
+	pCopy.disputeLogLevel = level
 	return &pCopy
 }
 

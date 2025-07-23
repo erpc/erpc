@@ -54,11 +54,12 @@ type Timer struct {
 	method        string
 	compositeType string
 	tracker       *Tracker
+	finality      common.DataFinalityState
 }
 
 func (t *Timer) ObserveDuration(isSuccess bool) {
 	duration := time.Since(t.start)
-	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType)
+	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality)
 }
 
 // ------------------------------------
@@ -115,13 +116,15 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 }
 
 // Reset zeroes out counters for the next window.
+// Note: blockHeadLag and finalizationLag are NOT reset because they are
+// state metrics that represent current conditions, not cumulative counts.
 func (m *TrackedMetrics) Reset() {
 	m.ErrorsTotal.Store(0)
 	m.RequestsTotal.Store(0)
 	m.SelfRateLimitedTotal.Store(0)
 	m.RemoteRateLimitedTotal.Store(0)
-	m.BlockHeadLag.Store(0)
-	m.FinalizationLag.Store(0)
+	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
+	// DO NOT reset m.FinalizationLag - it's a state metric, not cumulative
 	m.ResponseQuantiles.Reset()
 
 	// Optionally uncordon
@@ -290,7 +293,7 @@ func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string) *Timer {
+func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState) *Timer {
 	if compositeType == "" {
 		compositeType = "none"
 	}
@@ -299,11 +302,12 @@ func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method s
 		upstream:      upstream,
 		method:        method,
 		compositeType: compositeType,
+		finality:      finality,
 		tracker:       t,
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string) {
+func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState) {
 	if comp == "" {
 		comp = "none"
 	}
@@ -319,11 +323,22 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		}
 	}
 	telemetry.MetricUpstreamRequestDuration.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, comp).
+		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, comp, finality.String()).
 		Observe(sec)
 }
 
-func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string) {
+func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
+	// We want to ignore errors that should not affect the scores:
+	if common.HasErrorCode(
+		err,
+		common.ErrCodeEndpointExecutionException,
+		common.ErrCodeUpstreamExcludedByPolicy,
+		common.ErrCodeUpstreamRequestSkipped,
+		common.ErrCodeUpstreamShadowing,
+	) {
+		return
+	}
+
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).ErrorsTotal.Add(1)
 	}

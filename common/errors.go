@@ -49,6 +49,23 @@ func ErrorSummary(err interface{}) string {
 		} else {
 			s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
 		}
+	} else if e, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := e.Unwrap()
+		if len(errs) == 1 {
+			s = ErrorSummary(errs[0])
+		} else if len(errs) > 0 {
+			parts := []string{}
+			for _, err := range errs {
+				if se, ok := err.(StandardError); ok {
+					parts = append(parts, se.CodeChain())
+				} else {
+					parts = append(parts, err.Error())
+				}
+			}
+			s = strings.Join(parts, ", ")
+		} else {
+			s = "UnknownMultipleErrors"
+		}
 	} else if e, ok := err.(error); ok {
 		if errorLabelMode == ErrorLabelModeCompact {
 			if errors.Is(e, context.DeadlineExceeded) {
@@ -167,7 +184,7 @@ func (e *BaseError) Unwrap() error {
 func (e *BaseError) Error() string {
 	var detailsStr string
 
-	if e.Details != nil && len(e.Details) > 0 {
+	if len(e.Details) > 0 {
 		s, er := SonicCfg.Marshal(e.Details)
 		if er == nil {
 			detailsStr = fmt.Sprintf("(%s)", s)
@@ -746,7 +763,7 @@ var NewErrUpstreamsExhausted = func(
 	ersObj *sync.Map,
 	prjId, netId, method string,
 	duration time.Duration,
-	attempts, retries, hedges int,
+	attempts, retries, hedges, upstreams int,
 ) error {
 	ers := []error{}
 	ersObj.Range(func(key, value any) bool {
@@ -766,6 +783,7 @@ var NewErrUpstreamsExhausted = func(
 				"attempts":   attempts,
 				"retries":    retries,
 				"hedges":     hedges,
+				"upstreams":  upstreams,
 			},
 		},
 	}
@@ -776,6 +794,16 @@ var NewErrUpstreamsExhausted = func(
 	}
 
 	return e
+}
+
+func NewErrUpstreamsExhaustedWithCause(cause error) error {
+	return &ErrUpstreamsExhausted{
+		BaseError{
+			Code:    ErrCodeUpstreamsExhausted,
+			Message: "all upstream attempts failed",
+			Cause:   cause,
+		},
+	}
 }
 
 func (e *ErrUpstreamsExhausted) IsObjectNull() bool {
@@ -1175,6 +1203,22 @@ func (e *ErrUpstreamSyncing) ErrorStatusCode() int {
 	return http.StatusUnprocessableEntity
 }
 
+type ErrUpstreamShadowing struct{ BaseError }
+
+const ErrCodeUpstreamShadowing ErrorCode = "ErrUpstreamShadowing"
+
+var NewErrUpstreamShadowing = func(upstreamId string) error {
+	return &ErrUpstreamShadowing{
+		BaseError{
+			Code:    ErrCodeUpstreamShadowing,
+			Message: "upstream is shadowing and should not serve real requests",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
 type ErrUpstreamGetLogsExceededMaxAllowedRange struct{ BaseError }
 
 const ErrCodeUpstreamGetLogsExceededMaxAllowedRange ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedRange"
@@ -1243,12 +1287,13 @@ func (e *ErrUpstreamGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
 
 type ErrUpstreamNotAllowed struct{ BaseError }
 
-var NewErrUpstreamNotAllowed = func(upstreamId string) error {
+var NewErrUpstreamNotAllowed = func(required, upstreamId string) error {
 	return &ErrUpstreamNotAllowed{
 		BaseError{
 			Code:    "ErrUpstreamNotAllowed",
 			Message: "upstream not allowed based on use-upstream directive",
 			Details: map[string]interface{}{
+				"required":   required,
 				"upstreamId": upstreamId,
 			},
 		},
@@ -1715,7 +1760,7 @@ func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
 	if e.Cause != nil {
 		if er, ok := e.Cause.(*ErrJsonRpcExceptionInternal); ok {
 			switch er.NormalizedCode() {
-			case JsonRpcErrorEvmReverted, JsonRpcErrorCallException:
+			case JsonRpcErrorEvmReverted, JsonRpcErrorCallException, JsonRpcErrorTransactionRejected:
 				return 200
 			}
 		}
@@ -1768,11 +1813,18 @@ var NewErrEndpointTransportFailure = func(url *url.URL, cause error) error {
 	}
 }
 
-type ErrEndpointServerSideException struct{ BaseError }
+type ErrEndpointServerSideException struct {
+	BaseError
+
+	// We want to return the same status code as the upstream,
+	// to avoid overriding unknown behavior, this way we will
+	// have exact same code/message/status code as upstreams in case of unknown errors.
+	originalStatusCode int
+}
 
 const ErrCodeEndpointServerSideException = "ErrEndpointServerSideException"
 
-var NewErrEndpointServerSideException = func(cause error, details map[string]interface{}) error {
+var NewErrEndpointServerSideException = func(cause error, details map[string]interface{}, originalStatusCode int) error {
 	return &ErrEndpointServerSideException{
 		BaseError{
 			Code:    ErrCodeEndpointServerSideException,
@@ -1780,11 +1832,15 @@ var NewErrEndpointServerSideException = func(cause error, details map[string]int
 			Cause:   cause,
 			Details: details,
 		},
+		originalStatusCode,
 	}
 }
 
 func (e *ErrEndpointServerSideException) ErrorStatusCode() int {
-	return 500
+	if e.originalStatusCode != 0 {
+		return e.originalStatusCode
+	}
+	return http.StatusInternalServerError
 }
 
 type ErrEndpointRequestTimeout struct{ BaseError }
@@ -1862,12 +1918,29 @@ type ErrEndpointMissingData struct{ BaseError }
 
 const ErrCodeEndpointMissingData = "ErrEndpointMissingData"
 
-var NewErrEndpointMissingData = func(cause error) error {
+var NewErrEndpointMissingData = func(cause error, upstream Upstream) error {
+	details := map[string]interface{}{}
+	if upstream != nil {
+		details["upstreamId"] = upstream.Id()
+		if evmUps, ok := upstream.(EvmUpstream); ok {
+			if statePoller := evmUps.EvmStatePoller(); statePoller != nil {
+				details["latestBlock"] = statePoller.LatestBlock()
+				details["finalizedBlock"] = statePoller.FinalizedBlock()
+			}
+		}
+		if cfg := upstream.Config(); cfg != nil {
+			if cfg.Evm != nil {
+				details["maxAvailableRecentBlocks"] = cfg.Evm.MaxAvailableRecentBlocks
+			}
+		}
+	}
+
 	return &ErrEndpointMissingData{
 		BaseError{
 			Code:    ErrCodeEndpointMissingData,
-			Message: "remote endpoint does not have this data/block or not synced yet",
+			Message: "remote endpoint does not have this data",
 			Cause:   cause,
+			Details: details,
 		},
 	}
 }
@@ -1938,6 +2011,7 @@ const (
 
 	// Standard JSON-RPC codes
 	JsonRpcErrorCallException        JsonRpcErrorNumber = -32000
+	JsonRpcErrorTransactionRejected  JsonRpcErrorNumber = -32003
 	JsonRpcErrorClientSideException  JsonRpcErrorNumber = -32600
 	JsonRpcErrorUnsupportedException JsonRpcErrorNumber = -32601
 	JsonRpcErrorInvalidArgument      JsonRpcErrorNumber = -32602
@@ -2275,41 +2349,107 @@ func ClassifySeverity(err error) Severity {
 	return SeverityCritical
 }
 
+type ParticipantInfo struct {
+	Upstream   string `json:"upstream"`
+	ResultHash string `json:"resultHash,omitempty"`
+	ErrSummary string `json:"errorSummary,omitempty"`
+}
+
 type ErrConsensusDispute struct{ BaseError }
 
 const ErrCodeConsensusDispute ErrorCode = "ErrConsensusDispute"
 
-var NewErrConsensusDispute = func(message string) error {
+var NewErrConsensusDispute = func(message string, participants []ParticipantInfo, causes []error) error {
 	return &ErrConsensusDispute{
 		BaseError{
 			Code:    ErrCodeConsensusDispute,
 			Message: message,
+			Cause:   errors.Join(causes...),
+			Details: map[string]interface{}{
+				"participants": participants,
+			},
 		},
 	}
+}
+
+func (e *ErrConsensusDispute) Errors() []error {
+	if e.Cause == nil {
+		return nil
+	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
+}
+
+func (e *ErrConsensusDispute) ErrorStatusCode() int {
+	return http.StatusConflict
 }
 
 type ErrConsensusLowParticipants struct{ BaseError }
 
 const ErrCodeConsensusLowParticipants ErrorCode = "ErrConsensusLowParticipants"
 
-var NewErrConsensusLowParticipants = func(message string) error {
+var NewErrConsensusLowParticipants = func(message string, participants []ParticipantInfo, causes []error) error {
 	return &ErrConsensusLowParticipants{
 		BaseError{
 			Code:    ErrCodeConsensusLowParticipants,
 			Message: message,
+			Cause:   errors.Join(causes...),
+			Details: map[string]interface{}{
+				"participants": participants,
+			},
 		},
 	}
 }
 
-type ErrConsensusFailure struct{ BaseError }
-
-const ErrCodeConsensusFailure ErrorCode = "ErrConsensusFailure"
-
-var NewErrConsensusFailure = func(message string) error {
-	return &ErrConsensusFailure{
-		BaseError{
-			Code:    ErrCodeConsensusFailure,
-			Message: message,
-		},
+func (e *ErrConsensusLowParticipants) Errors() []error {
+	if e.Cause == nil {
+		return nil
 	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
+}
+
+func (e *ErrConsensusLowParticipants) ErrorStatusCode() int {
+	return http.StatusPreconditionFailed
+}
+
+func (e *ErrConsensusLowParticipants) DeepestMessage() string {
+	return fmt.Sprintf("%s: %s: %s", e.Code, e.Message, e.SummarizeParticipants())
+}
+
+func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
+	if e.Details == nil {
+		return ""
+	}
+	participants, ok := e.Details["participants"].([]ParticipantInfo)
+	if !ok {
+		return ""
+	}
+	parts := []string{}
+	for _, p := range participants {
+		if p.ErrSummary == "" {
+			if p.Upstream != "" && p.ResultHash != "" {
+				parts = append(parts, fmt.Sprintf("%s = %s", p.Upstream, p.ResultHash))
+			} else if p.Upstream != "" {
+				parts = append(parts, fmt.Sprintf("%s = NoResult", p.Upstream))
+			}
+		} else {
+			if p.Upstream != "" {
+				parts = append(parts, fmt.Sprintf("%s = %s", p.Upstream, p.ErrSummary))
+			} else {
+				parts = append(parts, p.ErrSummary)
+			}
+		}
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }

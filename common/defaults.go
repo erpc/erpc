@@ -14,6 +14,25 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// matchFinalities checks if two finality arrays match.
+// Empty arrays (nil or len=0) match any finality.
+func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
+	// If either is empty, they match any finality
+	if len(finalities1) == 0 || len(finalities2) == 0 {
+		return true
+	}
+
+	// Check if there's any overlap between the two arrays
+	for _, f1 := range finalities1 {
+		for _, f2 := range finalities2 {
+			if f1 == f2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type connectorScope string
 
 const (
@@ -98,20 +117,23 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 							EnforceGetLogsBlockRange: util.BoolPtr(true),
 						},
 					},
-					Failsafe: &FailsafeConfig{
-						Retry: &RetryPolicyConfig{
-							MaxAttempts:     5,
-							Delay:           Duration(0),
-							Jitter:          Duration(0),
-							BackoffMaxDelay: Duration(0),
-							BackoffFactor:   1.0,
-						},
-						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(120 * time.Second),
-						},
-						Hedge: &HedgePolicyConfig{
-							Quantile: 0.7,
-							MaxCount: 2,
+					Failsafe: []*FailsafeConfig{
+						{
+							MatchMethod: "*",
+							Retry: &RetryPolicyConfig{
+								MaxAttempts:     5,
+								Delay:           Duration(0),
+								Jitter:          Duration(0),
+								BackoffMaxDelay: Duration(0),
+								BackoffFactor:   1.0,
+							},
+							Timeout: &TimeoutPolicyConfig{
+								Duration: Duration(120 * time.Second),
+							},
+							Hedge: &HedgePolicyConfig{
+								Quantile: 0.7,
+								MaxCount: 2,
+							},
 						},
 					},
 				},
@@ -119,13 +141,16 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 					Evm: &EvmUpstreamConfig{
 						GetLogsAutoSplittingRangeThreshold: 5000,
 					},
-					Failsafe: &FailsafeConfig{
-						Retry: &RetryPolicyConfig{
-							MaxAttempts: 1,
-							Delay:       Duration(500 * time.Millisecond),
-						},
-						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(60 * time.Second),
+					Failsafe: []*FailsafeConfig{
+						{
+							MatchMethod: "*",
+							Retry: &RetryPolicyConfig{
+								MaxAttempts: 1,
+								Delay:       Duration(500 * time.Millisecond),
+							},
+							Timeout: &TimeoutPolicyConfig{
+								Duration: Duration(60 * time.Second),
+							},
 						},
 					},
 				},
@@ -403,8 +428,47 @@ func (c *CacheConfig) SetDefaults() error {
 		}
 	}
 
-	if c.Methods == nil {
+	// Set compression defaults
+	if c.Compression == nil {
+		c.Compression = &CompressionConfig{}
+	}
+	if err := c.Compression.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for compression: %w", err)
+	}
+
+	return nil
+}
+
+func (m *MethodsConfig) SetDefaults() error {
+	if m.Definitions == nil || (len(m.Definitions) == 0 && !m.PreserveDefaultMethods) {
+		// If no definitions provided or PreserveDefaultMethods is false, use all defaults
+		mergedMethods := map[string]*CacheMethodConfig{}
+
 		// Merge all default methods into a single map
+		for name, method := range DefaultStaticCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultRealtimeCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultWithBlockCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultSpecialCacheMethods {
+			mergedMethods[name] = method
+		}
+
+		if m.PreserveDefaultMethods && m.Definitions != nil {
+			// Merge user definitions on top of defaults
+			for name, method := range m.Definitions {
+				mergedMethods[name] = method
+			}
+		}
+
+		m.Definitions = mergedMethods
+	} else if m.PreserveDefaultMethods {
+		// User provided some definitions and wants to preserve defaults
+		// First copy all defaults
 		mergedMethods := map[string]*CacheMethodConfig{}
 		for name, method := range DefaultStaticCacheMethods {
 			mergedMethods[name] = method
@@ -418,16 +482,15 @@ func (c *CacheConfig) SetDefaults() error {
 		for name, method := range DefaultSpecialCacheMethods {
 			mergedMethods[name] = method
 		}
-		c.Methods = mergedMethods
-	}
 
-	// Set compression defaults
-	if c.Compression == nil {
-		c.Compression = &CompressionConfig{}
+		// Then override with user definitions
+		for name, method := range m.Definitions {
+			mergedMethods[name] = method
+		}
+
+		m.Definitions = mergedMethods
 	}
-	if err := c.Compression.SetDefaults(); err != nil {
-		return fmt.Errorf("failed to set defaults for compression: %w", err)
-	}
+	// else: User provided definitions and doesn't want defaults, keep as is
 
 	return nil
 }
@@ -842,7 +905,7 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 		}
 	}
 	if len(p.Providers) == 0 && len(p.Upstreams) == 0 {
-		if len(opts.Endpoints) > 0 {
+		if opts != nil && len(opts.Endpoints) > 0 {
 			for _, endpoint := range opts.Endpoints {
 				upstream := &UpstreamConfig{
 					Endpoint: endpoint,
@@ -931,7 +994,10 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 }
 
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
-	if strings.HasPrefix(upstream.Endpoint, "http://") || strings.HasPrefix(upstream.Endpoint, "https://") {
+	if strings.HasPrefix(upstream.Endpoint, "http://") ||
+		strings.HasPrefix(upstream.Endpoint, "https://") ||
+		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
+		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
 		return nil, nil
 	}
 
@@ -1035,6 +1101,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "quicknode", "evm+quicknode":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
 	case "chainstack", "evm+chainstack":
 		settings := VendorSettings{
 			"apiKey": endpoint.Host,
@@ -1094,9 +1164,11 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 }
 
 func (n *NetworkDefaults) SetDefaults() error {
-	if n.Failsafe != nil {
-		if err := n.Failsafe.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	if len(n.Failsafe) > 0 {
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
 	}
 	if n.SelectionPolicy != nil {
@@ -1235,7 +1307,7 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 			if err != nil {
 				return fmt.Errorf("failed to parse endpoint: %w", err)
 			}
-			if epUrl.Scheme == "http" || epUrl.Scheme == "https" || epUrl.Scheme == "ws" || epUrl.Scheme == "wss" {
+			if util.IsNativeProtocol(u.Endpoint) {
 				host := epUrl.Hostname()
 				if host == "" {
 					host = epUrl.Host
@@ -1253,22 +1325,63 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		u.Type = UpstreamTypeEvm
 	}
 
-	if u.Failsafe != nil {
-		if defaults != nil && defaults.Failsafe != nil {
-			if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	if len(u.Failsafe) > 0 {
+		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+			// Apply defaults to each failsafe config
+			for i, fs := range u.Failsafe {
+				// Find matching default by method/finality
+				var defaultFs *FailsafeConfig
+				for _, dfs := range defaults.Failsafe {
+					// Match method using wildcard (if both are specified)
+					methodMatch := true
+					if dfs.MatchMethod != "" && fs.MatchMethod != "" {
+						methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
+					} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
+						// If only one has a method specified, they don't match
+						methodMatch = false
+					}
+
+					// Match finality (empty array means any finality)
+					finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+
+					if methodMatch && finalityMatch {
+						defaultFs = dfs
+						break
+					}
+				}
+				// If no specific match found, use first default as general default
+				if defaultFs == nil && len(defaults.Failsafe) > 0 {
+					defaultFs = defaults.Failsafe[0]
+				}
+				if defaultFs != nil {
+					if err := fs.SetDefaults(defaultFs); err != nil {
+						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+					}
+				} else {
+					if err := fs.SetDefaults(nil); err != nil {
+						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+					}
+				}
 			}
 		} else {
-			if err := u.Failsafe.SetDefaults(nil); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+			// Apply nil defaults to each failsafe config
+			for i, fs := range u.Failsafe {
+				if err := fs.SetDefaults(nil); err != nil {
+					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+				}
 			}
 		}
-	} else if defaults != nil && defaults.Failsafe != nil {
-		u.Failsafe = &FailsafeConfig{}
-		if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+		u.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+		for i, dfs := range defaults.Failsafe {
+			u.Failsafe[i] = &FailsafeConfig{}
+			*u.Failsafe[i] = *dfs
+			if err := u.Failsafe[i].SetDefaults(dfs); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
 	}
+
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
 		u.RateLimitAutoTune = &RateLimitAutoTuneConfig{}
 	}
@@ -1408,18 +1521,49 @@ func (j *JsonRpcUpstreamConfig) SetDefaults() error {
 }
 
 func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) error {
-	sysDefCfg := NewDefaultNetworkConfig(upstreams)
 	if defaults != nil {
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
-		if defaults.Failsafe != nil {
-			if n.Failsafe == nil {
-				n.Failsafe = &FailsafeConfig{}
-				*n.Failsafe = *defaults.Failsafe
+		if len(defaults.Failsafe) > 0 {
+			if len(n.Failsafe) == 0 {
+				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+				for i, fs := range defaults.Failsafe {
+					n.Failsafe[i] = &FailsafeConfig{}
+					*n.Failsafe[i] = *fs
+				}
 			} else {
-				if err := n.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+				// Apply defaults to each failsafe config
+				for i, fs := range n.Failsafe {
+					// Find matching default by method/finality
+					var defaultFs *FailsafeConfig
+					for _, dfs := range defaults.Failsafe {
+						// Match method using wildcard (if both are specified)
+						methodMatch := true
+						if dfs.MatchMethod != "" && fs.MatchMethod != "" {
+							methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
+						} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
+							// If only one has a method specified, they don't match
+							methodMatch = false
+						}
+
+						// Match finality (empty array means any finality)
+						finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+
+						if methodMatch && finalityMatch {
+							defaultFs = dfs
+							break
+						}
+					}
+					// If no specific match found, use first default as general default
+					if defaultFs == nil && len(defaults.Failsafe) > 0 {
+						defaultFs = defaults.Failsafe[0]
+					}
+					if defaultFs != nil {
+						if err := fs.SetDefaults(defaultFs); err != nil {
+							return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+						}
+					}
 				}
 			}
 		}
@@ -1451,12 +1595,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
 			}
 		}
-	} else if n.Failsafe != nil {
-		if err := n.Failsafe.SetDefaults(sysDefCfg.Failsafe); err != nil {
-			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+	} else if len(n.Failsafe) > 0 {
+		// Apply system default to each failsafe config
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
 		}
-	} else {
-		n.Failsafe = sysDefCfg.Failsafe
 	}
 
 	if n.Architecture == "" {
@@ -1468,6 +1613,15 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.Architecture == "evm" && n.Evm == nil {
 		n.Evm = &EvmNetworkConfig{}
 	}
+
+	// Apply methods defaults
+	if n.Methods == nil {
+		n.Methods = &MethodsConfig{}
+	}
+	if err := n.Methods.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for methods: %w", err)
+	}
+
 	if n.Evm != nil {
 		if err := n.Evm.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for network evm config: %w", err)
@@ -1486,6 +1640,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.SelectionPolicy != nil {
 		if err := n.SelectionPolicy.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for selection policy: %w", err)
+		}
+	}
+
+	if n.DirectiveDefaults != nil {
+		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
+			return err
 		}
 	}
 
@@ -1523,6 +1683,15 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 }
 
 func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
+	// Set default for MatchMethod if empty
+	if f.MatchMethod == "" {
+		if defaults != nil && defaults.MatchMethod != "" {
+			f.MatchMethod = defaults.MatchMethod
+		} else {
+			f.MatchMethod = "*" // Default to match any method
+		}
+	}
+
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
 			if err := f.Timeout.SetDefaults(defaults.Timeout); err != nil {
@@ -1775,14 +1944,14 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	Network: "*",
 	Method:  "*",
 
-	ErrorRate:       4.0,
-	RespLatency:     8.0,
-	TotalRequests:   1.0,
-	ThrottledRate:   3.0,
-	BlockHeadLag:    2.0,
-	FinalizationLag: 1.0,
+	ErrorRate:       util.Float64Ptr(4.0),
+	RespLatency:     util.Float64Ptr(8.0),
+	TotalRequests:   util.Float64Ptr(1.0),
+	ThrottledRate:   util.Float64Ptr(3.0),
+	BlockHeadLag:    util.Float64Ptr(2.0),
+	FinalizationLag: util.Float64Ptr(1.0),
 
-	Overall: 1.0,
+	Overall: util.Float64Ptr(1.0),
 }
 
 func (s *ScoreMultiplierConfig) SetDefaults() error {
@@ -1792,28 +1961,25 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	if s.Method == "" {
 		s.Method = DefaultScoreMultiplier.Method
 	}
-	if s.ErrorRate == 0 {
+	if s.ErrorRate == nil {
 		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
 	}
-	if s.DeprecatedP90Latency > 0 {
-		s.RespLatency = s.DeprecatedP90Latency
-	}
-	if s.RespLatency == 0 {
+	if s.RespLatency == nil {
 		s.RespLatency = DefaultScoreMultiplier.RespLatency
 	}
-	if s.TotalRequests == 0 {
+	if s.TotalRequests == nil {
 		s.TotalRequests = DefaultScoreMultiplier.TotalRequests
 	}
-	if s.ThrottledRate == 0 {
+	if s.ThrottledRate == nil {
 		s.ThrottledRate = DefaultScoreMultiplier.ThrottledRate
 	}
-	if s.BlockHeadLag == 0 {
+	if s.BlockHeadLag == nil {
 		s.BlockHeadLag = DefaultScoreMultiplier.BlockHeadLag
 	}
-	if s.FinalizationLag == 0 {
+	if s.FinalizationLag == nil {
 		s.FinalizationLag = DefaultScoreMultiplier.FinalizationLag
 	}
-	if s.Overall == 0 {
+	if s.Overall == nil {
 		s.Overall = DefaultScoreMultiplier.Overall
 	}
 
@@ -1860,10 +2026,10 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalFunction == nil {
 		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
-			log.Error().Err(err).Msg("failed to compile default selection policy function")
-		} else {
-			c.EvalFunction = evalFunction
+			// This should never happen with the default function - it's a programming error
+			return fmt.Errorf("failed to compile default selection policy function: %w", err)
 		}
+		c.EvalFunction = evalFunction
 	}
 	if c.ResampleExcluded {
 		if c.ResampleInterval == 0 {
@@ -2018,8 +2184,8 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 	if hasAnyFallbackUpstream {
 		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
-			log.Error().Err(err).Msg("failed to compile default selection policy function")
-			return nil
+			// This should never happen with the default function - it's a programming error
+			panic(fmt.Sprintf("failed to compile default selection policy function: %v", err))
 		}
 
 		selectionPolicy := &SelectionPolicyConfig{

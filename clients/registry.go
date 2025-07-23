@@ -14,10 +14,12 @@ type ClientType string
 
 const (
 	ClientTypeHttpJsonRpc ClientType = "HttpJsonRpc"
+	ClientTypeGrpcBds     ClientType = "GrpcBds"
 )
 
 type ClientInterface interface {
 	GetType() ClientType
+	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
 type Client struct {
@@ -75,15 +77,15 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 		clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
 	} else {
 		once.Do(func() {
+			lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
 			switch cfg.Type {
 			case common.UpstreamTypeEvm:
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
 					newClient, err = NewGenericHttpJsonRpcClient(
 						appCtx,
 						&lg,
 						manager.projectId,
-						cfg.Id,
+						ups,
 						parsedUrl,
 						cfg.JsonRpc,
 						proxyPool,
@@ -93,6 +95,17 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
+				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
+					newClient, err = NewGrpcBdsClient(
+						appCtx,
+						&lg,
+						manager.projectId,
+						ups,
+						parsedUrl,
+					)
+					if err != nil {
+						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
+					}
 				} else {
 					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
 				}

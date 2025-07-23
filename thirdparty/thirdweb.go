@@ -134,7 +134,7 @@ func (v *ThirdwebVendor) getOrCreateClient(ctx context.Context, logger *zerolog.
 	}
 
 	// Create a new client for this chain ID
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", nil, parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}

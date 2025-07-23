@@ -51,10 +51,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt := ntw.metricsTracker
 
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamDuration(ups2, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups2, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
@@ -301,9 +301,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Initially set high error rate
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
@@ -320,11 +320,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Record successful requests to improve error rate
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 12*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 12*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for next evaluation cycle plus a small buffer
 		time.Sleep(75 * time.Millisecond)
@@ -480,9 +480,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Add good metrics
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -491,11 +491,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Degrade metrics
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -504,13 +504,13 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Improve metrics again
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 25*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 25*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for evaluation and sampling period
 		time.Sleep(200 * time.Millisecond)
@@ -563,9 +563,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Transition: Active -> Inactive (add bad metrics)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -586,7 +586,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Transition: Sampling -> Active (improve metrics during sampling)
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		}
 
 		// Wait for next evaluation after sampling
@@ -603,7 +603,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// (degrade metrics, wait for sampling, fail to improve)
 		for i := 0; i < 30; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamFailure(ups1, "method1")
+			mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		}
 
 		// Wait for evaluation
@@ -657,9 +657,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Add bad metrics to trigger cordoning
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -677,11 +677,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Improve metrics to trigger uncordoning
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for evaluation and sampling period
 		time.Sleep(200 * time.Millisecond)
@@ -730,9 +730,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Create failures
 		ups1 := ntw.upstreamsRegistry.GetAllUpstreams()[0]
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1081,12 +1081,12 @@ func TestPolicyEvaluator(t *testing.T) {
 					// Record new metrics
 					mt.RecordUpstreamRequest(ups1, "method1")
 					if rand.Float64() < errorRate {
-						mt.RecordUpstreamFailure(ups1, "method1")
-						mt.RecordUpstreamFailure(ups1, "method1")
-						mt.RecordUpstreamFailure(ups1, "method1")
-						mt.RecordUpstreamFailure(ups1, "method1")
+						mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
+						mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
+						mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
+						mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 					} else {
-						mt.RecordUpstreamDuration(ups1, "method1", time.Duration(rand.Intn(100))*time.Millisecond, true, "none")
+						mt.RecordUpstreamDuration(ups1, "method1", time.Duration(rand.Intn(100))*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 					}
 				}
 			}
@@ -1129,7 +1129,7 @@ func TestPolicyEvaluator(t *testing.T) {
 				case <-ticker.C:
 					methodName := fmt.Sprintf("method%d", methodCounter)
 					mt.RecordUpstreamRequest(ups1, methodName)
-					mt.RecordUpstreamDuration(ups1, methodName, 50*time.Millisecond, true, "none")
+					mt.RecordUpstreamDuration(ups1, methodName, 50*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 					methodCounter++
 				}
 			}
@@ -1244,13 +1244,13 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set error rate of 0.4 (should be active for method2, inactive for method3)
 		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamFailure(ups1, "method2")
+		mt.RecordUpstreamFailure(ups1, "method2", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method3")
-		mt.RecordUpstreamFailure(ups1, "method3")
+		mt.RecordUpstreamFailure(ups1, "method3", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method3")
-		mt.RecordUpstreamDuration(ups1, "method3", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method3", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1300,15 +1300,15 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set high error rate for method1
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		// Set low error rate for method2
 		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamDuration(ups1, "method2", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method2", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1361,7 +1361,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set good metrics for global (*) method
 		mt.RecordUpstreamRequest(ups1, "*")
-		mt.RecordUpstreamDuration(ups1, "*", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1401,11 +1401,11 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.SetLatestBlockNumberForNetwork("evm:123", 105) // Network head
 
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.SetLatestBlockNumber(ups1, 100)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.SetLatestBlockNumber(ups2, 102)
 
 		time.Sleep(75 * time.Millisecond)
@@ -1418,14 +1418,14 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Test Case 2: Default upstreams unhealthy (high error rate)
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1")
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamFailure(ups2, "method1")
+		mt.RecordUpstreamFailure(ups2, "method1", fmt.Errorf("test problem"))
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamFailure(ups2, "method1")
+		mt.RecordUpstreamFailure(ups2, "method1", fmt.Errorf("test problem"))
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1463,16 +1463,16 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.SetLatestBlockNumberForNetwork("evm:123", 105) // Network head
 
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.SetLatestBlockNumber(ups1, 100)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.SetLatestBlockNumber(ups2, 102)
 
 		// Set healthy metrics for fallback upstream
 		mt.RecordUpstreamRequest(ups3, "method1")
-		mt.RecordUpstreamDuration(ups3, "method1", 5*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups3, "method1", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.SetLatestBlockNumber(ups3, 103)
 
 		time.Sleep(75 * time.Millisecond)
@@ -1488,7 +1488,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Now degrade one default upstream
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamFailure(ups1, "method1")
+			mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		}
 
 		time.Sleep(75 * time.Millisecond)
@@ -1538,16 +1538,16 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.SetLatestBlockNumberForNetwork("evm:123", 102) // Network head
 
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.SetLatestBlockNumber(ups1, 100)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamFailure(ups2, "method1")
+		mt.RecordUpstreamFailure(ups2, "method1", fmt.Errorf("test problem"))
 		mt.SetLatestBlockNumber(ups2, 95) // Lagging
 
 		// Set good metrics for fallback
 		mt.RecordUpstreamRequest(ups3, "method1")
-		mt.RecordUpstreamDuration(ups3, "method1", 15*time.Millisecond, true, "none")
+		mt.RecordUpstreamDuration(ups3, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		mt.SetLatestBlockNumber(ups3, 101)
 
 		time.Sleep(75 * time.Millisecond)
@@ -1563,7 +1563,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Test Case 2: Both defaults become healthy (should disable fallbacks)
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest(ups2, "method1")
-			mt.RecordUpstreamDuration(ups2, "method1", 20*time.Millisecond, true, "none")
+			mt.RecordUpstreamDuration(ups2, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		}
 		mt.SetLatestBlockNumber(ups2, 101)
 
@@ -1669,21 +1669,21 @@ func TestPolicyEvaluator(t *testing.T) {
 		// rpc1: 20% error rate (below threshold)
 		for i := 0; i < 8; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none")
+			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		}
 		for i := 0; i < 2; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamFailure(ups1, "method1")
+			mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		}
 
 		// rpc2: 30% error rate (above threshold)
 		for i := 0; i < 7; i++ {
 			mt.RecordUpstreamRequest(ups2, "method1")
-			mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none")
+			mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		}
 		for i := 0; i < 3; i++ {
 			mt.RecordUpstreamRequest(ups2, "method1")
-			mt.RecordUpstreamFailure(ups2, "method1")
+			mt.RecordUpstreamFailure(ups2, "method1", fmt.Errorf("test problem"))
 		}
 
 		time.Sleep(75 * time.Millisecond)
@@ -1696,13 +1696,13 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Test Case 2: All defaults exceed error rate threshold
 		for i := 0; i < 5; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamFailure(ups1, "method1")
+			mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 		}
 
 		// Set good metrics for fallback
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest(ups3, "method1")
-			mt.RecordUpstreamDuration(ups3, "method1", 20*time.Millisecond, true, "none")
+			mt.RecordUpstreamDuration(ups3, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 		}
 
 		time.Sleep(75 * time.Millisecond)
@@ -1737,6 +1737,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Group:    "main",
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1745,6 +1746,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Group:    "main",
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1826,4 +1828,330 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	}
 
 	return ntw, pup1, pup2, pup3
+}
+
+func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
+	logger := log.Logger
+
+	t.Run("BlockHeadLagCordoningAndUncordoning", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		// Create a selection policy that filters based on block head lag < 10
+		evalFn, err := common.CompileFunction(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.config.group === 'main');
+				const maxBlockHeadLag = 10;
+				const healthyOnes = defaults.filter(u => u.metrics.blockHeadLag < maxBlockHeadLag);
+				return healthyOnes;
+			}
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     common.Duration(50 * time.Millisecond),
+			EvalPerMethod:    false,
+			EvalFunction:     evalFn,
+			ResampleExcluded: false,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
+			ResampleCount:    1,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Phase 1: Both upstreams start healthy (low block head lag)
+		mt.SetLatestBlockNumber(ups1, 100) // ups1 is the leader
+		mt.SetLatestBlockNumber(ups2, 95)  // ups2 has lag of 5 blocks (< 10, so healthy)
+
+		// Wait for evaluation
+		time.Sleep(100 * time.Millisecond)
+
+		// Both upstreams should be active
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active with low block head lag")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be active with acceptable block head lag")
+
+		// Verify metrics tracker shows correct cordoning state
+		metrics1 := mt.GetUpstreamMethodMetrics(ups1, "*")
+		metrics2 := mt.GetUpstreamMethodMetrics(ups2, "*")
+		assert.False(t, metrics1.Cordoned.Load(), "ups1 should not be cordoned")
+		assert.False(t, metrics2.Cordoned.Load(), "ups2 should not be cordoned")
+
+		// Phase 2: ups2 falls behind significantly (high block head lag)
+		mt.SetLatestBlockNumber(ups1, 120) // ups1 advances to 120 (still leader)
+		mt.SetLatestBlockNumber(ups2, 105) // ups2 now has lag of 15 blocks (> 10, so unhealthy)
+
+		// Wait for evaluation
+		time.Sleep(100 * time.Millisecond)
+
+		// ups1 should still be active, ups2 should be cordoned
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should still be active")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.Error(t, err, "ups2 should be cordoned due to high block head lag")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamExcludedByPolicy), "ups2 should be excluded by policy")
+
+		// Verify cordoning state
+		metrics1 = mt.GetUpstreamMethodMetrics(ups1, "*")
+		metrics2 = mt.GetUpstreamMethodMetrics(ups2, "*")
+		assert.False(t, metrics1.Cordoned.Load(), "ups1 should not be cordoned")
+		assert.True(t, metrics2.Cordoned.Load(), "ups2 should be cordoned")
+		assert.Equal(t, "excluded by selection policy", metrics2.CordonedReason.Load(), "ups2 should be cordoned due to selection policy")
+
+		// Phase 3: ups2 catches up (block head lag improves)
+		mt.SetLatestBlockNumber(ups2, 125) // ups2 catches up and becomes leader
+		mt.SetLatestBlockNumber(ups1, 120) // ups1 now has lag of 5 blocks (< 10, so healthy)
+
+		// Wait for evaluation
+		time.Sleep(100 * time.Millisecond)
+
+		// Both upstreams should be active again
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active after ups2 catches up")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be uncordoned after catching up")
+
+		// Verify both are uncordoned
+		metrics1 = mt.GetUpstreamMethodMetrics(ups1, "*")
+		metrics2 = mt.GetUpstreamMethodMetrics(ups2, "*")
+		assert.False(t, metrics1.Cordoned.Load(), "ups1 should not be cordoned")
+		assert.False(t, metrics2.Cordoned.Load(), "ups2 should be uncordoned after catching up")
+
+		// Phase 4: Test edge case where upstream has 0 block head lag
+		mt.SetLatestBlockNumber(ups1, 130) // ups1 becomes leader
+		mt.SetLatestBlockNumber(ups2, 130) // ups2 has 0 lag
+
+		// Wait for evaluation
+		time.Sleep(100 * time.Millisecond)
+
+		// Both should be active with 0 lag
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active with 0 lag")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be active with 0 lag")
+
+		// Verify block head lag metrics
+		metrics1 = mt.GetUpstreamMethodMetrics(ups1, "*")
+		metrics2 = mt.GetUpstreamMethodMetrics(ups2, "*")
+		assert.Equal(t, int64(0), metrics1.BlockHeadLag.Load(), "ups1 should have 0 block head lag")
+		assert.Equal(t, int64(0), metrics2.BlockHeadLag.Load(), "ups2 should have 0 block head lag")
+	})
+
+	t.Run("BlockHeadLagWithGroupFiltering", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		// Create a selection policy that filters by group first, then by block head lag
+		evalFn, err := common.CompileFunction(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.config.group === 'main');
+				const maxBlockHeadLag = 10;
+				const healthyOnes = defaults.filter(u => u.metrics.blockHeadLag < maxBlockHeadLag);
+				return healthyOnes;
+			}
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     common.Duration(50 * time.Millisecond),
+			EvalPerMethod:    false,
+			EvalFunction:     evalFn,
+			ResampleExcluded: false,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Set up initial state - both upstreams healthy
+		mt.SetLatestBlockNumber(ups1, 100)
+		mt.SetLatestBlockNumber(ups2, 95)
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Both should be active
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be active")
+
+		// One upstream falls behind
+		mt.SetLatestBlockNumber(ups1, 120)
+		mt.SetLatestBlockNumber(ups2, 105) // lag of 15 blocks
+
+		time.Sleep(100 * time.Millisecond)
+
+		// ups1 should be active, ups2 should be cordoned
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.Error(t, err, "ups2 should be cordoned")
+
+		// ups2 catches up
+		mt.SetLatestBlockNumber(ups2, 118) // lag of 2 blocks
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Both should be active again
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be uncordoned after catching up")
+	})
+
+	t.Run("BlockHeadLagWithEnvironmentVariable", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		// Set environment variable for max block head lag
+		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "5")
+
+		// Create a selection policy that uses environment variable
+		evalFn, err := common.CompileFunction(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.config.group === 'main');
+				const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10');
+				const healthyOnes = defaults.filter(u => u.metrics.blockHeadLag < maxBlockHeadLag);
+				return healthyOnes;
+			}
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     common.Duration(50 * time.Millisecond),
+			EvalPerMethod:    false,
+			EvalFunction:     evalFn,
+			ResampleExcluded: false,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Set up initial state
+		mt.SetLatestBlockNumber(ups1, 100)
+		mt.SetLatestBlockNumber(ups2, 95) // lag of 5 blocks (exactly at threshold)
+
+		time.Sleep(100 * time.Millisecond)
+
+		// ups1 should be active, ups2 should be cordoned (lag >= 5)
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.Error(t, err, "ups2 should be cordoned with lag >= 5")
+
+		// ups2 catches up slightly
+		mt.SetLatestBlockNumber(ups2, 97) // lag of 3 blocks (< 5)
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Both should be active now
+		err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "ups1 should be active")
+
+		err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+		assert.NoError(t, err, "ups2 should be uncordoned with lag < 5")
+	})
+
+	t.Run("BlockHeadLagRapidChanges", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		// Create a selection policy with very low threshold
+		evalFn, err := common.CompileFunction(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.config.group === 'main');
+				const maxBlockHeadLag = 2;
+				const healthyOnes = defaults.filter(u => u.metrics.blockHeadLag < maxBlockHeadLag);
+				return healthyOnes;
+			}
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     common.Duration(25 * time.Millisecond), // Very fast evaluation
+			EvalPerMethod:    false,
+			EvalFunction:     evalFn,
+			ResampleExcluded: false,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Test rapid changes in block head lag
+		for i := 0; i < 5; i++ {
+			// ups1 advances
+			mt.SetLatestBlockNumber(ups1, int64(100+i*10))
+			mt.SetLatestBlockNumber(ups2, int64(100+i*10-3)) // lag of 3 blocks (> 2, so unhealthy)
+
+			time.Sleep(50 * time.Millisecond)
+
+			// ups1 should be active, ups2 should be cordoned
+			err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+			assert.NoError(t, err, "ups1 should be active in iteration %d", i)
+
+			err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+			assert.Error(t, err, "ups2 should be cordoned in iteration %d", i)
+
+			// ups2 catches up
+			mt.SetLatestBlockNumber(ups2, int64(100+i*10-1)) // lag of 1 block (< 2, so healthy)
+
+			time.Sleep(50 * time.Millisecond)
+
+			// Both should be active
+			err = evaluator.AcquirePermit(&logger, ups1, "eth_getBalance")
+			assert.NoError(t, err, "ups1 should be active after ups2 catches up in iteration %d", i)
+
+			err = evaluator.AcquirePermit(&logger, ups2, "eth_getBalance")
+			assert.NoError(t, err, "ups2 should be uncordoned after catching up in iteration %d", i)
+		}
+	})
 }

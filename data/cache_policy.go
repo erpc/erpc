@@ -59,7 +59,7 @@ func (p *CachePolicy) MarshalJSON() ([]byte, error) {
 	return common.SonicCfg.Marshal(p.config)
 }
 
-func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, error) {
+func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) (bool, error) {
 	match, err := common.WildcardMatch(p.config.Network, networkId)
 	if err != nil {
 		return false, err
@@ -81,6 +81,14 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface
 		return false, err
 	}
 	if !match {
+		return false, nil
+	}
+
+	if isEmptyish && p.config.Empty == common.CacheEmptyBehaviorIgnore {
+		return false, nil
+	}
+
+	if !isEmptyish && p.config.Empty == common.CacheEmptyBehaviorOnly {
 		return false, nil
 	}
 

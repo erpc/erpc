@@ -903,6 +903,7 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		}
 		if common.HasErrorCode(
 			err,
+			common.ErrCodeEndpointExecutionException,
 			common.ErrCodeEndpointClientSideException,
 			common.ErrCodeInvalidUrlPath,
 			common.ErrCodeInvalidRequest,
@@ -911,6 +912,10 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeProjectNotFound,
 		) {
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
+		} else if errors.Is(err, context.Canceled) {
+			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with context cancellation")
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with deadline exceeded")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
 				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
@@ -1090,7 +1095,11 @@ func handleErrorResponse(
 	span.AddEvent("http.response_write_start")
 	err = encoder.Encode(resp)
 	if err != nil {
-		logger.Error().Err(err).Msgf("failed to encode error response")
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			logger.Debug().Err(err).Interface("response", resp).Msgf("skipping error response encoding due to context cancellation")
+		} else {
+			logger.Error().Err(err).Interface("response", resp).Msgf("failed to encode error response")
+		}
 		writeFatalError(httpCtx, http.StatusInternalServerError, err)
 	} else {
 		common.EnrichHTTPServerSpan(httpCtx, statusCode, nil)

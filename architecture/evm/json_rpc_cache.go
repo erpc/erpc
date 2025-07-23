@@ -22,7 +22,6 @@ import (
 type EvmJsonRpcCache struct {
 	projectId string
 	policies  []*data.CachePolicy
-	methods   map[string]*common.CacheMethodConfig
 	logger    *zerolog.Logger
 
 	// Compression settings
@@ -67,7 +66,6 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 
 	cache := &EvmJsonRpcCache{
 		policies: policies,
-		methods:  cfg.Methods,
 		logger:   logger,
 	}
 
@@ -138,7 +136,6 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	return &EvmJsonRpcCache{
 		logger:               &lg,
 		policies:             c.policies,
-		methods:              c.methods,
 		projectId:            projectId,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
@@ -176,7 +173,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	_, policySpan := common.StartDetailSpan(ctx, "Cache.FindGetPolicies")
 
 	ntwId := req.NetworkId()
-	finState := c.getFinalityState(ctx, req, nil)
+	finState := req.Finality(ctx)
 	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
 	span.SetAttributes(
 		attribute.String("request.method", rpcReq.Method),
@@ -264,6 +261,39 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, nil
 	}
 
+	if jrr.IsResultEmptyish() {
+		switch policy.EmptyState() {
+		case common.CacheEmptyBehaviorIgnore:
+			// Treat as cache miss - return nil to indicate no cached data
+			telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
+				c.projectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				policy.GetTTL().String(),
+			).Inc()
+			telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
+				c.projectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				policy.GetTTL().String(),
+			).Observe(time.Since(start).Seconds())
+			span.SetAttributes(attribute.Bool("cache.hit", false))
+			return nil, nil
+		case common.CacheEmptyBehaviorAllow, common.CacheEmptyBehaviorOnly:
+			// Continue to create and return the response
+			break
+		}
+	}
+
+	resp := common.NewNormalizedResponse().
+		WithRequest(req).
+		WithFromCache(true).
+		WithJsonRpcResponse(jrr)
+
 	telemetry.MetricCacheGetSuccessHitTotal.WithLabelValues(
 		c.projectId,
 		req.NetworkId(),
@@ -287,10 +317,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		c.logger.Debug().Str("method", rpcReq.Method).Interface("id", req.ID()).Msg("returning cached response")
 	}
 
-	return common.NewNormalizedResponse().
-		WithRequest(req).
-		WithFromCache(true).
-		WithJsonRpcResponse(jrr), nil
+	return resp, nil
 }
 
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
@@ -338,11 +365,19 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	finState := c.getFinalityState(ctx, req, resp)
-	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	// Use response finality if available, otherwise fall back to request finality
+	var finState common.DataFinalityState
+	if resp != nil {
+		finState = resp.Finality(ctx)
+	} else {
+		finState = req.Finality(ctx)
+	}
+	isEmptyish := resp == nil || resp.IsResultEmptyish()
+	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState, isEmptyish)
 	span.SetAttributes(
 		attribute.String("block.finality", finState.String()),
 		attribute.Int("cache.policies_matched", len(policies)),
+		attribute.Bool("response.emptyish", isEmptyish),
 	)
 	if common.IsTracingDetailed {
 		span.SetAttributes(
@@ -548,18 +583,11 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	return nil
 }
 
-func (c *EvmJsonRpcCache) MethodConfig(method string) *common.CacheMethodConfig {
-	if cfg, ok := c.methods[method]; ok {
-		return cfg
-	}
-	return nil
-}
-
 func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -573,7 +601,7 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 				Msg("checking policy match for set")
 		}
 
-		match, err := policy.MatchesForSet(networkId, method, params, finality)
+		match, err := policy.MatchesForSet(networkId, method, params, finality, isEmptyish)
 		if err != nil {
 			return nil, err
 		}
@@ -674,50 +702,6 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	}
 
 	return jrr, nil
-}
-
-func (c *EvmJsonRpcCache) getFinalityState(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (finality common.DataFinalityState) {
-	finality = common.DataFinalityStateUnknown
-
-	if req == nil && resp == nil {
-		return
-	}
-
-	method, _ := req.Method()
-	if cfg, ok := c.methods[method]; ok {
-		if cfg.Finalized {
-			finality = common.DataFinalityStateFinalized
-			return
-		} else if cfg.Realtime {
-			finality = common.DataFinalityStateRealtime
-			return
-		}
-	}
-
-	blockRef, blockNumber, _ := ExtractBlockReferenceFromRequest(ctx, req)
-
-	if blockRef == "*" && blockNumber == 0 {
-		finality = common.DataFinalityStateUnfinalized
-		return
-	} else if blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
-		finality = common.DataFinalityStateRealtime
-		return
-	} else if blockNumber > 0 && resp != nil {
-		upstream := resp.Upstream()
-		if upstream != nil {
-			if ups, ok := upstream.(common.EvmUpstream); ok {
-				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
-					if isFinalized {
-						finality = common.DataFinalityStateFinalized
-					} else {
-						finality = common.DataFinalityStateUnfinalized
-					}
-				}
-			}
-		}
-	}
-
-	return
 }
 
 func shouldCacheResponse(

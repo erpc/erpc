@@ -90,7 +90,8 @@ func NewEvmStatePoller(
 	tracker *health.Tracker,
 	sharedState data.SharedStateRegistry,
 ) *EvmStatePoller {
-	lg := logger.With().Str("component", "evmStatePoller").Logger()
+	networkId := up.NetworkId()
+	lg := logger.With().Str("component", "evmStatePoller").Str("networkId", networkId).Logger()
 
 	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
@@ -631,15 +632,28 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return s, nil
 	}
 
-	// For Arbitrum, the syncing state is returned as an object with a "msgCount" field
-	// And any value for "msgCount" means the node is syncing.
-	// Ref. https://docs.arbitrum.io/build-decentralized-apps/arbitrum-vs-ethereum/rpc-methods#eth_syncing
-	//
-	// For other EVM chains, returning an object containing "currentBlock" means the node is syncing.
-	// Ref. https://ethereum.org/en/developers/docs/apis/json-rpc/#eth_syncing
-	if objectSync, ok := syncing.(map[string]interface{}); ok &&
-		(objectSync["currentBlock"] != nil || objectSync["msgCount"] != nil) {
-		return true, nil
+	if objectSync, ok := syncing.(map[string]interface{}); ok {
+		// For some chains (e.g. Arbitrum), the syncing state is returned as an object with a "msgCount" field
+		// And any value for "msgCount" means the node is syncing.
+		// Ref. https://docs.arbitrum.io/build-decentralized-apps/arbitrum-vs-ethereum/rpc-methods#eth_syncing
+		//
+		// For other EVM chains, returning an object containing "currentBlock" means the node is syncing.
+		// Ref. https://ethereum.org/en/developers/docs/apis/json-rpc/#eth_syncing
+		if objectSync["currentBlock"] != nil || objectSync["msgCount"] != nil {
+			return true, nil
+		}
+		// Handle non-standard structure {Ok: bool}
+		if okVal, exists := objectSync["Ok"]; exists {
+			if b, ok := okVal.(bool); ok {
+				// Interpret Ok=true as not syncing, Ok=false as syncing (best-effort).
+				return !b, nil
+			}
+		}
+		if okVal, exists := objectSync["ok"]; exists { // lowercase variant just in case
+			if b, ok := okVal.(bool); ok {
+				return !b, nil
+			}
+		}
 	}
 
 	return false, &common.BaseError{

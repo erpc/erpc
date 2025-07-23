@@ -94,6 +94,7 @@ export const EvalAnyErrorRateBelow100 = "any:errorRateBelow100";
 export const EvalAllErrorRateBelow100 = "all:errorRateBelow100";
 export const EvalEvmAnyChainId = "any:evm:eth_chainId";
 export const EvalEvmAllChainId = "all:evm:eth_chainId";
+export const EvalAllActiveUpstreams = "all:activeUpstreams";
 export type TracingProtocol = string;
 export const TracingProtocolHttp: TracingProtocol = "http";
 export const TracingProtocolGrpc: TracingProtocol = "grpc";
@@ -131,7 +132,6 @@ export interface SharedStateConfig {
 export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
-  methods?: { [key: string]: CacheMethodConfig | undefined};
   compression?: CompressionConfig;
 }
 export interface CompressionConfig {
@@ -190,12 +190,12 @@ export interface TLSConfig {
   insecureSkipVerify?: boolean;
 }
 export interface RedisConnectorConfig {
-  addr: string;
+  addr?: string;
   username?: string;
-  db: number /* int */;
+  db?: number /* int */;
   tls?: TLSConfig;
-  connPoolSize: number /* int */;
-  uri?: string;
+  connPoolSize?: number /* int */;
+  uri: string;
   initTimeout?: Duration;
   getTimeout?: Duration;
   setTimeout?: Duration;
@@ -248,11 +248,17 @@ export interface ProjectConfig {
 }
 export interface NetworkDefaults {
   rateLimitBudget?: string;
-  failsafe?: FailsafeConfig;
+  failsafe?: (FailsafeConfig | undefined)[];
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -267,6 +273,7 @@ export interface ProviderConfig {
   vendor: string;
   settings?: VendorSettings;
   onlyNetworks?: string[];
+  ignoreNetworks?: string[];
   upstreamIdTemplate?: string;
   overrides?: { [key: string]: UpstreamConfig | undefined};
 }
@@ -281,10 +288,21 @@ export interface UpstreamConfig {
   ignoreMethods?: string[];
   allowMethods?: string[];
   autoIgnoreUnsupportedMethods?: boolean;
-  failsafe?: FailsafeConfig;
+  failsafe?: (FailsafeConfig | undefined)[];
   rateLimitBudget?: string;
   rateLimitAutoTune?: RateLimitAutoTuneConfig;
   routing?: RoutingConfig;
+  shadow?: ShadowUpstreamConfig;
+}
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
+export interface ShadowUpstreamConfig {
+  enabled: boolean;
+  ignoreFields?: { [key: string]: string[]};
 }
 export interface RoutingConfig {
   scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
@@ -293,17 +311,13 @@ export interface RoutingConfig {
 export interface ScoreMultiplierConfig {
   network: string;
   method: string;
-  overall: number /* float64 */;
-  errorRate: number /* float64 */;
-  respLatency: number /* float64 */;
-  totalRequests: number /* float64 */;
-  throttledRate: number /* float64 */;
-  blockHeadLag: number /* float64 */;
-  finalizationLag: number /* float64 */;
-  /**
-   * @deprecated use RespLatency instead
-   */
-  p90latency: number /* float64 */;
+  overall?: number /* float64 */;
+  errorRate?: number /* float64 */;
+  respLatency?: number /* float64 */;
+  totalRequests?: number /* float64 */;
+  throttledRate?: number /* float64 */;
+  blockHeadLag?: number /* float64 */;
+  finalizationLag?: number /* float64 */;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -337,6 +351,8 @@ export interface EvmUpstreamConfig {
   skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
+  matchMethod?: string;
+  matchFinality?: DataFinalityState[];
   retry?: RetryPolicyConfig;
   circuitBreaker?: CircuitBreakerPolicyConfig;
   timeout?: TimeoutPolicyConfig;
@@ -369,32 +385,29 @@ export interface HedgePolicyConfig {
   minDelay?: Duration;
   maxDelay?: Duration;
 }
-export type ConsensusFailureBehavior = string;
-export const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior = "returnError";
-export const ConsensusFailureBehaviorAcceptAnyValidResult: ConsensusFailureBehavior = "acceptAnyValidResult";
-export const ConsensusFailureBehaviorPreferBlockHeadLeader: ConsensusFailureBehavior = "preferBlockHeadLeader";
-export const ConsensusFailureBehaviorOnlyBlockHeadLeader: ConsensusFailureBehavior = "onlyBlockHeadLeader";
 export type ConsensusLowParticipantsBehavior = string;
 export const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior = "returnError";
-export const ConsensusLowParticipantsBehaviorAcceptAnyValidResult: ConsensusLowParticipantsBehavior = "acceptAnyValidResult";
+export const ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult: ConsensusLowParticipantsBehavior = "acceptMostCommonValidResult";
 export const ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: ConsensusLowParticipantsBehavior = "preferBlockHeadLeader";
 export const ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader";
 export type ConsensusDisputeBehavior = string;
 export const ConsensusDisputeBehaviorReturnError: ConsensusDisputeBehavior = "returnError";
-export const ConsensusDisputeBehaviorAcceptAnyValidResult: ConsensusDisputeBehavior = "acceptAnyValidResult";
+export const ConsensusDisputeBehaviorAcceptMostCommonValidResult: ConsensusDisputeBehavior = "acceptMostCommonValidResult";
 export const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBehavior = "preferBlockHeadLeader";
 export const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior = "onlyBlockHeadLeader";
 export interface ConsensusPolicyConfig {
   requiredParticipants: number /* int */;
   agreementThreshold?: number /* int */;
-  failureBehavior?: ConsensusFailureBehavior;
   disputeBehavior?: ConsensusDisputeBehavior;
   lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
   punishMisbehavior?: PunishMisbehaviorConfig;
+  disputeLogLevel?: string; // "trace", "debug", "info", "warn", "error"
+  ignoreFields?: { [key: string]: string[]};
 }
 export interface PunishMisbehaviorConfig {
-  disputeThreshold: number /* int */;
-  sitOutPenalty?: string;
+  disputeThreshold: number /* uint */;
+  disputeWindow?: Duration;
+  sitOutPenalty?: Duration;
 }
 export interface RateLimiterConfig {
   budgets: RateLimitBudgetConfig[];
@@ -416,15 +429,26 @@ export interface ProxyPoolConfig {
 export interface DeprecatedProjectHealthCheckConfig {
   scoreMetricsWindowSize: Duration;
 }
+export interface MethodsConfig {
+  preserveDefaultMethods?: boolean;
+  definitions?: { [key: string]: CacheMethodConfig | undefined};
+}
 export interface NetworkConfig {
   architecture: TsNetworkArchitecture;
   rateLimitBudget?: string;
-  failsafe?: FailsafeConfig;
+  failsafe?: (FailsafeConfig | undefined)[];
   evm?: EvmNetworkConfig;
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
+  methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;

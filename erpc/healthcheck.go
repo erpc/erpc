@@ -179,6 +179,16 @@ func (s *HttpServer) handleHealthCheck(
 			if !s.isSimpleMode() {
 				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
 				upstreamsDetails[ups.Id()]["metrics"] = mts
+
+				// Add last evaluation time from selection policy evaluator
+				if network, err := project.GetNetwork(ups.NetworkId()); err == nil && network != nil {
+					if network.selectionPolicyEvaluator != nil {
+						lastEvalTime := network.selectionPolicyEvaluator.GetLastEvalTime(ups.Id(), "*")
+						if !lastEvalTime.IsZero() {
+							upstreamsDetails[ups.Id()]["lastEvaluation"] = lastEvalTime.Format(time.RFC3339)
+						}
+					}
+				}
 			}
 		}
 
@@ -224,7 +234,8 @@ func (s *HttpServer) handleHealthCheck(
 				}
 			}
 
-			if inclusionStrategy == "any" {
+			switch inclusionStrategy {
+			case "any":
 				if len(belowThresholdErrorRates) == 0 && len(allErrorRates) == 0 {
 					projectHealthy = false
 					projectDetails["status"] = "ERROR"
@@ -237,7 +248,7 @@ func (s *HttpServer) handleHealthCheck(
 					projectDetails["status"] = "OK"
 					projectDetails["message"] = fmt.Sprintf("%d / %d upstreams have low error rates", len(belowThresholdErrorRates), len(allErrorRates))
 				}
-			} else if inclusionStrategy == "all" {
+			case "all":
 				if len(belowThresholdErrorRates) == len(allErrorRates) {
 					projectDetails["status"] = "OK"
 					projectDetails["message"] = fmt.Sprintf("%d / %d upstreams have low error rates", len(belowThresholdErrorRates), len(allErrorRates))
@@ -254,6 +265,64 @@ func (s *HttpServer) handleHealthCheck(
 			projectHealthy = results.healthy
 			projectDetails["status"] = results.status
 			projectDetails["message"] = results.message
+
+		case common.EvalAllActiveUpstreams:
+			// Check if all configured upstreams are initialized and not cordoned
+			totalInitializedUpstreams := len(filteredUpstreams)
+			activeUpstreams := 0
+			cordonedUpstreams := 0
+
+			// Count static upstreams for this specific network
+			networkStaticUpsCount := 0
+			if architecture != "" && chainId != "" {
+				// Count only static upstreams that match the specific network
+				for _, upsConfig := range project.Config.Upstreams {
+					switch common.NetworkArchitecture(architecture) {
+					case common.ArchitectureEvm:
+						if cid, err := strconv.ParseInt(chainId, 10, 64); err == nil {
+							if upsConfig.Evm != nil && upsConfig.Evm.ChainId == cid {
+								networkStaticUpsCount++
+							}
+						}
+					}
+				}
+			} else {
+				// When checking all networks, use total static upstream count
+				networkStaticUpsCount = staticUpsCount
+			}
+
+			var hasUninitializedUpstreams bool
+			if networkStaticUpsCount > 0 {
+				hasUninitializedUpstreams = networkStaticUpsCount > totalInitializedUpstreams
+			} else {
+				// For provider-based setups, ignore uninitialized upstream check
+				hasUninitializedUpstreams = false
+			}
+
+			for _, ups := range filteredUpstreams {
+				if metricsTracker.IsCordoned(ups, "*") {
+					cordonedUpstreams++
+				} else {
+					activeUpstreams++
+				}
+			}
+
+			if networkStaticUpsCount == 0 && staticProvidersCount == 0 {
+				projectHealthy = false
+				projectDetails["status"] = "ERROR"
+				projectDetails["message"] = "no upstreams configured"
+			} else if hasUninitializedUpstreams {
+				projectHealthy = false
+				projectDetails["status"] = "ERROR"
+				projectDetails["message"] = fmt.Sprintf("only %d / %d upstreams are initialized (%d active, %d cordoned)", totalInitializedUpstreams, networkStaticUpsCount, activeUpstreams, cordonedUpstreams)
+			} else if activeUpstreams >= totalInitializedUpstreams {
+				projectDetails["status"] = "OK"
+				projectDetails["message"] = fmt.Sprintf("all %d upstreams are active (initialized and not cordoned)", totalInitializedUpstreams)
+			} else {
+				projectHealthy = false
+				projectDetails["status"] = "ERROR"
+				projectDetails["message"] = fmt.Sprintf("%d / %d upstreams are active (%d cordoned)", activeUpstreams, totalInitializedUpstreams, cordonedUpstreams)
+			}
 
 		default:
 			// Unknown evaluation strategy
@@ -376,7 +445,7 @@ func checkEvmChainId(ctx context.Context, upstreams []*upstream.Upstream, upstre
 			if err != nil {
 				mu.Lock()
 				upstreamResult["status"] = "ERROR"
-				upstreamResult["message"] = fmt.Sprintf("eth_chainId request failed")
+				upstreamResult["message"] = "eth_chainId request failed"
 				mu.Unlock()
 				failureCount.Add(1)
 				return
@@ -386,7 +455,7 @@ func checkEvmChainId(ctx context.Context, upstreams []*upstream.Upstream, upstre
 			if err != nil {
 				mu.Lock()
 				upstreamResult["status"] = "ERROR"
-				upstreamResult["message"] = fmt.Sprintf("invalid chain id format")
+				upstreamResult["message"] = "invalid chain id format"
 				mu.Unlock()
 				failureCount.Add(1)
 				return

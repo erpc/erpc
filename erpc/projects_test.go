@@ -168,11 +168,11 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(10 * time.Second),
 								},
-							},
+							}},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -184,11 +184,11 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							// Very short upstream timeout
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(50 * time.Millisecond),
 								},
-							},
+							}},
 						},
 					},
 				},
@@ -233,7 +233,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			t.Error("Expected an upstream timeout error, got nil")
 		} else {
 			summary := common.ErrorSummary(lastErr)
-			if !strings.Contains(summary, "upstream timeout") {
+			if !strings.Contains(summary, "exceeded on upstream-level") {
 				t.Errorf("Expected upstream timeout error, got: %v", lastErr)
 			}
 		}
@@ -282,12 +282,12 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{{
 								// Very short network timeout
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(50 * time.Millisecond),
 								},
-							},
+							}},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -299,11 +299,11 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							// Higher upstream timeout
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(5 * time.Second),
 								},
-							},
+							}},
 						},
 					},
 				},
@@ -368,11 +368,11 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			Networks: nil,
 
 			NetworkDefaults: &common.NetworkDefaults{
-				Failsafe: &common.FailsafeConfig{
+				Failsafe: []*common.FailsafeConfig{{
 					Timeout: &common.TimeoutPolicyConfig{
 						Duration: common.Duration(7 * time.Second),
 					},
-				},
+				}},
 			},
 			Upstreams: []*common.UpstreamConfig{
 				{
@@ -452,17 +452,17 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 				nw.Evm != nil && nw.Evm.ChainId == 9999 {
 				found = true
 				// Confirm the default failsafe timeout was set as "7s"
-				if nw.Failsafe == nil || nw.Failsafe.Timeout == nil || nw.Failsafe.Timeout.Duration.String() != "7s" {
-					t.Errorf("expected lazy loaded network to have Failsafe.Timeout.Duration = 7s, got %+v", nw.Failsafe)
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Timeout == nil || nw.Failsafe[0].Timeout.Duration.String() != "7s" {
+					t.Errorf("expected lazy loaded network to have Failsafe[0].Timeout.Duration = 7s, got %+v", nw.Failsafe)
 				}
-				if nw.Failsafe == nil || nw.Failsafe.Retry != nil {
-					t.Errorf("expected lazy loaded network to have Failsafe.Retry = nil, got %+v", nw.Failsafe)
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Retry != nil {
+					t.Errorf("expected lazy loaded network to have Failsafe[0].Retry = nil, got %+v", nw.Failsafe)
 				}
-				if nw.Failsafe == nil || nw.Failsafe.CircuitBreaker != nil {
-					t.Errorf("expected lazy loaded network to have Failsafe.CircuitBreaker = nil, got %+v", nw.Failsafe)
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].CircuitBreaker != nil {
+					t.Errorf("expected lazy loaded network to have Failsafe[0].CircuitBreaker = nil, got %+v", nw.Failsafe)
 				}
-				if nw.Failsafe == nil || nw.Failsafe.Hedge != nil {
-					t.Errorf("expected lazy loaded network to have Failsafe.Hedge = nil, got %+v", nw.Failsafe)
+				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Hedge != nil {
+					t.Errorf("expected lazy loaded network to have Failsafe[0].Hedge = nil, got %+v", nw.Failsafe)
 				}
 				break
 			}

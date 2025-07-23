@@ -388,6 +388,38 @@ func TestDrpcVendor_GetVendorSpecificErrorIfAny(t *testing.T) {
 		err := vendor.GetVendorSpecificErrorIfAny(req, resp, jrr, details)
 		assert.NoError(t, err)
 	})
+
+	t.Run("ChainException error", func(t *testing.T) {
+		req := &common.NormalizedRequest{}
+		resp := &http.Response{}
+		jrr := &common.JsonRpcResponse{
+			Error: &common.ErrJsonRpcExceptionExternal{
+				Code:    -32005,
+				Message: "ChainException: Unexpected error (code=40000)",
+			},
+		}
+		details := make(map[string]interface{})
+
+		err := vendor.GetVendorSpecificErrorIfAny(req, resp, jrr, details)
+		assert.Error(t, err)
+		assert.IsType(t, &common.ErrEndpointMissingData{}, err)
+	})
+
+	t.Run("invalid block range error", func(t *testing.T) {
+		req := &common.NormalizedRequest{}
+		resp := &http.Response{}
+		jrr := &common.JsonRpcResponse{
+			Error: &common.ErrJsonRpcExceptionExternal{
+				Code:    -32602,
+				Message: "invalid block range",
+			},
+		}
+		details := make(map[string]interface{})
+
+		err := vendor.GetVendorSpecificErrorIfAny(req, resp, jrr, details)
+		assert.Error(t, err)
+		assert.IsType(t, &common.ErrEndpointMissingData{}, err)
+	})
 }
 
 func TestDrpcVendor_OwnsUpstream(t *testing.T) {

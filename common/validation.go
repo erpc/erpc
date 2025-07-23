@@ -457,7 +457,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
 	}
-	if p.Providers != nil && len(p.Providers) > 0 {
+	if len(p.Providers) > 0 {
 		existingIds := make(map[string]bool)
 		for _, provider := range p.Providers {
 			if err := provider.Validate(c); err != nil {
@@ -469,7 +469,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			existingIds[provider.Id] = true
 		}
 	}
-	if p.Upstreams != nil && len(p.Upstreams) > 0 {
+	if len(p.Upstreams) > 0 {
 		existingIds := make(map[string]bool)
 		for _, upstream := range p.Upstreams {
 			if err := upstream.Validate(c, false); err != nil {
@@ -480,7 +480,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			}
 			existingIds[upstream.Id] = true
 		}
-	} else if p.Providers == nil || len(p.Providers) == 0 {
+	} else if len(p.Providers) == 0 {
 		return fmt.Errorf("project.*.upstreams or project.*.providers is required, add at least one of them")
 	}
 	if p.Networks != nil {
@@ -518,7 +518,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 }
 
 func (a *AuthConfig) Validate() error {
-	if a.Strategies == nil || len(a.Strategies) == 0 {
+	if len(a.Strategies) == 0 {
 		return fmt.Errorf("project.*.auth.strategies is required, add at least one strategy")
 	}
 	for _, strategy := range a.Strategies {
@@ -585,7 +585,7 @@ func (s *SecretStrategyConfig) Validate() error {
 }
 
 func (j *JwtStrategyConfig) Validate() error {
-	if j.VerificationKeys == nil || len(j.VerificationKeys) == 0 {
+	if len(j.VerificationKeys) == 0 {
 		return fmt.Errorf("auth.*.jwt.verificationKeys is required, add at least one verification key")
 	}
 	return nil
@@ -596,7 +596,7 @@ func (s *SiweStrategyConfig) Validate() error {
 }
 
 func (c *CORSConfig) Validate() error {
-	if c.AllowedOrigins == nil || len(c.AllowedOrigins) == 0 {
+	if len(c.AllowedOrigins) == 0 {
 		return fmt.Errorf("*.cors.allowedOrigins is required, add at least one allowed origin")
 	}
 	return nil
@@ -619,6 +619,9 @@ func (u *ProviderConfig) Validate(c *Config) error {
 	if u.UpstreamIdTemplate == "" {
 		return fmt.Errorf("project.*.providers.*.upstreamIdTemplate is required")
 	}
+	if u.OnlyNetworks != nil && u.IgnoreNetworks != nil {
+		return fmt.Errorf("project.*.providers.*.onlyNetworks and project.*.providers.*.ignoreNetworks are mutually exclusive")
+	}
 	if u.Overrides != nil {
 		for _, override := range u.Overrides {
 			if err := override.Validate(c, true); err != nil {
@@ -630,6 +633,13 @@ func (u *ProviderConfig) Validate(c *Config) error {
 		for _, network := range u.OnlyNetworks {
 			if !IsValidNetwork(network) {
 				return fmt.Errorf("project.*.providers.*.onlyNetworks.* '%s' is invalid must be like evm:1", network)
+			}
+		}
+	}
+	if u.IgnoreNetworks != nil {
+		for _, network := range u.IgnoreNetworks {
+			if !IsValidNetwork(network) {
+				return fmt.Errorf("project.*.providers.*.ignoreNetworks.* '%s' is invalid must be like evm:1", network)
 			}
 		}
 	}
@@ -646,8 +656,10 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Failsafe != nil {
-		if err := u.Failsafe.Validate(); err != nil {
-			return err
+		for _, fs := range u.Failsafe {
+			if err := fs.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 	if u.JsonRpc != nil {
@@ -674,7 +686,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 }
 
 func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
-	if !strings.HasPrefix(u.Endpoint, "http") && !strings.HasPrefix(u.Endpoint, "ws") {
+	if !util.IsNativeProtocol(u.Endpoint) {
 		if e.ChainId > 0 {
 			return fmt.Errorf("upstream.*.evm.chainId must be 0 for non-http endpoints, but '%d' is provided for %s", e.ChainId, util.RedactEndpoint(u.Endpoint))
 		}
@@ -698,6 +710,11 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 }
 
 func (f *FailsafeConfig) Validate() error {
+	// Validate MatchMethod - empty string is not allowed
+	if f.MatchMethod == "" {
+		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
+	}
+
 	if f.Timeout != nil {
 		if err := f.Timeout.Validate(); err != nil {
 			return err
@@ -848,8 +865,10 @@ func (n *NetworkConfig) Validate(c *Config) error {
 		}
 	}
 	if n.Failsafe != nil {
-		if err := n.Failsafe.Validate(); err != nil {
-			return err
+		for _, fs := range n.Failsafe {
+			if err := fs.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 	if n.SelectionPolicy != nil {
@@ -898,25 +917,25 @@ func (c *SelectionPolicyConfig) Validate() error {
 }
 
 func (p *ScoreMultiplierConfig) Validate() error {
-	if p.Overall <= 0 {
+	if p.Overall == nil || *p.Overall <= 0 {
 		return fmt.Errorf("priorityMultipliers.*.overall multiplier must be greater than 0")
 	}
-	if p.ErrorRate < 0 {
+	if p.ErrorRate == nil || *p.ErrorRate < 0 {
 		return fmt.Errorf("priorityMultipliers.*.errorRate multiplier must be greater than or equal to 0")
 	}
-	if p.RespLatency < 0 {
+	if p.RespLatency == nil || *p.RespLatency < 0 {
 		return fmt.Errorf("priorityMultipliers.*.respLatency multiplier must be greater than or equal to 0")
 	}
-	if p.TotalRequests < 0 {
+	if p.TotalRequests == nil || *p.TotalRequests < 0 {
 		return fmt.Errorf("priorityMultipliers.*.totalRequests multiplier must be greater than or equal to 0")
 	}
-	if p.ThrottledRate < 0 {
+	if p.ThrottledRate == nil || *p.ThrottledRate < 0 {
 		return fmt.Errorf("priorityMultipliers.*.throttledRate multiplier must be greater than or equal to 0")
 	}
-	if p.BlockHeadLag < 0 {
+	if p.BlockHeadLag == nil || *p.BlockHeadLag < 0 {
 		return fmt.Errorf("priorityMultipliers.*.blockHeadLag multiplier must be greater than or equal to 0")
 	}
-	if p.FinalizationLag < 0 {
+	if p.FinalizationLag == nil || *p.FinalizationLag < 0 {
 		return fmt.Errorf("priorityMultipliers.*.finalizationLag multiplier must be greater than or equal to 0")
 	}
 	return nil

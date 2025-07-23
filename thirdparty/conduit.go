@@ -194,6 +194,7 @@ func (v *ConduitVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReques
 					details,
 				),
 				nil,
+				resp.StatusCode,
 			)
 		}
 	}

@@ -128,10 +128,12 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			jsonRpc = &common.JsonRpcUpstreamConfig{}
 			*jsonRpc = *upstream.JsonRpc
 		}
-		var failsafe *common.FailsafeConfig
+		var failsafe []*common.FailsafeConfig
 		if upstream.Failsafe != nil {
-			failsafe = &common.FailsafeConfig{}
-			*failsafe = *upstream.Failsafe
+			failsafe = make([]*common.FailsafeConfig, len(upstream.Failsafe))
+			for i, fs := range upstream.Failsafe {
+				failsafe[i] = fs.Copy()
+			}
 		}
 		var autoTuner *common.RateLimitAutoTuneConfig
 		if upstream.RateLimitAutoTune != nil {

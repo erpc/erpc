@@ -3,10 +3,12 @@ package evm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -49,7 +51,7 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 		return blockRef, blockNumber, err
 	}
 
-	br, bn, err := extractRefFromJsonRpcRequest(ctx, r.CacheDal(), rpcReq)
+	br, bn, err := extractRefFromJsonRpcRequest(ctx, r, rpcReq)
 	if br != "" {
 		blockRef = br
 	}
@@ -149,7 +151,7 @@ func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.Normalized
 		common.SetTraceSpanError(span, err)
 		return blockRef, blockNumber, err
 	}
-	br, bn, err := extractRefFromJsonRpcResponse(ctx, nreq.CacheDal(), rq, jrr)
+	br, bn, err := extractRefFromJsonRpcResponse(ctx, nreq, rq, jrr)
 	if br != "" {
 		blockRef = br
 	}
@@ -179,7 +181,7 @@ func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.Normalized
 	return blockRef, blockNumber, nil
 }
 
-func extractRefFromJsonRpcRequest(ctx context.Context, cacheDal common.CacheDAL, r *common.JsonRpcRequest) (string, int64, error) {
+func extractRefFromJsonRpcRequest(ctx context.Context, req *common.NormalizedRequest, r *common.JsonRpcRequest) (string, int64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Evm.extractRefFromJsonRpcRequest")
 	defer span.End()
 
@@ -188,7 +190,7 @@ func extractRefFromJsonRpcRequest(ctx context.Context, cacheDal common.CacheDAL,
 		common.SetTraceSpanError(span, err)
 		return "", 0, err
 	}
-	methodConfig := getMethodConfig(cacheDal, r.Method)
+	methodConfig := getMethodConfig(r.Method, req)
 	if methodConfig == nil {
 		common.SetTraceSpanError(span, errors.New("method config not found for "+r.Method+" when extracting block reference from json-rpc request"))
 		// For unknown methods blockRef and/or blockNumber will be empty therefore such data will not be cached despite any caching policies.
@@ -249,7 +251,7 @@ func extractRefFromJsonRpcRequest(ctx context.Context, cacheDal common.CacheDAL,
 	return blockRef, blockNumber, nil
 }
 
-func extractRefFromJsonRpcResponse(ctx context.Context, cacheDal common.CacheDAL, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
+func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Evm.extractRefFromJsonRpcResponse")
 	defer span.End()
 
@@ -264,7 +266,7 @@ func extractRefFromJsonRpcResponse(ctx context.Context, cacheDal common.CacheDAL
 		return "", 0, err
 	}
 
-	methodConfig := getMethodConfig(cacheDal, rpcReq.Method)
+	methodConfig := getMethodConfig(rpcReq.Method, req)
 	if methodConfig == nil {
 		common.SetTraceSpanError(span, errors.New("method config not found for "+rpcReq.Method+" when extracting block reference from json-rpc response"))
 		return "", 0, nil
@@ -304,14 +306,20 @@ func extractRefFromJsonRpcResponse(ctx context.Context, cacheDal common.CacheDAL
 	return "", 0, nil
 }
 
-func getMethodConfig(cacheDal common.CacheDAL, method string) (cfg *common.CacheMethodConfig) {
-	if cacheDal != nil && !cacheDal.IsObjectNull() {
-		// First lookup the method in configured cache methods
-		cfg = cacheDal.MethodConfig(method)
+func getMethodConfig(method string, req *common.NormalizedRequest) (cfg *common.CacheMethodConfig) {
+	// Try to get method config from network if available
+	if req != nil && req.Network() != nil {
+		network := req.Network()
+		networkCfg := network.Config()
+		if networkCfg != nil && networkCfg.Methods != nil && networkCfg.Methods.Definitions != nil {
+			if methodCfg, ok := networkCfg.Methods.Definitions[method]; ok {
+				cfg = methodCfg
+			}
+		}
 	}
 
 	if cfg == nil {
-		// If cacheDal is nil or empty or missing the method, we should get the method config from the default set of known methods.
+		// If network config is not available or missing the method, we should get the method config from the default set of known methods.
 		// This is necessary so that usual blockNumber detection used in various flows still resolves correctly.
 		cfg = common.DefaultWithBlockCacheMethods[method]
 		if cfg == nil {
@@ -329,48 +337,32 @@ func getMethodConfig(cacheDal common.CacheDAL, method string) (cfg *common.Cache
 }
 
 func parseCompositeBlockParam(param interface{}) (string, int64, error) {
+	blockNumberStr, blockHash, err := util.ParseBlockParameter(param)
+	if err != nil {
+		return "", 0, err
+	}
+
 	var blockRef string
 	var blockNumber int64
 
-	switch v := param.(type) {
-	case string:
-		if strings.HasPrefix(v, "0x") {
-			if len(v) == 66 { // Block hash
-				blockRef = v
-			} else {
-				// Could be block number in hex
-				bni, err := common.HexToInt64(v)
-				if err != nil {
-					return blockRef, blockNumber, err
-				}
-				blockNumber = bni
+	// If we got a block hash, use it as the block reference
+	if blockHash != nil {
+		blockRef = fmt.Sprintf("0x%x", blockHash)
+		return blockRef, blockNumber, nil
+	}
+
+	// If we got a block number string, process it
+	if blockNumberStr != "" {
+		if strings.HasPrefix(blockNumberStr, "0x") {
+			// Parse hex block number to int64
+			bni, err := common.HexToInt64(blockNumberStr)
+			if err != nil {
+				return blockRef, blockNumber, err
 			}
+			blockNumber = bni
 		} else {
 			// Block tag ('latest', 'earliest', 'pending')
-			blockRef = v
-		}
-	case map[string]interface{}:
-		// Extract blockHash if present
-		if blockHashValue, exists := v["blockHash"]; exists {
-			if bh, ok := blockHashValue.(string); ok {
-				blockRef = bh
-			}
-		}
-		// Extract blockNumber if present
-		if blockNumberValue, exists := v["blockNumber"]; exists {
-			if bns, ok := blockNumberValue.(string); ok {
-				bni, err := common.HexToInt64(bns)
-				if err != nil {
-					return blockRef, blockNumber, err
-				}
-				blockNumber = bni
-			}
-		}
-		// Extract blockTag if present
-		if blockTagValue, exists := v["blockTag"]; exists {
-			if bt, ok := blockTagValue.(string); ok {
-				blockRef = bt
-			}
+			blockRef = blockNumberStr
 		}
 	}
 

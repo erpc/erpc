@@ -46,7 +46,12 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 			return
 		}
 
-		logger.Info().Str("endpoint", cfg.Endpoint).Str("protocol", string(cfg.Protocol)).Msg("initializing OpenTelemetry tracing")
+		logger.Info().
+			Str("endpoint", cfg.Endpoint).
+			Str("protocol", string(cfg.Protocol)).
+			Float64("sampleRate", cfg.SampleRate).
+			Bool("detailed", cfg.Detailed).
+			Msg("initializing OpenTelemetry tracing")
 
 		var exporter sdktrace.SpanExporter
 
@@ -91,6 +96,11 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 			otel.SetLogger(zerologr.New(logger))
 			logger.Info().Msg("OpenTelemetry debug logging enabled")
 		}
+
+		// Create an error handler for logging export failures
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+			logger.Error().Err(err).Msg("open telemetry export error")
+		}))
 
 		tracer = otel.Tracer(instrumentationName)
 		IsTracingEnabled = true
@@ -177,5 +187,14 @@ func createTracingSampler(cfg *TracingConfig) sdktrace.Sampler {
 		return sdktrace.AlwaysSample()
 	}
 
-	return sdktrace.TraceIDRatioBased(cfg.SampleRate)
+	// Use ParentBased sampler to ensure child spans follow parent's sampling decision
+	// This prevents orphan spans and "invalid parent span" errors
+	return sdktrace.ParentBased(
+		sdktrace.TraceIDRatioBased(cfg.SampleRate),
+		// These options ensure consistent sampling across the trace
+		sdktrace.WithRemoteParentSampled(sdktrace.AlwaysSample()),
+		sdktrace.WithRemoteParentNotSampled(sdktrace.NeverSample()),
+		sdktrace.WithLocalParentSampled(sdktrace.AlwaysSample()),
+		sdktrace.WithLocalParentNotSampled(sdktrace.NeverSample()),
+	)
 }

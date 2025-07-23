@@ -389,6 +389,11 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
+		util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.ResetGock()
+		defer util.AssertNoPendingMocks(t, 0)
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
@@ -403,6 +408,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBalance",
+			Empty:   common.CacheEmptyBehaviorAllow,
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
@@ -636,7 +642,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				name:           "HighBlockBalance_Cache",
 				method:         "eth_getBalance",
 				params:         `["0x123","0x399"]`,
-				result:         `"result":"0x0"`,
+				result:         `"result":"0x222222"`,
 				expectedCache:  true, // Height above tip → Unfinalized
 				expectedPolicy: unfinalizedPolicy,
 			},
@@ -644,7 +650,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				name:           "LowBlockBalance_Cache",
 				method:         "eth_getBalance",
 				params:         `["0x123","0x5"]`,
-				result:         `"result":"0x0"`,
+				result:         `"result":"0x22222"`,
 				expectedCache:  true, // Height 0x5 finalized
 				expectedPolicy: finalizedPolicy,
 			},
@@ -1072,6 +1078,68 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			mock.Anything, // ttl
 		)
 	})
+
+	t.Run("HandleNilResponseGracefully", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		// Create a policy with empty behavior set to "ignore"
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBalance",
+			Finality: common.DataFinalityStateFinalized,
+			Empty:    common.CacheEmptyBehaviorIgnore,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Pass nil response to test the nil check
+		err = cache.Set(context.Background(), req, nil)
+
+		// Should not panic and should complete without error
+		assert.NoError(t, err)
+
+		// Should not attempt to cache since response is nil (empty)
+		mockConnectors[0].AssertNotCalled(t, "Set")
+	})
+
+	t.Run("HandleNilResponseWithAllowEmptyPolicy", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		// Create a policy with empty behavior set to "allow"
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBalance",
+			Finality: common.DataFinalityStateFinalized,
+			Empty:    common.CacheEmptyBehaviorAllow,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Pass nil response to test the nil check
+		err = cache.Set(context.Background(), req, nil)
+
+		// Should not panic and should complete without error
+		assert.NoError(t, err)
+
+		// Should still not cache since we can't actually cache a nil response
+		mockConnectors[0].AssertNotCalled(t, "Set")
+	})
 }
 
 func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
@@ -1096,7 +1164,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x2"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1154,7 +1222,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x1"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1568,7 +1636,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 			require.NoError(t, err)
 
 			// Test both Set and Get matching
-			matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
+			matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized, false)
 			require.NoError(t, err)
 			matchesGet, err := policy.MatchesForGet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
 			require.NoError(t, err)
@@ -1903,13 +1971,6 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		},
 	}
 
-	// Add method configs to ensure consistent behavior
-	cacheCfg.Methods = map[string]*common.CacheMethodConfig{
-		"eth_getBlockByNumber": {
-			Realtime: true, // This will make "latest" treated as realtime
-		},
-	}
-
 	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 	require.NoError(t, err, "failed to create cache")
 
@@ -1924,6 +1985,13 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
 				ChainId: 123,
+			},
+			Methods: &common.MethodsConfig{
+				Definitions: map[string]*common.CacheMethodConfig{
+					"eth_getBlockByNumber": {
+						Realtime: true, // This will make "latest" treated as realtime
+					},
+				},
 			},
 		},
 	}

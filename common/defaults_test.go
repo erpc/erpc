@@ -22,72 +22,87 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 	t.Run("NetworkDefaultsDefinesFailsafeNoUserDefinedFailsafe", func(t *testing.T) {
 		network := &NetworkConfig{}
 		network.SetDefaults(nil, &NetworkDefaults{
-			Failsafe: &FailsafeConfig{
-				Timeout: &TimeoutPolicyConfig{
-					Duration: Duration(100 * time.Millisecond),
+			Failsafe: []*FailsafeConfig{
+				{
+					Timeout: &TimeoutPolicyConfig{
+						Duration: Duration(100 * time.Millisecond),
+					},
 				},
 			},
 		})
 
+		assert.NotNil(t, network.Failsafe)
+		assert.Len(t, network.Failsafe, 1)
 		assert.EqualValues(t, &FailsafeConfig{
 			Timeout: &TimeoutPolicyConfig{
 				Duration: Duration(100 * time.Millisecond),
 			},
-		}, network.Failsafe)
-		assert.Nil(t, network.Failsafe.Hedge)
-		assert.Nil(t, network.Failsafe.CircuitBreaker)
-		assert.Nil(t, network.Failsafe.Retry)
+		}, network.Failsafe[0])
+		assert.Nil(t, network.Failsafe[0].Hedge)
+		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
+		assert.Nil(t, network.Failsafe[0].Retry)
 	})
 
 	t.Run("NetworkDefaultsDefinesHedgeNoUserDefinedFailsafe", func(t *testing.T) {
 		network := &NetworkConfig{}
 		network.SetDefaults(nil, &NetworkDefaults{
-			Failsafe: &FailsafeConfig{
-				Hedge: &HedgePolicyConfig{
-					Delay:    Duration(100 * time.Millisecond),
-					MaxCount: 10,
+			Failsafe: []*FailsafeConfig{
+				{
+					Hedge: &HedgePolicyConfig{
+						Delay:    Duration(100 * time.Millisecond),
+						MaxCount: 10,
+					},
 				},
 			},
 		})
 
+		assert.NotNil(t, network.Failsafe)
+		assert.Len(t, network.Failsafe, 1)
 		assert.EqualValues(t, &HedgePolicyConfig{
 			Delay:    Duration(100 * time.Millisecond),
 			MaxCount: 10,
-		}, network.Failsafe.Hedge)
-		assert.Nil(t, network.Failsafe.Timeout)
-		assert.Nil(t, network.Failsafe.CircuitBreaker)
-		assert.Nil(t, network.Failsafe.Retry)
+		}, network.Failsafe[0].Hedge)
+		assert.Nil(t, network.Failsafe[0].Timeout)
+		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
+		assert.Nil(t, network.Failsafe[0].Retry)
 	})
 
 	t.Run("NetworkDefaultsDefinesCircuitBreakerNoUserDefinedFailsafe", func(t *testing.T) {
 		network := &NetworkConfig{}
 		network.SetDefaults(nil, &NetworkDefaults{
-			Failsafe: &FailsafeConfig{
-				CircuitBreaker: &CircuitBreakerPolicyConfig{
-					FailureThresholdCount: 10,
+			Failsafe: []*FailsafeConfig{
+				{
+					CircuitBreaker: &CircuitBreakerPolicyConfig{
+						FailureThresholdCount: 10,
+					},
 				},
 			},
 		})
 
+		assert.NotNil(t, network.Failsafe)
+		assert.Len(t, network.Failsafe, 1)
 		assert.EqualValues(t, &CircuitBreakerPolicyConfig{
 			FailureThresholdCount: 10,
-		}, network.Failsafe.CircuitBreaker)
-		assert.Nil(t, network.Failsafe.Timeout)
-		assert.Nil(t, network.Failsafe.Hedge)
-		assert.Nil(t, network.Failsafe.Retry)
+		}, network.Failsafe[0].CircuitBreaker)
+		assert.Nil(t, network.Failsafe[0].Timeout)
+		assert.Nil(t, network.Failsafe[0].Hedge)
+		assert.Nil(t, network.Failsafe[0].Retry)
 	})
 
 	t.Run("UserDefinedRetryFailsafeWithoutNetworkDefaults", func(t *testing.T) {
 		network := &NetworkConfig{
-			Failsafe: &FailsafeConfig{
-				Retry: &RetryPolicyConfig{
-					MaxAttempts: 12345,
+			Failsafe: []*FailsafeConfig{
+				{
+					Retry: &RetryPolicyConfig{
+						MaxAttempts: 12345,
+					},
 				},
 			},
 		}
 		network.SetDefaults(nil, nil)
 
 		assert.EqualValues(t, &FailsafeConfig{
+			MatchMethod: "*",
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     12345,
 				Delay:           Duration(0 * time.Millisecond),
@@ -95,32 +110,36 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 				BackoffFactor:   1.2,
 				Jitter:          Duration(0 * time.Millisecond),
 			},
-		}, network.Failsafe)
-		assert.Nil(t, network.Failsafe.Timeout)
-		assert.Nil(t, network.Failsafe.Hedge)
-		assert.Nil(t, network.Failsafe.CircuitBreaker)
+		}, network.Failsafe[0])
+		assert.Nil(t, network.Failsafe[0].Timeout)
+		assert.Nil(t, network.Failsafe[0].Hedge)
+		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 	})
 
 	t.Run("UserDefinedTimeoutOverridesNetworkDefaults", func(t *testing.T) {
 		network := &NetworkConfig{
-			Failsafe: &FailsafeConfig{
-				Timeout: &TimeoutPolicyConfig{
-					Duration: Duration(5 * time.Second),
+			Failsafe: []*FailsafeConfig{
+				{
+					Timeout: &TimeoutPolicyConfig{
+						Duration: Duration(5 * time.Second),
+					},
 				},
 			},
 		}
 		network.SetDefaults(nil, &NetworkDefaults{
-			Failsafe: &FailsafeConfig{
-				Timeout: &TimeoutPolicyConfig{
-					Duration: Duration(10 * time.Second),
+			Failsafe: []*FailsafeConfig{
+				{
+					Timeout: &TimeoutPolicyConfig{
+						Duration: Duration(10 * time.Second),
+					},
 				},
 			},
 		})
 
-		assert.EqualValues(t, "5s", network.Failsafe.Timeout.Duration.String(), "User-defined timeout should take precedence")
-		assert.Nil(t, network.Failsafe.Hedge)
-		assert.Nil(t, network.Failsafe.CircuitBreaker)
-		assert.Nil(t, network.Failsafe.Retry)
+		assert.EqualValues(t, "5s", network.Failsafe[0].Timeout.Duration.String(), "User-defined timeout should take precedence")
+		assert.Nil(t, network.Failsafe[0].Hedge)
+		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
+		assert.Nil(t, network.Failsafe[0].Retry)
 	})
 }
 
@@ -200,13 +219,15 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 						{
 							Endpoint: "http://rpc1.localhost",
 							// Individual upstream failsafe
-							Failsafe: &FailsafeConfig{
-								Retry: &RetryPolicyConfig{
-									BackoffMaxDelay: Duration(10 * time.Second),
-									Delay:           Duration(1 * time.Second),
-									Jitter:          Duration(500 * time.Millisecond),
-									MaxAttempts:     2,
-									BackoffFactor:   1.2,
+							Failsafe: []*FailsafeConfig{
+								{
+									Retry: &RetryPolicyConfig{
+										BackoffMaxDelay: Duration(10 * time.Second),
+										Delay:           Duration(1 * time.Second),
+										Jitter:          Duration(500 * time.Millisecond),
+										MaxAttempts:     2,
+										BackoffFactor:   1.2,
+									},
 								},
 							},
 						},
@@ -217,13 +238,15 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 					// Global upstream failsafe defaults
 					UpstreamDefaults: &UpstreamConfig{
 						AllowMethods: []string{"eth_getLogs"},
-						Failsafe: &FailsafeConfig{
-							CircuitBreaker: &CircuitBreakerPolicyConfig{
-								FailureThresholdCapacity: 200,
-								FailureThresholdCount:    1,
-								HalfOpenAfter:            Duration(5 * time.Minute),
-								SuccessThresholdCapacity: 3,
-								SuccessThresholdCount:    3,
+						Failsafe: []*FailsafeConfig{
+							{
+								CircuitBreaker: &CircuitBreakerPolicyConfig{
+									FailureThresholdCapacity: 200,
+									FailureThresholdCount:    1,
+									HalfOpenAfter:            Duration(5 * time.Minute),
+									SuccessThresholdCapacity: 3,
+									SuccessThresholdCount:    3,
+								},
 							},
 						},
 					},
@@ -236,7 +259,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		assert.Nil(t, err, "SetDefaults should not return an error")
 
 		// Verify failsafe retry is only applied to the first upstream
-		retry := cfg.Projects[0].Upstreams[0].Failsafe.Retry
+		retry := cfg.Projects[0].Upstreams[0].Failsafe[0].Retry
 		assert.EqualValues(t, &RetryPolicyConfig{
 			MaxAttempts:     2,
 			BackoffMaxDelay: Duration(10 * time.Second),
@@ -257,7 +280,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 				SuccessThresholdCapacity: 3,
 				SuccessThresholdCount:    3,
 			}
-			assert.Equal(t, expectedCircuitBreaker, upstream.Failsafe.CircuitBreaker)
+			assert.Equal(t, expectedCircuitBreaker, upstream.Failsafe[0].CircuitBreaker)
 		}
 
 		// Validate the project configuration

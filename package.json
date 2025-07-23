@@ -15,5 +15,5 @@
     "engines": {
         "node": ">=18.14"
     },
-    "version": "0.0.50"
+    "version": "0.0.53"
 }

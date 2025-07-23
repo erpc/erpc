@@ -41,10 +41,12 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmNetworkConfig{
 							ChainId: 123,
 						},
-						Failsafe: &common.FailsafeConfig{
-							Retry: &common.RetryPolicyConfig{
-								MaxAttempts: 3,
-								Delay:       common.Duration(10 * time.Millisecond),
+						Failsafe: []*common.FailsafeConfig{
+							{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 3,
+									Delay:       common.Duration(10 * time.Millisecond),
+								},
 							},
 						},
 					},
@@ -65,13 +67,13 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 								{
 									Network:         "*",
 									Method:          "*",
-									Overall:         1,
-									ErrorRate:       5,
-									RespLatency:     0,
-									TotalRequests:   0,
-									BlockHeadLag:    0,
-									FinalizationLag: 0,
-									ThrottledRate:   0,
+									Overall:         util.Float64Ptr(1),
+									ErrorRate:       util.Float64Ptr(5),
+									RespLatency:     util.Float64Ptr(0),
+									TotalRequests:   util.Float64Ptr(0),
+									BlockHeadLag:    util.Float64Ptr(0),
+									FinalizationLag: util.Float64Ptr(0),
+									ThrottledRate:   util.Float64Ptr(0),
 								},
 							},
 						},
@@ -91,13 +93,13 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 								{
 									Network:         "*",
 									Method:          "*",
-									Overall:         1,
-									ErrorRate:       5,
-									RespLatency:     0,
-									TotalRequests:   0,
-									BlockHeadLag:    0,
-									FinalizationLag: 0,
-									ThrottledRate:   0,
+									Overall:         util.Float64Ptr(1),
+									ErrorRate:       util.Float64Ptr(5),
+									RespLatency:     util.Float64Ptr(0),
+									TotalRequests:   util.Float64Ptr(0),
+									BlockHeadLag:    util.Float64Ptr(0),
+									FinalizationLag: util.Float64Ptr(0),
+									ThrottledRate:   util.Float64Ptr(0),
 								},
 							},
 						},

@@ -20,7 +20,8 @@ const (
 	CompositeTypeLogsSplitProactive = "logs-split-proactive"
 )
 
-const RequestContextKey ContextKey = "request"
+const RequestContextKey ContextKey = "rq"
+const UpstreamsContextKey ContextKey = "ups"
 
 type RequestDirectives struct {
 	// Instruct the proxy to retry if response from the upstream appears to be empty
@@ -68,7 +69,17 @@ type NormalizedRequest struct {
 
 	method         string
 	directives     *RequestDirectives
-	jsonRpcRequest *JsonRpcRequest
+	jsonRpcRequest atomic.Pointer[JsonRpcRequest]
+
+	// Upstream selection fields - protected by upstreamMutex
+	upstreamMutex    sync.Mutex
+	UpstreamIdx      uint32
+	ErrorsByUpstream sync.Map
+	EmptyResponses   sync.Map // TODO we can potentially remove this map entirely, only use is to report "wrong empty responses"
+
+	// New fields for centralized upstream management
+	upstreamList      []Upstream // Available upstreams for this request
+	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
 	lastValidResponse atomic.Pointer[NormalizedResponse]
 	lastUpstream      atomic.Value
@@ -77,6 +88,8 @@ type NormalizedRequest struct {
 
 	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
+
+	finality atomic.Value // Cached finality state
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -92,11 +105,11 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 
 func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *NormalizedRequest {
 	nr := &NormalizedRequest{
-		jsonRpcRequest: jsonRpcRequest,
 		directives: &RequestDirectives{
 			RetryEmpty: false,
 		},
 	}
+	nr.jsonRpcRequest.Store(jsonRpcRequest)
 	nr.compositeType.Store(CompositeTypeNone)
 	return nr
 }
@@ -300,19 +313,8 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 	if r == nil {
 		return nil, nil
 	}
-	r.RLock()
-	if r.jsonRpcRequest != nil {
-		r.RUnlock()
-		return r.jsonRpcRequest, nil
-	}
-	r.RUnlock()
-
-	r.Lock()
-	defer r.Unlock()
-
-	// Double-check in case another goroutine initialized it
-	if r.jsonRpcRequest != nil {
-		return r.jsonRpcRequest, nil
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		return jrq, nil
 	}
 
 	rpcReq := new(JsonRpcRequest)
@@ -325,7 +327,7 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
-	r.jsonRpcRequest = rpcReq
+	r.jsonRpcRequest.Store(rpcReq)
 
 	return rpcReq, nil
 }
@@ -339,9 +341,9 @@ func (r *NormalizedRequest) Method() (string, error) {
 		return r.method, nil
 	}
 
-	if r.jsonRpcRequest != nil {
-		r.method = r.jsonRpcRequest.Method
-		return r.jsonRpcRequest.Method, nil
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		r.method = jrq.Method
+		return jrq.Method, nil
 	}
 
 	if len(r.body) > 0 {
@@ -384,8 +386,8 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		e.Str("networkId", r.network.Id())
 	}
 
-	if r.jsonRpcRequest != nil {
-		e.Object("jsonRpc", r.jsonRpcRequest)
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		e.Object("jsonRpc", jrq)
 	} else if r.body != nil {
 		if IsSemiValidJson(r.body) {
 			e.RawJSON("body", r.body)
@@ -429,9 +431,9 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 		return r.body, nil
 	}
 
-	if r.jsonRpcRequest != nil {
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
 		return SonicCfg.Marshal(map[string]interface{}{
-			"method": r.jsonRpcRequest.Method,
+			"method": jrq.Method,
 		})
 	}
 
@@ -462,7 +464,7 @@ func (r *NormalizedRequest) Validate() error {
 		return NewErrInvalidRequest(fmt.Errorf("request is nil"))
 	}
 
-	if r.body == nil && r.jsonRpcRequest == nil {
+	if r.body == nil && r.jsonRpcRequest.Load() == nil {
 		return NewErrInvalidRequest(fmt.Errorf("request body is nil"))
 	}
 
@@ -515,4 +517,137 @@ func (r *NormalizedRequest) SetParentRequestId(parentId interface{}) {
 		return
 	}
 	r.parentRequestId.Store(parentId)
+}
+
+func (r *NormalizedRequest) Finality(ctx context.Context) DataFinalityState {
+	if r == nil {
+		return DataFinalityStateUnknown
+	}
+
+	// Check if we have a cached value
+	if f := r.finality.Load(); f != nil {
+		return f.(DataFinalityState)
+	}
+
+	// Calculate and cache the finality
+	if r.network != nil {
+		finality := r.network.GetFinality(ctx, r, nil)
+		// Only cache if we got a definitive answer (not unknown)
+		if finality != DataFinalityStateUnknown {
+			r.finality.Store(finality)
+		}
+		return finality
+	}
+
+	return DataFinalityStateUnknown
+}
+
+func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
+	if r == nil {
+		return
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	r.upstreamList = upstreams
+	if r.ConsumedUpstreams == nil {
+		r.ConsumedUpstreams = &sync.Map{}
+	}
+}
+
+func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
+	if r == nil {
+		return nil, fmt.Errorf("unexpected uninitialized request")
+	}
+
+	// Lock for 100% guaranteed sequential upstream selection
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	if len(r.upstreamList) == 0 {
+		return nil, fmt.Errorf("no upstreams available for this request")
+	}
+
+	// Check if UseUpstream directive is set
+	if r.directives != nil && r.directives.UseUpstream != "" {
+		// Handle UseUpstream directive - find matching upstream
+		for _, upstream := range r.upstreamList {
+			match, err := WildcardMatch(r.directives.UseUpstream, upstream.Id())
+			if err != nil {
+				continue
+			}
+			if match {
+				// Check if this upstream has already been consumed
+				if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
+					return upstream, nil
+				}
+			}
+		}
+		// If no matching upstream found or all consumed, return error
+		return nil, fmt.Errorf("no more non-consumed matching upstreams left")
+	}
+
+	upstreamCount := len(r.upstreamList)
+
+	// Try all upstreams starting from current index with guaranteed sequential access
+	for attempts := 0; attempts < upstreamCount; attempts++ {
+		// Get current index and increment - this is now atomic within the mutex
+		idx := r.UpstreamIdx % uint32(upstreamCount) // #nosec G115
+		r.UpstreamIdx++                              // Guaranteed increment for next caller
+
+		upstream := r.upstreamList[idx]
+
+		// Skip if already consumed (gave valid response or consensus-valid error)
+		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
+			continue
+		}
+
+		// Skip if already responded with non-retryable error
+		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
+			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
+				continue
+			}
+		}
+
+		// Skip if already responded empty
+		if _, isEmpty := r.EmptyResponses.Load(upstream); isEmpty {
+			continue
+		}
+
+		// Try to reserve this upstream atomically
+		// If LoadOrStore returns loaded=false, we successfully reserved it
+		if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
+			// Successfully reserved this upstream
+			return upstream, nil
+		}
+		// If we reach here, another goroutine reserved this upstream, continue to next
+	}
+
+	// All upstreams exhausted
+	return nil, fmt.Errorf("no more good upstreams left")
+}
+
+func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream Upstream, resp *NormalizedResponse, err error) {
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	hasResponse := resp != nil && !resp.IsObjectNull(ctx)
+	// We can re-use the same upstream on next rotation if there's no response or the error is retryable towards the upstream
+	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
+
+	if err != nil {
+		r.ErrorsByUpstream.Store(upstream, err)
+	} else if resp != nil && resp.IsResultEmptyish(ctx) {
+		jr, err := resp.JsonRpcResponse(ctx)
+		if jr == nil {
+			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", err), upstream))
+		} else {
+			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.Result), upstream))
+		}
+		r.EmptyResponses.Store(upstream, true)
+	}
+
+	if canReUse {
+		r.ConsumedUpstreams.Delete(upstream)
+	}
 }

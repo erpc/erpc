@@ -139,7 +139,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	// check if the number of addresses is beyond the hard limit
+	jrq.RLock()
 	addresses, hasAddresses := filter["address"].([]interface{})
+	jrq.RUnlock()
 	if hasAddresses && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedAddresses > 0 &&
 		int64(len(addresses)) > cfg.Evm.GetLogsMaxAllowedAddresses {
 		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedAddresses(
@@ -150,7 +152,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	// check if the number of topics is beyond the hard limit
+	jrq.RLock()
 	topics, hasTopics := filter["topics"].([]interface{})
+	jrq.RUnlock()
 	if hasTopics && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedTopics > 0 &&
 		int64(len(topics)) > cfg.Evm.GetLogsMaxAllowedTopics {
 		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedTopics(
@@ -175,7 +179,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	if !available {
 		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found, because requested block (toBlock %d) is not available on the upstream node, ensure statePollerDebounce is low enough and or the requested block is older than the current chain head", toBlock),
+			fmt.Errorf("block not found for eth_getLogs, because requested toBlock %d is not available on the upstream node", toBlock),
+			up,
 		)
 	}
 	available, err = up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, fromBlock)
@@ -184,7 +189,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	if !available {
 		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found, because (fromBlock %d) is not available on the upstream node, ensure the requested block is within supported range", fromBlock),
+			fmt.Errorf("block not found for eth_getLogs, because fromBlock %d is not available on the upstream node", fromBlock),
+			up,
 		)
 	}
 
@@ -201,6 +207,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 			var subRequests []ethGetLogsSubRequest
 			sb := fromBlock
+			jrq.RLock()
 			for sb <= toBlock {
 				eb := min(sb+cfg.Evm.GetLogsAutoSplittingRangeThreshold-1, toBlock)
 				subRequests = append(subRequests, ethGetLogsSubRequest{
@@ -211,6 +218,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				})
 				sb = eb + 1
 			}
+			jrq.RUnlock()
 			logger.Debug().
 				Int64("requestRange", requestRange).
 				Int64("maxBlockRange", cfg.Evm.GetLogsAutoSplittingRangeThreshold).
@@ -357,6 +365,18 @@ func (g *GetLogsMultiResponseWriter) IsResultEmptyish() bool {
 	}
 
 	return true
+}
+
+func (g *GetLogsMultiResponseWriter) Size(ctx ...context.Context) (int, error) {
+	size := 0
+	for _, response := range g.responses {
+		s, err := response.Size(ctx...)
+		if err != nil {
+			return 0, err
+		}
+		size += s
+	}
+	return size, nil
 }
 
 type ethGetLogsSubRequest struct {

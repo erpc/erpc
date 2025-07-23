@@ -111,6 +111,7 @@ Available strategies:
 | Strategy | Description |
 |----------|-------------|
 | `any:initializedUpstreams` | Returns healthy if any upstreams are initialized (default) |
+| `all:activeUpstreams` | Returns healthy if all configured upstreams are initialized AND not cordoned |
 | `any:errorRateBelow90` | Returns healthy if any upstream has an error rate below 90% |
 | `all:errorRateBelow90` | Returns healthy if all upstreams have an error rate below 90% |
 | `any:errorRateBelow100` | Returns healthy if any upstream has an error rate below 100% |
@@ -120,6 +121,7 @@ Available strategies:
 
 * Error rate is read from [score tracking](/config/projects/upstreams#priority--selection-mechanism) component of each Upstream and it is a fast memory-access operation.
 * The `eth_chainId` evals will send an actual request to the upstreams (in parallel), thus ensure proper timeout is set for the healthcheck (e.g. on Kubernetes readinessProbe.timeoutSeconds).
+* The `all:activeUpstreams` is an aggressive strategy that checks both initialization status and cordon status of ALL configured upstreams. An upstream is "cordoned" when [selection policy](config/projects/selection-policies) exclude it from the list.
 
 ## Endpoints
 

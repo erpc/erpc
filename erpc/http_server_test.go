@@ -487,9 +487,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(200 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(200 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -501,9 +503,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -556,11 +560,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(30 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(30 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -572,11 +578,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(300 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(300 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -634,11 +642,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -651,11 +661,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(5 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(5 * time.Second),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -711,9 +723,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1 * time.Second),
+									},
 								},
 							},
 						},
@@ -725,9 +739,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -784,11 +800,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(5 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(5 * time.Second),
+									},
 								},
 							},
 						},
@@ -801,11 +819,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -861,9 +881,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(50 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(50 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -875,9 +897,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(5 * time.Second),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(5 * time.Second),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -937,10 +961,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:   nil,
-								Hedge:   nil,
-								Timeout: nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:   nil,
+									Hedge:   nil,
+									Timeout: nil,
+								},
 							},
 						},
 					},
@@ -952,10 +978,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:   nil,
-								Hedge:   nil,
-								Timeout: nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:   nil,
+									Hedge:   nil,
+									Timeout: nil,
+								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
@@ -1011,11 +1039,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(300 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(300 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1028,11 +1058,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(10 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1096,10 +1128,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 8,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 8,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1115,10 +1149,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1132,10 +1168,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1193,7 +1231,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 }
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
-	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingDisabled", func(t *testing.T) {
+	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
@@ -1207,10 +1250,107 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(100 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x111111",
+			})
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(20 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x222222")
+	})
+
+	t.Run("SimpleHedgePolicyAvoidSameUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1232,11 +1372,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			},
 			RateLimiters: &common.RateLimiterConfig{},
 		}
-
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -1272,7 +1407,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x222222")
+		assert.Contains(t, body, "0x111111")
 	})
 
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {
@@ -1289,12 +1424,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: nil,
-								Retry:   nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: nil,
+									Retry:   nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1307,10 +1444,31 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: nil,
-								Retry:   nil,
-								Hedge:   nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: nil,
+									Retry:   nil,
+									Hedge:   nil,
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+								BatchMaxWait:  common.Duration(5 * time.Millisecond),
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: nil,
+									Retry:   nil,
+									Hedge:   nil,
+								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
@@ -1342,7 +1500,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					"id":      111,
 					"result":  "0x111_SLOW",
 				}})
-		gock.New("http://rpc1.localhost").
+		gock.New("http://rpc2.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -1380,14 +1538,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(50 * time.Millisecond),
-								},
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(50 * time.Millisecond),
+									},
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1400,10 +1560,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1417,10 +1579,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(500 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(500 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1488,14 +1652,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(100 * time.Millisecond),
-								},
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(100 * time.Millisecond),
+									},
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1508,10 +1674,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1525,10 +1693,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1000 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(1000 * time.Millisecond),
+									},
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1601,14 +1771,16 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: nil,
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
-								},
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(300 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: nil,
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(300 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1621,11 +1793,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(150 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(150 * time.Millisecond),
+									},
+									Retry: nil,
 								},
-								Retry: nil,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1638,11 +1812,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(200 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Timeout: &common.TimeoutPolicyConfig{
+										Duration: common.Duration(200 * time.Millisecond),
+									},
+									Retry: nil,
 								},
-								Retry: nil,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1700,7 +1876,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.Contains(t, body, ErrHandlerTimeout.Error())
 	})
 
-	t.Run("HedgeDiscardsSlowerCall_FirstRequestCancelled", func(t *testing.T) {
+	t.Run("HedgeDiscardsSlowerCallFirstRequestCancelled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
@@ -1713,11 +1889,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1727,6 +1905,17 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Id:       "rpc1",
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
@@ -1761,7 +1950,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Mock #2 (faster) – "hedge request"
-		gock.New("http://rpc1.localhost").
+		gock.New("http://rpc2.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -1793,7 +1982,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
 	})
 
-	t.Run("HedgeDiscardsSlowerCall_SecondRequestCancelled", func(t *testing.T) {
+	t.Run("HedgeDiscardsSlowerCallSecondRequestCancelled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
@@ -1806,11 +1995,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(10 * time.Millisecond),
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(10 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -1820,6 +2011,17 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Id:       "rpc1",
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
@@ -1854,7 +2056,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Mock #2 (slower) – "hedge request"
-		gock.New("http://rpc1.localhost").
+		gock.New("http://rpc2.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -1894,11 +2096,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
+							Failsafe: []*common.FailsafeConfig{
 								// Network-level hedge configuration
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 1,
-									Delay:    common.Duration(100 * time.Millisecond),
+								{
+									Hedge: &common.HedgePolicyConfig{
+										MaxCount: 1,
+										Delay:    common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -2684,7 +2888,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
 
 				assert.Equal(t, http.StatusInternalServerError, statusCode)
-				assert.Contains(t, body, "-32603")
+				assert.Contains(t, body, "-39999")
 				assert.Contains(t, body, "my funky error")
 			})
 
@@ -3043,11 +3247,13 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3059,11 +3265,13 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3075,19 +3283,24 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-			}).
-			Times(3).
-			Reply(200).
-			Delay(4000 * time.Millisecond).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x123456",
-			})
+		// Create 3 separate mocks that will handle the first 3 unique requests
+		// The rest should be served from the multiplexer
+		for i := 0; i < 3; i++ {
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Filter(func(request *http.Request) bool {
+					body := util.SafeReadBody(request)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Times(1).
+				Reply(200).
+				Delay(4000 * time.Millisecond).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1, // Default ID, will be replaced by the actual request ID
+					"result":  "0x123456",
+				})
+		}
 
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -3108,7 +3321,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		wg.Wait()
 	})
 
-	t.Run("CorrectResponseonEvmRevertData", func(t *testing.T) {
+	t.Run("CorrectResponseOnEvmRevertData", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(500 * time.Second).Ptr(),
@@ -3121,6 +3334,16 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3286,6 +3509,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
 						},
 					},
 				},
@@ -3347,11 +3573,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3363,11 +3591,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 						{
@@ -3377,11 +3607,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3442,11 +3674,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3458,11 +3692,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 						{
@@ -3472,11 +3708,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry:          nil,
-								CircuitBreaker: nil,
-								Hedge:          nil,
-								Timeout:        nil,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry:          nil,
+									CircuitBreaker: nil,
+									Hedge:          nil,
+									Timeout:        nil,
+								},
 							},
 						},
 					},
@@ -3548,10 +3786,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 8,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 8,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -3567,10 +3807,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -3584,10 +3826,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 3,
-									Delay:       common.Duration(100 * time.Millisecond),
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 3,
+										Delay:       common.Duration(100 * time.Millisecond),
+									},
 								},
 							},
 						},
@@ -3605,7 +3849,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3620,7 +3864,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3636,12 +3880,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		// Prepare a getLogs request with specific parameters
 		requestBody := `{
 			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"fromBlock": "0x1ab771",
-				"toBlock": "0x1ab7d5",
-				"topics": ["0xbccc00b713f54173962e7de6098f643d8ebf53d488d71f4b2a5171496d038f9e"]
-			}],
+			"method": "eth_getBalance",
+			"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 			"id": 1
 		}`
 
@@ -3686,8 +3926,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
+								},
 							},
 						},
 					},
@@ -3698,8 +3940,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+								},
 							},
 						},
 						{
@@ -3708,8 +3952,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+								},
 							},
 						},
 					},
@@ -3724,7 +3970,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3738,7 +3984,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getLogs")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -3753,12 +3999,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		requestBody := `{
 			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"fromBlock": "0x1ab771",
-				"toBlock": "0x1ab7d5",
-				"topics": ["0xbccc00b713f54173962e7de6098f643d8ebf53d488d71f4b2a5171496d038f9e"]
-			}],
+			"method": "eth_getBalance",
+			"params": ["0x1234567890abcdef1234567890abcdef12345678"],
 			"id": 1
 		}`
 
@@ -4381,6 +4623,8 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 	logger := &log.Logger
 	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
 	ssr, err := data.NewSharedStateRegistry(testCtx, logger, &common.SharedStateConfig{
 		ClusterKey: "test",
 		Connector: &common.ConnectorConfig{
@@ -4417,11 +4661,11 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				err := pp.upstreamsRegistry.Bootstrap(ctx)
 				require.NoError(t, err)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -4472,11 +4716,11 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				err := pp.upstreamsRegistry.Bootstrap(ctx)
 				require.NoError(t, err)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -4504,11 +4748,11 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				err := pp.upstreamsRegistry.Bootstrap(ctx)
 				require.NoError(t, err)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -4536,11 +4780,11 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				err := pp.upstreamsRegistry.Bootstrap(ctx)
 				require.NoError(t, err)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -4578,10 +4822,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				}
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
 					erpc: &ERPC{
@@ -4609,10 +4853,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
@@ -4646,10 +4890,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
@@ -4692,10 +4936,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, upBad}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, upBad}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, upBad}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, upBad}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				ups1 := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*")
@@ -4734,10 +4978,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				util.ResetGock()
 				defer util.ResetGock()
@@ -4774,10 +5018,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				authReg, _ := auth.NewAuthRegistry(logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 					{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Value: "test-secret"}},
@@ -4811,10 +5055,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				authReg, _ := auth.NewAuthRegistry(logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 					{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Value: "test-secret"}},
@@ -4855,10 +5099,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4887,10 +5131,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4919,10 +5163,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			setupServer: func(ctx context.Context) *HttpServer {
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second, nil),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}}),
 				}
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
-				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
 					logger: logger,
@@ -4944,6 +5188,226 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			architecture: "",
 			chainId:      "",
 			request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
+			wantStatus:   http.StatusOK,
+			wantBody:     `OK`,
+		},
+		{
+			name: "Eval strategy - all:activeUpstreams - Success (all upstreams active)",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second),
+				}
+				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+					draining: &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=all:activeUpstreams", Path: "/healthcheck"}},
+			wantStatus:   http.StatusOK,
+			wantBody:     `OK`,
+		},
+		{
+			name: "Eval strategy - all:activeUpstreams - Failure (no upstreams configured)",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{}, Providers: []*common.ProviderConfig{}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{}, ssr, nil, vr, pr, nil, mtk, 0*time.Second),
+				}
+				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+					draining: &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=all:activeUpstreams", Path: "/healthcheck"}},
+			wantStatus:   http.StatusBadGateway,
+			wantBody:     `no upstreams configured`,
+		},
+		{
+			name: "Eval strategy - all:activeUpstreams - Failure (uninitialized upstreams)",
+			setupServer: func(ctx context.Context) *HttpServer {
+				upNoChainId := &common.UpstreamConfig{
+					Id:       "test-upstream",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1.localhost",
+					// Missing ChainId to force initialization failure
+				}
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second),
+				}
+				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+					draining: &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=all:activeUpstreams", Path: "/healthcheck"}},
+			wantStatus:   http.StatusBadGateway,
+			wantBody:     `0 / 1 upstreams are initialized`,
+		},
+		{
+			name: "Eval strategy - all:activeUpstreams - Failure (cordoned upstreams)",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second),
+				}
+				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				// Cordon the upstream
+				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
+				mtk.Cordon(up, "*", "test cordoning")
+
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+					draining: &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=all:activeUpstreams", Path: "/healthcheck"}},
+			wantStatus:   http.StatusBadGateway,
+			wantBody:     `0 / 1 upstreams are active (1 cordoned)`,
+		},
+		{
+			name: "Eval strategy - all:activeUpstreams - Success with providers configured",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}, Providers: []*common.ProviderConfig{{Id: "test-provider", Vendor: "alchemy"}}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second),
+				}
+				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+					draining: &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=all:activeUpstreams", Path: "/healthcheck"}},
+			wantStatus:   http.StatusOK,
+			wantBody:     `OK`,
+		},
+		{
+			name: "Eval strategy - all:activeUpstreams - Network-specific upstream counting",
+			setupServer: func(ctx context.Context) *HttpServer {
+				// Create upstreams for different networks
+				up1 := &common.UpstreamConfig{
+					Id:       "test-upstream-123",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				}
+				up2 := &common.UpstreamConfig{
+					Id:       "test-upstream-456",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 456,
+					},
+				}
+
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, up2}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, up2}, ssr, nil, vr, pr, nil, mtk, 0*time.Second),
+				}
+				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+					draining: &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "evm",
+			chainId:      "123",
+			request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=all:activeUpstreams", Path: "/healthcheck"}},
 			wantStatus:   http.StatusOK,
 			wantBody:     `OK`,
 		},
@@ -5266,10 +5730,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				{
 					Id: "test_project",
 					UpstreamDefaults: &common.UpstreamConfig{
-						Failsafe: &common.FailsafeConfig{
-							Hedge: &common.HedgePolicyConfig{
-								Delay:    common.Duration(10 * time.Millisecond),
-								MaxCount: 267,
+						Failsafe: []*common.FailsafeConfig{
+							{
+								Hedge: &common.HedgePolicyConfig{
+									Delay:    common.Duration(10 * time.Millisecond),
+									MaxCount: 267,
+								},
 							},
 						},
 						Evm: &common.EvmUpstreamConfig{
@@ -5352,8 +5818,8 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		require.Equal(t, len(upstreams), 1)
 		upsCfg := upstreams[0].Config()
 
-		assert.Equalf(t, upsCfg.Failsafe.Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
-		assert.Equalf(t, upsCfg.Failsafe.Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be set")
+		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
+		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be set")
 	})
 
 	t.Run("InheritUpstreamsOverridesAfterUpstreamDefaultsConfig", func(t *testing.T) {
@@ -5365,10 +5831,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				{
 					Id: "test_project",
 					UpstreamDefaults: &common.UpstreamConfig{
-						Failsafe: &common.FailsafeConfig{
-							Hedge: &common.HedgePolicyConfig{
-								Delay:    common.Duration(10 * time.Millisecond),
-								MaxCount: 267,
+						Failsafe: []*common.FailsafeConfig{
+							{
+								Hedge: &common.HedgePolicyConfig{
+									Delay:    common.Duration(10 * time.Millisecond),
+									MaxCount: 267,
+								},
 							},
 						},
 						Evm: &common.EvmUpstreamConfig{
@@ -5385,9 +5853,11 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 							},
 							Overrides: map[string]*common.UpstreamConfig{
 								"evm:1": {
-									Failsafe: &common.FailsafeConfig{
-										Retry: &common.RetryPolicyConfig{
-											MaxAttempts: 123,
+									Failsafe: []*common.FailsafeConfig{
+										{
+											Retry: &common.RetryPolicyConfig{
+												MaxAttempts: 123,
+											},
 										},
 									},
 								},
@@ -5459,8 +5929,8 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		require.Equal(t, len(upstreams), 1)
 		upsCfg := upstreams[0].Config()
 
-		assert.Equalf(t, upsCfg.Failsafe.Retry.MaxAttempts, 123, "Retry policy should be set")
-		assert.Nilf(t, upsCfg.Failsafe.Hedge, "Hedge policy should not be set")
+		assert.Equalf(t, upsCfg.Failsafe[0].Retry.MaxAttempts, 123, "Retry policy should be set")
+		assert.Nilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should not be set")
 	})
 }
 
@@ -5498,9 +5968,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 								ChainId:                            1,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 2,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
 								},
 							},
 						},
@@ -5682,9 +6154,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 								ChainId:                            1,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 2,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
 								},
 							},
 						},
@@ -5723,28 +6197,25 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 				},
 			})
 
-		// Mock failing responses for second range (both attempts)
+		// Mock failing responses for other ranges
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Times(2). // Will be called twice due to retry
+			Times(6).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
-					strings.Contains(body, `"toBlock":"0x111181ff"`)
+					!(strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+						strings.Contains(body, `"toBlock":"0x111180ff"`))
 			}).
 			Reply(503).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      2,
 				"error": map[string]interface{}{
-					"code":    -32000,
+					"code":    -32603,
 					"message": "Server error",
 				},
 			})
-
-		// We don't need to mock the third range because the request should fail after
-		// the second range fails all retry attempts
 
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -5789,6 +6260,13 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 									EnforceGetLogsBlockRange: util.BoolPtr(true),
 								},
 							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
+								},
+							},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -5800,9 +6278,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 								ChainId:                            1,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
-							Failsafe: &common.FailsafeConfig{
-								Retry: &common.RetryPolicyConfig{
-									MaxAttempts: 2,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
 								},
 							},
 						},
@@ -6298,7 +6778,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ReturnsMissingDataIfAllUpstreamsReturnNull", func(t *testing.T) {
 		util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 		defer util.ResetGock()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
@@ -6347,78 +6829,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"jsonrpc": "2.0",
 			"id":      999,
 			"method":  "eth_getBlockByNumber",
-			"params": ["latest", false]
+			"params": ["0x777", false]
 		}`
 
-		// Mock poller calls for "rpc1" => we say "eth_syncing" = false, and eth_getBlockByNumber("latest") = 0x100
 		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
-
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x775"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x775"}}`))
-
-		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
-		// for the method "eth_getBlockByNumber('latest')".
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result":  nil,
-			})
-		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -6445,8 +6859,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		assert.Contains(t, body, "block not found")
 		assert.Contains(t, body, "-32014")
-
-		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
 
 	t.Run("FailFastIfSharedStateIsTooSlow", func(t *testing.T) {
@@ -6896,7 +7308,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
 	})
 
-	t.Run("ShouldReturnForwardErrorIfUpstreamFails", func(t *testing.T) {
+	t.Run("ShouldReturnForwardErrorIfUpstreamFailsPreserveCodes", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -6982,7 +7394,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				"jsonrpc": "2.0",
 				"id":      777,
 				"error": map[string]interface{}{
-					"code":    -32000,
+					"code":    -3212345,
 					"message": "Upstream error",
 				},
 			})
@@ -6992,7 +7404,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		defer shutdown()
 
 		statusCode, respBody := sendRequest(requestBody, nil, nil)
-		assert.Equal(t, http.StatusInternalServerError, statusCode, "should reflect upstream's 500 error")
+		assert.Equal(t, 503, statusCode, "should reflect upstream's 500 error")
 
 		// Verify the server forwards the original error info
 		var respObject map[string]interface{}
@@ -7001,7 +7413,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Contains(t, respObject, "error", "should contain error field")
 
 		errorObj := respObject["error"].(map[string]interface{})
-		assert.Equal(t, float64(-32603), errorObj["code"].(float64), "error code should match upstream error")
+		assert.Equal(t, float64(-3212345), errorObj["code"].(float64), "error code should match upstream error")
 		assert.Contains(t, errorObj["message"].(string), "Upstream error", "error message should match upstream message")
 
 		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
@@ -7668,27 +8080,30 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
 		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{"result": false})
+		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": false})
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
-					strings.Contains(util.SafeReadBody(request), `"latest"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"result": map[string]interface{}{
-					"number": "0x300",
-				},
-			})
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
+						strings.Contains(util.SafeReadBody(request), `"latest"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"result": map[string]interface{}{
+						"number": "0x300",
+					},
+				})
+		}
 
 		// The user calls eth_getBlockByNumber("unknownTag", false). Since "unknownTag" is neither
 		// 'latest', 'finalized', 'pending', 'earliest', nor a direct hex, we expect NO override logic to happen.
@@ -7736,11 +8151,11 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0xabcd", result["number"], "invalid block tag should not trigger any override")
 		assert.Equal(t, "0xhash_for_unknownTag", result["hash"], "the block hash should match upstream exactly")
 
-		// Only the poller calls plus the single user request are used; no fallback or second request is triggered.
-		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+		// The 2 persistent poller mocks remain pending after use
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
 
-	t.Run("Should Handle Successful Consensus", func(t *testing.T) {
+	t.Run("ShouldHandleSuccessfulConsensus", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -7760,13 +8175,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
 							},
-							Failsafe: &common.FailsafeConfig{
-								Consensus: &common.ConsensusPolicyConfig{
-									RequiredParticipants:    3,
-									AgreementThreshold:      2,
-									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									MatchMethod: "*",
+									Consensus: &common.ConsensusPolicyConfig{
+										RequiredParticipants:    3,
+										AgreementThreshold:      2,
+										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+									},
 								},
 							},
 						},
@@ -7818,6 +8235,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 			gock.New(rpc.Endpoint).
 				Post("").
+				Persist().
 				Filter(func(request *http.Request) bool {
 					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
 						strings.Contains(util.SafeReadBody(request), `"latest"`)
@@ -7844,14 +8262,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
-					return strings.Contains(body, `"id":5010`) &&
-						strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					return strings.Contains(body, `"eth_getBlockByNumber"`) &&
 						strings.Contains(body, `"0x300"`)
 				}).
 				Reply(200).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      5050,
+					"id":      1, // ID doesn't matter for the response
 					"result": map[string]interface{}{
 						"number": "0x300",
 						"hash":   "0xhash_for_consensus",
@@ -7871,7 +8288,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0x300", result["number"], "the block number should match the upstream's response")
 		assert.Equal(t, "0xhash_for_consensus", result["hash"], "the block hash should match upstream exactly")
 	})
-	t.Run("Should Handle Consensus Failure due to Low Participants", func(t *testing.T) {
+
+	t.Run("ShouldHandleConsensusFailureDueToLowParticipants", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -7891,13 +8309,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
 							},
-							Failsafe: &common.FailsafeConfig{
-								Consensus: &common.ConsensusPolicyConfig{
-									RequiredParticipants:    3,
-									AgreementThreshold:      2,
-									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									MatchMethod: "*",
+									Consensus: &common.ConsensusPolicyConfig{
+										RequiredParticipants:    3,
+										AgreementThreshold:      2,
+										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+									},
 								},
 							},
 						},
@@ -7931,6 +8351,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 			gock.New(rpc.Endpoint).
 				Post("").
+				Persist().
 				Filter(func(request *http.Request) bool {
 					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
 						strings.Contains(util.SafeReadBody(request), `"latest"`)
@@ -7959,14 +8380,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Times(3).
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				return strings.Contains(body, `"id":5010`) &&
-					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
 					strings.Contains(body, `"0x300"`)
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
-				"id":      5050,
+				"id":      1, // ID doesn't matter for the response
 				"result": map[string]interface{}{
 					"number": "0x300",
 					"hash":   "0xhash_for_consensus",
@@ -7974,7 +8394,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		statusCode, respBody := sendRequest(userRequest, nil, nil)
-		assert.Equal(t, http.StatusInternalServerError, statusCode, "status code should indicate failure")
+		assert.Equal(t, http.StatusPreconditionFailed, statusCode, "status code should indicate failure")
 
 		var respObj map[string]interface{}
 		err := sonic.UnmarshalString(respBody, &respObj)
@@ -7983,10 +8403,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		errResp, ok := respObj["error"].(map[string]interface{})
 		assert.True(t, ok, "error should be present")
 		assert.Equal(t, float64(-32603), errResp["code"], "error code should be -32603")
-		assert.Equal(t, "not enough participants", errResp["message"], "error message should be 'not enough participants'")
+		assert.Contains(t, errResp["message"], "not enough participants", "error message should be 'not enough participants'")
 	})
 
-	t.Run("Should Handle Consensus Failure due to Dispute", func(t *testing.T) {
+	t.Run("ShouldHandleConsensusFailureDueToDispute", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -8006,13 +8426,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
 							},
-							Failsafe: &common.FailsafeConfig{
-								Consensus: &common.ConsensusPolicyConfig{
-									RequiredParticipants:    3,
-									AgreementThreshold:      2,
-									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
-									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+							Failsafe: []*common.FailsafeConfig{
+								{
+									MatchMethod: "*",
+									Consensus: &common.ConsensusPolicyConfig{
+										RequiredParticipants:    3,
+										AgreementThreshold:      2,
+										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+									},
 								},
 							},
 						},
@@ -8064,6 +8486,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 			gock.New(rpc.Endpoint).
 				Post("").
+				Persist().
 				Filter(func(request *http.Request) bool {
 					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
 						strings.Contains(util.SafeReadBody(request), `"latest"`)
@@ -8090,14 +8513,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				Post("").
 				Filter(func(r *http.Request) bool {
 					body := util.SafeReadBody(r)
-					return strings.Contains(body, `"id":5010`) &&
-						strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					return strings.Contains(body, `"eth_getBlockByNumber"`) &&
 						strings.Contains(body, `"0x300"`)
 				}).
 				Reply(200).
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"id":      5050,
+					"id":      1, // ID doesn't matter for the response
 					"result": map[string]interface{}{
 						"number": "0x300",
 						"hash":   fmt.Sprintf("0xhash_for_consensus_%d", idx),
@@ -8106,7 +8528,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}
 
 		statusCode, respBody := sendRequest(userRequest, nil, nil)
-		assert.Equal(t, http.StatusInternalServerError, statusCode, "status code should indicate failure")
+		assert.Equal(t, http.StatusConflict, statusCode, "status code should indicate failure")
 
 		var respObj map[string]interface{}
 		err := sonic.UnmarshalString(respBody, &respObj)

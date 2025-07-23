@@ -23,10 +23,12 @@ type Network interface {
 	Logger() *zerolog.Logger
 	GetMethodMetrics(method string) TrackedMetrics
 	Forward(ctx context.Context, nq *NormalizedRequest) (*NormalizedResponse, error)
+	GetFinality(ctx context.Context, req *NormalizedRequest, resp *NormalizedResponse) DataFinalityState
 
 	// TODO Move to EvmNetwork interface?
 	EvmHighestLatestBlockNumber(ctx context.Context) int64
 	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
+	EvmLeaderUpstream(ctx context.Context) Upstream
 }
 
 func IsValidArchitecture(architecture string) bool {

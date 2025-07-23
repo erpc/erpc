@@ -1,0 +1,128 @@
+---
+description: Consensus policy compares responses from multiple upstreams and returns the agreed result
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+# Consensus
+
+The `consensus` policy sends the same request to multiple upstreams and returns the result only when enough of them agree. This ensures data consistency and detects misbehaving nodes.
+
+<Callout type="warning">
+  Consensus can only be configured at **network level** since it requires multiple upstreams to compare results.
+</Callout>
+
+## Configuration
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 42161
+        failsafe:
+          - matchMethod: "*" # Define different consensus thresholds for different methods
+            matchFinality: ["finalized", "unknown"] # Read more in Failsafe docs -> Finality states
+            consensus:
+              requiredParticipants: 4
+              agreementThreshold: 2
+              disputeBehavior: preferBlockHeadLeader
+              lowParticipantsBehavior: acceptMostCommonValidResult
+              punishMisbehavior:
+                disputeThreshold: 10
+                disputeWindow: 10m
+                sitOutPenalty: 30m
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [
+      {
+        architecture: "evm",
+        evm: { chainId: 42161 },
+        failsafe: [
+          {
+            matchMethod: "*",      // Can be configured per-method
+            consensus: {
+              requiredParticipants: 3,
+              agreementThreshold: 2,
+              disputeBehavior: "preferBlockHeadLeader",
+              lowParticipantsBehavior: "acceptMostCommonValidResult",
+              punishMisbehavior: {
+                disputeThreshold: 3,
+                disputeWindow: "10s",
+                sitOutPenalty: "30s"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }]
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+## Participation options
+
+### `requiredParticipants`
+Number of upstreams to query in each consensus round. The policy selects the first N healthy upstreams based on their scores.
+
+### `agreementThreshold`
+Minimum number of identical responses needed to reach consensus. For example, with `requiredParticipants: 3` and `agreementThreshold: 2`, at least 2 upstreams must return the same result.
+
+<Callout type="info">
+  Response comparison is done using canonical JSON-RPC response hashing, which normalizes responses before comparison.
+</Callout>
+
+## Behavior options
+
+### `disputeBehavior`
+Determines what to do when upstreams disagree (consensus not reached):
+
+- **`returnError`**: Returns a consensus dispute error to the client. Use this for critical operations where inconsistency is unacceptable.
+
+- **`acceptMostCommonValidResult`**: Returns the most common valid response among all participants, even if it doesn't meet the threshold. Good for operations where some inconsistency is tolerable.
+
+- **`preferBlockHeadLeader`**: Returns the response from the upstream with the highest block number, falling back to most common if no block info is available. Ideal for recent data queries where the most up-to-date node is preferred.
+
+- **`onlyBlockHeadLeader`**: Only returns the response from the highest block upstream, errors if unavailable. Use when you strictly need the latest chain state.
+
+### `lowParticipantsBehavior`
+Handles cases when fewer than `requiredParticipants` healthy upstreams are available:
+
+- **`returnError`**: Fails the request when not enough upstreams are healthy.
+
+- **`acceptMostCommonValidResult`**: Proceeds with any available upstreams and returns the most common result.
+
+- **`preferBlockHeadLeader`**: Uses the highest block upstream if available, otherwise returns the most common valid result, ensuring requests succeed during partial outages.
+
+- **`onlyBlockHeadLeader`**: Only proceeds if the block head leader is among healthy upstreams, and use the block head leader's response.
+
+<Callout type="info">
+  **Block Head Leader**: The upstream reporting the highest block number. This is determined by each upstream's state poller and ensures you're getting data from the most synchronized node.
+</Callout>
+
+## Misbehavior tracking
+
+### `punishMisbehavior`
+Temporarily removes upstreams that consistently disagree with the consensus:
+
+- **`disputeThreshold`**: Number of disputes before punishment (e.g., 3 strikes)
+- **`disputeWindow`**: Time window for counting disputes (e.g., 10m)
+- **`sitOutPenalty`**: How long the upstream is cordoned (e.g., 30m)
+
+## Chain reorganizations
+During reorgs, nodes may temporarily disagree on recent blocks. Using `preferBlockHeadLeader` helps resolve disputes by using the response from most up-to-date upstream.
+
+## Performance
+Consensus increases costs and latency since it waits for multiple responses. Use it selectively for critical workloads and specific methods rather than all requests.

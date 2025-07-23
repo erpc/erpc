@@ -6,11 +6,18 @@ import (
 	"net/http"
 	"strings"
 
+	bdscommon "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
+func init() {
+	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
+}
+
+func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
 	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
 		var details map[string]interface{} = make(map[string]interface{})
 		details["statusCode"] = r.StatusCode
@@ -188,6 +195,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
+				upstream,
 			)
 		}
 
@@ -205,17 +213,18 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 				nil,
+				r.StatusCode,
 			)
 		}
 
 		//----------------------------------------------------------------
 		// "EVM reverts and execution" errors
 		//----------------------------------------------------------------
-
 		if strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
-			strings.Contains(msg, "VM Exception") {
+			strings.Contains(msg, "VM Exception") ||
+			strings.Contains(strings.ToLower(msg), "intrinsic gas too high") {
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -226,28 +235,39 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		}
+		// Hack for some chains (Berachain) to make the message compatible with Subgraph and other tools.
+		if strings.Contains(msg, "EVM error: InvalidJump") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorEvmReverted,
+					"revert: invalid jump destination",
+					nil,
+					details,
+				),
+			)
+		}
 
 		//----------------------------------------------------------------
-		// "Insufficient funds" or "out of gas" errors
+		// "Transaction rejected" or "Insufficient funds" or "out of gas" errors
 		//----------------------------------------------------------------
 
-		if strings.Contains(msg, "insufficient funds") ||
+		if code == common.JsonRpcErrorTransactionRejected ||
+			strings.Contains(msg, "insufficient funds") ||
 			strings.Contains(msg, "insufficient balance") ||
 			strings.Contains(msg, "out of gas") ||
 			strings.Contains(msg, "gas too low") ||
 			strings.Contains(msg, "IntrinsicGas") {
 
-			// by default, we do not retry this type of client-side exception
-			// as if the gas/funds is low, retrying another upstream would not help.
-			return common.NewErrEndpointClientSideException(
+			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
-					common.JsonRpcErrorCallException,
+					common.JsonRpcErrorTransactionRejected,
 					err.Message,
 					nil,
 					details,
 				),
-			).WithRetryableTowardNetwork(false)
+			)
 		}
 
 		//----------------------------------------------------------------
@@ -285,6 +305,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						nil,
 						details,
 					),
+					upstream,
 				)
 			} else {
 				// by default, we retry this type of client-side exception, as the root cause
@@ -418,12 +439,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		return common.NewErrEndpointServerSideException(
 			common.NewErrJsonRpcExceptionInternal(
 				int(code),
-				common.JsonRpcErrorServerSideException,
+				code,
 				err.Message,
 				nil,
 				details,
 			),
 			nil,
+			r.StatusCode,
 		)
 	}
 
@@ -469,6 +491,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 								},
 							),
 							nil,
+							r.StatusCode,
 						)
 					}
 				}
@@ -478,6 +501,224 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 	// No error detected.
 	return nil
+}
+
+func ExtractGrpcError(st *status.Status, upstream common.Upstream) error {
+	if st == nil || st.Code() == codes.OK {
+		return nil
+	}
+
+	// Extract error details from gRPC status
+	details := make(map[string]interface{})
+	details["grpcCode"] = st.Code().String()
+	details["grpcMessage"] = st.Message()
+	upsId := "n/a"
+	if upstream != nil {
+		upsId = upstream.Id()
+	}
+	details["upstreamId"] = upsId
+
+	// Try to extract BDS error details using FromGRPCStatus
+	bdsErr, hasBdsError := bdscommon.FromGRPCStatus(st)
+	if hasBdsError {
+		details["bdsErrorCode"] = bdsErr.Code
+		if bdsErr.Cause != nil {
+			details["cause"] = bdsErr.Cause.Error()
+		}
+		if bdsErr.Details != nil {
+			for k, v := range bdsErr.Details {
+				details[k] = v
+			}
+		}
+	}
+
+	msg := st.Message()
+	code := st.Code()
+
+	if hasBdsError {
+		switch bdsErr.Code {
+		case bdscommon.ErrorCode_UNSUPPORTED_BLOCK_TAG,
+			bdscommon.ErrorCode_UNSUPPORTED_METHOD:
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorUnsupportedException),
+					common.JsonRpcErrorUnsupportedException,
+					msg,
+					nil,
+					details,
+				),
+			)
+
+		case bdscommon.ErrorCode_RANGE_OUTSIDE_AVAILABLE:
+			return common.NewErrEndpointMissingData(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorMissingData),
+					common.JsonRpcErrorMissingData,
+					msg,
+					nil,
+					details,
+				),
+				upstream,
+			)
+
+		case bdscommon.ErrorCode_INVALID_PARAMETER, bdscommon.ErrorCode_INVALID_REQUEST:
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorInvalidArgument),
+					common.JsonRpcErrorInvalidArgument,
+					msg,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
+
+		case bdscommon.ErrorCode_RATE_LIMITED:
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorCapacityExceeded),
+					common.JsonRpcErrorCapacityExceeded,
+					msg,
+					nil,
+					details,
+				),
+			)
+
+		case bdscommon.ErrorCode_TIMEOUT_ERROR:
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorNodeTimeout),
+					common.JsonRpcErrorNodeTimeout,
+					msg,
+					nil,
+					details,
+				),
+				nil,
+				0,
+			)
+
+		case bdscommon.ErrorCode_RANGE_TOO_LARGE:
+			return common.NewErrEndpointRequestTooLarge(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorEvmLargeRange),
+					common.JsonRpcErrorEvmLargeRange,
+					msg,
+					nil,
+					details,
+				),
+				common.EvmBlockRangeTooLarge,
+			)
+
+		case bdscommon.ErrorCode_INTERNAL_ERROR:
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorServerSideException),
+					common.JsonRpcErrorServerSideException,
+					msg,
+					nil,
+					details,
+				),
+				nil,
+				0,
+			)
+		}
+	}
+
+	switch code {
+	case codes.Unimplemented:
+		return common.NewErrEndpointUnsupported(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorUnsupportedException),
+				common.JsonRpcErrorUnsupportedException,
+				msg,
+				nil,
+				details,
+			),
+		)
+
+	case codes.InvalidArgument:
+		return common.NewErrEndpointClientSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorInvalidArgument),
+				common.JsonRpcErrorInvalidArgument,
+				msg,
+				nil,
+				details,
+			),
+		).WithRetryableTowardNetwork(false)
+
+	case codes.ResourceExhausted:
+		return common.NewErrEndpointCapacityExceeded(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorCapacityExceeded),
+				common.JsonRpcErrorCapacityExceeded,
+				msg,
+				nil,
+				details,
+			),
+		)
+
+	case codes.DeadlineExceeded:
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorNodeTimeout),
+				common.JsonRpcErrorNodeTimeout,
+				msg,
+				nil,
+				details,
+			),
+			nil,
+			0,
+		)
+
+	case codes.Unauthenticated, codes.PermissionDenied:
+		return common.NewErrEndpointUnauthorized(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorUnauthorized),
+				common.JsonRpcErrorUnauthorized,
+				msg,
+				nil,
+				details,
+			),
+		)
+
+	case codes.NotFound, codes.OutOfRange:
+		return common.NewErrEndpointMissingData(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorMissingData),
+				common.JsonRpcErrorMissingData,
+				msg,
+				nil,
+				details,
+			),
+			upstream,
+		)
+
+	case codes.Internal, codes.Unknown, codes.Unavailable:
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorServerSideException),
+				common.JsonRpcErrorServerSideException,
+				msg,
+				nil,
+				details,
+			),
+			nil,
+			0,
+		)
+
+	default:
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(common.JsonRpcErrorServerSideException),
+				common.JsonRpcErrorServerSideException,
+				msg,
+				nil,
+				details,
+			),
+			nil,
+			0,
+		)
+	}
 }
 
 func getVendorSpecificErrorIfAny(

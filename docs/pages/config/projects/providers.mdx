@@ -26,6 +26,7 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`tenderly`](#tenderly) Accepts tenderly.co api key and automatically adds all their EVM chains.
 - [`blockpi`](#blockpi) Accepts blockpi.io api key and automatically adds all their EVM chains.
 - [`ankr`](#ankr) Accepts ankr.com api key and automatically adds all their EVM chains.
+- [`quicknode`](#quicknode) Accepts quicknode.com api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -608,6 +609,8 @@ For production traffic consult with Tenderly team about the chains you are going
 
 Built for [Chainstack](https://chainstack.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
 
+See also Chainstack docs: [Using eRPC with Chainstack: Quickstart](https://docs.chainstack.com/docs/using-erpc-with-chainstack-quickstart).
+
 <Callout type='info'>
   This key must be created using [Platform API key](https://docs.chainstack.com/reference/platform-api-getting-started) settings page.
 </Callout>
@@ -784,6 +787,48 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `quicknode`
+
+Built for [QuickNode](https://www.quicknode.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Callout type='info'>
+  You can create an API key from your [QuickNode dashboard](https://dashboard.quicknode.com/api-keys).
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: quicknode://YOUR_QUICKNODE_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "quicknode://YOUR_QUICKNODE_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 ## Advanced config
 
 You can use dedicated `providers:` config to customize per-network configurations (e.g. different config for Alchemy eth-mainnet vs Alchemy polygon) as follows:
@@ -803,6 +848,9 @@ projects:
         onlyNetworks:    # (optional) If you want to limit the lazy-loaded networks (instead of loading all supported chains)
           - evm:1
           - evm:137
+        ignoreNetworks:  # (optional) If you want to exclude specific networks from this provider
+          - evm:56
+          - evm:43114
         # (optional) If you want to customize the dynamically generated upstream ID
         upstreamIdTemplate: "<PROVIDER>-<NETWORK>"
         # (optional) Customize upstream configs for specific networks:
@@ -847,6 +895,12 @@ export default createConfig({
           onlyNetworks: [
             "evm:1",
             "evm:137",
+          ],
+
+          // (optional) If you want to exclude specific networks from this provider:
+          ignoreNetworks: [
+            "evm:56",
+            "evm:43114",
           ],
 
           // (optional) If you want to customize the dynamically generated upstream ID:
@@ -955,4 +1009,8 @@ providers:
   - vendor: ankr
     settings:
       apiKey: xxxxx # Your Ankr API key
+  - vendor: quicknode
+    settings:
+      apiKey: xxxxx # Your QuickNode API key
+      recheckInterval: 1h # (optional) How often to recheck the API for newly added networks (default: 1h)
 ```

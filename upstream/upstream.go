@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// FailsafeExecutor wraps a failsafe executor with method and finality filters
+type FailsafeExecutor struct {
+	method     string
+	finalities []common.DataFinalityState
+	executor   failsafe.Executor[*common.NormalizedResponse]
+	timeout    *time.Duration
+}
+
 type Upstream struct {
 	ProjectId string
 	Client    clients.ClientInterface
@@ -41,8 +50,7 @@ type Upstream struct {
 	supportedMethods     sync.Map
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
-	timeoutDuration      *time.Duration
-	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
+	failsafeExecutors    []*FailsafeExecutor
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
@@ -61,16 +69,40 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, cfg.Failsafe)
-	if err != nil {
-		return nil, err
-	}
-	policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge", "timeout")
+	// Create failsafe executors from configs
+	var failsafeExecutors []*FailsafeExecutor
+	if len(cfg.Failsafe) > 0 {
+		for _, fsCfg := range cfg.Failsafe {
+			policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, fsCfg)
+			if err != nil {
+				return nil, err
+			}
+			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge", "timeout")
 
-	var timeoutDuration *time.Duration
-	if cfg.Failsafe != nil && cfg.Failsafe.Timeout != nil {
-		timeoutDuration = cfg.Failsafe.Timeout.Duration.DurationPtr()
+			var timeoutDuration *time.Duration
+			if fsCfg.Timeout != nil {
+				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+			}
+
+			method := fsCfg.MatchMethod
+			if method == "" {
+				method = "*"
+			}
+			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+				method:     method,
+				finalities: fsCfg.MatchFinality,
+				executor:   failsafe.NewExecutor(policiesArray...),
+				timeout:    timeoutDuration,
+			})
+		}
 	}
+
+	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+		method:     "*", // "*" means match any method
+		finalities: nil, // nil means match any finality
+		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
+		timeout:    nil,
+	})
 
 	vn := vr.LookupByUpstream(cfg)
 
@@ -87,8 +119,7 @@ func NewUpstream(
 		vendor:               vn,
 		metricsTracker:       mt,
 		sharedStateRegistry:  ssr,
-		timeoutDuration:      timeoutDuration,
-		failsafeExecutor:     failsafe.NewExecutor(policiesArray...),
+		failsafeExecutors:    failsafeExecutors,
 		rateLimitersRegistry: rlr,
 		supportedMethods:     sync.Map{},
 	}
@@ -209,6 +240,49 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
+func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+	method, _ := req.Method()
+	finality := req.Finality(context.Background())
+
+	// First, try to find a specific match for both method and finality
+	for _, fe := range u.failsafeExecutors {
+		if fe.method != "*" && len(fe.finalities) > 0 {
+			matched, _ := common.WildcardMatch(fe.method, method)
+			if matched && slices.Contains(fe.finalities, finality) {
+				return fe
+			}
+		}
+	}
+
+	// Then, try to find a match for method only (empty finalities means any finality)
+	for _, fe := range u.failsafeExecutors {
+		if fe.method != "*" && (len(fe.finalities) == 0) {
+			matched, _ := common.WildcardMatch(fe.method, method)
+			if matched {
+				return fe
+			}
+		}
+	}
+
+	// Then, try to find a match for finality only
+	for _, fe := range u.failsafeExecutors {
+		if fe.method == "*" && len(fe.finalities) > 0 {
+			if slices.Contains(fe.finalities, finality) {
+				return fe
+			}
+		}
+	}
+
+	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
+	for _, fe := range u.failsafeExecutors {
+		if fe.method == "*" && (len(fe.finalities) == 0) {
+			return fe
+		}
+	}
+
+	return nil
+}
+
 func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	// TODO Should we move byPassMethodExclusion to directives? How do we prevent clients from setting it?
 	startTime := time.Now()
@@ -301,33 +375,12 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	// Prepare and normalize the request object
 	//
 	nrq.SetLastUpstream(u)
-	err = u.prepareRequest(ctx, nrq)
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return nil, err
-	}
 
 	//
 	// Send the request based on client type
 	//
 	switch clientType {
-	case clients.ClientTypeHttpJsonRpc:
-		jsonRpcClient, okClient := u.Client.(clients.HttpJsonRpcClient)
-		if !okClient {
-			err := common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("failed to initialize client for upstream %s", cfg.Id),
-				common.NewErrUpstreamClientInitialization(
-					fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
-					cfg.Id,
-				),
-				nil,
-			)
-			common.SetTraceSpanError(span, err)
-			return nil, err
-		}
-
+	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds:
 		tryForward := func(
 			ctx context.Context,
 			exec failsafe.Execution[*common.NormalizedResponse],
@@ -336,10 +389,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				u,
 				method,
 			)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType()).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType())
+			finality := nrq.Finality(ctx)
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType(), finality.String()).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality)
 
-			nrs, errCall := jsonRpcClient.SendRequest(ctx, nrq)
+			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			isSuccess := false
 			if nrs != nil {
 				nrs.SetUpstream(u)
@@ -350,11 +404,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				} else {
 					isSuccess = false
 				}
-				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Object("response", nrs).Msgf("upstream request ended with response")
-				} else {
-					lg.Debug().Err(errCall).Msgf("upstream request ended with non-nil response")
-				}
+				lg.Debug().Err(errCall).Object("response", nrs).Msgf("upstream request ended with non-nil response")
 			} else {
 				if errCall != nil {
 					if lg.GetLevel() == zerolog.TraceLevel && errors.Is(errCall, context.Canceled) {
@@ -369,23 +419,24 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			if errCall != nil {
 				isSuccess = false
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String()).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String()).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(method)
 					}
 					severity := common.ClassifySeverity(errCall)
-					if severity == common.SeverityCritical {
-						// We only consider a subset of errors in metrics tracker (which is used for score calculation)
-						// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
-						u.metricsTracker.RecordUpstreamFailure(
-							u,
-							method,
-						)
-					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType()).Inc()
+					// if severity == common.SeverityCritical {
+					// We only consider a subset of errors in metrics tracker (which is used for score calculation)
+					// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
+					u.metricsTracker.RecordUpstreamFailure(
+						u,
+						method,
+						errCall,
+					)
+					// }
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType(), finality.String()).Inc()
 				}
 
 				timer.ObserveDuration(false)
@@ -414,7 +465,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				}
 			} else {
 				if nrs.IsResultEmptyish() {
-					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String()).Inc()
 				}
 			}
 
@@ -426,8 +477,12 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nrs, nil
 		}
 
-		executor := u.failsafeExecutor
-		resp, execErr := executor.
+		failsafeExecutor := u.getFailsafeExecutor(nrq)
+		if failsafeExecutor == nil {
+			return nil, fmt.Errorf("no failsafe executor found for request")
+		}
+
+		resp, execErr := failsafeExecutor.executor.
 			WithContext(ctx).
 			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 				ectx, execSpan := common.StartSpan(exec.Context(), "Upstream.forwardAttempt",
@@ -457,7 +512,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						return nil, ctxErr
 					}
 				}
-				if u.timeoutDuration != nil {
+				if failsafeExecutor.timeout != nil {
 					var cancelFn context.CancelFunc
 					ectx, cancelFn = context.WithTimeout(
 						ectx,
@@ -465,7 +520,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
 						//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 						//      but allow the failsafe execution to fail with timeout first for proper error handling.
-						*u.timeoutDuration+5*time.Millisecond,
+						*failsafeExecutor.timeout+5*time.Millisecond,
 					)
 					defer cancelFn()
 				}
@@ -508,7 +563,21 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 	// TODO extend this to per-network and/or per-method because of either upstream performance diff
 	// or if user wants diff policies (retry/cb/integrity) per network/method.
-	return u.failsafeExecutor
+
+	// Return the default executor (the one with "*" method and no finality filters)
+	for _, fe := range u.failsafeExecutors {
+		if fe.method == "*" && (len(fe.finalities) == 0) {
+			return fe.executor
+		}
+	}
+
+	// If no default executor found, return the first one
+	if len(u.failsafeExecutors) > 0 {
+		return u.failsafeExecutors[0].executor
+	}
+
+	// Return a no-op executor if none configured
+	return failsafe.NewExecutor[*common.NormalizedResponse]()
 }
 
 // TODO move to evm package
@@ -623,7 +692,6 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			return false, fmt.Errorf("failed to check if block is finalized: %w", err)
 		}
 		if !isFinalized {
-			// Block is not finalized yet
 			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
@@ -752,60 +820,12 @@ func (u *Upstream) IgnoreMethod(method string) {
 	if ai == nil || !*ai {
 		return
 	}
+	u.logger.Warn().Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
 
 	u.cfgMu.Lock()
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
 	u.cfgMu.Unlock()
 	u.supportedMethods.Store(method, false)
-}
-
-func (u *Upstream) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
-	cfg := u.Config()
-	switch cfg.Type {
-	case common.UpstreamTypeEvm:
-		// TODO Move the logic to evm package as a pre-request hook?
-		if u.Client == nil {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("client not initialized for evm upstream: %s", cfg.Id),
-				nil,
-				nil,
-			)
-		}
-
-		if u.Client.GetType() == clients.ClientTypeHttpJsonRpc {
-			jsonRpcReq, err := nr.JsonRpcRequest(ctx)
-			if err != nil {
-				return common.NewErrJsonRpcExceptionInternal(
-					0,
-					common.JsonRpcErrorParseException,
-					"failed to unmarshal json-rpc request",
-					err,
-					nil,
-				)
-			}
-			evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
-		} else {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("unsupported evm client type: %s upstream: %s", u.Client.GetType(), cfg.Id),
-				nil,
-				nil,
-			)
-		}
-	default:
-		return common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorServerSideException,
-			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Type, cfg.Id),
-			nil,
-			nil,
-		)
-	}
-
-	return nil
 }
 
 func (u *Upstream) initRateLimitAutoTuner() {
@@ -846,7 +866,7 @@ func (u *Upstream) recordRemoteRateLimit(method string) {
 	}
 }
 
-func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
+func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
 	cfg := u.Config()
 	if s, ok := u.supportedMethods.Load(method); ok {
 		return s.(bool), nil
@@ -976,6 +996,9 @@ func (u *Upstream) guessVendorName() string {
 }
 
 func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest) (reason error, skip bool) {
+	if u.config.Shadow != nil && u.config.Shadow.Enabled {
+		return common.NewErrUpstreamShadowing(u.config.Id), true
+	}
 	method, _ := req.Method()
 
 	if u.config.Evm != nil && u.config.Evm.SkipWhenSyncing != nil && *u.config.Evm.SkipWhenSyncing {
@@ -984,7 +1007,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	allowed, err := u.shouldHandleMethod(method)
+	allowed, err := u.ShouldHandleMethod(method)
 	if err != nil {
 		return err, true
 	}
@@ -1000,7 +1023,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 			return err, true
 		}
 		if !match {
-			return common.NewErrUpstreamNotAllowed(u.config.Id), true
+			return common.NewErrUpstreamNotAllowed(dirs.UseUpstream, u.config.Id), true
 		}
 	}
 

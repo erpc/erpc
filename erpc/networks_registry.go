@@ -73,16 +73,44 @@ func NewNetwork(
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
 	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
-	pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
-	if err != nil {
-		return nil, err
+
+	// Create failsafe executors from configs
+	var failsafeExecutors []*FailsafeExecutor
+	if len(nwCfg.Failsafe) > 0 {
+		for _, fsCfg := range nwCfg.Failsafe {
+			pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, fsCfg)
+			if err != nil {
+				return nil, err
+			}
+			policyArray := upstream.ToPolicyArray(pls, "timeout", "consensus", "hedge", "retry")
+
+			var timeoutDuration *time.Duration
+			if fsCfg.Timeout != nil {
+				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+			}
+
+			method := fsCfg.MatchMethod
+			if method == "" {
+				method = "*"
+			}
+			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+				method:     method,
+				finalities: fsCfg.MatchFinality,
+				executor:   failsafe.NewExecutor(policyArray...),
+				timeout:    timeoutDuration,
+			})
+		}
 	}
-	policyArray := upstream.ToPolicyArray(pls, "timeout", "retry", "hedge", "consensus")
-	var timeoutDuration *time.Duration
-	if nwCfg.Failsafe != nil && nwCfg.Failsafe.Timeout != nil {
-		timeoutDuration = nwCfg.Failsafe.Timeout.Duration.DurationPtr()
-	}
-	lg.Debug().Interface("config", nwCfg.Failsafe).Msg("creating network")
+
+	// Create a default executor if no failsafe config is provided or matched
+	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
+		method:     "*", // "*" means match any method
+		finalities: nil, // nil means match any finality
+		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
+		timeout:    nil,
+	})
+
+	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))
 
 	network := &Network{
 		cfg:       nwCfg,
@@ -95,11 +123,10 @@ func NewNetwork(
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
 
-		bootstrapOnce:    sync.Once{},
-		inFlightRequests: &sync.Map{},
-		timeoutDuration:  timeoutDuration,
-		failsafeExecutor: failsafe.NewExecutor(policyArray...),
-		initializer:      util.NewInitializer(appCtx, &lg, nil),
+		bootstrapOnce:     sync.Once{},
+		inFlightRequests:  &sync.Map{},
+		failsafeExecutors: failsafeExecutors,
+		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
 
 	if nwCfg.Architecture == "" {

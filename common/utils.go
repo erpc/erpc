@@ -89,5 +89,5 @@ func RemoveDuplicates(slice []string) []string {
 // This is not a full json.Valid check, but it is good enough for high speed detection of wrong HTML responses
 // from upstreams.
 func IsSemiValidJson(data []byte) bool {
-	return data != nil && len(data) > 0 && (data[0] == '{' || data[0] == '[' || data[0] == '"' || data[0] == 'n' || data[0] == 't' || data[0] == 'f')
+	return len(data) > 0 && (data[0] == '{' || data[0] == '[' || data[0] == '"' || data[0] == 'n' || data[0] == 't' || data[0] == 'f')
 }

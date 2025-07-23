@@ -44,16 +44,12 @@ export {
   AuthTypeSiwe,
   AuthTypeNetwork,
   // Consensus related
-  ConsensusFailureBehaviorReturnError,
-  ConsensusFailureBehaviorAcceptAnyValidResult,
-  ConsensusFailureBehaviorPreferBlockHeadLeader,
-  ConsensusFailureBehaviorOnlyBlockHeadLeader,
   ConsensusLowParticipantsBehaviorReturnError,
-  ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
+  ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
   ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
   ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
   ConsensusDisputeBehaviorReturnError,
-  ConsensusDisputeBehaviorAcceptAnyValidResult,
+  ConsensusDisputeBehaviorAcceptMostCommonValidResult,
   ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorOnlyBlockHeadLeader,
 } from "./generated";

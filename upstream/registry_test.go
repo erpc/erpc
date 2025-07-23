@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -21,8 +22,8 @@ func init() {
 	telemetry.SetHistogramBuckets("0.05,0.5,5,30")
 }
 
-func getUpsByID(upsList []*Upstream, ids ...string) []*Upstream {
-	var ups []*Upstream
+func getUpsByID(upsList []common.Upstream, ids ...string) []common.Upstream {
+	var ups []common.Upstream
 	for _, id := range ids {
 		for _, u := range upsList {
 			if u.Id() == id {
@@ -549,8 +550,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:   "evm:1",
 						Method:    "eth_call",
-						Overall:   2.0, // Double the weight for this specific method
-						ErrorRate: 8.0, // Heavily penalize errors
+						Overall:   util.Float64Ptr(2.0), // Double the weight for this specific method
+						ErrorRate: util.Float64Ptr(8.0), // Heavily penalize errors
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -566,8 +567,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:   "evm:1",
 						Method:    "eth_call",
-						Overall:   1.0,
-						ErrorRate: 2.0,
+						Overall:   util.Float64Ptr(1.0),
+						ErrorRate: util.Float64Ptr(2.0),
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -595,8 +596,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getLogs",
-						Overall:     3.0, // Heavily prefer for historical queries
-						RespLatency: 2.0, // Latency less important for historical data
+						Overall:     util.Float64Ptr(3.0), // Heavily prefer for historical queries
+						RespLatency: util.Float64Ptr(2.0), // Latency less important for historical data
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -612,8 +613,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getLogs",
-						Overall:     1.0,
-						RespLatency: 2.0,
+						Overall:     util.Float64Ptr(1.0),
+						RespLatency: util.Float64Ptr(2.0),
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -641,8 +642,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getBalance",
-						Overall:     1.0,
-						RespLatency: 8.0, // Heavily weight latency
+						Overall:     util.Float64Ptr(1.0),
+						RespLatency: util.Float64Ptr(8.0), // Heavily weight latency
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -658,8 +659,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:     "evm:1",
 						Method:      "eth_getBalance",
-						Overall:     1.0,
-						RespLatency: 8.0, // Same latency weight
+						Overall:     util.Float64Ptr(1.0),
+						RespLatency: util.Float64Ptr(8.0), // Same latency weight
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -687,8 +688,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:      "evm:1",
 						Method:       "eth_getBlockByNumber",
-						Overall:      1.0,
-						BlockHeadLag: 5.0, // Heavily weight block lag
+						Overall:      util.Float64Ptr(1.0),
+						BlockHeadLag: util.Float64Ptr(5.0), // Heavily weight block lag
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -705,8 +706,8 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					priorityMultiplier: &common.ScoreMultiplierConfig{
 						Network:      "evm:1",
 						Method:       "eth_getBlockByNumber",
-						Overall:      1.0,
-						BlockHeadLag: 5.0, // Same block lag weight
+						Overall:      util.Float64Ptr(1.0),
+						BlockHeadLag: util.Float64Ptr(5.0), // Same block lag weight
 					},
 					metrics: struct {
 						totalRequests, respLatency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
@@ -768,6 +769,80 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
+	util.ConfigureTestLogger()
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_call"
+
+	// Create registry with existing test upstreams
+	ctx := context.Background()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Second)
+
+	// Get the existing upstreams
+	upstreams := registry.GetAllUpstreams()
+	assert.Len(t, upstreams, 3)
+
+	// Find our test upstreams
+	var workingUpstream, failingUpstream *Upstream
+	for _, ups := range upstreams {
+		if ups.Id() == "upstream-a" {
+			workingUpstream = ups
+		} else if ups.Id() == "upstream-b" {
+			failingUpstream = ups
+		}
+	}
+	assert.NotNil(t, workingUpstream)
+	assert.NotNil(t, failingUpstream)
+
+	// Simulate metrics: one upstream has real latency, another has zero latency (100% error rate)
+	// Working upstream: some latency, low error rate
+	simulateRequestsWithLatency(metricsTracker, workingUpstream, method, 10, 0.1) // 100ms latency
+	simulateRequests(metricsTracker, workingUpstream, method, 10, 1)              // 10% error rate
+
+	// Failing upstream: zero latency (no successful requests), high error rate
+	simulateRequests(metricsTracker, failingUpstream, method, 10, 10) // 100% error rate
+	// No latency simulation for failing upstream - it will have zero latency
+
+	// Initialize scores by calling GetSortedUpstreams first
+	_, err := registry.GetSortedUpstreams(context.Background(), networkID, method)
+	assert.NoError(t, err)
+
+	// Refresh scores
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	// Get sorted upstreams for this specific method
+	sortedUpstreams, err := registry.GetSortedUpstreams(context.Background(), networkID, method)
+	assert.NoError(t, err)
+	assert.Len(t, sortedUpstreams, 3)
+
+	// Verify scores: working upstream should have higher score than failing one
+	registry.upstreamsMu.RLock()
+	workingScore := registry.upstreamScores["upstream-a"][networkID][method]
+	failingScore := registry.upstreamScores["upstream-b"][networkID][method]
+	registry.upstreamsMu.RUnlock()
+
+	assert.Greater(t, workingScore, failingScore, "Working upstream should have higher score than failing upstream")
+
+	t.Logf("Working upstream (upstream-a) score: %f", workingScore)
+	t.Logf("Failing upstream (upstream-b) score: %f", failingScore)
+
+	// Working upstream should be ranked higher than failing upstream
+	workingRank := -1
+	failingRank := -1
+	for i, ups := range sortedUpstreams {
+		if ups.Id() == "upstream-a" {
+			workingRank = i
+		} else if ups.Id() == "upstream-b" {
+			failingRank = i
+		}
+	}
+	assert.Less(t, workingRank, failingRank, "Working upstream should be ranked higher (lower index) than failing upstream")
 }
 
 func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
@@ -833,7 +908,7 @@ func simulateRequests(tracker *health.Tracker, upstream common.Upstream, method 
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, method)
+			tracker.RecordUpstreamFailure(upstream, method, fmt.Errorf("test problem"))
 		}
 	}
 }
@@ -857,8 +932,8 @@ func simulateRequestsWithLatency(tracker *health.Tracker, upstream common.Upstre
 		go func() {
 			defer wg.Done()
 			tracker.RecordUpstreamRequest(upstream, method)
-			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), true, "none")
-			// timer := tracker.RecordUpstreamDurationStart(upstream, network, method, "none")
+			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), true, "none", common.DataFinalityStateUnknown)
+			// timer := tracker.RecordUpstreamDurationStart(upstream, network, method, "none", common.DataFinalityStateUnknown)
 			// time.Sleep(time.Duration(latency * float64(time.Second)))
 			// timer.ObserveDuration()
 		}()
@@ -869,7 +944,7 @@ func simulateRequestsWithLatency(tracker *health.Tracker, upstream common.Upstre
 func simulateFailedRequests(tracker *health.Tracker, upstream common.Upstream, method string, count int) {
 	for i := 0; i < count; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
-		tracker.RecordUpstreamFailure(upstream, method)
+		tracker.RecordUpstreamFailure(upstream, method, fmt.Errorf("test problem"))
 	}
 }
 

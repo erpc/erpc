@@ -2,7 +2,7 @@ package health
 
 import (
 	"context"
-	// "fmt"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -287,7 +287,7 @@ func simulateRequestMetrics(tracker *Tracker, upstream common.Upstream, method s
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, method)
+			tracker.RecordUpstreamFailure(upstream, method, fmt.Errorf("test problem"))
 		}
 	}
 }
@@ -311,7 +311,7 @@ func simulateRequestMetricsWithLatency(tracker *Tracker, upstream common.Upstrea
 		go func() {
 			defer wg.Done()
 			tracker.RecordUpstreamRequest(upstream, method)
-			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), true, "none")
+			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), true, "none", common.DataFinalityStateUnknown)
 		}()
 	}
 	wg.Wait()
@@ -333,4 +333,119 @@ func resetMetrics() {
 	if telemetry.MetricUpstreamRemoteRateLimitedTotal != nil {
 		telemetry.MetricUpstreamRemoteRateLimitedTotal.Reset()
 	}
+}
+
+func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
+	projectID := "test-project"
+	windowSize := 100 * time.Millisecond // Short window for faster testing
+
+	tracker := NewTracker(&log.Logger, projectID, windowSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups1 := common.NewFakeUpstream("upstream1")
+	ups2 := common.NewFakeUpstream("upstream2")
+
+	// First, ensure TrackedMetrics exist by recording some requests
+	tracker.RecordUpstreamRequest(ups1, "method1")
+	tracker.RecordUpstreamRequest(ups2, "method1")
+	tracker.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test error"))
+
+	// Now set different block numbers to create lag
+	tracker.SetLatestBlockNumber(ups1, 1000) // ups1 is at block 1000
+	tracker.SetLatestBlockNumber(ups2, 990)  // ups2 is behind by 10 blocks
+
+	// Get initial metrics AFTER setting block numbers
+	metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1")
+	metrics2Before := tracker.GetUpstreamMethodMetrics(ups2, "method1")
+
+	// Debug: Print actual lag values
+	t.Logf("Before reset - ups1 lag: %d, ups2 lag: %d",
+		metrics1Before.BlockHeadLag.Load(),
+		metrics2Before.BlockHeadLag.Load())
+
+	// Verify initial state
+	assert.Equal(t, int64(0), metrics1Before.BlockHeadLag.Load())  // ups1 is at network head
+	assert.Equal(t, int64(10), metrics2Before.BlockHeadLag.Load()) // ups2 is 10 blocks behind
+	assert.Equal(t, int64(1), metrics1Before.RequestsTotal.Load())
+	assert.Equal(t, int64(1), metrics1Before.ErrorsTotal.Load())
+
+	// Wait for reset cycle
+	time.Sleep(windowSize + 50*time.Millisecond)
+
+	// Get metrics after reset
+	metrics1After := tracker.GetUpstreamMethodMetrics(ups1, "method1")
+	metrics2After := tracker.GetUpstreamMethodMetrics(ups2, "method1")
+
+	// Debug: Print actual lag values after reset
+	t.Logf("After reset - ups1 lag: %d, ups2 lag: %d",
+		metrics1After.BlockHeadLag.Load(),
+		metrics2After.BlockHeadLag.Load())
+
+	// Verify cumulative metrics were reset
+	assert.Equal(t, int64(0), metrics1After.RequestsTotal.Load())
+	assert.Equal(t, int64(0), metrics1After.ErrorsTotal.Load())
+	assert.Equal(t, int64(0), metrics2After.RequestsTotal.Load())
+
+	// Verify block head lag persisted (the key fix)
+	assert.Equal(t, int64(0), metrics1After.BlockHeadLag.Load(), "upstream1 should still be at network head")
+	assert.Equal(t, int64(10), metrics2After.BlockHeadLag.Load(), "upstream2 should still be 10 blocks behind")
+
+	// Test that block lag can still be updated after reset
+	tracker.SetLatestBlockNumber(ups2, 1000) // ups2 catches up
+	metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1")
+	assert.Equal(t, int64(0), metrics2Updated.BlockHeadLag.Load(), "upstream2 should now be caught up")
+}
+
+func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
+	projectID := "test-project"
+	windowSize := 100 * time.Millisecond // Short window for faster testing
+
+	tracker := NewTracker(&log.Logger, projectID, windowSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups1 := common.NewFakeUpstream("upstream1")
+	ups2 := common.NewFakeUpstream("upstream2")
+
+	// First, ensure TrackedMetrics exist by recording some requests
+	tracker.RecordUpstreamRequest(ups1, "method1")
+	tracker.RecordUpstreamRequest(ups2, "method1")
+
+	// Now set different finalized block numbers to create lag
+	tracker.SetFinalizedBlockNumber(ups1, 900) // ups1 finalized at block 900
+	tracker.SetFinalizedBlockNumber(ups2, 880) // ups2 finalized at block 880 (behind by 20)
+
+	// Get initial metrics
+	metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1")
+	metrics2Before := tracker.GetUpstreamMethodMetrics(ups2, "method1")
+
+	// Verify initial state
+	assert.Equal(t, int64(0), metrics1Before.FinalizationLag.Load())  // ups1 is at network finalization head
+	assert.Equal(t, int64(20), metrics2Before.FinalizationLag.Load()) // ups2 is 20 blocks behind
+	assert.Equal(t, int64(1), metrics1Before.RequestsTotal.Load())
+
+	// Wait for reset cycle
+	time.Sleep(windowSize + 50*time.Millisecond)
+
+	// Get metrics after reset
+	metrics1After := tracker.GetUpstreamMethodMetrics(ups1, "method1")
+	metrics2After := tracker.GetUpstreamMethodMetrics(ups2, "method1")
+
+	// Verify cumulative metrics were reset
+	assert.Equal(t, int64(0), metrics1After.RequestsTotal.Load())
+	assert.Equal(t, int64(0), metrics2After.RequestsTotal.Load())
+
+	// Verify finalization lag persisted (the key fix)
+	assert.Equal(t, int64(0), metrics1After.FinalizationLag.Load(), "upstream1 should still be at network finalization head")
+	assert.Equal(t, int64(20), metrics2After.FinalizationLag.Load(), "upstream2 should still be 20 blocks behind in finalization")
+
+	// Test that finalization lag can still be updated after reset
+	tracker.SetFinalizedBlockNumber(ups2, 900) // ups2 catches up
+	metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1")
+	assert.Equal(t, int64(0), metrics2Updated.FinalizationLag.Load(), "upstream2 should now be caught up in finalization")
 }

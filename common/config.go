@@ -116,6 +116,7 @@ const (
 	EvalAllErrorRateBelow100    = "all:errorRateBelow100"
 	EvalEvmAnyChainId           = "any:evm:eth_chainId"
 	EvalEvmAllChainId           = "all:evm:eth_chainId"
+	EvalAllActiveUpstreams      = "all:activeUpstreams"
 )
 
 type TracingProtocol string
@@ -163,10 +164,9 @@ type SharedStateConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors  []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
-	Policies    []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
-	Methods     map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
-	Compression *CompressionConfig            `yaml:"compression,omitempty" json:"compression"`
+	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
+	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
+	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
 }
 
 type CompressionConfig struct {
@@ -237,13 +237,13 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr              string     `yaml:"addr" json:"addr"`
+	Addr              string     `yaml:"addr,omitempty" json:"addr"`
 	Username          string     `yaml:"username,omitempty" json:"username"`
-	Password          string     `yaml:"password" json:"-"`
-	DB                int        `yaml:"db" json:"db"`
-	TLS               *TLSConfig `yaml:"tls" json:"tls"`
-	ConnPoolSize      int        `yaml:"connPoolSize" json:"connPoolSize"`
-	URI               string     `yaml:"uri,omitempty" json:"uri"`
+	Password          string     `yaml:"password,omitempty" json:"-"`
+	DB                int        `yaml:"db,omitempty" json:"db"`
+	TLS               *TLSConfig `yaml:"tls,omitempty" json:"tls"`
+	ConnPoolSize      int        `yaml:"connPoolSize,omitempty" json:"connPoolSize"`
+	URI               string     `yaml:"uri" json:"uri"`
 	InitTimeout       Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
 	GetTimeout        Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 	SetTimeout        Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
@@ -338,10 +338,66 @@ type ProjectConfig struct {
 
 type NetworkDefaults struct {
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+}
+
+// UnmarshalYAML provides backward compatibility for old single failsafe object format
+func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Define a type alias to avoid recursion
+	type rawNetworkDefaults NetworkDefaults
+	raw := (*rawNetworkDefaults)(n)
+
+	// Try unmarshaling normally first
+	err := unmarshal(raw)
+	if err == nil {
+		return nil
+	}
+
+	// Save the original error - it might be more informative
+	originalErr := err
+
+	// Check if the error is about unknown fields - if so, return it as is
+	// This preserves errors like "field maxCount not found in type"
+	errStr := err.Error()
+	if strings.Contains(errStr, "not found in type") ||
+		strings.Contains(errStr, "unknown field") {
+		return originalErr
+	}
+
+	// If that fails, try the old format with single failsafe object
+	type oldNetworkDefaults struct {
+		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
+		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
+		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
+		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+	}
+
+	var old oldNetworkDefaults
+	if err := unmarshal(&old); err != nil {
+		// If both formats fail, return the original error as it's likely more informative
+		// about the actual problem (like invalid field names)
+		return originalErr
+	}
+
+	// Convert old format to new format
+	n.RateLimitBudget = old.RateLimitBudget
+	n.SelectionPolicy = old.SelectionPolicy
+	n.DirectiveDefaults = old.DirectiveDefaults
+	n.Evm = old.Evm
+
+	if old.Failsafe != nil {
+		// Ensure MatchMethod has a default value for backward compatibility
+		if old.Failsafe.MatchMethod == "" {
+			old.Failsafe.MatchMethod = "*"
+		}
+		n.Failsafe = []*FailsafeConfig{old.Failsafe}
+	}
+
+	return nil
 }
 
 type CORSConfig struct {
@@ -360,6 +416,7 @@ type ProviderConfig struct {
 	Vendor             string                     `yaml:"vendor" json:"vendor"`
 	Settings           VendorSettings             `yaml:"settings,omitempty" json:"settings"`
 	OnlyNetworks       []string                   `yaml:"onlyNetworks,omitempty" json:"onlyNetworks"`
+	IgnoreNetworks     []string                   `yaml:"ignoreNetworks,omitempty" json:"ignoreNetworks"`
 	UpstreamIdTemplate string                     `yaml:"upstreamIdTemplate,omitempty" json:"upstreamIdTemplate"`
 	Overrides          map[string]*UpstreamConfig `yaml:"overrides,omitempty" json:"overrides"`
 }
@@ -386,12 +443,91 @@ type UpstreamConfig struct {
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
 	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty" json:"autoIgnoreUnsupportedMethods"`
-	Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
 	LoadBalancer                 *LoadBalancerConfig      `yaml:"loadBalancer,omitempty" json:"loadBalancer"`
+	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
 	ProjectConfig                *ProjectConfig           `yaml:"-" json:"-"` // Reference to parent project config
+}
+
+// UnmarshalYAML provides backward compatibility for old single failsafe object format
+func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Define a type alias to avoid recursion
+	type rawUpstreamConfig UpstreamConfig
+	raw := (*rawUpstreamConfig)(u)
+
+	// Try unmarshaling normally first
+	err := unmarshal(raw)
+	if err == nil {
+		return nil
+	}
+
+	// Save the original error - it might be more informative
+	originalErr := err
+
+	// Check if the error is about unknown fields - if so, return it as is
+	// This preserves errors like "field maxCount not found in type"
+	errStr := err.Error()
+	if strings.Contains(errStr, "not found in type") ||
+		strings.Contains(errStr, "unknown field") {
+		return originalErr
+	}
+
+	// If that fails, try the old format with single failsafe object
+	type oldUpstreamConfig struct {
+		Id                           string                   `yaml:"id,omitempty"`
+		Type                         UpstreamType             `yaml:"type,omitempty"`
+		Group                        string                   `yaml:"group,omitempty"`
+		VendorName                   string                   `yaml:"vendorName,omitempty"`
+		Endpoint                     string                   `yaml:"endpoint,omitempty"`
+		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
+		JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty"`
+		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
+		AllowMethods                 []string                 `yaml:"allowMethods,omitempty"`
+		AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty"`
+		Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty"`
+		RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty"`
+		Routing                      *RoutingConfig           `yaml:"routing,omitempty"`
+		LoadBalancer                 *LoadBalancerConfig      `yaml:"loadBalancer,omitempty"`
+		Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty"`
+	}
+
+	var old oldUpstreamConfig
+	if err := unmarshal(&old); err != nil {
+		// If both formats fail, return the original error as it's likely more informative
+		// about the actual problem (like invalid field names)
+		return originalErr
+	}
+
+	// Convert old format to new format
+	u.Id = old.Id
+	u.Type = old.Type
+	u.Group = old.Group
+	u.VendorName = old.VendorName
+	u.Endpoint = old.Endpoint
+	u.Evm = old.Evm
+	u.JsonRpc = old.JsonRpc
+	u.IgnoreMethods = old.IgnoreMethods
+	u.AllowMethods = old.AllowMethods
+	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
+	u.RateLimitBudget = old.RateLimitBudget
+	u.RateLimitAutoTune = old.RateLimitAutoTune
+	u.Routing = old.Routing
+	u.LoadBalancer = old.LoadBalancer
+	u.Shadow = old.Shadow
+
+	if old.Failsafe != nil {
+		// Ensure MatchMethod has a default value for backward compatibility
+		if old.Failsafe.MatchMethod == "" {
+			old.Failsafe.MatchMethod = "*"
+		}
+		u.Failsafe = []*FailsafeConfig{old.Failsafe}
+	}
+
+	return nil
 }
 
 func (c *UpstreamConfig) Copy() *UpstreamConfig {
@@ -406,7 +542,10 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 		copied.Evm = c.Evm.Copy()
 	}
 	if c.Failsafe != nil {
-		copied.Failsafe = c.Failsafe.Copy()
+		copied.Failsafe = make([]*FailsafeConfig, len(c.Failsafe))
+		for i, failsafe := range c.Failsafe {
+			copied.Failsafe[i] = failsafe.Copy()
+		}
 	}
 	if c.JsonRpc != nil {
 		copied.JsonRpc = c.JsonRpc.Copy()
@@ -429,6 +568,11 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 
 	return copied
+}
+
+type ShadowUpstreamConfig struct {
+	Enabled      bool                `yaml:"enabled" json:"enabled"`
+	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
 type RoutingConfig struct {
@@ -454,18 +598,15 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 }
 
 type ScoreMultiplierConfig struct {
-	Network         string  `yaml:"network" json:"network"`
-	Method          string  `yaml:"method" json:"method"`
-	Overall         float64 `yaml:"overall" json:"overall"`
-	ErrorRate       float64 `yaml:"errorRate" json:"errorRate"`
-	RespLatency     float64 `yaml:"respLatency" json:"respLatency"`
-	TotalRequests   float64 `yaml:"totalRequests" json:"totalRequests"`
-	ThrottledRate   float64 `yaml:"throttledRate" json:"throttledRate"`
-	BlockHeadLag    float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
-	FinalizationLag float64 `yaml:"finalizationLag" json:"finalizationLag"`
-
-	// @deprecated use RespLatency instead
-	DeprecatedP90Latency float64 `yaml:"p90latency" json:"p90latency"`
+	Network         string   `yaml:"network" json:"network"`
+	Method          string   `yaml:"method" json:"method"`
+	Overall         *float64 `yaml:"overall" json:"overall"`
+	ErrorRate       *float64 `yaml:"errorRate" json:"errorRate"`
+	RespLatency     *float64 `yaml:"respLatency" json:"respLatency"`
+	TotalRequests   *float64 `yaml:"totalRequests" json:"totalRequests"`
+	ThrottledRate   *float64 `yaml:"throttledRate" json:"throttledRate"`
+	BlockHeadLag    *float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
+	FinalizationLag *float64 `yaml:"finalizationLag" json:"finalizationLag"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
@@ -561,6 +702,8 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
+	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
@@ -575,6 +718,12 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 
 	copied := &FailsafeConfig{}
 	*copied = *c
+
+	// Deep copy the MatchFinality array
+	if c.MatchFinality != nil {
+		copied.MatchFinality = make([]DataFinalityState, len(c.MatchFinality))
+		copy(copied.MatchFinality, c.MatchFinality)
+	}
 
 	if c.Retry != nil {
 		copied.Retry = c.Retry.Copy()
@@ -665,40 +814,32 @@ func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
 	return copied
 }
 
-type ConsensusFailureBehavior string
-
-const (
-	ConsensusFailureBehaviorReturnError           ConsensusFailureBehavior = "returnError"
-	ConsensusFailureBehaviorAcceptAnyValidResult  ConsensusFailureBehavior = "acceptAnyValidResult"
-	ConsensusFailureBehaviorPreferBlockHeadLeader ConsensusFailureBehavior = "preferBlockHeadLeader"
-	ConsensusFailureBehaviorOnlyBlockHeadLeader   ConsensusFailureBehavior = "onlyBlockHeadLeader"
-)
-
 type ConsensusLowParticipantsBehavior string
 
 const (
-	ConsensusLowParticipantsBehaviorReturnError           ConsensusLowParticipantsBehavior = "returnError"
-	ConsensusLowParticipantsBehaviorAcceptAnyValidResult  ConsensusLowParticipantsBehavior = "acceptAnyValidResult"
-	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
-	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader   ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
+	ConsensusLowParticipantsBehaviorReturnError                 ConsensusLowParticipantsBehavior = "returnError"
+	ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult ConsensusLowParticipantsBehavior = "acceptMostCommonValidResult"
+	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader       ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
+	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader         ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
 )
 
 type ConsensusDisputeBehavior string
 
 const (
-	ConsensusDisputeBehaviorReturnError           ConsensusDisputeBehavior = "returnError"
-	ConsensusDisputeBehaviorAcceptAnyValidResult  ConsensusDisputeBehavior = "acceptAnyValidResult"
-	ConsensusDisputeBehaviorPreferBlockHeadLeader ConsensusDisputeBehavior = "preferBlockHeadLeader"
-	ConsensusDisputeBehaviorOnlyBlockHeadLeader   ConsensusDisputeBehavior = "onlyBlockHeadLeader"
+	ConsensusDisputeBehaviorReturnError                 ConsensusDisputeBehavior = "returnError"
+	ConsensusDisputeBehaviorAcceptMostCommonValidResult ConsensusDisputeBehavior = "acceptMostCommonValidResult"
+	ConsensusDisputeBehaviorPreferBlockHeadLeader       ConsensusDisputeBehavior = "preferBlockHeadLeader"
+	ConsensusDisputeBehaviorOnlyBlockHeadLeader         ConsensusDisputeBehavior = "onlyBlockHeadLeader"
 )
 
 type ConsensusPolicyConfig struct {
 	RequiredParticipants    int                              `yaml:"requiredParticipants" json:"requiredParticipants"`
 	AgreementThreshold      int                              `yaml:"agreementThreshold,omitempty" json:"agreementThreshold"`
-	FailureBehavior         ConsensusFailureBehavior         `yaml:"failureBehavior,omitempty" json:"failureBehavior"`
 	DisputeBehavior         ConsensusDisputeBehavior         `yaml:"disputeBehavior,omitempty" json:"disputeBehavior"`
 	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`
 	PunishMisbehavior       *PunishMisbehaviorConfig         `yaml:"punishMisbehavior,omitempty" json:"punishMisbehavior"`
+	DisputeLogLevel         string                           `yaml:"disputeLogLevel,omitempty" json:"disputeLogLevel"` // "trace", "debug", "info", "warn", "error"
+	IgnoreFields            map[string][]string              `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -710,6 +851,14 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 
 	if c.PunishMisbehavior != nil {
 		copied.PunishMisbehavior = c.PunishMisbehavior.Copy()
+	}
+
+	if c.IgnoreFields != nil {
+		copied.IgnoreFields = make(map[string][]string, len(c.IgnoreFields))
+		for method, fields := range c.IgnoreFields {
+			copied.IgnoreFields[method] = make([]string, len(fields))
+			copy(copied.IgnoreFields[method], fields)
+		}
 	}
 
 	return copied
@@ -767,14 +916,82 @@ type DeprecatedProjectHealthCheckConfig struct {
 	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
 }
 
+type MethodsConfig struct {
+	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
+	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
+}
+
 type NetworkConfig struct {
 	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
+	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
+}
+
+// UnmarshalYAML provides backward compatibility for old single failsafe object format
+func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Define a type alias to avoid recursion
+	type rawNetworkConfig NetworkConfig
+	raw := (*rawNetworkConfig)(n)
+
+	// Try unmarshaling normally first
+	err := unmarshal(raw)
+	if err == nil {
+		return nil
+	}
+
+	// Save the original error - it might be more informative
+	originalErr := err
+
+	// Check if the error is about unknown fields - if so, return it as is
+	// This preserves errors like "field maxCount not found in type"
+	errStr := err.Error()
+	if strings.Contains(errStr, "not found in type") ||
+		strings.Contains(errStr, "unknown field") {
+		return originalErr
+	}
+
+	// If that fails, try the old format with single failsafe object
+	type oldNetworkConfig struct {
+		Architecture      NetworkArchitecture      `yaml:"architecture"`
+		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
+		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
+		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
+		Alias             string                   `yaml:"alias,omitempty"`
+		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
+	}
+
+	var old oldNetworkConfig
+	if err := unmarshal(&old); err != nil {
+		// If both formats fail, return the original error as it's likely more informative
+		// about the actual problem (like invalid field names)
+		return originalErr
+	}
+
+	// Convert old format to new format
+	n.Architecture = old.Architecture
+	n.RateLimitBudget = old.RateLimitBudget
+	n.Evm = old.Evm
+	n.SelectionPolicy = old.SelectionPolicy
+	n.DirectiveDefaults = old.DirectiveDefaults
+	n.Alias = old.Alias
+	n.Methods = old.Methods
+
+	if old.Failsafe != nil {
+		// Ensure MatchMethod has a default value for backward compatibility
+		if old.Failsafe.MatchMethod == "" {
+			old.Failsafe.MatchMethod = "*"
+		}
+		n.Failsafe = []*FailsafeConfig{old.Failsafe}
+	}
+
+	return nil
 }
 
 type DirectiveDefaultsConfig struct {
