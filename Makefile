@@ -14,6 +14,7 @@ help:
 	@echo " up                            Up docker services"
 	@echo " down                          Down docker services"
 	@echo " fmt                           Format source code"
+	@echo " docker-build                  Build docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
 
 .PHONY: setup
 setup:
@@ -64,7 +65,7 @@ test-race:
 
 .PHONY: bench
 bench:
-	@go test -run=^$$ -bench=. -benchmem -count=8 -v ./... 
+	@go test -run=^$$ -bench=. -benchmem -count=8 -v ./...
 
 .PHONY: coverage
 coverage:
@@ -83,5 +84,15 @@ down:
 .PHONY: fmt
 fmt:
 	@go fmt ./...
+
+.PHONY: docker-build
+docker-build:
+	$(eval platform ?= linux/amd64)
+	@docker build -t local/erpc-server --platform $(platform) --build-arg VERSION=local --build-arg COMMIT_SHA=$$(git rev-parse --short HEAD) .
+
+.PHONY: docker-run
+docker-run:
+	$(eval platform ?= linux/amd64)
+	@docker run --rm -it --platform $(platform) -p 4000:4000 -p 4001:4001 -v $(PWD)/erpc.yaml:/erpc.yaml local/erpc-server /erpc-server --config /erpc.yaml
 
 .DEFAULT_GOAL := help
