@@ -15,6 +15,7 @@ help:
 	@echo " down                          Down docker services"
 	@echo " fmt                           Format source code"
 	@echo " docker-build                  Build docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
+	@echo " docker-run                    Run docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
 
 .PHONY: setup
 setup:
