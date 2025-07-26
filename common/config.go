@@ -18,10 +18,18 @@ import (
 )
 
 var (
-	ErpcVersion   = "dev"
+	// ErpcVersion is the version of eRPC, overridden at build time via ldflags.
+	// Default: "dev" for development builds.
+	// Build example: -ldflags="-X github.com/erpc/erpc/common.ErpcVersion=v1.0.0"
+	ErpcVersion = "dev"
+
+	// ErpcCommitSha is the git commit SHA, overridden at build time via ldflags.
+	// Default: "none" for development builds.
+	// Build example: -ldflags="-X github.com/erpc/erpc/common.ErpcCommitSha=abc123def"
 	ErpcCommitSha = "none"
-	TRUE          = true
-	FALSE         = false
+
+	TRUE  = true
+	FALSE = false
 )
 
 // Config represents the configuration of the application.
