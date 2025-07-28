@@ -27,7 +27,7 @@ ARG COMMIT_SHA
 # Set environment variables for Go build
 ENV CGO_ENABLED=0 \
     GOOS=linux \
-    LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}"
+    LDFLAGS="-w -s -X github.com/erpc/erpc/common.ErpcVersion=${VERSION} -X github.com/erpc/erpc/common.ErpcCommitSha=${COMMIT_SHA}"
 
 # Build the Go binary
 RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go && \
@@ -48,7 +48,7 @@ COPY pnpm* /temp/dev/
 COPY package.json /temp/dev/package.json
 
 # Install everything and build
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/dev &&  pnpm install --frozen-lockfile 
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/dev &&  pnpm install --frozen-lockfile
 RUN cd /temp/dev && pnpm build
 
 # Stage where we will install prod dependencies only
