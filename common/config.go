@@ -716,6 +716,76 @@ type MatcherConfig struct {
 	Action   MatcherAction          `yaml:"action,omitempty" json:"action"`
 }
 
+// ApplyGlobalOverride applies global override logic to a slice of MatcherConfig
+// - If only "include" rules are defined, auto-add catch-all exclude
+// - If only "exclude" rules are defined, auto-add catch-all include
+// - If there's a mix, validate that the FIRST rule determines the starting point
+// - If allowIncompletePolicy is true, don't add catch-all rules (used for multiple failsafe policies)
+func ApplyGlobalOverride(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
+	return ApplyGlobalOverrideWithOptions(matchers, false)
+}
+
+// ApplyGlobalOverrideWithOptions provides more control over the global override behavior
+func ApplyGlobalOverrideWithOptions(matchers []*MatcherConfig, allowIncompletePolicy bool) ([]*MatcherConfig, error) {
+	if len(matchers) == 0 {
+		return matchers, nil
+	}
+
+	hasInclude := false
+	hasExclude := false
+
+	// Check what types of actions we have
+	for _, matcher := range matchers {
+		if matcher.Action == MatcherInclude {
+			hasInclude = true
+		} else if matcher.Action == MatcherExclude {
+			hasExclude = true
+		}
+	}
+
+	// If there's a mix of include and exclude, validate the first rule
+	if hasInclude && hasExclude {
+		firstAction := matchers[0].Action
+		if firstAction != MatcherInclude && firstAction != MatcherExclude {
+			return nil, fmt.Errorf("when mixing include and exclude rules, the FIRST rule must have action 'include' or 'exclude' to determine the starting point")
+		}
+		// Mixed rules are valid if first rule has proper action
+		return matchers, nil
+	}
+
+	// If allowIncompletePolicy is true, don't add catch-all rules
+	// This is useful when there are multiple failsafe policies
+	if allowIncompletePolicy {
+		return matchers, nil
+	}
+
+	// IMPORTANT: Matchers are processed in REVERSE order by ConfigMatcher
+	// So we need to add catch-all rules in the opposite position than expected
+
+	// If only include rules, add catch-all exclude at the BEGINNING
+	// (so it gets processed LAST in reverse order)
+	if hasInclude && !hasExclude {
+		catchAllExclude := &MatcherConfig{
+			Method: "*",
+			Action: MatcherExclude,
+		}
+		return append([]*MatcherConfig{catchAllExclude}, matchers...), nil
+	}
+
+	// If only exclude rules, add catch-all include at the END
+	// (so it gets processed FIRST in reverse order)
+	if hasExclude && !hasInclude {
+		catchAllInclude := &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		}
+		return append(matchers, catchAllInclude), nil
+	}
+
+	// No include or exclude actions found (shouldn't happen with proper validation)
+	return matchers, nil
+}
+
 type MatcherAction string
 
 const (
@@ -1317,4 +1387,59 @@ func loadConfigFromTypescript(filename string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// ValidateAndProcessFailsafePolicies validates an array of FailsafeConfig and applies
+// appropriate global override logic for multiple policies
+func ValidateAndProcessFailsafePolicies(policies []*FailsafeConfig) error {
+	if len(policies) == 0 {
+		return nil
+	}
+
+	// Each individual policy should be complete and follow global override rules
+	// Multiple policies work as a sequence where the first matching policy wins
+	for i, policy := range policies {
+		if policy == nil {
+			continue
+		}
+
+		// Validate legacy MatchMethod only if using legacy mode (no Matchers defined)
+		if len(policy.Matchers) == 0 && policy.MatchMethod == "" {
+			return fmt.Errorf("failsafe[%d].matchMethod cannot be empty, use '*' to match any method", i)
+		}
+
+		// Validate and apply global override to matchers
+		// Each policy should be complete, so don't allow incomplete policies
+		if len(policy.Matchers) > 0 {
+			processedMatchers, err := ApplyGlobalOverride(policy.Matchers)
+			if err != nil {
+				return fmt.Errorf("failsafe[%d].matchers validation failed: %v", i, err)
+			}
+			policy.Matchers = processedMatchers
+		}
+
+		// Validate other policy components
+		if policy.Timeout != nil {
+			if err := policy.Timeout.Validate(); err != nil {
+				return fmt.Errorf("failsafe[%d].timeout validation failed: %v", i, err)
+			}
+		}
+		if policy.Retry != nil {
+			if err := policy.Retry.Validate(); err != nil {
+				return fmt.Errorf("failsafe[%d].retry validation failed: %v", i, err)
+			}
+		}
+		if policy.Hedge != nil {
+			if err := policy.Hedge.Validate(); err != nil {
+				return fmt.Errorf("failsafe[%d].hedge validation failed: %v", i, err)
+			}
+		}
+		if policy.CircuitBreaker != nil {
+			if err := policy.CircuitBreaker.Validate(); err != nil {
+				return fmt.Errorf("failsafe[%d].circuitBreaker validation failed: %v", i, err)
+			}
+		}
+	}
+
+	return nil
 }

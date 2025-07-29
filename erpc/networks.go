@@ -236,7 +236,6 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 		params = jrpcReq.Params
 	}
 
-	// Try to find a matching executor using the new matcher system
 	for _, fe := range n.failsafeExecutors {
 		if fe.config != nil && len(fe.config.Matchers) > 0 {
 			matcher := matchers.NewConfigMatcher(fe.config.Matchers)

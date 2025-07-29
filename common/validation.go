@@ -740,10 +740,8 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Failsafe != nil {
-		for _, fs := range u.Failsafe {
-			if err := fs.Validate(); err != nil {
-				return err
-			}
+		if err := ValidateAndProcessFailsafePolicies(u.Failsafe); err != nil {
+			return err
 		}
 	}
 	if u.JsonRpc != nil {
@@ -794,9 +792,18 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 }
 
 func (f *FailsafeConfig) Validate() error {
-	// Validate MatchMethod - empty string is not allowed
-	if f.MatchMethod == "" {
+	// Validate legacy MatchMethod only if using legacy mode (no Matchers defined)
+	if len(f.Matchers) == 0 && f.MatchMethod == "" {
 		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
+	}
+
+	// Validate and apply global override to matchers
+	if len(f.Matchers) > 0 {
+		processedMatchers, err := ApplyGlobalOverride(f.Matchers)
+		if err != nil {
+			return fmt.Errorf("failsafe.matchers validation failed: %v", err)
+		}
+		f.Matchers = processedMatchers
 	}
 
 	if f.Timeout != nil {
@@ -984,10 +991,8 @@ func (n *NetworkConfig) Validate(c *Config) error {
 		}
 	}
 	if n.Failsafe != nil {
-		for _, fs := range n.Failsafe {
-			if err := fs.Validate(); err != nil {
-				return err
-			}
+		if err := ValidateAndProcessFailsafePolicies(n.Failsafe); err != nil {
+			return err
 		}
 	}
 	if n.SelectionPolicy != nil {

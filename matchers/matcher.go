@@ -32,8 +32,22 @@ func (m *ConfigMatcher) MatchRequest(networkId, method string, params []interfac
 		}
 	}
 
-	// Default behavior if no matchers match
-	return common.MatchResult{Matched: true, Action: common.MatcherInclude}
+	// Default behavior if no matchers match - this should not happen if catch-all rules are properly configured
+	// We determine the default based on the intended behavior:
+	// - If the first matcher (processed last) is an include, default to exclude
+	// - If the first matcher (processed last) is an exclude, default to include
+	// - Otherwise, default to exclude for safety (fail-closed)
+	if len(m.configs) > 0 {
+		firstMatcher := m.configs[0]
+		if firstMatcher.Action == common.MatcherInclude {
+			return common.MatchResult{Matched: false, Action: common.MatcherExclude}
+		} else if firstMatcher.Action == common.MatcherExclude {
+			return common.MatchResult{Matched: false, Action: common.MatcherInclude}
+		}
+	}
+
+	// Fallback to exclude for safety
+	return common.MatchResult{Matched: false, Action: common.MatcherExclude}
 }
 
 // MatchForCache evaluates if a response should be cached

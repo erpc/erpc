@@ -563,7 +563,6 @@ projects:
             duration: 5s
           retry:
             maxCount: 5
-            delay: "10ms"
 `
 		// Create a temporary file
 		fs := afero.NewMemMapFs()
@@ -862,5 +861,262 @@ projects:
 		assert.Equal(t, 3, network.Failsafe[0].Retry.MaxAttempts)
 		assert.Equal(t, "eth_*", network.Failsafe[1].MatchMethod)
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
+	})
+}
+
+func TestApplyGlobalOverride(t *testing.T) {
+	t.Run("only include rules - should add catch-all exclude", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{Method: "eth_*", Action: MatcherInclude},
+			{Method: "debug_*", Action: MatcherInclude},
+		}
+
+		result, err := ApplyGlobalOverride(matchers)
+		assert.NoError(t, err)
+		assert.Len(t, result, 3)
+		// Catch-all exclude should be at the BEGINNING (processed last in reverse order)
+		assert.Equal(t, MatcherExclude, result[0].Action)
+		assert.Equal(t, "*", result[0].Method)
+		assert.Equal(t, MatcherInclude, result[1].Action)
+		assert.Equal(t, MatcherInclude, result[2].Action)
+	})
+
+	t.Run("only exclude rules - should add catch-all include at beginning", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{Method: "alchemy_*", Action: MatcherExclude},
+			{Method: "debug_*", Action: MatcherExclude},
+		}
+
+		result, err := ApplyGlobalOverride(matchers)
+		assert.NoError(t, err)
+		assert.Len(t, result, 3)
+		assert.Equal(t, MatcherExclude, result[0].Action)
+		assert.Equal(t, MatcherExclude, result[1].Action)
+		// Catch-all include should be at the END (processed first in reverse order)
+		assert.Equal(t, MatcherInclude, result[2].Action)
+		assert.Equal(t, "*", result[2].Method)
+	})
+
+	t.Run("mixed rules with valid first rule - should pass through unchanged", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{Method: "*", Action: MatcherInclude}, // First rule determines starting point
+			{Method: "alchemy_*", Action: MatcherExclude},
+			{Method: "debug_*", Action: MatcherInclude},
+		}
+
+		result, err := ApplyGlobalOverride(matchers)
+		assert.NoError(t, err)
+		assert.Len(t, result, 3)
+		assert.Equal(t, matchers, result) // Should be unchanged
+	})
+
+	t.Run("mixed rules with invalid first rule - should return error", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{Method: "eth_*", Action: ""}, // Invalid action
+			{Method: "alchemy_*", Action: MatcherExclude},
+			{Method: "debug_*", Action: MatcherInclude},
+		}
+
+		result, err := ApplyGlobalOverride(matchers)
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "FIRST rule must have action 'include' or 'exclude'")
+	})
+
+	t.Run("empty matchers - should return unchanged", func(t *testing.T) {
+		var matchers []*MatcherConfig
+
+		result, err := ApplyGlobalOverride(matchers)
+		assert.NoError(t, err)
+		assert.Len(t, result, 0)
+	})
+
+	t.Run("matchers with no actions - should return unchanged", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{Method: "eth_*", Action: ""},
+			{Method: "debug_*", Action: ""},
+		}
+
+		result, err := ApplyGlobalOverride(matchers)
+		assert.NoError(t, err)
+		assert.Equal(t, matchers, result) // Should be unchanged
+	})
+}
+
+func TestFailsafeConfigValidateWithMatchers(t *testing.T) {
+	t.Run("valid matchers with only includes", func(t *testing.T) {
+		config := &FailsafeConfig{
+			Matchers: []*MatcherConfig{
+				{Method: "eth_*", Action: MatcherInclude},
+			},
+		}
+
+		err := config.Validate()
+		assert.NoError(t, err)
+		// Should have added catch-all exclude
+		assert.Len(t, config.Matchers, 2)
+		assert.Equal(t, MatcherExclude, config.Matchers[1].Action)
+	})
+
+	t.Run("valid matchers with only excludes", func(t *testing.T) {
+		config := &FailsafeConfig{
+			Matchers: []*MatcherConfig{
+				{Method: "alchemy_*", Action: MatcherExclude},
+			},
+		}
+
+		err := config.Validate()
+		assert.NoError(t, err)
+		// Should have added catch-all include at beginning
+		assert.Len(t, config.Matchers, 2)
+		assert.Equal(t, MatcherInclude, config.Matchers[0].Action)
+		assert.Equal(t, "*", config.Matchers[0].Method)
+	})
+
+	t.Run("invalid mixed matchers", func(t *testing.T) {
+		config := &FailsafeConfig{
+			Matchers: []*MatcherConfig{
+				{Method: "eth_*", Action: ""}, // Invalid first rule
+				{Method: "alchemy_*", Action: MatcherExclude},
+				{Method: "debug_*", Action: MatcherInclude},
+			},
+		}
+
+		err := config.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "FIRST rule must have action 'include' or 'exclude'")
+	})
+
+	t.Run("legacy mode validation", func(t *testing.T) {
+		config := &FailsafeConfig{
+			MatchMethod: "*", // Legacy mode
+		}
+
+		err := config.Validate()
+		assert.NoError(t, err)
+	})
+
+	t.Run("legacy mode with empty MatchMethod", func(t *testing.T) {
+		config := &FailsafeConfig{
+			MatchMethod: "", // Invalid legacy mode
+		}
+
+		err := config.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failsafe.matchMethod cannot be empty")
+	})
+}
+
+func TestValidateAndProcessFailsafePolicies(t *testing.T) {
+	t.Run("single policy with only includes - should add catch-all exclude", func(t *testing.T) {
+		policies := []*FailsafeConfig{
+			{
+				Matchers: []*MatcherConfig{
+					{Method: "eth_*", Action: MatcherInclude},
+				},
+			},
+		}
+
+		err := ValidateAndProcessFailsafePolicies(policies)
+		assert.NoError(t, err)
+		// Single policy should get catch-all exclude at beginning
+		assert.Len(t, policies[0].Matchers, 2)
+		assert.Equal(t, MatcherExclude, policies[0].Matchers[0].Action)
+		assert.Equal(t, "*", policies[0].Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, policies[0].Matchers[1].Action)
+	})
+
+	t.Run("multiple policies with partial matchers - each should get global override", func(t *testing.T) {
+		policies := []*FailsafeConfig{
+			{
+				Matchers: []*MatcherConfig{
+					{Method: "eth_*", Action: MatcherInclude},
+				},
+			},
+			{
+				Matchers: []*MatcherConfig{
+					{Method: "debug_*", Action: MatcherExclude},
+				},
+			},
+		}
+
+		err := ValidateAndProcessFailsafePolicies(policies)
+		assert.NoError(t, err)
+		// Each policy should get global override rules applied
+		assert.Len(t, policies[0].Matchers, 2) // Should have catch-all exclude added at beginning
+		assert.Equal(t, MatcherExclude, policies[0].Matchers[0].Action)
+		assert.Equal(t, "*", policies[0].Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, policies[0].Matchers[1].Action)
+
+		assert.Len(t, policies[1].Matchers, 2) // Should have catch-all include added at end
+		assert.Equal(t, MatcherExclude, policies[1].Matchers[0].Action)
+		assert.Equal(t, MatcherInclude, policies[1].Matchers[1].Action)
+		assert.Equal(t, "*", policies[1].Matchers[1].Method)
+	})
+
+	t.Run("multiple policies with mixed rules and valid first rule", func(t *testing.T) {
+		policies := []*FailsafeConfig{
+			{
+				Matchers: []*MatcherConfig{
+					{Method: "*", Action: MatcherInclude},
+					{Method: "alchemy_*", Action: MatcherExclude},
+				},
+			},
+			{
+				Matchers: []*MatcherConfig{
+					{Method: "debug_*", Action: MatcherInclude},
+				},
+			},
+		}
+
+		err := ValidateAndProcessFailsafePolicies(policies)
+		assert.NoError(t, err)
+		// First policy has mixed rules with valid first rule - should pass through unchanged
+		assert.Len(t, policies[0].Matchers, 2)
+		// Second policy should get catch-all exclude added at beginning (only include rules)
+		assert.Len(t, policies[1].Matchers, 2)
+		assert.Equal(t, MatcherExclude, policies[1].Matchers[0].Action)
+		assert.Equal(t, "*", policies[1].Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, policies[1].Matchers[1].Action)
+	})
+
+	t.Run("multiple policies with invalid mixed rules", func(t *testing.T) {
+		policies := []*FailsafeConfig{
+			{
+				Matchers: []*MatcherConfig{
+					{Method: "eth_*", Action: ""}, // Invalid first rule (empty action)
+					{Method: "alchemy_*", Action: MatcherExclude},
+					{Method: "debug_*", Action: MatcherInclude}, // This creates a mix
+				},
+			},
+			{
+				Matchers: []*MatcherConfig{
+					{Method: "debug_*", Action: MatcherInclude},
+				},
+			},
+		}
+
+		err := ValidateAndProcessFailsafePolicies(policies)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failsafe[0].matchers validation failed")
+		assert.Contains(t, err.Error(), "FIRST rule must have action 'include' or 'exclude'")
+	})
+
+	t.Run("legacy mode validation", func(t *testing.T) {
+		policies := []*FailsafeConfig{
+			{
+				MatchMethod: "*", // Legacy mode
+			},
+		}
+
+		err := ValidateAndProcessFailsafePolicies(policies)
+		assert.NoError(t, err)
+	})
+
+	t.Run("empty policies array", func(t *testing.T) {
+		var policies []*FailsafeConfig
+
+		err := ValidateAndProcessFailsafePolicies(policies)
+		assert.NoError(t, err)
 	})
 }
