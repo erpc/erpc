@@ -1107,6 +1107,7 @@ type AuthStrategyConfig struct {
 }
 
 type SecretStrategyConfig struct {
+	Id    string `yaml:"id" json:"id"`
 	Value string `yaml:"value" json:"value"`
 }
 

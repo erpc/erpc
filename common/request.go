@@ -90,6 +90,8 @@ type NormalizedRequest struct {
 	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
 
 	finality atomic.Value // Cached finality state
+
+	user atomic.Value
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -112,6 +114,23 @@ func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *Nor
 	nr.jsonRpcRequest.Store(jsonRpcRequest)
 	nr.compositeType.Store(CompositeTypeNone)
 	return nr
+}
+
+func (r *NormalizedRequest) SetUser(user *User) {
+	if r == nil || user == nil {
+		return
+	}
+	r.user.Store(user)
+}
+
+func (r *NormalizedRequest) User() *User {
+	if r == nil {
+		return nil
+	}
+	if u, ok := r.user.Load().(*User); ok {
+		return u
+	}
+	return nil
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {

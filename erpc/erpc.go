@@ -114,14 +114,11 @@ func (e *ERPC) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.AuthPayload) error {
+func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
 	if e.adminAuthRegistry != nil {
-		err := e.adminAuthRegistry.Authenticate(ctx, method, ap)
-		if err != nil {
-			return err
-		}
+		return e.adminAuthRegistry.Authenticate(ctx, method, ap)
 	}
-	return nil
+	return nil, nil
 }
 
 func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {

@@ -353,17 +353,23 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 
 				if isAdmin {
-					if err := s.erpc.AdminAuthenticate(requestCtx, method, ap); err != nil {
+					_, err := s.erpc.AdminAuthenticate(requestCtx, method, ap)
+					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				} else {
-					if err := project.AuthenticateConsumer(requestCtx, method, ap); err != nil {
+					user, err := project.AuthenticateConsumer(requestCtx, method, ap)
+					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
+					if user != nil {
+						rlg = rlg.With().Str("userId", user.Id).Logger()
+					}
+					nq.SetUser(user)
 				}
 
 				if isAdmin {

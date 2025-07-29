@@ -42,14 +42,14 @@ func NewAuthRegistry(logger *zerolog.Logger, projectId string, cfg *common.AuthC
 }
 
 // Authenticate checks the authentication payload against all registered strategies
-func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *AuthPayload) error {
+func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *AuthPayload) (*common.User, error) {
 	if ap == nil {
-		return common.NewErrAuthUnauthorized("", "auth payload is nil")
+		return nil, common.NewErrAuthUnauthorized("n/a", "auth payload is nil")
 	}
 
 	if len(r.strategies) == 0 {
 		// If no strategies are configured, allow all requests
-		return nil
+		return nil, nil
 	}
 
 	var errs []error
@@ -63,28 +63,29 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *Auth
 			continue
 		}
 
-		if err := az.strategy.Authenticate(ctx, ap); err != nil {
+		user, err := az.strategy.Authenticate(ctx, ap);
+		if  err != nil {
 			errs = append(errs, err)
 			continue
 		}
 
 		// If authentication is passed then apply and consume the rate limit
-		if err := az.acquireRateLimitPermit(method); err != nil {
-			return err
+		if err := az.acquireRateLimitPermit(user, method); err != nil {
+			return user, err
 		}
 
 		// If a strategy succeeds, we consider the request authenticated
-		return nil
+		return user, nil
 	}
 
 	if len(errs) == 1 {
-		return errs[0]
+		return nil, errs[0]
 	}
 
 	if len(errs) == 0 {
-		return common.NewErrAuthUnauthorized("", "no auth strategy matched make sure correct headers or query strings are provided")
+		return nil, common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
 	// If no strategy matched or succeeded, consider the request unauthorized
-	return common.NewErrAuthUnauthorized("", errors.Join(errs...).Error())
+	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
 }

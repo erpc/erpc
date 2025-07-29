@@ -102,15 +102,11 @@ func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
 	}, nil
 }
 
-func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) error {
+func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
 	if p.consumerAuthRegistry != nil {
-		err := p.consumerAuthRegistry.Authenticate(ctx, method, ap)
-		if err != nil {
-			return err
-		}
+		return p.consumerAuthRegistry.Authenticate(ctx, method, ap)
 	}
-
-	return nil
+	return nil, nil
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {

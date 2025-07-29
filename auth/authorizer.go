@@ -103,7 +103,7 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 	return shouldApply
 }
 
-func (a *Authorizer) acquireRateLimitPermit(method string) error {
+func (a *Authorizer) acquireRateLimitPermit(user *common.User, method string) error {
 	if a.cfg.RateLimitBudget == "" {
 		return nil
 	}
