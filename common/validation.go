@@ -11,6 +11,55 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// validateMatchers applies global override logic to a slice of MatcherConfig
+// This is a copy of the logic from matchers.Validate to avoid circular imports
+func validateMatchers(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
+	if len(matchers) == 0 {
+		return matchers, nil
+	}
+
+	var hasInclude, hasExclude bool
+	for _, matcher := range matchers {
+		if matcher.Action == MatcherInclude {
+			hasInclude = true
+		} else if matcher.Action == MatcherExclude {
+			hasExclude = true
+		}
+	}
+
+	// Only include actions - add catch-all exclude at the beginning (processed last)
+	if hasInclude && !hasExclude {
+		catchAllExclude := &MatcherConfig{
+			Method: "*",
+			Action: MatcherExclude,
+		}
+		return append([]*MatcherConfig{catchAllExclude}, matchers...), nil
+	}
+
+	// Only exclude actions - add catch-all include at the end (processed first)
+	if hasExclude && !hasInclude {
+		catchAllInclude := &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		}
+		return append(matchers, catchAllInclude), nil
+	}
+
+	// Mixed include and exclude - validate that the first rule determines the starting point
+	if hasInclude && hasExclude {
+		if len(matchers) == 0 {
+			return nil, fmt.Errorf("matchers cannot be empty when mixing include and exclude rules")
+		}
+		firstAction := matchers[0].Action
+		if firstAction != MatcherInclude && firstAction != MatcherExclude {
+			return nil, fmt.Errorf("when mixing include and exclude rules, the FIRST rule must have action 'include' or 'exclude' to determine the starting point, but got: %s", firstAction)
+		}
+	}
+
+	// No include or exclude actions found (shouldn't happen with proper validation)
+	return matchers, nil
+}
+
 func (c *Config) Validate() error {
 	if c.Server != nil {
 		if err := c.Server.Validate(); err != nil {
@@ -740,8 +789,10 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Failsafe != nil {
-		if err := ValidateAndProcessFailsafePolicies(u.Failsafe); err != nil {
-			return err
+		for i, fs := range u.Failsafe {
+			if err := fs.Validate(); err != nil {
+				return fmt.Errorf("upstream.failsafe[%d]: %v", i, err)
+			}
 		}
 	}
 	if u.JsonRpc != nil {
@@ -799,7 +850,9 @@ func (f *FailsafeConfig) Validate() error {
 
 	// Validate and apply global override to matchers
 	if len(f.Matchers) > 0 {
-		processedMatchers, err := ApplyGlobalOverride(f.Matchers)
+		// Import matchers package dynamically to avoid circular import
+		// We'll handle this differently - move the validation logic
+		processedMatchers, err := validateMatchers(f.Matchers)
 		if err != nil {
 			return fmt.Errorf("failsafe.matchers validation failed: %v", err)
 		}
@@ -991,8 +1044,10 @@ func (n *NetworkConfig) Validate(c *Config) error {
 		}
 	}
 	if n.Failsafe != nil {
-		if err := ValidateAndProcessFailsafePolicies(n.Failsafe); err != nil {
-			return err
+		for i, fs := range n.Failsafe {
+			if err := fs.Validate(); err != nil {
+				return fmt.Errorf("network.failsafe[%d]: %v", i, err)
+			}
 		}
 	}
 	if n.SelectionPolicy != nil {
