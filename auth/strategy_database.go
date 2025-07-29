@@ -93,7 +93,7 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 	valueBytes, err := s.connector.Get(ctx, data.ConnectorMainIndex, apiKey, rangeKey)
 	if err != nil {
 		// Check for record not found error
-		if common.HasErrorCode(err, "ErrRecordNotFound") {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 			return nil, common.NewErrAuthUnauthorized("database", "invalid API key")
 		}
 		s.logger.Error().Err(err).Str("apiKey", apiKey).Msg("database query failed during authentication")

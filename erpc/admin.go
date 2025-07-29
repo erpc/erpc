@@ -41,22 +41,14 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		return e.handleConfig(ctx, nq)
 	case "erpc_project":
 		return e.handleProject(ctx, nq)
-
-	// API Key Management Methods
 	case "erpc_addApiKey":
 		return e.handleAddApiKey(ctx, nq)
 	case "erpc_listApiKeys":
 		return e.handleListApiKeys(ctx, nq)
-	case "erpc_findApiKeysByUserId":
-		return e.handleFindApiKeysByUserId(ctx, nq)
 	case "erpc_updateApiKey":
 		return e.handleUpdateApiKey(ctx, nq)
 	case "erpc_deleteApiKey":
 		return e.handleDeleteApiKey(ctx, nq)
-	case "erpc_enableApiKey":
-		return e.handleEnableApiKey(ctx, nq)
-	case "erpc_disableApiKey":
-		return e.handleDisableApiKey(ctx, nq)
 
 	default:
 		return nil, common.NewErrEndpointUnsupported(
@@ -151,7 +143,6 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 		return nil, fmt.Errorf("failed to marshal user data: %w", err)
 	}
 
-	// Store single record: apiKey -> userId -> userData (optimized: only 1 row per API key)
 	err = connector.Set(ctx, apiKey, userId, userDataBytes, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store API key: %w", err)
@@ -271,69 +262,6 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 	return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
 }
 
-// handleFindApiKeysByUserId finds API keys by user ID
-func (e *ERPC) handleFindApiKeysByUserId(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	jrr, err := nq.JsonRpcRequest()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(jrr.Params) < 1 {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("requires params: {projectId, connectorId, userId}"))
-	}
-
-	params, ok := jrr.Params[0].(map[string]interface{})
-	if !ok {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("first parameter must be an object"))
-	}
-
-	projectId, ok := params["projectId"].(string)
-	if !ok || projectId == "" {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("projectId is required and must be a string"))
-	}
-
-	connectorId, ok := params["connectorId"].(string)
-	if !ok || connectorId == "" {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("connectorId is required and must be a string"))
-	}
-
-	userId, ok := params["userId"].(string)
-	if !ok || userId == "" {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("userId is required and must be a string"))
-	}
-
-	connector, err := e.findDatabaseConnectorById(projectId, connectorId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find connector: %w", err)
-	}
-
-	// Scan main index to find all API keys for this user (optimized: filter by range key)
-	results, _, err := connector.List(ctx, data.ConnectorMainIndex, 1000, "") // High limit for scanning
-	if err != nil {
-		return nil, fmt.Errorf("failed to search for user API keys: %w", err)
-	}
-
-	apiKeys := make([]string, 0)
-	for _, item := range results {
-		if item.RangeKey == userId { // Filter by userId in range key
-			apiKeys = append(apiKeys, item.PartitionKey) // Partition key is the API key
-		}
-	}
-
-	result := map[string]interface{}{
-		"userId":  userId,
-		"apiKeys": apiKeys,
-		"count":   len(apiKeys),
-	}
-
-	jrrs, err := common.NewJsonRpcResponse(jrr.ID, result, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
-}
-
 // handleUpdateApiKey updates an existing API key
 func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrr, err := nq.JsonRpcRequest()
@@ -375,7 +303,6 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	// Get current data using wildcard lookup (optimized: find by API key only)
 	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current API key data: %w", err)
@@ -475,17 +402,9 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("missing or invalid userId in current data")
 	}
 
-	// Delete the single record
 	err = connector.Delete(ctx, apiKey, userId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete API key: %w", err)
-	}
-
-	// Delete reverse index
-	err = connector.Delete(ctx, userId, apiKey)
-	if err != nil {
-		e.logger.Warn().Err(err).Str("userId", userId).Str("apiKey", apiKey).Msg("failed to delete reverse index")
-		// Don't fail the whole operation for reverse index cleanup
 	}
 
 	result := map[string]interface{}{
@@ -500,71 +419,6 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 	}
 
 	return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
-}
-
-// handleEnableApiKey enables an API key
-func (e *ERPC) handleEnableApiKey(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	updates := map[string]interface{}{"enabled": true}
-	return e.updateApiKeyEnabled(ctx, nq, updates)
-}
-
-// handleDisableApiKey disables an API key
-func (e *ERPC) handleDisableApiKey(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	updates := map[string]interface{}{"enabled": false}
-	return e.updateApiKeyEnabled(ctx, nq, updates)
-}
-
-// updateApiKeyEnabled is a helper method for enable/disable operations
-func (e *ERPC) updateApiKeyEnabled(ctx context.Context, nq *common.NormalizedRequest, updates map[string]interface{}) (*common.NormalizedResponse, error) {
-	jrr, err := nq.JsonRpcRequest()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(jrr.Params) < 1 {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("requires params: {projectId, connectorId, apiKey}"))
-	}
-
-	params, ok := jrr.Params[0].(map[string]interface{})
-	if !ok {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("first parameter must be an object"))
-	}
-
-	projectId, ok := params["projectId"].(string)
-	if !ok || projectId == "" {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("projectId is required and must be a string"))
-	}
-
-	connectorId, ok := params["connectorId"].(string)
-	if !ok || connectorId == "" {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("connectorId is required and must be a string"))
-	}
-
-	apiKey, ok := params["apiKey"].(string)
-	if !ok || apiKey == "" {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("apiKey is required and must be a string"))
-	}
-
-	// Create a new request with object parameters for updateApiKey
-	newParams := []interface{}{map[string]interface{}{
-		"projectId":   projectId,
-		"connectorId": connectorId,
-		"apiKey":      apiKey,
-		"updates":     updates,
-	}}
-	newJrr := &common.JsonRpcRequest{
-		ID:      jrr.ID,
-		Method:  "erpc_updateApiKey",
-		Params:  newParams,
-		JSONRPC: jrr.JSONRPC,
-	}
-
-	newReq := common.NewNormalizedRequestFromJsonRpcRequest(newJrr)
-
-	// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
-	newReq.CopyHttpContextFrom(nq)
-
-	return e.handleUpdateApiKey(ctx, newReq)
 }
 
 // handleConfig returns the eRPC configuration
