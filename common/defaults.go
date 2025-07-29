@@ -38,6 +38,7 @@ type connectorScope string
 const (
 	connectorScopeSharedState connectorScope = "shared-state"
 	connectorScopeCache       connectorScope = "cache"
+	connectorScopeAuth        connectorScope = "auth"
 )
 
 // DefaultOptions is used to pass env-provided or args-provided options to the config defaults initializer
@@ -831,6 +832,8 @@ func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 			p.Table = "erpc_shared_state"
 		case connectorScopeCache:
 			p.Table = "erpc_json_rpc_cache"
+		case connectorScopeAuth:
+			p.Table = "erpc_auth"
 		default:
 			return fmt.Errorf("invalid connector scope: %s", scope)
 		}
@@ -861,6 +864,8 @@ func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 			d.Table = "erpc_shared_state"
 		case connectorScopeCache:
 			d.Table = "erpc_json_rpc_cache"
+		case connectorScopeAuth:
+			d.Table = "erpc_auth"
 		default:
 			return fmt.Errorf("invalid connector scope: %s", scope)
 		}
@@ -2072,6 +2077,12 @@ func (s *AuthStrategyConfig) SetDefaults() error {
 		s.Type = AuthTypeSecret
 		if err := s.Secret.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for secret strategy: %w", err)
+		}
+	}
+	if s.Database != nil {
+		s.Type = AuthTypeSecret
+		if err := s.Database.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for database strategy: %w", err)
 		}
 	}
 

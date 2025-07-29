@@ -471,7 +471,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		assert.True(t, successes > 0, "Expected some successes")
 	})
 }
-
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		cfg := &common.Config{
@@ -1228,7 +1227,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Empty(t, result, "Result should be an empty array")
 	})
 }
-
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
 		util.ResetGock()
@@ -1980,7 +1978,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
 		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
 	})
-
 	t.Run("HedgeDiscardsSlowerCallSecondRequestCancelled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -2772,7 +2769,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				errStr, _ := sonic.Marshal(errorObj)
 				assert.Contains(t, string(errStr), "timeout")
 			})
-
 			t.Run("UnexpectedPlainErrorResponseFromUpstream", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
@@ -3557,7 +3553,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		assert.Contains(t, body, "0x0000000000000000000000000000000000000000000000056bc75e2d63100000")
 	})
 }
-
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		cfg := &common.Config{
@@ -4285,7 +4280,6 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		assert.Empty(t, headers["Access-Control-Allow-Methods"])
 	})
 }
-
 func TestHttpServer_ParseUrlPath(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -4616,7 +4610,6 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 		})
 	}
 }
-
 func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	testCtx, testCtxCancel := context.WithCancel(context.Background())
 	defer testCtxCancel()
@@ -5023,7 +5016,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				authReg, _ := auth.NewAuthRegistry(logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
+				authReg, _ := auth.NewAuthRegistry(ctx, logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 					{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Value: "test-secret"}},
 				}}, nil)
 
@@ -5060,7 +5053,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				authReg, _ := auth.NewAuthRegistry(logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
+				authReg, _ := auth.NewAuthRegistry(ctx, logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
 					{Type: common.AuthTypeSecret, Secret: &common.SecretStrategyConfig{Value: "test-secret"}},
 				}}, nil)
 
@@ -5412,7 +5405,6 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			wantBody:     `OK`,
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, ctxCancel := context.WithCancel(testCtx)
@@ -5933,7 +5925,6 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		assert.Nilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should not be set")
 	})
 }
-
 func TestHttpServer_EvmGetLogs(t *testing.T) {
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
@@ -6363,7 +6354,6 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, errorObj["message"].(string), "missing")
 	})
 }
-
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -7030,7 +7020,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
-
 	t.Run("FailFastIfSharedStateIsDown", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -7661,7 +7650,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
 	})
-
 	t.Run("ShouldOverrideIfUpstreamReturnsOlderBlockOnFinalized", func(t *testing.T) {
 		// This test covers the scenario:
 		// - User calls eth_getBlockByNumber("finalized", true)
@@ -8405,7 +8393,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, float64(-32603), errResp["code"], "error code should be -32603")
 		assert.Contains(t, errResp["message"], "not enough participants", "error message should be 'not enough participants'")
 	})
-
 	t.Run("ShouldHandleConsensusFailureDueToDispute", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

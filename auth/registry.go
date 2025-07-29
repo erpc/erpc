@@ -18,7 +18,7 @@ type AuthRegistry struct {
 }
 
 // NewAuthRegistry creates a new group of authorizers for a project
-func NewAuthRegistry(logger *zerolog.Logger, projectId string, cfg *common.AuthConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*AuthRegistry, error) {
+func NewAuthRegistry(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*AuthRegistry, error) {
 	if cfg == nil {
 		return nil, common.NewErrInvalidConfig("auth config is nil")
 	}
@@ -31,7 +31,7 @@ func NewAuthRegistry(logger *zerolog.Logger, projectId string, cfg *common.AuthC
 
 	for _, strategy := range cfg.Strategies {
 		lg := logger.With().Str("strategy", string(strategy.Type)).Logger()
-		az, err := NewAuthorizer(&lg, projectId, strategy, rateLimitersRegistry)
+		az, err := NewAuthorizer(appCtx, &lg, projectId, strategy, rateLimitersRegistry)
 		if err != nil {
 			return nil, common.NewErrInvalidConfig(fmt.Sprintf("failed to create authorizer for project %s with strategy %s: %v", projectId, strategy.Type, err))
 		}
@@ -63,8 +63,8 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *Auth
 			continue
 		}
 
-		user, err := az.strategy.Authenticate(ctx, ap);
-		if  err != nil {
+		user, err := az.strategy.Authenticate(ctx, ap)
+		if err != nil {
 			errs = append(errs, err)
 			continue
 		}

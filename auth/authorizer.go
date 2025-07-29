@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/erpc/erpc/common"
@@ -19,7 +20,7 @@ type Authorizer struct {
 }
 
 // NewAuthorizer creates a new Authorizer based on the provided configuration
-func NewAuthorizer(logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*Authorizer, error) {
+func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*Authorizer, error) {
 	if cfg == nil {
 		return nil, common.NewErrInvalidConfig("auth strategy config is nil")
 	}
@@ -51,6 +52,14 @@ func NewAuthorizer(logger *zerolog.Logger, projectId string, cfg *common.AuthStr
 			return nil, common.NewErrInvalidConfig("network strategy config is nil")
 		}
 		strategy, err = NewNetworkStrategy(cfg.Network)
+		if err != nil {
+			return nil, err
+		}
+	case common.AuthTypeDatabase:
+		if cfg.Database == nil {
+			return nil, common.NewErrInvalidConfig("database strategy config is nil")
+		}
+		strategy, err = NewDatabaseStrategy(appCtx, logger, cfg.Database)
 		if err != nil {
 			return nil, err
 		}

@@ -81,7 +81,7 @@ func NewERPC(
 
 	var adminAuthRegistry *auth.AuthRegistry
 	if cfg.Admin != nil && cfg.Admin.Auth != nil {
-		adminAuthRegistry, err = auth.NewAuthRegistry(logger, "admin", cfg.Admin.Auth, rateLimitersRegistry)
+		adminAuthRegistry, err = auth.NewAuthRegistry(appCtx, logger, "admin", cfg.Admin.Auth, rateLimitersRegistry)
 		if err != nil {
 			return nil, err
 		}

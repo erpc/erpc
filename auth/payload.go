@@ -11,6 +11,7 @@ type AuthPayload struct {
 	Network *NetworkPayload
 }
 
+// This payload is used by both "secret" and "database" strategies
 type SecretPayload struct {
 	Value string
 }

@@ -95,7 +95,7 @@ func NewHttpServer(
 
 	if healthCheckCfg != nil && healthCheckCfg.Auth != nil {
 		var err error
-		srv.healthCheckAuthRegistry, err = auth.NewAuthRegistry(logger, "healthcheck", healthCheckCfg.Auth, nil)
+		srv.healthCheckAuthRegistry, err = auth.NewAuthRegistry(ctx, logger, "healthcheck", healthCheckCfg.Auth, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create healthcheck auth registry: %w", err)
 		}
