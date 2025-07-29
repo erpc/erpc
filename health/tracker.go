@@ -347,27 +347,51 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 	}
 }
 
-func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string) {
+func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).SelfRateLimitedTotal.Add(1)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
 		t.getNtwMetrics(nk).SelfRateLimitedTotal.Add(1)
 	}
+
+	var userId, agentName, agentVersion string
+	if req != nil {
+		userId = req.UserId()
+		agentName = req.AgentName()
+		agentVersion = req.AgentVersion()
+	} else {
+		userId = "n/a"
+		agentName = "unknown"
+		agentVersion = "unknown"
+	}
+
 	telemetry.MetricUpstreamSelfRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method).
+		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId, agentName, agentVersion).
 		Inc()
 }
 
-func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method string) {
+func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).RemoteRateLimitedTotal.Add(1)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
 		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
 	}
+
+	var userId, agentName, agentVersion string
+	if req != nil {
+		userId = req.UserId()
+		agentName = req.AgentName()
+		agentVersion = req.AgentVersion()
+	} else {
+		userId = "n/a"
+		agentName = "unknown"
+		agentVersion = "unknown"
+	}
+
 	telemetry.MetricUpstreamRemoteRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method).
+		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId, agentName, agentVersion).
 		Inc()
 }
 

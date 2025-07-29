@@ -203,6 +203,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				up.VendorName(),
 				up.NetworkId(),
 				up.Id(),
+				nrq.UserId(),
+				nrq.AgentName(),
+				nrq.AgentVersion(),
 			).Inc()
 
 			var subRequests []ethGetLogsSubRequest
@@ -430,6 +433,9 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 				u.NetworkId(),
 				u.Id(),
 				"block_range",
+				r.UserId(),
+				r.AgentName(),
+				r.AgentVersion(),
 			).Inc()
 		}
 		mid := fb + (blockRange / 2)
@@ -450,11 +456,14 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 				u.NetworkId(),
 				u.Id(),
 				"addresses",
+				r.UserId(),
+				r.AgentName(),
+				r.AgentVersion(),
 			).Inc()
 		}
 		return []ethGetLogsSubRequest{
-			{fromBlock: fb, toBlock: tb, address: addresses[:mid], topics: filter["topics"]},
-			{fromBlock: fb, toBlock: tb, address: addresses[mid:], topics: filter["topics"]},
+			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: addresses[:mid]},
+			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: addresses[mid:]},
 		}, nil
 	}
 
@@ -469,6 +478,9 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 				u.NetworkId(),
 				u.Id(),
 				"topics",
+				r.UserId(),
+				r.AgentName(),
+				r.AgentVersion(),
 			).Inc()
 		}
 		return []ethGetLogsSubRequest{
@@ -535,6 +547,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 					u.VendorName(),
 					u.NetworkId(),
 					u.Id(),
+					r.UserId(),
+					r.AgentName(),
+					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -549,6 +564,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			sbnrq.SetNetwork(n)
 			sbnrq.SetParentRequestId(r.ID())
 
+			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
+			sbnrq.CopyHttpContextFrom(r)
+
 			rs, re := n.Forward(ctx, sbnrq)
 			if re != nil {
 				mu.Lock()
@@ -557,6 +575,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 					u.VendorName(),
 					u.NetworkId(),
 					u.Id(),
+					r.UserId(),
+					r.AgentName(),
+					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, re)
 				mu.Unlock()
@@ -571,6 +592,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 					u.VendorName(),
 					u.NetworkId(),
 					u.Id(),
+					r.UserId(),
+					r.AgentName(),
+					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -584,6 +608,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 					u.VendorName(),
 					u.NetworkId(),
 					u.Id(),
+					r.UserId(),
+					r.AgentName(),
+					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, fmt.Errorf("unexpected empty json-rpc response %v", rs))
 				mu.Unlock()
@@ -597,6 +624,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 					u.VendorName(),
 					u.NetworkId(),
 					u.Id(),
+					r.UserId(),
+					r.AgentName(),
+					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, jrr.Error)
 				mu.Unlock()
@@ -609,6 +639,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				u.VendorName(),
 				u.NetworkId(),
 				u.Id(),
+				r.UserId(),
+				r.AgentName(),
+				r.AgentVersion(),
 			).Inc()
 			responses = append(responses, jrr)
 			mu.Unlock()

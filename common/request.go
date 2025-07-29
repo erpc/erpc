@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/util"
@@ -70,6 +71,10 @@ type NormalizedRequest struct {
 	method         string
 	directives     *RequestDirectives
 	jsonRpcRequest atomic.Pointer[JsonRpcRequest]
+
+	// HTTP context fields for metrics and user agent parsing
+	httpHeaders http.Header
+	queryArgs   url.Values
 
 	// Upstream selection fields - protected by upstreamMutex
 	upstreamMutex    sync.Mutex
@@ -290,6 +295,9 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryAr
 	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
 	}
+
+	r.httpHeaders = headers
+	r.queryArgs = queryArgs
 }
 
 func (r *NormalizedRequest) SkipCacheRead() bool {
@@ -561,6 +569,41 @@ func (r *NormalizedRequest) Finality(ctx context.Context) DataFinalityState {
 	return DataFinalityStateUnknown
 }
 
+// CopyHttpContextFrom copies HTTP context (headers and query parameters) from another request
+// This ensures user agent information is preserved for metrics when creating derived requests
+func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
+	if r == nil || source == nil {
+		return
+	}
+
+	r.Lock()
+	defer r.Unlock()
+
+	source.RLock()
+	defer source.RUnlock()
+
+	// Copy HTTP headers
+	if source.httpHeaders != nil {
+		r.httpHeaders = make(http.Header)
+		for k, v := range source.httpHeaders {
+			r.httpHeaders[k] = v
+		}
+	}
+
+	// Copy query parameters
+	if source.queryArgs != nil {
+		r.queryArgs = make(url.Values)
+		for k, v := range source.queryArgs {
+			r.queryArgs[k] = v
+		}
+	}
+
+	// Also copy the user if it exists
+	if user := source.User(); user != nil {
+		r.SetUser(user)
+	}
+}
+
 func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 	if r == nil {
 		return
@@ -572,6 +615,222 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 	if r.ConsumedUpstreams == nil {
 		r.ConsumedUpstreams = &sync.Map{}
 	}
+}
+
+// UserId returns the user ID from the user object, or "n/a" if not available
+func (r *NormalizedRequest) UserId() string {
+	if r == nil {
+		return "n/a"
+	}
+
+	user := r.User()
+	if user != nil && user.Id != "" {
+		return user.Id
+	}
+
+	return "n/a"
+}
+
+// AgentName extracts and simplifies the agent name from User-Agent header or query parameter
+func (r *NormalizedRequest) AgentName() string {
+	if r == nil {
+		return "unknown"
+	}
+
+	r.RLock()
+	userAgent := r.getUserAgent()
+	r.RUnlock()
+
+	if userAgent == "" {
+		return "unknown"
+	}
+
+	return r.simplifyAgentName(userAgent)
+}
+
+// AgentVersion extracts and simplifies the agent version from User-Agent header or query parameter
+func (r *NormalizedRequest) AgentVersion() string {
+	if r == nil {
+		return "unknown"
+	}
+
+	r.RLock()
+	userAgent := r.getUserAgent()
+	r.RUnlock()
+
+	if userAgent == "" {
+		return "unknown"
+	}
+
+	return r.simplifyAgentVersion(userAgent)
+}
+
+// getUserAgent returns the user agent string, with query parameter taking precedence over header
+func (r *NormalizedRequest) getUserAgent() string {
+	// Query parameter takes precedence
+	if r.queryArgs != nil {
+		if userAgent := r.queryArgs.Get("user-agent"); userAgent != "" {
+			return userAgent
+		}
+	}
+
+	// Fallback to User-Agent header
+	if r.httpHeaders != nil {
+		return r.httpHeaders.Get("User-Agent")
+	}
+
+	return ""
+}
+
+// simplifyAgentName extracts and simplifies the agent name for low cardinality metrics
+func (r *NormalizedRequest) simplifyAgentName(userAgent string) string {
+	userAgent = strings.ToLower(strings.TrimSpace(userAgent))
+
+	// Common patterns for agent name extraction
+	if strings.Contains(userAgent, "curl") {
+		return "curl"
+	}
+	if strings.Contains(userAgent, "wget") {
+		return "wget"
+	}
+	if strings.Contains(userAgent, "postman") {
+		return "postman"
+	}
+	if strings.Contains(userAgent, "insomnia") {
+		return "insomnia"
+	}
+	if strings.Contains(userAgent, "httpie") {
+		return "httpie"
+	}
+	if strings.Contains(userAgent, "python") {
+		return "python"
+	}
+	if strings.Contains(userAgent, "node") || strings.Contains(userAgent, "javascript") {
+		return "nodejs"
+	}
+	if strings.Contains(userAgent, "go-http-client") || strings.Contains(userAgent, "go/") {
+		return "go"
+	}
+	if strings.Contains(userAgent, "java") {
+		return "java"
+	}
+	if strings.Contains(userAgent, "rust") {
+		return "rust"
+	}
+	if strings.Contains(userAgent, "ruby") {
+		return "ruby"
+	}
+	if strings.Contains(userAgent, "php") {
+		return "php"
+	}
+	if strings.Contains(userAgent, "chrome") {
+		return "chrome"
+	}
+	if strings.Contains(userAgent, "firefox") {
+		return "firefox"
+	}
+	if strings.Contains(userAgent, "safari") {
+		return "safari"
+	}
+	if strings.Contains(userAgent, "edge") {
+		return "edge"
+	}
+	if strings.Contains(userAgent, "viem") {
+		return "viem"
+	}
+	if strings.Contains(userAgent, "ethers") {
+		return "ethers"
+	}
+	if strings.Contains(userAgent, "web3") {
+		return "web3"
+	}
+	if strings.Contains(userAgent, "alchemy") {
+		return "alchemy-sdk"
+	}
+	if strings.Contains(userAgent, "infura") {
+		return "infura-sdk"
+	}
+	if strings.Contains(userAgent, "quicknode") {
+		return "quicknode-sdk"
+	}
+
+	// Try to extract first word before version or space
+	parts := strings.Fields(userAgent)
+	if len(parts) > 0 {
+		name := parts[0]
+		// Remove version info from the name part
+		if idx := strings.IndexAny(name, "/()"); idx != -1 {
+			name = name[:idx]
+		}
+		// Limit length to prevent high cardinality
+		if len(name) > 20 {
+			name = name[:20]
+		}
+		if name != "" {
+			return name
+		}
+	}
+
+	return "other"
+}
+
+// simplifyAgentVersion extracts and simplifies the agent version for low cardinality metrics
+func (r *NormalizedRequest) simplifyAgentVersion(userAgent string) string {
+	userAgent = strings.ToLower(strings.TrimSpace(userAgent))
+
+	// Look for version after slash (e.g., "curl/7.68.0")
+	if idx := strings.Index(userAgent, "/"); idx != -1 {
+		versionPart := userAgent[idx+1:]
+		// Extract version numbers
+		parts := strings.FieldsFunc(versionPart, func(r rune) bool {
+			return !unicode.IsDigit(r) && r != '.'
+		})
+		if len(parts) > 0 {
+			version := parts[0]
+			// Simplify version to major.minor only for lower cardinality
+			versionParts := strings.Split(version, ".")
+			if len(versionParts) >= 2 {
+				return versionParts[0] + "." + versionParts[1]
+			} else if len(versionParts) == 1 {
+				return versionParts[0]
+			}
+		}
+	}
+
+	// Look for version in parentheses (e.g., "Mozilla/5.0 (compatible)")
+	if idx := strings.Index(userAgent, "("); idx != -1 {
+		end := strings.Index(userAgent[idx:], ")")
+		if end != -1 {
+			versionPart := userAgent[idx+1 : idx+end]
+			parts := strings.Fields(versionPart)
+			for _, part := range parts {
+				if len(part) > 0 && unicode.IsDigit(rune(part[0])) {
+					// Simplify to major.minor
+					versionParts := strings.Split(part, ".")
+					if len(versionParts) >= 2 {
+						return versionParts[0] + "." + versionParts[1]
+					} else if len(versionParts) == 1 {
+						return versionParts[0]
+					}
+				}
+			}
+		}
+	}
+
+	// Look for version after space (e.g., "Python 3.9.0")
+	parts := strings.Fields(userAgent)
+	for _, part := range parts {
+		if len(part) > 0 && unicode.IsDigit(rune(part[0])) && strings.Contains(part, ".") {
+			versionParts := strings.Split(part, ".")
+			if len(versionParts) >= 2 {
+				return versionParts[0] + "." + versionParts[1]
+			} else if len(versionParts) == 1 {
+				return versionParts[0]
+			}
+		}
+	}
+
+	return "unknown"
 }
 
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {

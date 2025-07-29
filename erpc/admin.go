@@ -36,107 +36,11 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 
 	switch method {
 	case "erpc_taxonomy":
-		jrr, err := nq.JsonRpcRequest()
-		if err != nil {
-			return nil, err
-		}
-		type taxonomyUpstream struct {
-			Id string `json:"id"`
-		}
-		type taxonomyNetwork struct {
-			Id        string              `json:"id"`
-			Upstreams []*taxonomyUpstream `json:"upstreams"`
-		}
-		type taxonomyProject struct {
-			Id       string             `json:"id"`
-			Networks []*taxonomyNetwork `json:"networks"`
-		}
-		type taxonomyResult struct {
-			Projects []*taxonomyProject `json:"projects"`
-		}
-		result := &taxonomyResult{}
-		projects := e.GetProjects()
-		for _, p := range projects {
-			networks := []*taxonomyNetwork{}
-			for _, n := range p.GetNetworks() {
-				ntw := &taxonomyNetwork{
-					Id:        n.Id(),
-					Upstreams: []*taxonomyUpstream{},
-				}
-				upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.Id())
-				for _, u := range upstreams {
-					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Id()})
-				}
-				networks = append(networks, ntw)
-			}
-			result.Projects = append(result.Projects, &taxonomyProject{
-				Id:       p.Config.Id,
-				Networks: networks,
-			})
-		}
-		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
-			result,
-			nil,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
-
+		return e.handleTaxonomy(ctx, nq)
 	case "erpc_config":
-		jrr, err := nq.JsonRpcRequest()
-		if err != nil {
-			return nil, err
-		}
-
-		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
-			e.cfg,
-			nil,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
-
+		return e.handleConfig(ctx, nq)
 	case "erpc_project":
-		jrr, err := nq.JsonRpcRequest()
-		if err != nil {
-			return nil, err
-		}
-		type configResult struct {
-			Config *common.ProjectConfig `json:"config"`
-			Health *ProjectHealthInfo    `json:"health"`
-		}
-		if len(jrr.Params) == 0 {
-			return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) is required"))
-		}
-		pid, ok := jrr.Params[0].(string)
-		if !ok {
-			return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) must be a string"))
-		}
-		p, err := e.GetProject(pid)
-		if err != nil {
-			return nil, err
-		}
-		health, err := p.GatherHealthInfo()
-		if err != nil {
-			return nil, err
-		}
-		result := configResult{
-			Config: p.Config,
-			Health: health,
-		}
-		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
-			result,
-			nil,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
+		return e.handleProject(ctx, nq)
 
 	// API Key Management Methods
 	case "erpc_addApiKey":
@@ -656,5 +560,128 @@ func (e *ERPC) updateApiKeyEnabled(ctx context.Context, nq *common.NormalizedReq
 	}
 
 	newReq := common.NewNormalizedRequestFromJsonRpcRequest(newJrr)
+
+	// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
+	newReq.CopyHttpContextFrom(nq)
+
 	return e.handleUpdateApiKey(ctx, newReq)
+}
+
+// handleConfig returns the eRPC configuration
+func (e *ERPC) handleConfig(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	jrr, err := nq.JsonRpcRequest()
+	if err != nil {
+		return nil, err
+	}
+
+	jrrs, err := common.NewJsonRpcResponse(
+		jrr.ID,
+		e.cfg,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
+}
+
+// handleTaxonomy returns the taxonomy of projects, networks, and upstreams
+func (e *ERPC) handleTaxonomy(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	jrr, err := nq.JsonRpcRequest()
+	if err != nil {
+		return nil, err
+	}
+
+	type taxonomyUpstream struct {
+		Id string `json:"id"`
+	}
+	type taxonomyNetwork struct {
+		Id        string              `json:"id"`
+		Upstreams []*taxonomyUpstream `json:"upstreams"`
+	}
+	type taxonomyProject struct {
+		Id       string             `json:"id"`
+		Networks []*taxonomyNetwork `json:"networks"`
+	}
+	type taxonomyResult struct {
+		Projects []*taxonomyProject `json:"projects"`
+	}
+
+	result := &taxonomyResult{}
+	projects := e.GetProjects()
+	for _, p := range projects {
+		networks := []*taxonomyNetwork{}
+		for _, n := range p.GetNetworks() {
+			ntw := &taxonomyNetwork{
+				Id:        n.Id(),
+				Upstreams: []*taxonomyUpstream{},
+			}
+			upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.Id())
+			for _, u := range upstreams {
+				ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Id()})
+			}
+			networks = append(networks, ntw)
+		}
+		result.Projects = append(result.Projects, &taxonomyProject{
+			Id:       p.Config.Id,
+			Networks: networks,
+		})
+	}
+
+	jrrs, err := common.NewJsonRpcResponse(
+		jrr.ID,
+		result,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
+}
+
+// handleProject returns the configuration and health information for a specific project
+func (e *ERPC) handleProject(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	jrr, err := nq.JsonRpcRequest()
+	if err != nil {
+		return nil, err
+	}
+
+	type configResult struct {
+		Config *common.ProjectConfig `json:"config"`
+		Health *ProjectHealthInfo    `json:"health"`
+	}
+
+	if len(jrr.Params) == 0 {
+		return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) is required"))
+	}
+
+	pid, ok := jrr.Params[0].(string)
+	if !ok {
+		return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) must be a string"))
+	}
+
+	p, err := e.GetProject(pid)
+	if err != nil {
+		return nil, err
+	}
+
+	health, err := p.GatherHealthInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	result := configResult{
+		Config: p.Config,
+		Health: health,
+	}
+
+	jrrs, err := common.NewJsonRpcResponse(
+		jrr.ID,
+		result,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
 }

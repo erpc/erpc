@@ -140,8 +140,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if err != nil {
 				return nil, err
 			}
-			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
-			dr := nq.Directives().Clone()
+			newReq := common.NewNormalizedRequestFromJsonRpcRequest(request)
+			dr := newReq.Directives().Clone()
 			dr.SkipCacheRead = true
 			// In case a block number is extracted, it means the node actually has an older latest block.
 			// Therefore we exclude the current upstream from the request (as high likely it doesn't have this block).
@@ -149,9 +149,13 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if respBlockNumber > 0 {
 				dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
 			}
-			nq.SetDirectives(dr)
-			nq.SetNetwork(network)
-			nnr, err := network.Forward(ctx, nq)
+			newReq.SetDirectives(dr)
+			newReq.SetNetwork(network)
+
+			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
+			newReq.CopyHttpContextFrom(nq)
+
+			nnr, err := network.Forward(ctx, newReq)
 			// This is needed in case highest block number is corrupted somehow and for example
 			// it is requesting a very high non-existent block number.
 			return pickHighestBlock(ctx, nnr, nr, err)
@@ -194,8 +198,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if err != nil {
 				return nil, err
 			}
-			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
-			dr := nq.Directives().Clone()
+			newReq2 := common.NewNormalizedRequestFromJsonRpcRequest(request)
+			dr := newReq2.Directives().Clone()
 			dr.SkipCacheRead = true
 			if respBlockNumber > 0 {
 				// In case a block number is extracted, it means the node actually has an older latest block.
@@ -204,9 +208,13 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 				// Also, if response from cache we don't need to exclude the current upstream.
 				dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
 			}
-			nq.SetDirectives(dr)
-			nq.SetNetwork(network)
-			nnr, err := network.Forward(ctx, nq)
+			newReq2.SetDirectives(dr)
+			newReq2.SetNetwork(network)
+
+			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
+			newReq2.CopyHttpContextFrom(nq)
+
+			nnr, err := network.Forward(ctx, newReq2)
 			// This is needed in case highest block number is corrupted somehow and for example
 			// it is requesting a very high non-existent block number.
 			return pickHighestBlock(ctx, nnr, nr, err)

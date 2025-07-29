@@ -92,6 +92,9 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				shadowReq.SetDirectives(dirs.Clone())
 			}
 
+			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
+			shadowReq.CopyHttpContextFrom(origReq)
+
 			// Set network reference for completeness (not strictly required for forwarding)
 			shadowReq.SetNetwork(origReq.Network())
 

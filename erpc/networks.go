@@ -522,7 +522,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				attempts := exec.Attempts()
 				if hedges > 0 {
 					finality := effectiveReq.Finality(loopCtx)
-					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", hedges), finality.String()).Inc()
+					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
 				}
 
 				var r *common.NormalizedResponse
@@ -539,7 +539,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					finality := effectiveReq.Finality(loopCtx)
-					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String()).Inc()
+					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
 					err := common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 					common.SetTraceSpanError(loopSpan, err)
 					return nil, err
@@ -682,6 +682,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				upstream.Id(),
 				method,
 				finality.String(),
+				req.UserId(),
+				req.AgentName(),
+				req.AgentVersion(),
 			).Inc()
 			if upstream != nil {
 				if mt := upstream.MetricsTracker(); mt != nil {
@@ -881,7 +884,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		inf := vinf.(*Multiplexer)
 		method, _ := req.Method()
 		finality := req.Finality(ctx)
-		telemetry.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method, finality.String()).Inc()
+		telemetry.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method, finality.String(), req.UserId(), req.AgentName(), req.AgentVersion()).Inc()
 
 		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
 
@@ -1072,6 +1075,9 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 					n.networkId,
 					method,
 					finality.String(),
+					req.UserId(),
+					req.AgentName(),
+					req.AgentVersion(),
 				).Inc()
 				return common.NewErrNetworkRateLimitRuleExceeded(
 					n.projectId,
