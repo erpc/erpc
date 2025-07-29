@@ -2,6 +2,8 @@ package data
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -833,4 +835,157 @@ func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string,
 	}
 
 	return nil
+}
+
+func (d *DynamoDBConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Delete")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+		)
+	}
+
+	if d.writeClient == nil {
+		err := fmt.Errorf("DynamoDB client not initialized yet")
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	d.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting item from dynamodb")
+
+	ctx, cancel := context.WithTimeout(ctx, d.setTimeout)
+	defer cancel()
+
+	_, err := d.writeClient.DeleteItemWithContext(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(d.table),
+		Key: map[string]*dynamodb.AttributeValue{
+			d.partitionKeyName: {
+				S: aws.String(partitionKey),
+			},
+			d.rangeKeyName: {
+				S: aws.String(rangeKey),
+			},
+		},
+	})
+
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+	}
+
+	return err
+}
+
+func (d *DynamoDBConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.List")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("index", index),
+			attribute.Int("limit", limit),
+		)
+	}
+
+	if d.readClient == nil {
+		err := fmt.Errorf("DynamoDB client not initialized yet")
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
+	defer cancel()
+
+	// Parse pagination token
+	var exclusiveStartKey map[string]*dynamodb.AttributeValue
+	if paginationToken != "" {
+		decoded, err := base64.StdEncoding.DecodeString(paginationToken)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid pagination token: %w", err)
+		}
+		err = json.Unmarshal(decoded, &exclusiveStartKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid pagination token format: %w", err)
+		}
+	}
+
+	var result *dynamodb.ScanOutput
+	var err error
+
+	if index == ConnectorReverseIndex {
+		// Use the reverse index (GSI)
+		result, err = d.readClient.ScanWithContext(ctx, &dynamodb.ScanInput{
+			TableName:         aws.String(d.table),
+			IndexName:         aws.String(d.reverseIndexName),
+			Limit:             aws.Int64(int64(limit)),
+			ExclusiveStartKey: exclusiveStartKey,
+		})
+	} else {
+		// Use the main table
+		result, err = d.readClient.ScanWithContext(ctx, &dynamodb.ScanInput{
+			TableName:         aws.String(d.table),
+			Limit:             aws.Int64(int64(limit)),
+			ExclusiveStartKey: exclusiveStartKey,
+		})
+	}
+
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+
+	results := make([]KeyValuePair, 0, len(result.Items))
+	now := time.Now().Unix()
+
+	for _, item := range result.Items {
+		// Check if item has expired
+		if ttl, exists := item[d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
+			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
+			if err == nil && now > expirationTime {
+				continue // Skip expired items
+			}
+		}
+
+		// Extract partition and range keys
+		partitionKey := ""
+		rangeKey := ""
+		if item[d.partitionKeyName] != nil && item[d.partitionKeyName].S != nil {
+			partitionKey = *item[d.partitionKeyName].S
+		}
+		if item[d.rangeKeyName] != nil && item[d.rangeKeyName].S != nil {
+			rangeKey = *item[d.rangeKeyName].S
+		}
+
+		// Extract value
+		var value []byte
+		if item["value"] != nil {
+			if item["value"].B != nil {
+				value = item["value"].B
+			} else if item["value"].S != nil {
+				value = []byte(*item["value"].S)
+			}
+		}
+
+		if partitionKey != "" && rangeKey != "" {
+			results = append(results, KeyValuePair{
+				PartitionKey: partitionKey,
+				RangeKey:     rangeKey,
+				Value:        value,
+			})
+		}
+	}
+
+	// Prepare next token
+	nextToken := ""
+	if result.LastEvaluatedKey != nil {
+		tokenData, err := json.Marshal(result.LastEvaluatedKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to create pagination token: %w", err)
+		}
+		nextToken = base64.StdEncoding.EncodeToString(tokenData)
+	}
+
+	return results, nextToken, nil
 }

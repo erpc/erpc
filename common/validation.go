@@ -321,6 +321,9 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 }
 
 func (c *ConnectorConfig) Validate() error {
+	if c.Id == "" {
+		return fmt.Errorf("*.connector.id is required")
+	}
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
 	}
@@ -521,9 +524,24 @@ func (a *AuthConfig) Validate() error {
 	if len(a.Strategies) == 0 {
 		return fmt.Errorf("project.*.auth.strategies is required, add at least one strategy")
 	}
+
+	// Track database connector IDs to ensure uniqueness
+	databaseConnectorIds := make(map[string]bool)
+
 	for _, strategy := range a.Strategies {
 		if err := strategy.Validate(); err != nil {
 			return err
+		}
+
+		// Validate unique connector IDs for database strategies
+		if strategy.Type == AuthTypeDatabase && strategy.Database != nil && strategy.Database.Connector != nil {
+			connectorId := strategy.Database.Connector.Id
+			if connectorId != "" {
+				if databaseConnectorIds[connectorId] {
+					return fmt.Errorf("database auth strategy connector ID '%s' is not unique, each database strategy must have a unique connector ID", connectorId)
+				}
+				databaseConnectorIds[connectorId] = true
+			}
 		}
 	}
 	return nil
@@ -562,12 +580,20 @@ func (s *AuthStrategyConfig) Validate() error {
 		if err := s.Siwe.Validate(); err != nil {
 			return err
 		}
+	case AuthTypeDatabase:
+		if s.Database == nil {
+			return fmt.Errorf("auth.*.database is required for database strategy")
+		}
+		if err := s.Database.Validate(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("auth.*.type '%s' is invalid must be one of: %v", s.Type, []AuthType{
 			AuthTypeNetwork,
 			AuthTypeSecret,
 			AuthTypeJwt,
 			AuthTypeSiwe,
+			AuthTypeDatabase,
 		})
 	}
 	return nil

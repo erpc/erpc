@@ -19,12 +19,20 @@ type DistributedLock interface {
 	IsNil() bool
 }
 
+type KeyValuePair struct {
+	PartitionKey string
+	RangeKey     string
+	Value        []byte
+}
+
 type Connector interface {
 	Id() string
 	Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error)
 	// Note if "value" is going to be stored/kept in memory for longer than response lifecycle it must be
 	// copied to a new memory location because B2Str is used to provide "value" as a string reference.
 	Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error
+	Delete(ctx context.Context, partitionKey, rangeKey string) error
+	List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error)
 	Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error)
 	WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error)
 	PublishCounterInt64(ctx context.Context, key string, value int64) error

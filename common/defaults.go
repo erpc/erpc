@@ -692,6 +692,9 @@ func (d *DatabaseConfig) SetDefaults(defClusterKey string) error {
 }
 
 func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
+	if c.Id == "" {
+		c.Id = string(scope) + "-" + string(c.Driver)
+	}
 	if c.Memory != nil {
 		c.Driver = DriverMemory
 	}
@@ -2079,8 +2082,11 @@ func (s *AuthStrategyConfig) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for secret strategy: %w", err)
 		}
 	}
+	if s.Type == AuthTypeDatabase && s.Database == nil {
+		s.Database = &DatabaseStrategyConfig{}
+	}
 	if s.Database != nil {
-		s.Type = AuthTypeSecret
+		s.Type = AuthTypeDatabase
 		if err := s.Database.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for database strategy: %w", err)
 		}

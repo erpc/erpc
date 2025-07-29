@@ -53,8 +53,9 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 		return nil, common.NewErrAuthUnauthorized("database", "empty API key")
 	}
 
-	// Use API key as partition key and fixed range key "user" since we assume one user per API key
-	rangeKey := "user"
+	// Use API key as partition key and wildcard "*" as range key to get the record for this API key
+	// (optimized: apiKey -> userId -> data, where userId is now the range key)
+	rangeKey := "*"
 	valueBytes, err := s.connector.Get(ctx, data.ConnectorMainIndex, apiKey, rangeKey)
 	if err != nil {
 		// Check for record not found error
@@ -69,6 +70,7 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 	var userData struct {
 		UserId             string `json:"userId"`
 		PerSecondRateLimit *int64 `json:"perSecondRateLimit,omitempty"`
+		Enabled            *bool  `json:"enabled,omitempty"`
 	}
 
 	if err := json.Unmarshal(valueBytes, &userData); err != nil {
@@ -79,6 +81,17 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 	if userData.UserId == "" {
 		s.logger.Error().Str("apiKey", apiKey).RawJSON("data", valueBytes).Msg("missing user ID in database record")
 		return nil, common.NewErrAuthUnauthorized("database", "missing user ID in data")
+	}
+
+	// Check if API key is enabled (default to true if not specified for backward compatibility)
+	enabled := true
+	if userData.Enabled != nil {
+		enabled = *userData.Enabled
+	}
+
+	if !enabled {
+		s.logger.Warn().Str("apiKey", apiKey).Str("userId", userData.UserId).Msg("authentication attempt with disabled API key")
+		return nil, common.NewErrAuthUnauthorized("database", "API key is disabled")
 	}
 
 	// Create and return the user
@@ -93,4 +106,9 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 	s.logger.Debug().Str("apiKey", apiKey).Str("userId", user.Id).Int64("rateLimit", user.PerSecondRateLimit).Msg("user authenticated successfully from database")
 
 	return user, nil
+}
+
+// GetConnector returns the database connector for admin operations
+func (s *DatabaseStrategy) GetConnector() data.Connector {
+	return s.connector
 }

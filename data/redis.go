@@ -582,3 +582,154 @@ func (l *redisLock) Unlock(ctx context.Context) error {
 	l.connector.logger.Trace().Str("key", l.key).Msg("distributed lock released")
 	return nil
 }
+
+func (r *RedisConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.Delete")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+		)
+	}
+
+	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+	r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting from Redis")
+
+	ctx, cancel := context.WithTimeout(ctx, r.setTimeout)
+	defer cancel()
+
+	// Delete main key
+	if err := r.client.Del(ctx, key).Err(); err != nil {
+		r.logger.Warn().Err(err).Str("key", key).Msg("failed to DELETE in Redis")
+		r.markConnectionAsLostIfNecessary(err)
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	// Clean up reverse index if it exists
+	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
+		parts := strings.SplitAfterN(partitionKey, ":", 3)
+		if len(parts) >= 2 {
+			wildcardPartitionKey := parts[0] + parts[1] + "*"
+			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
+			// Best-effort: log on error but do not fail the primary DELETE
+			if err := r.client.Del(ctx, reverseKey).Err(); err != nil {
+				r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to DELETE reverse index in Redis")
+			}
+		}
+	}
+
+	return nil
+}
+
+func (r *RedisConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.List")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("index", index),
+			attribute.Int("limit", limit),
+		)
+	}
+
+	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, r.getTimeout)
+	defer cancel()
+
+	// Use SCAN for efficient pagination
+	cursor := uint64(0)
+	if paginationToken != "" {
+		var err error
+		cursor, err = strconv.ParseUint(paginationToken, 10, 64)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid pagination token: %w", err)
+		}
+	}
+
+	// Determine the pattern to scan for
+	pattern := "*"
+	if index == ConnectorReverseIndex {
+		pattern = redisReverseIndexPrefix + "#*"
+	}
+
+	keys, nextCursor, err := r.client.Scan(ctx, cursor, pattern, int64(limit)).Result()
+	if err != nil {
+		r.logger.Warn().Err(err).Msg("failed to SCAN in Redis")
+		r.markConnectionAsLostIfNecessary(err)
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+
+	results := make([]KeyValuePair, 0, len(keys))
+
+	// Get values for all keys in a pipeline for efficiency
+	pipe := r.client.Pipeline()
+	cmds := make([]*redis.StringCmd, len(keys))
+	for i, key := range keys {
+		cmds[i] = pipe.Get(ctx, key)
+	}
+
+	_, err = pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		r.logger.Warn().Err(err).Msg("failed to execute pipeline in Redis List")
+		r.markConnectionAsLostIfNecessary(err)
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+
+	for i, cmd := range cmds {
+		value, err := cmd.Bytes()
+		if err == redis.Nil {
+			continue // Key was deleted between SCAN and GET
+		}
+		if err != nil {
+			r.logger.Warn().Err(err).Str("key", keys[i]).Msg("failed to GET key value in Redis List")
+			continue
+		}
+
+		// Parse the key to extract partition and range keys
+		var partitionKey, rangeKey string
+		if index == ConnectorReverseIndex && strings.HasPrefix(keys[i], redisReverseIndexPrefix+"#") {
+			// For reverse index keys: rvi#partitionKey#rangeKey
+			parts := strings.SplitN(keys[i], "#", 3)
+			if len(parts) == 3 {
+				partitionKey = parts[1]
+				rangeKey = parts[2]
+			}
+		} else {
+			// For regular keys: partitionKey:rangeKey
+			parts := strings.SplitN(keys[i], ":", 2)
+			if len(parts) == 2 {
+				partitionKey = parts[0]
+				rangeKey = parts[1]
+			}
+		}
+
+		if partitionKey != "" && rangeKey != "" {
+			results = append(results, KeyValuePair{
+				PartitionKey: partitionKey,
+				RangeKey:     rangeKey,
+				Value:        value,
+			})
+		}
+	}
+
+	nextToken := ""
+	if nextCursor != 0 {
+		nextToken = strconv.FormatUint(nextCursor, 10)
+	}
+
+	return results, nextToken, nil
+}

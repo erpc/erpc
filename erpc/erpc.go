@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -112,129 +111,6 @@ func (e *ERPC) Bootstrap(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
-	if e.adminAuthRegistry != nil {
-		return e.adminAuthRegistry.Authenticate(ctx, method, ap)
-	}
-	return nil, nil
-}
-
-func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	method, err := nq.Method()
-	if err != nil {
-		return nil, err
-	}
-
-	switch method {
-	case "erpc_taxonomy":
-		jrr, err := nq.JsonRpcRequest()
-		if err != nil {
-			return nil, err
-		}
-		type taxonomyUpstream struct {
-			Id string `json:"id"`
-		}
-		type taxonomyNetwork struct {
-			Id        string              `json:"id"`
-			Upstreams []*taxonomyUpstream `json:"upstreams"`
-		}
-		type taxonomyProject struct {
-			Id       string             `json:"id"`
-			Networks []*taxonomyNetwork `json:"networks"`
-		}
-		type taxonomyResult struct {
-			Projects []*taxonomyProject `json:"projects"`
-		}
-		result := &taxonomyResult{}
-		projects := e.GetProjects()
-		for _, p := range projects {
-			networks := []*taxonomyNetwork{}
-			for _, n := range p.GetNetworks() {
-				ntw := &taxonomyNetwork{
-					Id:        n.Id(),
-					Upstreams: []*taxonomyUpstream{},
-				}
-				upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.Id())
-				for _, u := range upstreams {
-					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Id()})
-				}
-				networks = append(networks, ntw)
-			}
-			result.Projects = append(result.Projects, &taxonomyProject{
-				Id:       p.Config.Id,
-				Networks: networks,
-			})
-		}
-		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
-			result,
-			nil,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
-
-	case "erpc_config":
-		jrr, err := nq.JsonRpcRequest()
-		if err != nil {
-			return nil, err
-		}
-
-		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
-			e.cfg,
-			nil,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
-
-	case "erpc_project":
-		jrr, err := nq.JsonRpcRequest()
-		if err != nil {
-			return nil, err
-		}
-		type configResult struct {
-			Config *common.ProjectConfig `json:"config"`
-			Health *ProjectHealthInfo    `json:"health"`
-		}
-		if len(jrr.Params) == 0 {
-			return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) is required"))
-		}
-		pid, ok := jrr.Params[0].(string)
-		if !ok {
-			return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) must be a string"))
-		}
-		p, err := e.GetProject(pid)
-		if err != nil {
-			return nil, err
-		}
-		health, err := p.GatherHealthInfo()
-		if err != nil {
-			return nil, err
-		}
-		result := configResult{
-			Config: p.Config,
-			Health: health,
-		}
-		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
-			result,
-			nil,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
-	default:
-		return nil, common.NewErrEndpointUnsupported(
-			fmt.Errorf("admin method %s is not supported", method),
-		)
-	}
 }
 
 func (e *ERPC) GetNetwork(ctx context.Context, projectId string, networkId string) (*Network, error) {

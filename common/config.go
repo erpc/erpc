@@ -1131,6 +1131,13 @@ func (s *DatabaseStrategyConfig) SetDefaults() error {
 	return s.Connector.SetDefaults(connectorScopeAuth)
 }
 
+func (s *DatabaseStrategyConfig) Validate() error {
+	if s.Connector == nil {
+		return fmt.Errorf("auth.*.database.connector is required")
+	}
+	return s.Connector.Validate()
+}
+
 type JwtStrategyConfig struct {
 	AllowedIssuers    []string          `yaml:"allowedIssuers" json:"allowedIssuers"`
 	AllowedAudiences  []string          `yaml:"allowedAudiences" json:"allowedAudiences"`
