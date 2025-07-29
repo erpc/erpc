@@ -462,8 +462,8 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 			).Inc()
 		}
 		return []ethGetLogsSubRequest{
-			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: addresses[:mid]},
-			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: addresses[mid:]},
+			{fromBlock: fb, toBlock: tb, address: addresses[:mid], topics: filter["topics"]},
+			{fromBlock: fb, toBlock: tb, address: addresses[mid:], topics: filter["topics"]},
 		}, nil
 	}
 

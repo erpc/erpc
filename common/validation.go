@@ -599,6 +599,29 @@ func (s *AuthStrategyConfig) Validate() error {
 	return nil
 }
 
+func (s *DatabaseStrategyConfig) Validate() error {
+	if s.Connector == nil {
+		return fmt.Errorf("auth.*.database.connector is required")
+	}
+
+	if s.Cache != nil {
+		if s.Cache.TTL != nil && *s.Cache.TTL < 0 {
+			return fmt.Errorf("auth.*.database.cache.ttl must be non-negative")
+		}
+		if s.Cache.MaxSize != nil && *s.Cache.MaxSize <= 0 {
+			return fmt.Errorf("auth.*.database.cache.maxSize must be positive")
+		}
+		if s.Cache.MaxCost != nil && *s.Cache.MaxCost <= 0 {
+			return fmt.Errorf("auth.*.database.cache.maxCost must be positive")
+		}
+		if s.Cache.NumCounters != nil && *s.Cache.NumCounters <= 0 {
+			return fmt.Errorf("auth.*.database.cache.numCounters must be positive")
+		}
+	}
+
+	return s.Connector.Validate()
+}
+
 func (s *NetworkStrategyConfig) Validate() error {
 	return nil
 }

@@ -97,6 +97,10 @@ type NormalizedRequest struct {
 	finality atomic.Value // Cached finality state
 
 	user atomic.Value
+
+	// Cached agent information to avoid recalculation
+	agentName    atomic.Value // Cached agent name from User-Agent
+	agentVersion atomic.Value // Cached agent version from User-Agent
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -637,6 +641,11 @@ func (r *NormalizedRequest) AgentName() string {
 		return "unknown"
 	}
 
+	// Check if cached agent name is available
+	if cachedAgentName := r.agentName.Load(); cachedAgentName != nil {
+		return cachedAgentName.(string)
+	}
+
 	r.RLock()
 	userAgent := r.getUserAgent()
 	r.RUnlock()
@@ -645,7 +654,9 @@ func (r *NormalizedRequest) AgentName() string {
 		return "unknown"
 	}
 
-	return r.simplifyAgentName(userAgent)
+	simplifiedAgentName := r.simplifyAgentName(userAgent)
+	r.agentName.Store(simplifiedAgentName)
+	return simplifiedAgentName
 }
 
 // AgentVersion extracts and simplifies the agent version from User-Agent header or query parameter
@@ -654,6 +665,11 @@ func (r *NormalizedRequest) AgentVersion() string {
 		return "unknown"
 	}
 
+	// Check if cached agent version is available
+	if cachedAgentVersion := r.agentVersion.Load(); cachedAgentVersion != nil {
+		return cachedAgentVersion.(string)
+	}
+
 	r.RLock()
 	userAgent := r.getUserAgent()
 	r.RUnlock()
@@ -662,7 +678,9 @@ func (r *NormalizedRequest) AgentVersion() string {
 		return "unknown"
 	}
 
-	return r.simplifyAgentVersion(userAgent)
+	simplifiedAgentVersion := r.simplifyAgentVersion(userAgent)
+	r.agentVersion.Store(simplifiedAgentVersion)
+	return simplifiedAgentVersion
 }
 
 // getUserAgent returns the user agent string, with query parameter taking precedence over header

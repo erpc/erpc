@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/dgraph-io/ristretto/v2"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/rs/zerolog"
@@ -14,6 +15,7 @@ type DatabaseStrategy struct {
 	logger    *zerolog.Logger
 	cfg       *common.DatabaseStrategyConfig
 	connector data.Connector
+	cache     *ristretto.Cache[string, *common.User]
 }
 
 var _ AuthStrategy = &DatabaseStrategy{}
@@ -32,10 +34,33 @@ func NewDatabaseStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *co
 		return nil, fmt.Errorf("failed to create database connector: %w", err)
 	}
 
+	// Initialize cache
+	var cache *ristretto.Cache[string, *common.User]
+	if cfg.Cache != nil {
+		cacheConfig := &ristretto.Config[string, *common.User]{
+			NumCounters: *cfg.Cache.NumCounters,
+			MaxCost:     *cfg.Cache.MaxCost,
+			BufferItems: 64, // Default buffer size
+		}
+
+		cache, err = ristretto.NewCache(cacheConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create cache: %w", err)
+		}
+
+		logger.Info().
+			Dur("ttl", *cfg.Cache.TTL).
+			Int64("maxSize", *cfg.Cache.MaxSize).
+			Int64("maxCost", *cfg.Cache.MaxCost).
+			Int64("numCounters", *cfg.Cache.NumCounters).
+			Msg("initialized API key cache for database authentication strategy")
+	}
+
 	return &DatabaseStrategy{
 		logger:    logger,
 		cfg:       cfg,
 		connector: connector,
+		cache:     cache,
 	}, nil
 }
 
@@ -51,6 +76,15 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 	apiKey := ap.Secret.Value
 	if apiKey == "" {
 		return nil, common.NewErrAuthUnauthorized("database", "empty API key")
+	}
+
+	// Check cache first if available
+	if s.cache != nil {
+		if cachedUser, found := s.cache.Get(apiKey); found {
+			s.logger.Debug().Str("apiKey", apiKey).Msg("API key found in cache")
+			return cachedUser, nil
+		}
+		s.logger.Debug().Str("apiKey", apiKey).Msg("API key not found in cache, querying database")
 	}
 
 	// Use API key as partition key and wildcard "*" as range key to get the record for this API key
@@ -94,7 +128,7 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 		return nil, common.NewErrAuthUnauthorized("database", "API key is disabled")
 	}
 
-	// Create and return the user
+	// Create the user
 	user := &common.User{
 		Id: userData.UserId,
 	}
@@ -103,7 +137,14 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 		user.PerSecondRateLimit = *userData.PerSecondRateLimit
 	}
 
-	s.logger.Debug().Str("apiKey", apiKey).Str("userId", user.Id).Int64("rateLimit", user.PerSecondRateLimit).Msg("user authenticated successfully from database")
+	// Cache the successful result if cache is available
+	if s.cache != nil && s.cfg.Cache != nil && s.cfg.Cache.TTL != nil {
+		ttl := *s.cfg.Cache.TTL
+		s.cache.SetWithTTL(apiKey, user, 1, ttl)
+		s.logger.Debug().Str("apiKey", apiKey).Dur("ttl", ttl).Msg("cached API key data")
+	}
+
+	s.logger.Debug().Str("apiKey", apiKey).Str("userId", user.Id).Int64("rateLimit", user.PerSecondRateLimit).Msg("user authenticated successfully")
 
 	return user, nil
 }
@@ -111,4 +152,28 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 // GetConnector returns the database connector for admin operations
 func (s *DatabaseStrategy) GetConnector() data.Connector {
 	return s.connector
+}
+
+// InvalidateCache removes an API key from the cache
+func (s *DatabaseStrategy) InvalidateCache(apiKey string) {
+	if s.cache != nil {
+		s.cache.Del(apiKey)
+		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key cache entry")
+	}
+}
+
+// ClearCache clears all cached API keys
+func (s *DatabaseStrategy) ClearCache() {
+	if s.cache != nil {
+		s.cache.Clear()
+		s.logger.Info().Msg("cleared all API key cache entries")
+	}
+}
+
+// Close closes the cache and performs cleanup
+func (s *DatabaseStrategy) Close() {
+	if s.cache != nil {
+		s.cache.Close()
+		s.logger.Debug().Msg("closed API key cache")
+	}
 }

@@ -169,6 +169,45 @@ func TestSplitEthGetLogsRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "split by addresses - odd count",
+			request: createTestRequest(map[string]interface{}{
+				"fromBlock": "0x1",
+				"toBlock":   "0x1",
+				"address":   []interface{}{"0x123", "0x456", "0x789"},
+				"topics":    []interface{}{"0xabc"},
+			}),
+			expectedSplit: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 1, address: []interface{}{"0x123"}, topics: []interface{}{"0xabc"}},
+				{fromBlock: 1, toBlock: 1, address: []interface{}{"0x456", "0x789"}, topics: []interface{}{"0xabc"}},
+			},
+		},
+		{
+			name: "split by topics - odd count",
+			request: createTestRequest(map[string]interface{}{
+				"fromBlock": "0x1",
+				"toBlock":   "0x1",
+				"address":   "0x123",
+				"topics":    []interface{}{"0xabc", "0xdef", "0xghi"},
+			}),
+			expectedSplit: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{"0xabc"}},
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{"0xdef", "0xghi"}},
+			},
+		},
+		{
+			name: "split by block range - odd count",
+			request: createTestRequest(map[string]interface{}{
+				"fromBlock": "0x1",
+				"toBlock":   "0x5",
+				"address":   "0x123",
+				"topics":    []interface{}{"0xabc"},
+			}),
+			expectedSplit: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 2, address: "0x123", topics: []interface{}{"0xabc"}},
+				{fromBlock: 3, toBlock: 5, address: "0x123", topics: []interface{}{"0xabc"}},
+			},
+		},
+		{
 			name: "invalid fromBlock",
 			request: createTestRequest(map[string]interface{}{
 				"fromBlock": "invalid",

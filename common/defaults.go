@@ -2115,6 +2115,38 @@ func (s *AuthStrategyConfig) SetDefaults() error {
 	return nil
 }
 
+func (s *DatabaseStrategyConfig) SetDefaults() error {
+	if s.Connector == nil {
+		s.Connector = &ConnectorConfig{}
+	}
+
+	if s.Cache == nil {
+		s.Cache = &DatabaseStrategyCacheConfig{}
+	}
+
+	if s.Cache.TTL == nil {
+		defaultTTL := time.Hour
+		s.Cache.TTL = &defaultTTL
+	}
+
+	if s.Cache.MaxSize == nil {
+		defaultMaxSize := int64(10000)
+		s.Cache.MaxSize = &defaultMaxSize
+	}
+
+	if s.Cache.MaxCost == nil {
+		defaultMaxCost := int64(1 << 30) // 1GB
+		s.Cache.MaxCost = &defaultMaxCost
+	}
+
+	if s.Cache.NumCounters == nil {
+		defaultNumCounters := int64(100000)
+		s.Cache.NumCounters = &defaultNumCounters
+	}
+
+	return s.Connector.SetDefaults(connectorScopeAuth)
+}
+
 func (s *SecretStrategyConfig) SetDefaults() error {
 	return nil
 }

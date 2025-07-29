@@ -1121,21 +1121,15 @@ func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
 }
 
 type DatabaseStrategyConfig struct {
-	Connector *ConnectorConfig `yaml:"connector" json:"connector"`
+	Connector *ConnectorConfig             `yaml:"connector" json:"connector"`
+	Cache     *DatabaseStrategyCacheConfig `yaml:"cache,omitempty" json:"cache,omitempty"`
 }
 
-func (s *DatabaseStrategyConfig) SetDefaults() error {
-	if s.Connector == nil {
-		s.Connector = &ConnectorConfig{}
-	}
-	return s.Connector.SetDefaults(connectorScopeAuth)
-}
-
-func (s *DatabaseStrategyConfig) Validate() error {
-	if s.Connector == nil {
-		return fmt.Errorf("auth.*.database.connector is required")
-	}
-	return s.Connector.Validate()
+type DatabaseStrategyCacheConfig struct {
+	TTL         *time.Duration `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+	MaxSize     *int64         `yaml:"maxSize,omitempty" json:"maxSize,omitempty"`
+	MaxCost     *int64         `yaml:"maxCost,omitempty" json:"maxCost,omitempty"`
+	NumCounters *int64         `yaml:"numCounters,omitempty" json:"numCounters,omitempty"`
 }
 
 type JwtStrategyConfig struct {
