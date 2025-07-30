@@ -1018,6 +1018,23 @@ func TestMatchersValidate(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Len(t, result, 0)
 	})
+
+	t.Run("auto-generated default matcher - should NOT get global override", func(t *testing.T) {
+		// This simulates what ConvertFailsafeLegacyMatchers creates when no explicit matchers are provided
+		matchers := []*MatcherConfig{
+			{
+				Method: "*",
+				Action: MatcherInclude,
+				// Network, Params, Finality are all empty/nil by default
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.NoError(t, err)
+		assert.Len(t, result, 1, "Auto-generated default matcher should not get catch-all exclude added")
+		assert.Equal(t, "*", result[0].Method)
+		assert.Equal(t, MatcherInclude, result[0].Action)
+	})
 }
 
 func TestFailsafeValidation(t *testing.T) {
