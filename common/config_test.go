@@ -1181,17 +1181,50 @@ func TestFailsafeValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy mode with empty matchMethod should error", func(t *testing.T) {
-		policies := []*FailsafeConfig{
-			{
-				MatchMethod: "", // Empty matchMethod with no Matchers
-			},
+	t.Run("legacy mode with empty matchMethod should create catch-all matcher", func(t *testing.T) {
+		policy := &FailsafeConfig{
+			MatchMethod: "", // Empty matchMethod with no Matchers - should mean "match all"
 		}
 
-		for i, policy := range policies {
-			err := policy.Validate()
-			assert.Error(t, err, "Policy %d should fail validation", i)
-			assert.Contains(t, err.Error(), "matchMethod cannot be empty")
+		// First convert legacy matchers
+		policy.ConvertFailsafeLegacyMatchers()
+
+		// Then validate
+		err := policy.Validate()
+		assert.NoError(t, err, "Empty matchMethod should be valid (means match all)")
+
+		// Should create a default catch-all matcher since no legacy fields were present
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, "*", policy.Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
+	})
+
+	t.Run("legacy mode with empty matchMethod but with finality should apply global override", func(t *testing.T) {
+		policy := &FailsafeConfig{
+			MatchMethod:   "", // Empty method - should match all methods
+			MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
 		}
+
+		// First convert legacy matchers
+		policy.ConvertFailsafeLegacyMatchers()
+
+		// Then validate
+		err := policy.Validate()
+		assert.NoError(t, err, "Empty matchMethod with finality should be valid")
+
+		// Should create a matcher with finality constraint + global override catch-all exclude
+		// This is because a matcher with specific finality is NOT a default catch-all
+		assert.Len(t, policy.Matchers, 2)
+
+		// First matcher should be the catch-all exclude (processed last)
+		assert.Equal(t, "*", policy.Matchers[0].Method)
+		assert.Equal(t, MatcherExclude, policy.Matchers[0].Action)
+		assert.Len(t, policy.Matchers[0].Finality, 0)
+
+		// Second matcher should be the original finality-specific matcher
+		assert.Equal(t, "", policy.Matchers[1].Method) // Empty means match all methods
+		assert.Equal(t, MatcherInclude, policy.Matchers[1].Action)
+		assert.Len(t, policy.Matchers[1].Finality, 1)
+		assert.Equal(t, DataFinalityStateFinalized, policy.Matchers[1].Finality[0])
 	})
 }

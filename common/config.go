@@ -805,16 +805,18 @@ func (f *FailsafeConfig) ConvertFailsafeLegacyMatchers() {
 		return
 	}
 
-	// Convert legacy fields to new matcher format
+	// Convert legacy fields to new matcher format if any are present
+	// Note: Empty MatchMethod now means "match all methods" (consistent with new matcher system)
 	if f.MatchMethod != "" || len(f.MatchFinality) > 0 {
 		matcher := &MatcherConfig{
 			Action: MatcherInclude, // Default action for legacy configs
 		}
 
-		// Convert MatchMethod
+		// Convert MatchMethod - empty MatchMethod means match all methods
 		if f.MatchMethod != "" {
 			matcher.Method = f.MatchMethod
 		}
+		// If MatchMethod is empty, leave Method empty (which means match all)
 
 		// Convert MatchFinality - include all finality states in a single matcher
 		if len(f.MatchFinality) > 0 {

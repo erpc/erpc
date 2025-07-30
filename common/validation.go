@@ -878,10 +878,8 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 }
 
 func (f *FailsafeConfig) Validate() error {
-	// Validate legacy MatchMethod only if using legacy mode (no Matchers defined)
-	if len(f.Matchers) == 0 && f.MatchMethod == "" {
-		return fmt.Errorf("failsafe.matchMethod cannot be empty, use '*' to match any method")
-	}
+	// Legacy MatchMethod validation is removed - empty MatchMethod now means "match all methods"
+	// This is consistent with the new matcher system where empty fields mean "match everything"
 
 	// Validate and apply global override to matchers
 	if len(f.Matchers) > 0 {
