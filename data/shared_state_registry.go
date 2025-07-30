@@ -15,6 +15,9 @@ import (
 
 type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
+	SetString(ctx context.Context, key string, value string, ttl *time.Duration) error
+	GetString(ctx context.Context, key string) (string, error)
+	DeleteString(ctx context.Context, key string) error
 }
 
 type sharedStateRegistry struct {
@@ -184,4 +187,31 @@ func (r *sharedStateRegistry) fetchValue(ctx context.Context, key string) (int64
 	}
 
 	return remoteValue, nil
+}
+
+// SetString stores a string value in shared state with optional TTL
+func (r *sharedStateRegistry) SetString(ctx context.Context, key string, value string, ttl *time.Duration) error {
+	fkey := fmt.Sprintf("%s/%s", r.clusterKey, key)
+	return r.connector.Set(ctx, fkey, "value", []byte(value), ttl)
+}
+
+// GetString retrieves a string value from shared state
+func (r *sharedStateRegistry) GetString(ctx context.Context, key string) (string, error) {
+	fkey := fmt.Sprintf("%s/%s", r.clusterKey, key)
+	data, err := r.connector.Get(ctx, ConnectorMainIndex, fkey, "value")
+	if err != nil {
+		return "", err
+	}
+	if data == nil {
+		return "", common.NewErrRecordNotFound(fkey, "value", r.connector.Id())
+	}
+	return string(data), nil
+}
+
+// DeleteString removes a string value from shared state
+func (r *sharedStateRegistry) DeleteString(ctx context.Context, key string) error {
+	fkey := fmt.Sprintf("%s/%s", r.clusterKey, key)
+	// Set with zero TTL effectively deletes the key in most storage systems
+	zeroDuration := time.Duration(0)
+	return r.connector.Set(ctx, fkey, "value", nil, &zeroDuration)
 }

@@ -147,6 +147,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.appCtx,
 		upstreamsRegistry,
 		metricsTracker,
+		r.sharedState,
 		r.evmJsonRpcCache,
 		r.rateLimitersRegistry,
 		&lg,

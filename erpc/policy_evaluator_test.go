@@ -1809,6 +1809,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		rlr,
 		upr,
 		mt,
+		ssr,
 	)
 	if err != nil {
 		t.Fatal(err)

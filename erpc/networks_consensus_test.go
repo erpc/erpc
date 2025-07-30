@@ -906,6 +906,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				nil,
 				upsReg,
 				mt,
+				ssr,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -1106,6 +1107,7 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 		nil,
 		upsReg,
 		mt,
+		ssr,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1226,7 +1228,7 @@ func setupTestNetworkWithConsensusPolicy(t *testing.T, ctx context.Context, upst
 				},
 			},
 		},
-		nil, upsReg, mt,
+		nil, upsReg, mt, ssr,
 	)
 	require.NoError(t, err)
 
@@ -2014,7 +2016,7 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 						},
 					},
 				},
-				nil, upsReg, mt,
+				nil, upsReg, mt, ssr,
 			)
 			require.NoError(t, err)
 
@@ -2414,7 +2416,7 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 						},
 					},
 				},
-				nil, upsReg, mt,
+				nil, upsReg, mt, ssr,
 			)
 			require.NoError(t, err)
 

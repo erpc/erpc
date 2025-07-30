@@ -129,6 +129,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -250,6 +251,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -385,6 +387,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -506,6 +509,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -668,6 +672,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -824,6 +829,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1004,6 +1010,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1201,6 +1208,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1411,6 +1419,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1604,6 +1613,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1757,7 +1767,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Architecture: common.ArchitectureEvm,
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Failsafe:     []*common.FailsafeConfig{fsCfg},
-		}, rlr, upr, mt)
+		}, rlr, upr, mt, ssr)
 
 		_ = ntw.Bootstrap(ctx)
 		upstream.ReorderUpstreams(upr)
@@ -1960,6 +1970,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2161,6 +2172,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2352,6 +2364,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2539,6 +2552,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2761,6 +2775,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2970,6 +2985,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3160,6 +3176,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3350,6 +3367,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3507,6 +3525,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3638,6 +3657,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3817,6 +3837,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3952,6 +3973,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4084,6 +4106,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 10*time.Second),
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4205,6 +4228,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4331,6 +4355,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4463,6 +4488,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4596,6 +4622,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4726,6 +4753,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4878,6 +4906,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5032,6 +5061,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5185,6 +5215,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5326,6 +5357,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5463,6 +5495,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5606,6 +5639,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5752,6 +5786,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5909,6 +5944,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6033,6 +6069,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6181,6 +6218,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6332,6 +6370,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6476,6 +6515,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create network: %v", err)
@@ -6603,6 +6643,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6726,6 +6767,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6849,6 +6891,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6955,6 +6998,7 @@ func TestNetwork_Forward(t *testing.T) {
 			ctx,
 			upstreamsRegistry,
 			metricsTracker,
+			ssr,
 			nil,
 			rateLimitersRegistry,
 			&logger,
@@ -7159,6 +7203,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			ssr,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -9531,7 +9576,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Failsafe:     []*common.FailsafeConfig{fsCfg},
 		}
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, ssr)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, ntw.Bootstrap(ctx)) // This starts the poller ticker
 
@@ -9701,7 +9746,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 				},
 			},
 		}
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, ssr)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, ntw.Bootstrap(ctx))
 
@@ -9844,7 +9889,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			Architecture: common.ArchitectureEvm,
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		}
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, ssr)
 
 		require.NoError(t, upr.Bootstrap(ctx))
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
@@ -9947,6 +9992,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		ssr,
 	)
 	assert.NoError(t, err)
 
@@ -10068,6 +10114,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		ssr,
 	)
 	assert.NoError(t, err)
 
@@ -10181,6 +10228,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			ssr,
 		)
 		require.NoError(t, err)
 
@@ -10319,6 +10367,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			ssr,
 		)
 		require.NoError(t, err)
 
