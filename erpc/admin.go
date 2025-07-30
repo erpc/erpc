@@ -25,7 +25,7 @@ func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.Au
 	if e.adminAuthRegistry != nil {
 		return e.adminAuthRegistry.Authenticate(ctx, method, ap)
 	}
-	return nil, nil
+	return nil, fmt.Errorf("admin auth not configured")
 }
 
 func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -114,10 +114,10 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 		return nil, common.NewErrInvalidRequest(fmt.Errorf("userId is required and must be a string"))
 	}
 
-	var perSecondRateLimit *int
+	var perSecondRateLimit *int64
 	if rateLimit, exists := params["perSecondRateLimit"]; exists && rateLimit != nil {
 		if rateLimitFloat, ok := rateLimit.(float64); ok {
-			rateLimitInt := int(rateLimitFloat)
+			rateLimitInt := int64(rateLimitFloat)
 			perSecondRateLimit = &rateLimitInt
 		} else {
 			return nil, common.NewErrInvalidRequest(fmt.Errorf("perSecondRateLimit must be a number"))

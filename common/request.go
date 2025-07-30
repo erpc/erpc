@@ -72,10 +72,6 @@ type NormalizedRequest struct {
 	directives     *RequestDirectives
 	jsonRpcRequest atomic.Pointer[JsonRpcRequest]
 
-	// HTTP context fields for metrics and user agent parsing
-	httpHeaders http.Header
-	queryArgs   url.Values
-
 	// Upstream selection fields - protected by upstreamMutex
 	upstreamMutex    sync.Mutex
 	UpstreamIdx      uint32
@@ -261,7 +257,7 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	}
 }
 
-func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryArgs url.Values) {
+func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -300,8 +296,14 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryAr
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
 	}
 
-	r.httpHeaders = headers
-	r.queryArgs = queryArgs
+	// Extract and store user agent information for future use
+	if userAgent := r.getUserAgent(headers, queryArgs); userAgent != "" {
+		simplifiedAgentName := r.simplifyAgentName(userAgent)
+		simplifiedAgentVersion := r.simplifyAgentVersion(userAgent)
+
+		r.agentName.Store(simplifiedAgentName)
+		r.agentVersion.Store(simplifiedAgentVersion)
+	}
 }
 
 func (r *NormalizedRequest) SkipCacheRead() bool {
@@ -586,21 +588,9 @@ func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
 	source.RLock()
 	defer source.RUnlock()
 
-	// Copy HTTP headers
-	if source.httpHeaders != nil {
-		r.httpHeaders = make(http.Header)
-		for k, v := range source.httpHeaders {
-			r.httpHeaders[k] = v
-		}
-	}
-
-	// Copy query parameters
-	if source.queryArgs != nil {
-		r.queryArgs = make(url.Values)
-		for k, v := range source.queryArgs {
-			r.queryArgs[k] = v
-		}
-	}
+	// Copy the user agent information
+	r.agentName.Store(source.agentName.Load())
+	r.agentVersion.Store(source.agentVersion.Load())
 
 	// Also copy the user if it exists
 	if user := source.User(); user != nil {
@@ -635,7 +625,7 @@ func (r *NormalizedRequest) UserId() string {
 	return "n/a"
 }
 
-// AgentName extracts and simplifies the agent name from User-Agent header or query parameter
+// AgentName returns the cached agent name. The agent name should be populated via EnrichFromHttp().
 func (r *NormalizedRequest) AgentName() string {
 	if r == nil {
 		return "unknown"
@@ -646,20 +636,11 @@ func (r *NormalizedRequest) AgentName() string {
 		return cachedAgentName.(string)
 	}
 
-	r.RLock()
-	userAgent := r.getUserAgent()
-	r.RUnlock()
-
-	if userAgent == "" {
-		return "unknown"
-	}
-
-	simplifiedAgentName := r.simplifyAgentName(userAgent)
-	r.agentName.Store(simplifiedAgentName)
-	return simplifiedAgentName
+	// If not cached, return unknown (EnrichFromHttp should be called to populate this)
+	return "unknown"
 }
 
-// AgentVersion extracts and simplifies the agent version from User-Agent header or query parameter
+// AgentVersion returns the cached agent version. The agent version should be populated via EnrichFromHttp().
 func (r *NormalizedRequest) AgentVersion() string {
 	if r == nil {
 		return "unknown"
@@ -670,31 +651,22 @@ func (r *NormalizedRequest) AgentVersion() string {
 		return cachedAgentVersion.(string)
 	}
 
-	r.RLock()
-	userAgent := r.getUserAgent()
-	r.RUnlock()
-
-	if userAgent == "" {
-		return "unknown"
-	}
-
-	simplifiedAgentVersion := r.simplifyAgentVersion(userAgent)
-	r.agentVersion.Store(simplifiedAgentVersion)
-	return simplifiedAgentVersion
+	// If not cached, return unknown (EnrichFromHttp should be called to populate this)
+	return "unknown"
 }
 
 // getUserAgent returns the user agent string, with query parameter taking precedence over header
-func (r *NormalizedRequest) getUserAgent() string {
+func (r *NormalizedRequest) getUserAgent(headers http.Header, queryArgs url.Values) string {
 	// Query parameter takes precedence
-	if r.queryArgs != nil {
-		if userAgent := r.queryArgs.Get("user-agent"); userAgent != "" {
+	if queryArgs != nil {
+		if userAgent := queryArgs.Get("user-agent"); userAgent != "" {
 			return userAgent
 		}
 	}
 
 	// Fallback to User-Agent header
-	if r.httpHeaders != nil {
-		return r.httpHeaders.Get("User-Agent")
+	if headers != nil {
+		return headers.Get("User-Agent")
 	}
 
 	return ""

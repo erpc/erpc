@@ -437,7 +437,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				nq.SetNetwork(nw)
 
 				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
-				nq.ApplyDirectivesFromHttp(headers, queryArgs)
+				nq.EnrichFromHttp(headers, queryArgs)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)

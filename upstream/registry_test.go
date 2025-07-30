@@ -917,8 +917,6 @@ func simulateRequestsWithRateLimiting(tracker *health.Tracker, upstream common.U
 		tracker.RecordUpstreamRequest(upstream, method)
 		if i < selfLimited {
 			tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
-			time.Sleep(50 * time.Millisecond)
-			tracker.RecordUpstreamRemoteRateLimited(upstream, method, nil)
 		}
 		if i >= selfLimited && i < selfLimited+remoteLimited {
 			tracker.RecordUpstreamRemoteRateLimited(upstream, method, nil)
