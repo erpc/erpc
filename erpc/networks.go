@@ -243,11 +243,6 @@ func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeEx
 			if result.Matched && result.Action == common.MatcherInclude {
 				return fe
 			}
-		} else {
-			// Default executor (no config or no matchers)
-			if fe.config == nil || (fe.method == "*" && len(fe.finalities) == 0) {
-				return fe
-			}
 		}
 	}
 
