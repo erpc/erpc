@@ -447,11 +447,18 @@ func (e *ERPC) handleTaxonomy(ctx context.Context, nq *common.NormalizedRequest)
 	}
 
 	type taxonomyUpstream struct {
-		Id string `json:"id"`
+		Id     string `json:"id"`
+		Vendor string `json:"vendor"`
+	}
+	type taxonomyProvider struct {
+		Id     string `json:"id"`
+		Vendor string `json:"vendor"`
 	}
 	type taxonomyNetwork struct {
 		Id        string              `json:"id"`
+		Alias     string              `json:"alias"`
 		Upstreams []*taxonomyUpstream `json:"upstreams"`
+		Providers []*taxonomyProvider `json:"providers"`
 	}
 	type taxonomyProject struct {
 		Id       string             `json:"id"`
@@ -470,9 +477,18 @@ func (e *ERPC) handleTaxonomy(ctx context.Context, nq *common.NormalizedRequest)
 				Id:        n.Id(),
 				Upstreams: []*taxonomyUpstream{},
 			}
+			if n.cfg != nil && n.cfg.Alias != "" {
+				ntw.Alias = n.cfg.Alias
+			}
 			upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.Id())
 			for _, u := range upstreams {
-				ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Id()})
+				ups := taxonomyUpstream{
+					Id: u.Id(),
+				}
+				if u.Vendor() != nil {
+					ups.Vendor = u.Vendor().Name()
+				}
+				ntw.Upstreams = append(ntw.Upstreams, &ups)
 			}
 			networks = append(networks, ntw)
 		}

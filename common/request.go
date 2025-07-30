@@ -589,8 +589,12 @@ func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
 	defer source.RUnlock()
 
 	// Copy the user agent information
-	r.agentName.Store(source.agentName.Load())
-	r.agentVersion.Store(source.agentVersion.Load())
+	if agentName := source.agentName.Load(); agentName != nil {
+		r.agentName.Store(agentName)
+	}
+	if agentVersion := source.agentVersion.Load(); agentVersion != nil {
+		r.agentVersion.Store(agentVersion)
+	}
 
 	// Also copy the user if it exists
 	if user := source.User(); user != nil {
