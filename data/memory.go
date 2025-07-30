@@ -280,6 +280,34 @@ func (m *MemoryConnector) collectAndEmitMetrics() {
 		Msg("Emitted Ristretto cache metrics")
 }
 
+func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
+	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting from memory (ristretto)")
+
+	// Delete main entry
+	m.cache.Del(key)
+
+	// Clean up reverse index if it exists
+	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
+		parts := strings.SplitAfterN(partitionKey, ":", 3)
+		if len(parts) >= 2 {
+			wildcardPartitionKey := parts[0] + parts[1] + "*"
+			reverseKey := memoryReverseIndexPrefix + "#" + wildcardPartitionKey + "#" + rangeKey
+			m.cache.Del(reverseKey)
+		}
+	}
+
+	return nil
+}
+
+func (m *MemoryConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
+	m.logger.Warn().Msg("List operation on MemoryConnector is not efficiently supported by underlying Ristretto cache")
+	// TODO: Ristretto doesn't provide efficient iteration capabilities
+	// This is a limitation of the memory connector for admin operations
+	// For production use, consider using Redis, PostgreSQL, or DynamoDB connectors for admin operations
+	return nil, "", fmt.Errorf("List operation not supported by MemoryConnector - Ristretto cache doesn't provide efficient iteration")
+}
+
 // Close cleans up resources including stopping the metrics collection goroutine
 func (m *MemoryConnector) Close() error {
 	if m.stopMetrics != nil {

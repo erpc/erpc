@@ -49,7 +49,8 @@ func (s *HttpServer) handleHealthCheck(
 			return
 		}
 		if s.healthCheckAuthRegistry != nil {
-			if err := s.healthCheckAuthRegistry.Authenticate(ctx, "healthcheck", ap); err != nil {
+			_, err := s.healthCheckAuthRegistry.Authenticate(ctx, "healthcheck", ap)
+			if err != nil {
 				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
 				return
 			}

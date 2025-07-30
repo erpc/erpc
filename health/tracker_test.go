@@ -296,10 +296,10 @@ func simulateRateLimitedRequestMetrics(tracker *Tracker, upstream common.Upstrea
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
 		if i < selfLimited {
-			tracker.RecordUpstreamSelfRateLimited(upstream, method)
+			tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
 		}
 		if i >= selfLimited && i < selfLimited+remoteLimited {
-			tracker.RecordUpstreamRemoteRateLimited(upstream, method)
+			tracker.RecordUpstreamRemoteRateLimited(upstream, method, nil)
 		}
 	}
 }

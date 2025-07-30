@@ -102,15 +102,11 @@ func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
 	}, nil
 }
 
-func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) error {
+func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
 	if p.consumerAuthRegistry != nil {
-		err := p.consumerAuthRegistry.Authenticate(ctx, method, ap)
-		if err != nil {
-			return err
-		}
+		return p.consumerAuthRegistry.Authenticate(ctx, method, ap)
 	}
-
-	return nil
+	return nil, nil
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -133,7 +129,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	// Get initial finality from request
 	reqFinality := nq.Finality(ctx)
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String()).Inc()
+	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String(), nq.UserId(), nq.AgentName(), nq.AgentVersion()).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
@@ -185,6 +181,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			strconv.FormatInt(int64(resp.Attempts()), 10),
 			finality.String(),
 			strconv.FormatBool(resp.IsResultEmptyish(ctx)),
+			nq.UserId(),
+			nq.AgentName(),
+			nq.AgentVersion(),
 		).Inc()
 		if lg.GetLevel() == zerolog.TraceLevel {
 			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
@@ -218,6 +217,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			common.ErrorFingerprint(err),
 			string(common.ClassifySeverity(err)),
 			finality.String(),
+			nq.UserId(),
+			nq.AgentName(),
+			nq.AgentVersion(),
 		).Inc()
 		telemetry.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,

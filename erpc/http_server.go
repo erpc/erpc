@@ -95,7 +95,7 @@ func NewHttpServer(
 
 	if healthCheckCfg != nil && healthCheckCfg.Auth != nil {
 		var err error
-		srv.healthCheckAuthRegistry, err = auth.NewAuthRegistry(logger, "healthcheck", healthCheckCfg.Auth, nil)
+		srv.healthCheckAuthRegistry, err = auth.NewAuthRegistry(ctx, logger, "healthcheck", healthCheckCfg.Auth, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create healthcheck auth registry: %w", err)
 		}
@@ -353,17 +353,23 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 
 				if isAdmin {
-					if err := s.erpc.AdminAuthenticate(requestCtx, method, ap); err != nil {
+					_, err := s.erpc.AdminAuthenticate(requestCtx, method, ap)
+					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				} else {
-					if err := project.AuthenticateConsumer(requestCtx, method, ap); err != nil {
+					user, err := project.AuthenticateConsumer(requestCtx, method, ap)
+					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
+					if user != nil {
+						rlg = rlg.With().Str("userId", user.Id).Logger()
+					}
+					nq.SetUser(user)
 				}
 
 				if isAdmin {
@@ -431,7 +437,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				nq.SetNetwork(nw)
 
 				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
-				nq.ApplyDirectivesFromHttp(headers, queryArgs)
+				nq.EnrichFromHttp(headers, queryArgs)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)

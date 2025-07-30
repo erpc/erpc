@@ -39,6 +39,21 @@ func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey string, 
 	return args.Error(0)
 }
 
+// Delete mocks the Delete method of the Connector interface
+func (m *MockConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
+	args := m.Called(ctx, partitionKey, rangeKey)
+	return args.Error(0)
+}
+
+// List mocks the List method of the Connector interface
+func (m *MockConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
+	args := m.Called(ctx, index, limit, paginationToken)
+	if args.Get(0) == nil {
+		return nil, args.String(1), args.Error(2)
+	}
+	return args.Get(0).([]KeyValuePair), args.String(1), args.Error(2)
+}
+
 // Lock mocks the Lock method of the Connector interface
 func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
 	args := m.Called(ctx, key, ttl)

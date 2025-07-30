@@ -20,43 +20,43 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
 		Help:      "Total number of actual requests to upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "attempt", "composite", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "attempt", "composite", "finality", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_errors_total",
 		Help:      "Total number of errors for actual requests towards upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "error", "severity", "composite", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "error", "severity", "composite", "finality", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed rate limited requests before sending to upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_remote_rate_limited_total",
 		Help:      "Total number of remote rate limited requests by upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_skipped_total",
 		Help:      "Total number of requests skipped by upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamMissingDataErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_missing_data_error_total",
 		Help:      "Total number of requests where upstream is missing data or not synced yet.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_empty_response_total",
 		Help:      "Total number of empty responses from upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamBlockHeadLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -122,25 +122,25 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_evm_get_logs_range_exceeded_auto_splitting_threshold_total",
 		Help:      "Total number of times eth_getLogs request exceeded the block range threshold and needed splitting.",
-	}, []string{"project", "vendor", "network", "upstream"})
+	}, []string{"project", "vendor", "network", "upstream", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_evm_get_logs_split_success_total",
 		Help:      "Total number of successful split eth_getLogs sub-requests.",
-	}, []string{"project", "vendor", "network", "upstream"})
+	}, []string{"project", "vendor", "network", "upstream", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamEvmGetLogsSplitFailure = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_evm_get_logs_split_failure_total",
 		Help:      "Total number of failed split eth_getLogs sub-requests.",
-	}, []string{"project", "vendor", "network", "upstream"})
+	}, []string{"project", "vendor", "network", "upstream", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamEvmGetLogsForcedSplits = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_evm_get_logs_forced_splits_total",
 		Help:      "Total number of eth_getLogs request splits due to upstream complain by dimension (block_range, addresses, topics).",
-	}, []string{"project", "vendor", "network", "upstream", "dimension"})
+	}, []string{"project", "vendor", "network", "upstream", "dimension", "user", "agent_name", "agent_version"})
 
 	MetricUpstreamLatestBlockPolled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -164,49 +164,49 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_wrong_empty_response_total",
 		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "finality"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name", "agent_version"})
 
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed (locally) rate limited requests towards the network.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user", "agent_name", "agent_version"})
 
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_received_total",
 		Help:      "Total number of requests received for a network.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user", "agent_name", "agent_version"})
 
 	MetricNetworkMultiplexedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_multiplexed_request_total",
 		Help:      "Total number of multiplexed requests for a network.",
-	}, []string{"project", "network", "category", "finality"})
+	}, []string{"project", "network", "category", "finality", "user", "agent_name", "agent_version"})
 
 	MetricNetworkHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedged_request_total",
 		Help:      "Total number of hedged requests towards a network.",
-	}, []string{"project", "network", "upstream", "category", "attempt", "finality"})
+	}, []string{"project", "network", "upstream", "category", "attempt", "finality", "user", "agent_name", "agent_version"})
 
 	MetricNetworkHedgeDiscardsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedge_discards_total",
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
-	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality"})
+	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user", "agent_name", "agent_version"})
 
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
 		Help:      "Total number of failed requests for a network.",
-	}, []string{"project", "network", "category", "attempt", "error", "severity", "finality"})
+	}, []string{"project", "network", "category", "attempt", "error", "severity", "finality", "user", "agent_name", "agent_version"})
 
 	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_successful_request_total",
 		Help:      "Total number of successful requests for a network.",
-	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish"})
+	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user", "agent_name", "agent_version"})
 
 	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -391,28 +391,6 @@ var (
 	}, []string{"project", "network", "category", "phase", "finality"}) // phase: before_execution, after_execution, collection
 )
 
-var slowHistogramBuckets = []float64{
-	0.050, // 50ms
-	0.100, // 100ms
-	0.250, // 250ms
-	0.500, // 500ms
-	0.700, // 700ms
-	0.800, // 800ms
-	1,     // 1s
-	2,     // 2s
-	3,     // 3s
-	4,     // 4s
-	5,     // 5s
-	6,     // 6s
-	7,     // 7s
-	8,     // 8s
-	15,    // 15s
-	30,    // 30s
-	60,    // 60s
-	120,   // 2m
-	300,   // 5m
-}
-
 var DefaultHistogramBuckets = []float64{
 	0.05, // 50 ms
 	0.5,  // 500 ms
@@ -500,7 +478,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 		Namespace: "erpc",
 		Name:      "consensus_duration_seconds",
 		Help:      "Duration of consensus operations.",
-		Buckets:   slowHistogramBuckets,
+		Buckets:   buckets,
 	}, []string{"project", "network", "category", "outcome", "finality"})
 
 	return nil

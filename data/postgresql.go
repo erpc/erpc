@@ -2,6 +2,8 @@ package data
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"strconv"
@@ -822,4 +824,153 @@ func sanitizeChannelName(key string) string {
 	}
 
 	return sanitized
+}
+
+func (p *PostgreSQLConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Delete")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+		)
+	}
+
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
+	if p.conn == nil {
+		err := fmt.Errorf("PostgreSQLConnector not connected yet")
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	p.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting from postgres")
+
+	ctx, cancel := context.WithTimeout(ctx, p.setTimeout)
+	defer cancel()
+
+	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
+		DELETE FROM %s 
+		WHERE partition_key = $1 AND range_key = $2
+	`, p.table), partitionKey, rangeKey)
+
+	if err != nil {
+		p.handleConnectionFailure(err)
+		common.SetTraceSpanError(span, err)
+	}
+
+	return err
+}
+
+func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.List")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("index", index),
+			attribute.Int("limit", limit),
+		)
+	}
+
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
+	if p.conn == nil {
+		err := fmt.Errorf("PostgreSQLConnector not connected yet")
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, p.getTimeout)
+	defer cancel()
+
+	// Parse pagination token - we'll use base64 encoded JSON with offset info
+	offset := 0
+	if paginationToken != "" {
+		decoded, err := base64.StdEncoding.DecodeString(paginationToken)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid pagination token: %w", err)
+		}
+		var tokenData map[string]int
+		err = json.Unmarshal(decoded, &tokenData)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid pagination token format: %w", err)
+		}
+		if o, ok := tokenData["offset"]; ok {
+			offset = o
+		}
+	}
+
+	query := fmt.Sprintf(`
+		SELECT partition_key, range_key, value 
+		FROM %s 
+		WHERE expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC'
+		ORDER BY partition_key, range_key
+		LIMIT $1 OFFSET $2
+	`, p.table)
+
+	p.logger.Debug().Str("query", query).Int("limit", limit).Int("offset", offset).Msg("listing from postgres")
+
+	rows, err := p.conn.Query(ctx, query, limit+1, offset) // Get one extra to check if there are more
+	if err != nil {
+		p.handleConnectionFailure(err)
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	results := make([]KeyValuePair, 0, limit)
+	count := 0
+
+	for rows.Next() {
+		if count >= limit {
+			break // We got the extra record, so there are more results
+		}
+
+		var partitionKey, rangeKey string
+		var value []byte
+
+		err := rows.Scan(&partitionKey, &rangeKey, &value)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		results = append(results, KeyValuePair{
+			PartitionKey: partitionKey,
+			RangeKey:     rangeKey,
+			Value:        value,
+		})
+		count++
+	}
+
+	if err := rows.Err(); err != nil {
+		p.handleConnectionFailure(err)
+		common.SetTraceSpanError(span, err)
+		return nil, "", err
+	}
+
+	// Prepare next token
+	nextToken := ""
+	if count == limit {
+		// Check if there's a next page by seeing if we got more than limit records
+		hasMore := false
+		for rows.Next() {
+			hasMore = true
+			break
+		}
+
+		if hasMore {
+			tokenData := map[string]int{"offset": offset + limit}
+			tokenBytes, err := json.Marshal(tokenData)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to create pagination token: %w", err)
+			}
+			nextToken = base64.StdEncoding.EncodeToString(tokenBytes)
+		}
+	}
+
+	return results, nextToken, nil
 }

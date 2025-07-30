@@ -1084,10 +1084,11 @@ func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 type AuthType string
 
 const (
-	AuthTypeSecret  AuthType = "secret"
-	AuthTypeJwt     AuthType = "jwt"
-	AuthTypeSiwe    AuthType = "siwe"
-	AuthTypeNetwork AuthType = "network"
+	AuthTypeSecret   AuthType = "secret"
+	AuthTypeDatabase AuthType = "database"
+	AuthTypeJwt      AuthType = "jwt"
+	AuthTypeSiwe     AuthType = "siwe"
+	AuthTypeNetwork  AuthType = "network"
 )
 
 type AuthConfig struct {
@@ -1099,14 +1100,16 @@ type AuthStrategyConfig struct {
 	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
 	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 
-	Type    AuthType               `yaml:"type" json:"type" tstype:"TsAuthType"`
-	Network *NetworkStrategyConfig `yaml:"network,omitempty" json:"network,omitempty"`
-	Secret  *SecretStrategyConfig  `yaml:"secret,omitempty" json:"secret,omitempty"`
-	Jwt     *JwtStrategyConfig     `yaml:"jwt,omitempty" json:"jwt,omitempty"`
-	Siwe    *SiweStrategyConfig    `yaml:"siwe,omitempty" json:"siwe,omitempty"`
+	Type     AuthType                `yaml:"type" json:"type" tstype:"TsAuthType"`
+	Network  *NetworkStrategyConfig  `yaml:"network,omitempty" json:"network,omitempty"`
+	Secret   *SecretStrategyConfig   `yaml:"secret,omitempty" json:"secret,omitempty"`
+	Database *DatabaseStrategyConfig `yaml:"database,omitempty" json:"database,omitempty"`
+	Jwt      *JwtStrategyConfig      `yaml:"jwt,omitempty" json:"jwt,omitempty"`
+	Siwe     *SiweStrategyConfig     `yaml:"siwe,omitempty" json:"siwe,omitempty"`
 }
 
 type SecretStrategyConfig struct {
+	Id    string `yaml:"id" json:"id"`
 	Value string `yaml:"value" json:"value"`
 }
 
@@ -1115,6 +1118,18 @@ func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]string{
 		"value": "REDACTED",
 	})
+}
+
+type DatabaseStrategyConfig struct {
+	Connector *ConnectorConfig             `yaml:"connector" json:"connector"`
+	Cache     *DatabaseStrategyCacheConfig `yaml:"cache,omitempty" json:"cache,omitempty"`
+}
+
+type DatabaseStrategyCacheConfig struct {
+	TTL         *time.Duration `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+	MaxSize     *int64         `yaml:"maxSize,omitempty" json:"maxSize,omitempty"`
+	MaxCost     *int64         `yaml:"maxCost,omitempty" json:"maxCost,omitempty"`
+	NumCounters *int64         `yaml:"numCounters,omitempty" json:"numCounters,omitempty"`
 }
 
 type JwtStrategyConfig struct {

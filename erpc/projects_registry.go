@@ -128,7 +128,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	var consumerAuthRegistry *auth.AuthRegistry
 	if prjCfg.Auth != nil {
-		consumerAuthRegistry, err = auth.NewAuthRegistry(&lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
+		consumerAuthRegistry, err = auth.NewAuthRegistry(r.appCtx, &lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
 		if err != nil {
 			return nil, err
 		}

@@ -230,6 +230,9 @@ func BenchmarkHighConcurrency(b *testing.B) {
 						tracker.RecordUpstreamRequest(ups, method)
 						_ = tracker.GetUpstreamMethodMetrics(ups, method)
 						tracker.RecordUpstreamDuration(ups, method, 100*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+						tracker.RecordUpstreamSelfRateLimited(ups, method, nil)
+						time.Sleep(50 * time.Millisecond)
+						tracker.RecordUpstreamRemoteRateLimited(ups, method, nil)
 					}
 				}()
 			}
@@ -304,9 +307,9 @@ func BenchmarkFullRequestFlow(b *testing.B) {
 			case 0:
 				tracker.RecordUpstreamFailure(ups, method, fmt.Errorf("test problem"))
 			case 1:
-				tracker.RecordUpstreamSelfRateLimited(ups, method)
+				tracker.RecordUpstreamSelfRateLimited(ups, method, nil)
 			case 2:
-				tracker.RecordUpstreamRemoteRateLimited(ups, method)
+				tracker.RecordUpstreamRemoteRateLimited(ups, method, nil)
 			}
 
 			// End timing

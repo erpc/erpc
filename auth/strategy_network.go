@@ -61,36 +61,42 @@ func (s *NetworkStrategy) Supports(ap *AuthPayload) bool {
 	return ap.Type == common.AuthTypeNetwork
 }
 
-func (s *NetworkStrategy) Authenticate(ctx context.Context, ap *AuthPayload) error {
+func (s *NetworkStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*common.User, error) {
 	if ap.Network == nil {
-		return common.NewErrAuthUnauthorized("network", "missing network payload")
+		return nil, common.NewErrAuthUnauthorized("network", "missing network payload")
 	}
 
 	clientIP := s.determineClientIP(ap.Network)
 	if clientIP == nil {
-		return common.NewErrAuthUnauthorized("network", "unable to determine client IP")
+		return nil, common.NewErrAuthUnauthorized("network", "unable to determine client IP")
 	}
 
 	// Check if localhost is allowed
 	if s.cfg.AllowLocalhost && isLocalhost(clientIP) {
-		return nil
+		return &common.User{
+			Id: clientIP.String(),
+		}, nil
 	}
 
 	// Check against allowed IPs
 	for _, ip := range s.allowedIPs {
 		if clientIP.Equal(*ip) {
-			return nil
+			return &common.User{
+				Id: clientIP.String(),
+			}, nil
 		}
 	}
 
 	// Check against allowed CIDRs
 	for _, cidr := range s.allowedCIDRs {
 		if cidr.Contains(clientIP) {
-			return nil
+			return &common.User{
+				Id: clientIP.String(),
+			}, nil
 		}
 	}
 
-	return common.NewErrAuthUnauthorized("network", fmt.Sprintf("IP %s is not allowed", clientIP.String()))
+	return nil, common.NewErrAuthUnauthorized("network", fmt.Sprintf("IP %s is not allowed", clientIP.String()))
 }
 
 // determineClientIP extracts the actual client IP address from the NetworkPayload

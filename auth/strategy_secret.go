@@ -20,10 +20,12 @@ func (s *SecretStrategy) Supports(ap *AuthPayload) bool {
 	return ap.Type == common.AuthTypeSecret
 }
 
-func (s *SecretStrategy) Authenticate(ctx context.Context, ap *AuthPayload) error {
+func (s *SecretStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*common.User, error) {
 	if ap.Secret.Value != s.cfg.Value {
-		return common.NewErrAuthUnauthorized("secret", "invalid secret")
+		return nil, common.NewErrAuthUnauthorized("secret", "invalid secret")
 	}
 
-	return nil
+	return &common.User{
+		Id: s.cfg.Value,
+	}, nil
 }

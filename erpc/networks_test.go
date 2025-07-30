@@ -2557,7 +2557,7 @@ func TestNetwork_Forward(t *testing.T) {
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		fakeReq.ApplyDirectivesFromHttp(http.Header{
+		fakeReq.EnrichFromHttp(http.Header{
 			"X-Erpc-Retry-Pending": []string{"true"},
 		}, url.Values{})
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -3183,7 +3183,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"X-Erpc-Retry-Pending": []string{"true"},
 		}
 		queryArgs := url.Values{}
-		fakeReq.ApplyDirectivesFromHttp(headers, queryArgs)
+		fakeReq.EnrichFromHttp(headers, queryArgs)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -3372,7 +3372,7 @@ func TestNetwork_Forward(t *testing.T) {
 		headers := http.Header{}
 		headers.Set("x-erpc-retry-pending", "false")
 		queryArgs := url.Values{}
-		fakeReq.ApplyDirectivesFromHttp(headers, queryArgs)
+		fakeReq.EnrichFromHttp(headers, queryArgs)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -3525,7 +3525,7 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq2 := common.NewNormalizedRequest(requestBytes)
 		headers := http.Header{}
 		headers.Set("x-erpc-skip-cache-read", "true")
-		fakeReq2.ApplyDirectivesFromHttp(headers, url.Values{})
+		fakeReq2.EnrichFromHttp(headers, url.Values{})
 		resp2, err := ntw.Forward(ctx, fakeReq2)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)

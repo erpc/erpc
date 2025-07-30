@@ -38,6 +38,7 @@ type connectorScope string
 const (
 	connectorScopeSharedState connectorScope = "shared-state"
 	connectorScopeCache       connectorScope = "cache"
+	connectorScopeAuth        connectorScope = "auth"
 )
 
 // DefaultOptions is used to pass env-provided or args-provided options to the config defaults initializer
@@ -691,6 +692,9 @@ func (d *DatabaseConfig) SetDefaults(defClusterKey string) error {
 }
 
 func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
+	if c.Id == "" {
+		c.Id = string(scope) + "-" + string(c.Driver)
+	}
 	if c.Memory != nil {
 		c.Driver = DriverMemory
 	}
@@ -831,6 +835,8 @@ func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 			p.Table = "erpc_shared_state"
 		case connectorScopeCache:
 			p.Table = "erpc_json_rpc_cache"
+		case connectorScopeAuth:
+			p.Table = "erpc_auth"
 		default:
 			return fmt.Errorf("invalid connector scope: %s", scope)
 		}
@@ -861,6 +867,8 @@ func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 			d.Table = "erpc_shared_state"
 		case connectorScopeCache:
 			d.Table = "erpc_json_rpc_cache"
+		case connectorScopeAuth:
+			d.Table = "erpc_auth"
 		default:
 			return fmt.Errorf("invalid connector scope: %s", scope)
 		}
@@ -2074,6 +2082,15 @@ func (s *AuthStrategyConfig) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for secret strategy: %w", err)
 		}
 	}
+	if s.Type == AuthTypeDatabase && s.Database == nil {
+		s.Database = &DatabaseStrategyConfig{}
+	}
+	if s.Database != nil {
+		s.Type = AuthTypeDatabase
+		if err := s.Database.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for database strategy: %w", err)
+		}
+	}
 
 	if s.Type == AuthTypeJwt && s.Jwt == nil {
 		s.Jwt = &JwtStrategyConfig{}
@@ -2096,6 +2113,38 @@ func (s *AuthStrategyConfig) SetDefaults() error {
 	}
 
 	return nil
+}
+
+func (s *DatabaseStrategyConfig) SetDefaults() error {
+	if s.Connector == nil {
+		s.Connector = &ConnectorConfig{}
+	}
+
+	if s.Cache == nil {
+		s.Cache = &DatabaseStrategyCacheConfig{}
+	}
+
+	if s.Cache.TTL == nil {
+		defaultTTL := time.Hour
+		s.Cache.TTL = &defaultTTL
+	}
+
+	if s.Cache.MaxSize == nil {
+		defaultMaxSize := int64(10000)
+		s.Cache.MaxSize = &defaultMaxSize
+	}
+
+	if s.Cache.MaxCost == nil {
+		defaultMaxCost := int64(1 << 30) // 1GB
+		s.Cache.MaxCost = &defaultMaxCost
+	}
+
+	if s.Cache.NumCounters == nil {
+		defaultNumCounters := int64(100000)
+		s.Cache.NumCounters = &defaultNumCounters
+	}
+
+	return s.Connector.SetDefaults(connectorScopeAuth)
 }
 
 func (s *SecretStrategyConfig) SetDefaults() error {
