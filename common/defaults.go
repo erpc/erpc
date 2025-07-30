@@ -761,12 +761,8 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 		)
 	}
 
-	// URI is provided directly
-	if r.URI != "" {
-		return nil
-	}
-
 	// Set default values for timeouts and connection pool size
+	// This must happen BEFORE the URI check to ensure timeouts are always set
 	if r.ConnPoolSize == 0 {
 		r.ConnPoolSize = 8
 	}
@@ -781,6 +777,11 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	}
 	if r.LockRetryInterval == 0 {
 		r.LockRetryInterval = Duration(300 * time.Millisecond)
+	}
+
+	// URI is provided directly
+	if r.URI != "" {
+		return nil
 	}
 
 	// URI needs to be constructed from individual fields

@@ -475,6 +475,7 @@ export interface SelectionPolicyConfig {
 }
 export type AuthType = string;
 export const AuthTypeSecret: AuthType = "secret";
+export const AuthTypeDatabase: AuthType = "database";
 export const AuthTypeJwt: AuthType = "jwt";
 export const AuthTypeSiwe: AuthType = "siwe";
 export const AuthTypeNetwork: AuthType = "network";
@@ -488,11 +489,23 @@ export interface AuthStrategyConfig {
   type: TsAuthType;
   network?: NetworkStrategyConfig;
   secret?: SecretStrategyConfig;
+  database?: DatabaseStrategyConfig;
   jwt?: JwtStrategyConfig;
   siwe?: SiweStrategyConfig;
 }
 export interface SecretStrategyConfig {
+  id: string;
   value: string;
+}
+export interface DatabaseStrategyConfig {
+  connector?: ConnectorConfig;
+  cache?: DatabaseStrategyCacheConfig;
+}
+export interface DatabaseStrategyCacheConfig {
+  ttl?: number /* time in nanoseconds (time.Duration) */;
+  maxSize?: number /* int64 */;
+  maxCost?: number /* int64 */;
+  numCounters?: number /* int64 */;
 }
 export interface JwtStrategyConfig {
   allowedIssuers: string[];
@@ -579,3 +592,11 @@ export const ScopeNetwork: Scope = "network";
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
 export type Upstream = any;
+
+//////////
+// source: user.go
+
+export interface User {
+  id: string;
+  persecondratelimit: number /* int64 */;
+}
