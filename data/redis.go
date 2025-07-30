@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
@@ -28,12 +27,14 @@ const (
 var _ Connector = &RedisConnector{}
 
 type RedisConnector struct {
-	id          string
-	logger      *zerolog.Logger
-	client      *redis.Client
-	initializer *util.Initializer
-	cfg         *common.RedisConnectorConfig
-	redsync     *redsync.Redsync
+	id             string
+	logger         *zerolog.Logger
+	client         *redis.Client
+	initializer    *util.Initializer
+	cfg            *common.RedisConnectorConfig
+	redsync        *redsync.Redsync
+	pubsubManager  *RedisPubSubManager
+	appCtx         context.Context
 
 	ttls        map[string]time.Duration
 	initTimeout time.Duration
@@ -54,6 +55,7 @@ func NewRedisConnector(
 		id:          id,
 		logger:      &lg,
 		cfg:         cfg,
+		appCtx:      appCtx,
 		ttls:        make(map[string]time.Duration),
 		initTimeout: cfg.InitTimeout.Duration(),
 		getTimeout:  cfg.GetTimeout.Duration(),
@@ -163,6 +165,11 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 
 	pool := goredis.NewPool(client)
 	r.redsync = redsync.New(pool)
+
+	// Initialize the pubsub manager if not already done
+	if r.pubsubManager == nil {
+		r.pubsubManager = NewRedisPubSubManager(r.appCtx, r.logger, client, r)
+	}
 
 	r.logger.Info().Str("addr", options.Addr).Msg("successfully connected to Redis") // Use options.Addr for logging consistency
 	return nil
@@ -401,95 +408,14 @@ func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-c
 	if err := r.checkReady(); err != nil {
 		return nil, nil, err
 	}
-	updates := make(chan int64, 1)
-	pubsub := r.client.Subscribe(ctx, "counter:"+key)
 
-	// Start a goroutine to handle updates
-	go func() {
-		defer close(updates)
-		defer func() {
-			if err := pubsub.Close(); err != nil {
-				r.logger.Warn().Err(err).Str("key", key).Msg("failed to close pubsub")
-				r.markConnectionAsLostIfNecessary(err)
-			}
-		}()
-
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		ch := pubsub.Channel()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-
-			case msg, ok := <-ch:
-				if ok && msg != nil {
-					if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
-						select {
-						case updates <- val:
-						default:
-						}
-					} else {
-						r.logger.Warn().Str("key", key).Str("payload", msg.Payload).Msg("failed to parse received payload")
-					}
-				} else {
-					r.logger.Warn().Str("key", key).Interface("msg", msg).Msg("pubsub channel closed")
-					return
-				}
-
-			case <-ticker.C:
-				r.logger.Debug().Str("key", key).Msg("polling current value")
-				if val, err := r.getCurrentValue(ctx, key); err != nil {
-					r.markConnectionAsLostIfNecessary(err)
-					return
-				} else {
-					select {
-					case updates <- val:
-					default:
-					}
-				}
-			}
-		}
-	}()
-
-	cleanup := func() {
-		err := pubsub.Close()
-		if err != nil {
-			r.logger.Warn().Err(err).Str("key", key).Msg("failed to close pubsub")
-			r.markConnectionAsLostIfNecessary(err)
-		}
+	// Ensure pubsub manager is initialized
+	if r.pubsubManager == nil {
+		return nil, nil, fmt.Errorf("pubsub manager not initialized")
 	}
 
-	go func() {
-		defer func() {
-			if rc := recover(); rc != nil {
-				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-					"redis-watch-counter-int64",
-					fmt.Sprintf("connector:%s", r.id),
-					common.ErrorFingerprint(rc),
-				).Inc()
-				r.logger.Error().
-					Interface("panic", rc).
-					Str("stack", string(debug.Stack())).
-					Msg("unexpected panic in redis WatchCounterInt64")
-			}
-		}()
-		// Get initial value
-		if val, err := r.getCurrentValue(ctx, key); err == nil {
-			select {
-			case updates <- val:
-			default:
-				r.logger.Warn().Str("key", key).Msg("skipping initial value send - channel full or closed")
-			}
-		} else {
-			r.logger.Warn().Err(err).Str("key", key).Msg("failed to get initial value")
-		}
-	}()
-
-	r.logger.Info().Str("key", key).Msg("started watching counter int64 in Redis")
-
-	return updates, cleanup, nil
+	// Subscribe through the centralized manager
+	return r.pubsubManager.Subscribe(key)
 }
 
 // PublishCounterInt64 publishes a counter value to Redis.
@@ -518,33 +444,6 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 		common.SetTraceSpanError(span, err)
 	}
 	return err
-}
-
-func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
-	ctx, span := common.StartDetailSpan(ctx, "RedisConnector.getCurrentValue",
-		trace.WithAttributes(
-			attribute.String("key", key),
-		),
-	)
-	defer span.End()
-
-	val, err := r.Get(ctx, ConnectorMainIndex, key, "value")
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-			return 0, nil
-		}
-		return 0, err
-	}
-
-	value, err := strconv.ParseInt(string(val), 10, 64)
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return 0, err
-	}
-
-	span.SetAttributes(attribute.Int64("value", value))
-	return value, nil
 }
 
 var _ DistributedLock = &redisLock{}
