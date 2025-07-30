@@ -563,6 +563,7 @@ projects:
             duration: 5s
           retry:
             maxCount: 5
+			delay: "10ms"
 `
 		// Create a temporary file
 		fs := afero.NewMemMapFs()
