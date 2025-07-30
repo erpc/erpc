@@ -44,6 +44,7 @@ type Network struct {
 	metricsTracker           *health.Tracker
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
+	filterManager            *FilterManager
 	initializer              *util.Initializer
 }
 
@@ -330,6 +331,31 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
+	// Handle filter operation methods with sticky routing (creation methods use normal load balancing)
+	if n.filterManager != nil && n.filterManager.IsFilterOperationMethod(method) {
+		var handleErr error
+		switch method {
+		case "eth_getFilterChanges":
+			handleErr = n.handleGetFilterChanges(ctx, req, &lg)
+		case "eth_uninstallFilter":
+			handleErr = n.handleUninstallFilter(ctx, req, &lg)
+		default:
+			lg.Warn().Str("method", method).Msg("unhandled filter operation method")
+		}
+
+		if handleErr != nil {
+			lg.Debug().Err(handleErr).Msgf("failed to handle filter operation method")
+			if mlx != nil {
+				mlx.Close(ctx, nil, handleErr)
+			}
+			common.SetTraceSpanError(forwardSpan, handleErr)
+			return nil, handleErr
+		}
+		// Filter operation method has set UseUpstream directive
+		// Normal upstream selection will handle the directive automatically
+	}
+
+	// Get all sorted upstreams (UseUpstream directive will be handled during selection)
 	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
@@ -356,7 +382,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	req.SetUpstreams(upsList)
 
 	// 3) Check if we should handle this method on this network
-	if err := n.shouldHandleMethod(method, upsList); err != nil {
+	if err := n.shouldHandleMethod(method); err != nil {
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)
 		}
@@ -661,6 +687,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			attribute.Int("execution.retries", int(resp.Retries())),
 			attribute.Int("execution.hedges", int(resp.Hedges())),
 		)
+
+		// Handle filter session creation for filter creation methods
+		if n.filterManager != nil && n.filterManager.IsFilterCreationMethod(method) {
+			n.handleFilterSessionCreation(ctx, req, resp, &lg)
+		}
 	}
 
 	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
@@ -946,15 +977,181 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	n.inFlightRequests.Delete(mlx.hash)
 }
 
-func (n *Network) shouldHandleMethod(method string, upsList []common.Upstream) error {
-	// TODO Move the logic to evm package?
-	if method == "eth_newFilter" ||
-		method == "eth_newBlockFilter" ||
-		method == "eth_newPendingTransactionFilter" {
-		if len(upsList) > 1 {
-			return common.NewErrNotImplemented("eth_newFilter, eth_newBlockFilter and eth_newPendingTransactionFilter are not supported yet when there are more than 1 upstream defined")
-		}
+// handleGetFilterChanges handles eth_getFilterChanges operations with sticky routing
+func (n *Network) handleGetFilterChanges(ctx context.Context, req *common.NormalizedRequest, lg *zerolog.Logger) error {
+	ctx, span := common.StartDetailSpan(ctx, "Network.HandleGetFilterChanges")
+	defer span.End()
+
+	// Extract filter ID from request parameters
+	filterId, err := n.filterManager.ExtractFilterIdFromRequest(ctx, req)
+	if err != nil {
+		lg.Warn().Err(err).Str("method", "eth_getFilterChanges").Msg("failed to extract filter ID from request")
+		return err
 	}
+
+	// Get the filter session to determine which upstream to use
+	session, err := n.filterManager.GetFilterSession(ctx, filterId, n.networkId, n.projectId)
+	if err != nil {
+		lg.Warn().Err(err).Str("filterId", filterId).Msg("filter session not found")
+		// Return a more user-friendly error for unknown filter IDs
+		return common.NewErrJsonRpcExceptionInternal(
+			0,
+			common.JsonRpcErrorInvalidArgument,
+			fmt.Sprintf("filter not found: %s", filterId),
+			err,
+			nil,
+		)
+	}
+
+	// Extend TTL to keep the filter alive since we're accessing it
+	if extendErr := n.filterManager.ExtendFilterSessionTTL(ctx, filterId, n.networkId, n.projectId, session.UpstreamID); extendErr != nil {
+		lg.Warn().Err(extendErr).Str("filterId", filterId).Msg("failed to extend filter session TTL")
+		// Don't return error - the filter operation can still proceed
+	} else {
+		lg.Debug().Str("filterId", filterId).Str("upstreamId", session.UpstreamID).Msg("extended filter session TTL")
+	}
+
+	// Apply sticky routing using UseUpstream directive
+	if req.Directives() == nil {
+		req.ApplyDirectiveDefaults(&common.DirectiveDefaultsConfig{
+			UseUpstream: &session.UpstreamID,
+		})
+	} else {
+		// Update existing directives to use the specific upstream
+		directives := req.Directives()
+		directives.UseUpstream = session.UpstreamID
+	}
+
+	lg.Debug().
+		Str("filterId", filterId).
+		Str("upstreamId", session.UpstreamID).
+		Msg("applying sticky routing for eth_getFilterChanges")
+
+	span.SetAttributes(
+		attribute.String("filter.id", filterId),
+		attribute.String("filter.upstream_id", session.UpstreamID),
+		attribute.Bool("filter.sticky_routing", true),
+		attribute.String("filter.operation", "getFilterChanges"),
+	)
+
+	return nil
+}
+
+// handleUninstallFilter handles eth_uninstallFilter operations with sticky routing
+func (n *Network) handleUninstallFilter(ctx context.Context, req *common.NormalizedRequest, lg *zerolog.Logger) error {
+	ctx, span := common.StartDetailSpan(ctx, "Network.HandleUninstallFilter")
+	defer span.End()
+
+	// Extract filter ID from request parameters
+	filterId, err := n.filterManager.ExtractFilterIdFromRequest(ctx, req)
+	if err != nil {
+		lg.Warn().Err(err).Str("method", "eth_uninstallFilter").Msg("failed to extract filter ID from request")
+		return err
+	}
+
+	// Get the filter session to determine which upstream to use
+	session, err := n.filterManager.GetFilterSession(ctx, filterId, n.networkId, n.projectId)
+	if err != nil {
+		lg.Warn().Err(err).Str("filterId", filterId).Msg("filter session not found")
+		// Return a more user-friendly error for unknown filter IDs
+		return common.NewErrJsonRpcExceptionInternal(
+			0,
+			common.JsonRpcErrorInvalidArgument,
+			fmt.Sprintf("filter not found: %s", filterId),
+			err,
+			nil,
+		)
+	}
+
+	// Remove the filter session immediately since we're uninstalling
+	if removeErr := n.filterManager.RemoveFilterSession(ctx, filterId, n.networkId, n.projectId); removeErr != nil {
+		lg.Warn().Err(removeErr).Str("filterId", filterId).Msg("failed to remove filter session")
+		// Continue with uninstall even if cleanup fails
+	} else {
+		lg.Debug().Str("filterId", filterId).Msg("removed filter session from shared state")
+	}
+
+	// Apply sticky routing using UseUpstream directive
+	if req.Directives() == nil {
+		req.ApplyDirectiveDefaults(&common.DirectiveDefaultsConfig{
+			UseUpstream: &session.UpstreamID,
+		})
+	} else {
+		// Update existing directives to use the specific upstream
+		directives := req.Directives()
+		directives.UseUpstream = session.UpstreamID
+	}
+
+	lg.Debug().
+		Str("filterId", filterId).
+		Str("upstreamId", session.UpstreamID).
+		Msg("applying sticky routing for eth_uninstallFilter")
+
+	span.SetAttributes(
+		attribute.String("filter.id", filterId),
+		attribute.String("filter.upstream_id", session.UpstreamID),
+		attribute.Bool("filter.sticky_routing", true),
+		attribute.String("filter.operation", "uninstallFilter"),
+	)
+
+	return nil
+}
+
+// handleFilterSessionCreation creates a filter session when a filter is successfully created
+func (n *Network) handleFilterSessionCreation(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse, lg *zerolog.Logger) {
+	ctx, span := common.StartDetailSpan(ctx, "Network.HandleFilterSessionCreation")
+	defer span.End()
+
+	method, _ := req.Method()
+
+	// Extract filter ID from response for filter creation methods
+	filterId, err := n.filterManager.ExtractFilterIdFromResponse(ctx, resp)
+	if err != nil {
+		lg.Warn().Err(err).Str("method", method).Msg("failed to extract filter ID from response")
+		return
+	}
+
+	// Get the upstream that processed this request
+	upstream := resp.Upstream()
+	if upstream == nil {
+		lg.Warn().Str("method", method).Str("filterId", filterId).Msg("no upstream found in response")
+		return
+	}
+
+	// Create filter session
+	err = n.filterManager.CreateFilterSession(
+		ctx,
+		filterId,
+		upstream.Id(),
+		n.networkId,
+		n.projectId,
+		method,
+	)
+	if err != nil {
+		lg.Error().Err(err).
+			Str("method", method).
+			Str("filterId", filterId).
+			Str("upstreamId", upstream.Id()).
+			Msg("failed to create filter session")
+		return
+	}
+
+	lg.Debug().
+		Str("method", method).
+		Str("filterId", filterId).
+		Str("upstreamId", upstream.Id()).
+		Msg("created filter session")
+
+	span.SetAttributes(
+		attribute.String("filter.id", filterId),
+		attribute.String("filter.upstream_id", upstream.Id()),
+		attribute.String("filter.method", method),
+		attribute.Bool("filter.session_created", true),
+	)
+}
+
+func (n *Network) shouldHandleMethod(method string) error {
+	// TODO Move the logic to evm package?
 	if method == "eth_accounts" || method == "eth_sign" {
 		return common.NewErrNotImplemented("eth_accounts and eth_sign are not supported")
 	}

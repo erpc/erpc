@@ -11,6 +11,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -23,6 +24,7 @@ type NetworksRegistry struct {
 	appCtx               context.Context
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	metricsTracker       *health.Tracker
+	sharedStateRegistry  data.SharedStateRegistry
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     sync.Map // map[string]*Network
@@ -41,6 +43,7 @@ func NewNetworksRegistry(
 	appCtx context.Context,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
+	sharedStateRegistry data.SharedStateRegistry,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	logger *zerolog.Logger,
@@ -51,6 +54,7 @@ func NewNetworksRegistry(
 		appCtx:               appCtx,
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
+		sharedStateRegistry:  sharedStateRegistry,
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     sync.Map{},
@@ -69,6 +73,7 @@ func NewNetwork(
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
+	sharedStateRegistry data.SharedStateRegistry,
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
@@ -112,6 +117,9 @@ func NewNetwork(
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))
 
+	// Initialize FilterManager for handling filter sessions across multiple upstreams
+	filterManager := NewFilterManager(&lg, sharedStateRegistry)
+
 	network := &Network{
 		cfg:       nwCfg,
 		logger:    &lg,
@@ -122,6 +130,7 @@ func NewNetwork(
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
+		filterManager:        filterManager,
 
 		bootstrapOnce:     sync.Once{},
 		inFlightRequests:  &sync.Map{},
@@ -252,6 +261,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		nr.rateLimitersRegistry,
 		nr.upstreamsRegistry,
 		nr.metricsTracker,
+		nr.sharedStateRegistry,
 	)
 	if err != nil {
 		return nil, err
