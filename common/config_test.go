@@ -938,6 +938,79 @@ func TestMatchersValidate(t *testing.T) {
 		assert.Nil(t, result)
 	})
 
+	t.Run("mixed rules with non-catch-all first rule - should error", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "eth_call", // Not a catch-all method
+				Action: MatcherInclude,
+			},
+			{
+				Method: "debug_*",
+				Action: MatcherExclude,
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "FIRST rule must be a catch-all rule")
+		assert.Contains(t, err.Error(), "method=\"eth_call\"")
+		assert.Nil(t, result)
+	})
+
+	t.Run("mixed rules with catch-all first rule (method='*') - should pass", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "*", // Catch-all method
+				Action: MatcherInclude,
+			},
+			{
+				Method: "debug_*",
+				Action: MatcherExclude,
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.NoError(t, err)
+		assert.Equal(t, matchers, result) // Should pass through unchanged
+	})
+
+	t.Run("mixed rules with catch-all first rule (method=empty) - should pass", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "", // Empty method means catch-all
+				Action: MatcherInclude,
+			},
+			{
+				Method: "debug_*",
+				Action: MatcherExclude,
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.NoError(t, err)
+		assert.Equal(t, matchers, result) // Should pass through unchanged
+	})
+
+	t.Run("mixed rules with params in first rule - should error", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "*",
+				Action: MatcherInclude,
+				Params: []interface{}{"some", "params"}, // Not allowed for catch-all
+			},
+			{
+				Method: "debug_*",
+				Action: MatcherExclude,
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "FIRST rule must be a catch-all rule")
+		assert.Contains(t, err.Error(), "params=2")
+		assert.Nil(t, result)
+	})
+
 	t.Run("empty matchers - should return as-is", func(t *testing.T) {
 		var matchers []*MatcherConfig
 
@@ -1042,6 +1115,51 @@ func TestFailsafeValidation(t *testing.T) {
 			err := policy.Validate()
 			assert.Error(t, err, "Policy %d should fail validation", i)
 			assert.Contains(t, err.Error(), "FIRST rule must have action")
+		}
+	})
+
+	t.Run("mixed rules with non-catch-all first rule should error", func(t *testing.T) {
+		policies := []*FailsafeConfig{
+			{
+				Matchers: []*MatcherConfig{
+					{
+						Method: "eth_call", // Not a catch-all
+						Action: MatcherInclude,
+					},
+					{
+						Method: "debug_*",
+						Action: MatcherExclude,
+					},
+				},
+			},
+		}
+
+		for i, policy := range policies {
+			err := policy.Validate()
+			assert.Error(t, err, "Policy %d should fail validation", i)
+			assert.Contains(t, err.Error(), "FIRST rule must be a catch-all rule")
+		}
+	})
+
+	t.Run("mixed rules with valid catch-all first rule should pass", func(t *testing.T) {
+		policies := []*FailsafeConfig{
+			{
+				Matchers: []*MatcherConfig{
+					{
+						Method: "*", // Valid catch-all
+						Action: MatcherInclude,
+					},
+					{
+						Method: "debug_*",
+						Action: MatcherExclude,
+					},
+				},
+			},
+		}
+
+		for i, policy := range policies {
+			err := policy.Validate()
+			assert.NoError(t, err, "Policy %d should validate successfully", i)
 		}
 	})
 

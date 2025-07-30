@@ -50,9 +50,26 @@ func validateMatchers(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
 		if len(matchers) == 0 {
 			return nil, fmt.Errorf("matchers cannot be empty when mixing include and exclude rules")
 		}
-		firstAction := matchers[0].Action
+
+		firstMatcher := matchers[0]
+		firstAction := firstMatcher.Action
+
+		// First rule must have a valid action
 		if firstAction != MatcherInclude && firstAction != MatcherExclude {
 			return nil, fmt.Errorf("when mixing include and exclude rules, the FIRST rule must have action 'include' or 'exclude' to determine the starting point, but got: %s", firstAction)
+		}
+
+		// First rule must be a catch-all rule (matches everything)
+		// Method should be "*" or empty (empty means match all)
+		// Network should be empty or "*" (we typically don't set network for catch-all)
+		isCatchAllMethod := firstMatcher.Method == "*" || firstMatcher.Method == ""
+		isCatchAllNetwork := firstMatcher.Network == "" || firstMatcher.Network == "*"
+		hasNoParams := len(firstMatcher.Params) == 0
+		hasNoFinality := len(firstMatcher.Finality) == 0
+
+		if !isCatchAllMethod || !isCatchAllNetwork || !hasNoParams || !hasNoFinality {
+			return nil, fmt.Errorf("when mixing include and exclude rules, the FIRST rule must be a catch-all rule that matches everything (method: '*' or empty, network: empty or '*', no params, no finality), but got: method=%q, network=%q, params=%d, finality=%d",
+				firstMatcher.Method, firstMatcher.Network, len(firstMatcher.Params), len(firstMatcher.Finality))
 		}
 	}
 
