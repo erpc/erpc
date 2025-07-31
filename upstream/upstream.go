@@ -70,6 +70,11 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
+	// Ensure defaults are set and legacy conversion happens
+	if err := cfg.SetDefaults(nil); err != nil {
+		return nil, fmt.Errorf("failed to set defaults for upstream config: %w", err)
+	}
+
 	// Create failsafe executors from configs
 	var failsafeExecutors []*FailsafeExecutor
 	if len(cfg.Failsafe) > 0 {
