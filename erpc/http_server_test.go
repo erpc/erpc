@@ -1186,6 +1186,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 8,
 										Delay:       common.Duration(100 * time.Millisecond),
@@ -1207,6 +1213,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 3,
 										Delay:       common.Duration(100 * time.Millisecond),
@@ -1226,6 +1238,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 3,
 										Delay:       common.Duration(100 * time.Millisecond),
@@ -1626,6 +1644,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
@@ -1667,6 +1691,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(500 * time.Millisecond),
@@ -3434,6 +3464,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 2,
 									},
@@ -3885,6 +3921,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 8,
 										Delay:       common.Duration(100 * time.Millisecond),
@@ -3906,6 +3948,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 3,
 										Delay:       common.Duration(100 * time.Millisecond),
@@ -3925,6 +3973,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 3,
 										Delay:       common.Duration(100 * time.Millisecond),
@@ -4025,6 +4079,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
 								},
 							},
@@ -4039,6 +4099,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
 								},
 							},
@@ -4051,6 +4117,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
 								},
 							},
@@ -5828,6 +5900,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 					UpstreamDefaults: &common.UpstreamConfig{
 						Failsafe: []*common.FailsafeConfig{
 							{
+								Matchers: []*common.MatcherConfig{
+									{
+										Method: "*",
+										Action: common.MatcherInclude,
+									},
+								},
 								Hedge: &common.HedgePolicyConfig{
 									Delay:    common.Duration(10 * time.Millisecond),
 									MaxCount: 267,
@@ -5931,6 +6009,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 					UpstreamDefaults: &common.UpstreamConfig{
 						Failsafe: []*common.FailsafeConfig{
 							{
+								Matchers: []*common.MatcherConfig{
+									{
+										Method: "*",
+										Action: common.MatcherInclude,
+									},
+								},
 								Hedge: &common.HedgePolicyConfig{
 									Delay:    common.Duration(10 * time.Millisecond),
 									MaxCount: 267,
@@ -6101,6 +6185,16 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 									EnforceGetLogsBlockRange: util.BoolPtr(true),
 								},
 							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
+								},
+							},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -6114,6 +6208,12 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 2,
 									},
@@ -6287,6 +6387,16 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 									EnforceGetLogsBlockRange: util.BoolPtr(true),
 								},
 							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
+								},
+							},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -6300,6 +6410,12 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 2,
 									},
@@ -6406,6 +6522,12 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 2,
 									},
@@ -6424,6 +6546,12 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: &common.RetryPolicyConfig{
 										MaxAttempts: 2,
 									},

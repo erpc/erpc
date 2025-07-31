@@ -1313,19 +1313,27 @@ func TestNetwork_Forward(t *testing.T) {
 		// First upstream returns the retryable client error
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_call")
+			}).
 			Reply(400).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"error": {
 					"code": -32000,
-					"message": "pending block is not available"
-				}
-			}`))
+									"message": "pending block is not available"
+			}
+		}`))
 
 		// Second upstream responds successfully
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_call")
+			}).
 			Reply(200).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
@@ -1445,6 +1453,12 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 3,
 					}},
@@ -1506,6 +1520,10 @@ func TestNetwork_Forward(t *testing.T) {
 		// Mock a client error response (400) and code -32602, meaning invalid argument
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_call")
+			}).
 			Reply(400).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
@@ -1519,6 +1537,10 @@ func TestNetwork_Forward(t *testing.T) {
 		// Second upstream responds successfully
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_call")
+			}).
 			Reply(200).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
@@ -1638,6 +1660,12 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 3,
 					}},
@@ -6665,6 +6693,12 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 2,
 					}},
