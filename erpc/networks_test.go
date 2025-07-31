@@ -555,11 +555,23 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		upsFsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
 		}
 		ntwFsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -711,11 +723,23 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		upsFsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
 		}
 		ntwFsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -7751,6 +7775,12 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				ChainId: 123,
 			},
 			Failsafe: []*common.FailsafeConfig{{
+				Matchers: []*common.MatcherConfig{
+					{
+						Method: "*",
+						Action: common.MatcherInclude,
+					},
+				},
 				Retry: nil,
 				Hedge: nil,
 				Timeout: &common.TimeoutPolicyConfig{

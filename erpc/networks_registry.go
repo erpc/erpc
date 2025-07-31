@@ -78,8 +78,6 @@ func NewNetwork(
 	var failsafeExecutors []*FailsafeExecutor
 	if len(nwCfg.Failsafe) > 0 {
 		for _, fsCfg := range nwCfg.Failsafe {
-			// Ensure legacy conversion happens for each failsafe config
-			fsCfg.ConvertFailsafeLegacyMatchers()
 			pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, fsCfg)
 			if err != nil {
 				return nil, err

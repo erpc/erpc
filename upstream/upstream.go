@@ -74,8 +74,6 @@ func NewUpstream(
 	var failsafeExecutors []*FailsafeExecutor
 	if len(cfg.Failsafe) > 0 {
 		for _, fsCfg := range cfg.Failsafe {
-			// Ensure legacy conversion happens for each failsafe config
-			fsCfg.ConvertFailsafeLegacyMatchers()
 			policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, fsCfg)
 			if err != nil {
 				return nil, err
