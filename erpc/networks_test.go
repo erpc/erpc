@@ -298,6 +298,12 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -420,6 +426,12 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -1731,6 +1743,12 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Configure network with hedge policy
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(hedgeDelay),
 				MaxCount: 1,
@@ -1873,6 +1891,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "eth_getBalance",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -2082,6 +2106,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "eth_getBalance",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -2273,6 +2303,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -2458,6 +2494,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -2662,6 +2704,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
 			},
@@ -2892,6 +2940,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -3084,6 +3138,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3, // Allow up to 3 retry attempts
 			},
@@ -3274,6 +3334,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -3459,7 +3525,14 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-		fsCfg := &common.FailsafeConfig{}
+		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -3726,6 +3799,12 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -3899,6 +3978,12 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -4028,6 +4113,12 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -4279,6 +4370,12 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -4411,6 +4508,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4,
 			},
@@ -4674,6 +4777,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: common.Duration(1 * time.Second),
 			},
@@ -4808,6 +4917,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(200 * time.Millisecond),
 				MaxCount: 1,
@@ -4962,6 +5077,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(100 * time.Millisecond),
 				MaxCount: 5,
@@ -5115,6 +5236,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(100 * time.Millisecond),
 				MaxCount: 5,
@@ -5702,7 +5829,14 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-		fsCfg := &common.FailsafeConfig{}
+		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -5839,6 +5973,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -5980,6 +6120,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -6109,6 +6255,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -6263,6 +6415,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -6549,7 +6707,14 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{}
+		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -6673,7 +6838,14 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{}
+		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -6796,7 +6968,14 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{}
+		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -7097,7 +7276,14 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{}
+		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
