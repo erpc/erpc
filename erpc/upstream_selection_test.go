@@ -274,6 +274,12 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 
 	// Configure aggressive hedging
 	failsafeConfig := &common.FailsafeConfig{
+		Matchers: []*common.MatcherConfig{
+			{
+				Method: "*",
+				Action: common.MatcherInclude,
+			},
+		},
 		Hedge: &common.HedgePolicyConfig{
 			MaxCount: 2,                                       // Allow up to 2 hedges (3 total requests)
 			Delay:    common.Duration(100 * time.Millisecond), // Hedge quickly
@@ -494,6 +500,12 @@ func TestMixedResponseTypes(t *testing.T) {
 
 			// Setup network with retry policy
 			failsafeConfig := &common.FailsafeConfig{
+				Matchers: []*common.MatcherConfig{
+					{
+						Method: "*",
+						Action: common.MatcherInclude,
+					},
+				},
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 3,
 					Delay:       0,

@@ -6502,7 +6502,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		defer util.AssertNoPendingMocks(t, 0)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -6596,7 +6596,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		// Mock failing responses for second range (both attempts)
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Times(2). // Will be called twice due to retry
+			Times(1). // Will be called once - missing data errors are not retryable
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getLogs") &&

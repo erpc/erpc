@@ -5556,6 +5556,10 @@ func TestNetwork_Forward(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_traceTransaction")
+			}).
 			Times(1).
 			Reply(503).
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
@@ -5575,11 +5579,23 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfgNetwork := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 1,
 			},
 		}
 		fsCfgUp1 := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    1,
 				FailureThresholdCapacity: 1,
@@ -8694,9 +8710,14 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			common.EvmNodeTypeFull,    // rpc2 type
 			1000,                      // rpc2 max recent blocks
 			&common.FailsafeConfig{
-				MatchMethod: "*",
-				Hedge:       nil,
-				Timeout:     nil,
+				Matchers: []*common.MatcherConfig{
+					{
+						Method: "*",
+						Action: common.MatcherInclude,
+					},
+				},
+				Hedge:   nil,
+				Timeout: nil,
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 2,
 				},
@@ -8782,9 +8803,14 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		// Setup network with a Full node that has limited block history (128 blocks)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, &common.FailsafeConfig{
-			MatchMethod: "*",
-			Hedge:       nil,
-			Timeout:     nil,
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+			Hedge:   nil,
+			Timeout: nil,
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -9779,7 +9805,12 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		pollerDebounce := 1000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
-			MatchMethod: "*",
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: failAttempts, // upstream‑level retries
 			},
@@ -10330,10 +10361,15 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 
 	if failsafeConfig == nil {
 		failsafeConfig = &common.FailsafeConfig{
-			MatchMethod: "*",
-			Hedge:       nil,
-			Timeout:     nil,
-			Retry:       nil,
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
+			Hedge:   nil,
+			Timeout: nil,
+			Retry:   nil,
 		}
 	}
 
