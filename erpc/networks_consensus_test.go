@@ -1457,6 +1457,374 @@ func TestConsensusShortCircuitIntegration(t *testing.T) {
 	t.Logf("Consensus completed in %v (short-circuit working)", duration)
 }
 
+// TestConsensusEmptyishShortCircuitPrevention tests that consensus short-circuiting is avoided for emptyish results
+func TestConsensusEmptyishShortCircuitPrevention(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	tests := []struct {
+		name                    string
+		mockResponses           []map[string]interface{}
+		expectedShortCircuit    bool
+		expectedMinDuration     time.Duration
+		expectedMaxDuration     time.Duration
+		description             string
+	}{
+		{
+			name: "normal_consensus_still_short_circuits",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a", // Non-emptyish result
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a", // Same non-emptyish result
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7b", // Different result (won't be reached due to short-circuit)
+				},
+			},
+			expectedShortCircuit: true,
+			expectedMaxDuration:  500 * time.Millisecond,
+			description:          "Normal non-emptyish consensus should still short-circuit",
+		},
+		{
+			name: "emptyish_null_consensus_no_short_circuit",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil, // null result (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil, // Same null result (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a", // Non-emptyish result
+				},
+			},
+			expectedShortCircuit: false,
+			expectedMinDuration:  100 * time.Millisecond, // Should wait for all responses
+			description:          "Emptyish null consensus should not short-circuit",
+		},
+		{
+			name: "emptyish_empty_array_consensus_no_short_circuit",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty array (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Same empty array (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x123", // Non-emptyish result
+				},
+			},
+			expectedShortCircuit: false,
+			expectedMinDuration:  100 * time.Millisecond,
+			description:          "Emptyish empty array consensus should not short-circuit",
+		},
+		{
+			name: "emptyish_empty_object_consensus_no_short_circuit",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  map[string]interface{}{}, // Empty object (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  map[string]interface{}{}, // Same empty object (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x456", // Non-emptyish result
+				},
+			},
+			expectedShortCircuit: false,
+			expectedMinDuration:  100 * time.Millisecond,
+			description:          "Emptyish empty object consensus should not short-circuit",
+		},
+		{
+			name: "emptyish_zero_hex_consensus_no_short_circuit",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x0", // Zero hex (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x0", // Same zero hex (emptyish)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x789", // Non-emptyish result
+				},
+			},
+			expectedShortCircuit: false,
+			expectedMinDuration:  100 * time.Millisecond,
+			description:          "Emptyish zero hex consensus should not short-circuit",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset gock for each test
+			gock.Clean()
+			util.SetupMocksForEvmStatePoller()
+
+			// Create upstreams
+			upstreams := []*common.UpstreamConfig{
+				{
+					Id:       "upstream1",
+					Endpoint: "http://upstream1.localhost",
+					Type:     common.UpstreamTypeEvm,
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "upstream2",
+					Endpoint: "http://upstream2.localhost",
+					Type:     common.UpstreamTypeEvm,
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "upstream3",
+					Endpoint: "http://upstream3.localhost",
+					Type:     common.UpstreamTypeEvm,
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			}
+
+			// Mock responses for each upstream
+			for i, upstream := range upstreams {
+				if i < len(tc.mockResponses) {
+					gock.New(upstream.Endpoint).
+						Post("").
+						Times(1).
+						Reply(200).
+						JSON(tc.mockResponses[i])
+				}
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
+				RequiredParticipants: 3,
+				AgreementThreshold:   2, // Should normally short-circuit after 2 matching responses
+				DisputeBehavior:      common.ConsensusDisputeBehaviorReturnError,
+				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+			})
+
+			// Make request
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
+
+			start := time.Now()
+			resp, err := network.Forward(ctx, req)
+			duration := time.Since(start)
+
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			if tc.expectedShortCircuit {
+				assert.Less(t, duration, tc.expectedMaxDuration, tc.description)
+			} else {
+				assert.Greater(t, duration, tc.expectedMinDuration, tc.description)
+			}
+
+			t.Logf("%s: completed in %v", tc.description, duration)
+		})
+	}
+}
+
+// TestConsensusEmptyishMixedScenarios tests mixed scenarios with emptyish and non-emptyish responses
+func TestConsensusEmptyishMixedScenarios(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	tests := []struct {
+		name             string
+		mockResponses    []map[string]interface{}
+		expectError      bool
+		expectedResult   interface{}
+		description      string
+	}{
+		{
+			name: "emptyish_consensus_overridden_by_meaningful_data",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil, // Emptyish result
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil, // Same emptyish result
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x123", // Meaningful result
+				},
+			},
+			expectError:    false,
+			expectedResult: `"0x123"`, // Should prefer the meaningful result
+			description:    "Should wait for meaningful data even when emptyish consensus is reached early",
+		},
+		{
+			name: "all_emptyish_responses_return_emptyish_consensus",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil,
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil,
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  nil,
+				},
+			},
+			expectError:    false,
+			expectedResult: "null", // Should return the emptyish consensus
+			description:    "When all responses are emptyish, should return emptyish consensus",
+		},
+		{
+			name: "mixed_emptyish_types_with_meaningful_winner",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty array
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  map[string]interface{}{}, // Empty object  
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x456", // Meaningful result
+				},
+			},
+			expectError:    false,
+			expectedResult: `"0x456"`,
+			description:    "Should prefer meaningful result over mixed emptyish responses",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset gock for each test
+			gock.Clean()
+			util.SetupMocksForEvmStatePoller()
+
+			// Create upstreams
+			upstreams := []*common.UpstreamConfig{
+				{
+					Id:       "upstream1",
+					Endpoint: "http://upstream1.localhost",
+					Type:     common.UpstreamTypeEvm,
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "upstream2",
+					Endpoint: "http://upstream2.localhost",
+					Type:     common.UpstreamTypeEvm,
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "upstream3",
+					Endpoint: "http://upstream3.localhost",
+					Type:     common.UpstreamTypeEvm,
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			}
+
+			// Mock responses for each upstream
+			for i, upstream := range upstreams {
+				if i < len(tc.mockResponses) {
+					gock.New(upstream.Endpoint).
+						Post("").
+						Times(1).
+						Reply(200).
+						JSON(tc.mockResponses[i])
+				}
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
+				RequiredParticipants: 3,
+				AgreementThreshold:   2,
+				DisputeBehavior:      common.ConsensusDisputeBehaviorReturnError,
+				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+			})
+
+			// Make request
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`))
+
+			resp, err := network.Forward(ctx, req)
+
+			if tc.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+
+				// Verify response content
+				jrr, err := resp.JsonRpcResponse()
+				require.NoError(t, err)
+				assert.Equal(t, tc.expectedResult, string(jrr.Result))
+			}
+
+			t.Logf("%s: test completed successfully", tc.description)
+		})
+	}
+}
+
 // TestConsensusInsufficientParticipants tests behavior when requiredParticipants > available upstreams
 func TestConsensusInsufficientParticipants(t *testing.T) {
 	util.ResetGock()
