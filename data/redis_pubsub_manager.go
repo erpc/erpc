@@ -3,9 +3,11 @@ package data
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -21,93 +23,89 @@ type subscriberChannel struct {
 	mu     sync.Mutex
 }
 
-// RedisPubSubManager is a centralized singleton for managing Redis pubsub subscriptions
-// It uses a copy-on-write pattern for subscriber management to avoid race conditions.
-// When subscribers are added or removed, a new slice is created rather than modifying
-// the existing one, allowing concurrent readers to safely iterate without locks.
+// RedisPubSubManager is a self-healing manager for Redis pubsub subscriptions.
+// Key design principles:
+// - Transparent reconnection - subscribers never see disconnections
+// - Self-healing message loop that reconnects automatically
+// - Copy-on-write pattern for subscriber management
+// - Zero disruption to active subscribers during reconnection
 type RedisPubSubManager struct {
-	client         *redis.Client
-	logger         *zerolog.Logger
-	ctx            context.Context
-	cancel         context.CancelFunc
-	pubsub         *redis.PubSub
-	subscribers    sync.Map // map[string][]*subscriberChannel - uses copy-on-write
-	mu             sync.RWMutex // protects started/stopped state only
-	started        bool
-	stopped        bool
-	pollInterval   time.Duration
-	redisConnector *RedisConnector
+	connector    *RedisConnector // Reference to get current client
+	logger       *zerolog.Logger
+	appCtx       context.Context
+	cancel       context.CancelFunc
+	pubsub       *redis.PubSub
+	subscribers  sync.Map     // map[string][]*subscriberChannel - NEVER cleared
+	mu           sync.RWMutex // Protects pubsub operations
+	running      atomic.Bool
+	pollInterval time.Duration
 }
 
 // NewRedisPubSubManager creates a new centralized pubsub manager
 func NewRedisPubSubManager(
-	ctx context.Context,
+	appCtx context.Context,
 	logger *zerolog.Logger,
-	client *redis.Client,
-	redisConnector *RedisConnector,
+	connector *RedisConnector,
 ) *RedisPubSubManager {
-	ctx, cancel := context.WithCancel(ctx)
 	lg := logger.With().Str("component", "redisPubSubManager").Logger()
-	return &RedisPubSubManager{
-		client:         client,
-		logger:         &lg,
-		ctx:            ctx,
-		cancel:         cancel,
-		pollInterval:   5 * time.Minute,
-		redisConnector: redisConnector,
+
+	m := &RedisPubSubManager{
+		connector:    connector,
+		logger:       &lg,
+		appCtx:       appCtx,
+		pollInterval: 5 * time.Minute,
 	}
+
+	// Start immediately - if it fails, Subscribe will retry
+	if err := m.start(); err != nil {
+		m.logger.Error().Err(err).Msg("failed to start pubsub manager on creation")
+		// Don't fail construction - let Subscribe handle retries
+	}
+
+	// Stop the manager when the context is done
+	go func() {
+		<-appCtx.Done()
+		m.stop()
+	}()
+
+	return m
 }
 
-// Start initializes the pubsub subscription and starts listening
-func (m *RedisPubSubManager) Start() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.started {
-		return nil
+// start initializes the pubsub subscription and starts listening
+// This is now an internal method - external callers just use Subscribe
+func (m *RedisPubSubManager) start() error {
+	// Check if already running
+	if !m.running.CompareAndSwap(false, true) {
+		return nil // Already running
 	}
 
-	// Subscribe to all counter updates using pattern
-	m.pubsub = m.client.PSubscribe(m.ctx, "counter:*")
-
-	// Wait for subscription confirmation
-	_, err := m.pubsub.Receive(m.ctx)
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to counter:* pattern: %w", err)
+	// Initial connection attempt
+	if err := m.reconnectPubSub(); err != nil {
+		m.running.Store(false)
+		return err
 	}
 
-	m.started = true
-	m.logger.Info().Msg("started Redis pubsub manager with pattern subscription")
-
-	// Start the main message handling loop
+	// Start the goroutines
 	go m.messageLoop()
-
-	// Start the polling loop
 	go m.pollingLoop()
 
 	return nil
 }
 
-// Stop gracefully shuts down the pubsub manager
-func (m *RedisPubSubManager) Stop() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.started {
-		return nil
+// stop gracefully shuts down the pubsub manager
+// This is called automatically when the app context is closing
+func (m *RedisPubSubManager) stop() {
+	// Ensure we only stop once
+	if !m.running.CompareAndSwap(true, false) {
+		return // Already stopped
 	}
 
-	m.cancel()
-	m.started = false
-
+	// Close pubsub connection
 	if m.pubsub != nil {
 		if err := m.pubsub.Close(); err != nil {
 			m.logger.Warn().Err(err).Msg("error closing pubsub connection")
-			return err
 		}
 	}
-
-	m.stopped = true
 
 	// Close all subscriber channels
 	m.subscribers.Range(func(key, value interface{}) bool {
@@ -124,21 +122,71 @@ func (m *RedisPubSubManager) Stop() error {
 	})
 
 	m.logger.Info().Msg("stopped Redis pubsub manager")
+}
+
+// reconnectPubSub safely reconnects the pubsub subscription without disrupting subscribers
+func (m *RedisPubSubManager) reconnectPubSub() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Close old pubsub if exists
+	if m.pubsub != nil {
+		if err := m.pubsub.Close(); err != nil {
+			m.logger.Debug().Err(err).Msg("error closing old pubsub connection")
+		}
+		m.pubsub = nil
+	}
+
+	// Ensure main client is available and healthy
+	if m.connector.client == nil {
+		return fmt.Errorf("redis client not available")
+	}
+
+	// Test main client health before creating pubsub
+	pingCtx, cancel := context.WithTimeout(m.appCtx, 3*time.Second)
+	err := m.connector.client.Ping(pingCtx).Err()
+	cancel()
+
+	if err != nil {
+		m.logger.Debug().Err(err).Msg("main redis client unhealthy, deferring pubsub reconnection")
+		return fmt.Errorf("main redis client unhealthy: %w", err)
+	}
+
+	// Create new pubsub subscription
+	m.pubsub = m.connector.client.PSubscribe(m.appCtx, "counter:*")
+
+	// Wait for subscription confirmation with timeout
+	confirmCtx, cancelConfirm := context.WithTimeout(m.appCtx, 10*time.Second)
+	_, err = m.pubsub.Receive(confirmCtx)
+	cancelConfirm()
+
+	if err != nil {
+		// Clean up failed pubsub
+		if m.pubsub != nil {
+			m.pubsub.Close()
+			m.pubsub = nil
+		}
+		return fmt.Errorf("failed to subscribe to counter:* pattern: %w", err)
+	}
+
+	m.logger.Info().Msg("pubsub reconnected successfully")
+
+	// Force poll to ensure subscribers get latest values (but don't block)
+	go m.pollAllKeys()
+
 	return nil
 }
 
 // Subscribe adds a subscription for a specific key
 func (m *RedisPubSubManager) Subscribe(key string) (<-chan int64, func(), error) {
-	m.mu.RLock()
-	if m.stopped {
-		m.mu.RUnlock()
+	// Check if context is done (manager is stopped)
+	if m.appCtx.Err() != nil {
 		return nil, nil, fmt.Errorf("pubsub manager is stopped")
 	}
-	m.mu.RUnlock()
 
-	// Ensure manager is started
-	if !m.started {
-		if err := m.Start(); err != nil {
+	// Ensure manager is running
+	if !m.running.Load() {
+		if err := m.start(); err != nil {
 			return nil, nil, fmt.Errorf("failed to start pubsub manager: %w", err)
 		}
 	}
@@ -150,18 +198,14 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan int64, func(), error)
 	// Add the channel to subscribers
 	m.addSubscriber(key, sc)
 
-	// Create a context for the initial value goroutine
-	initCtx, initCancel := context.WithCancel(m.ctx)
-
-	// Get initial value
+	// Get initial value in background
 	go func() {
-		defer initCancel()
-		if val, err := m.getCurrentValue(initCtx, key); err == nil && val > 0 {
+		if val, err := m.getCurrentValue(m.appCtx, key); err == nil && val > 0 {
 			sc.mu.Lock()
 			if !sc.closed {
 				select {
 				case sc.ch <- val:
-				case <-initCtx.Done():
+				case <-m.appCtx.Done():
 				}
 			}
 			sc.mu.Unlock()
@@ -170,7 +214,6 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan int64, func(), error)
 
 	// Return cleanup function
 	cleanup := func() {
-		initCancel() // Cancel the initial value goroutine if still running
 		m.removeSubscriber(key, sc)
 		sc.mu.Lock()
 		if !sc.closed {
@@ -183,7 +226,7 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan int64, func(), error)
 	return sc.ch, cleanup, nil
 }
 
-// messageLoop handles incoming pubsub messages
+// messageLoop handles incoming pubsub messages with self-healing reconnection
 func (m *RedisPubSubManager) messageLoop() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -196,33 +239,84 @@ func (m *RedisPubSubManager) messageLoop() {
 				Interface("panic", r).
 				Msg("unexpected panic in Redis pubsub message loop")
 		}
+		// Mark as not running on exit
+		m.running.Store(false)
 	}()
 
+	for {
+		if err := m.runMessageLoop(); err != nil {
+			if m.appCtx.Err() != nil {
+				return // Manager is stopping
+			}
+
+			// Connection lost - use more graceful reconnection with jitter
+			m.logger.Warn().Err(err).Msg("pubsub connection lost, attempting graceful reconnection...")
+
+			retryDelay := time.Second
+			maxRetryDelay := 30 * time.Second
+
+			for {
+				if m.appCtx.Err() != nil {
+					return // Manager is stopping
+				}
+
+				// Add jitter to prevent thundering herd
+				jitter := time.Duration(rand.Int63n(int64(retryDelay / 2)))
+				actualDelay := retryDelay + jitter
+
+				m.logger.Debug().Dur("delay", actualDelay).Msg("waiting before pubsub reconnection attempt")
+				select {
+				case <-time.After(actualDelay):
+				case <-m.appCtx.Done():
+					return
+				}
+
+				if err := m.reconnectPubSub(); err != nil {
+					m.logger.Error().Err(err).Dur("nextRetryDelay", retryDelay*2).Msg("failed to reconnect pubsub, will retry...")
+					// Exponential backoff with max delay
+					if retryDelay < maxRetryDelay {
+						retryDelay *= 2
+					}
+					continue
+				}
+
+				m.logger.Info().Msg("pubsub reconnected successfully in message loop")
+				break
+			}
+		}
+	}
+}
+
+// runMessageLoop runs the actual message processing loop
+func (m *RedisPubSubManager) runMessageLoop() error {
+	m.mu.RLock()
+	if m.pubsub == nil {
+		m.mu.RUnlock()
+		return fmt.Errorf("pubsub not initialized")
+	}
 	ch := m.pubsub.Channel()
+	m.mu.RUnlock()
+
 	for {
 		select {
-		case <-m.ctx.Done():
-			return
+		case <-m.appCtx.Done():
+			return nil
 
 		case msg, ok := <-ch:
 			if !ok {
-				m.logger.Warn().Msg("pubsub channel closed")
-				return
+				return fmt.Errorf("pubsub channel closed")
 			}
 
 			if msg != nil && strings.HasPrefix(msg.Channel, "counter:") {
-				m.logger.Debug().Str("channel", msg.Channel).Str("payload", msg.Payload).Msg("received pubsub message")
 				key := strings.TrimPrefix(msg.Channel, "counter:")
 				if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
 					m.notifySubscribers(key, val)
 				} else {
-					m.logger.Warn().
+					m.logger.Debug().
 						Str("key", key).
 						Str("payload", msg.Payload).
 						Msg("failed to parse counter value from pubsub message")
 				}
-			} else {
-				m.logger.Trace().Str("channel", msg.Channel).Str("payload", msg.Payload).Msg("received pubsub message with unknown prefix")
 			}
 		}
 	}
@@ -248,7 +342,7 @@ func (m *RedisPubSubManager) pollingLoop() {
 
 	for {
 		select {
-		case <-m.ctx.Done():
+		case <-m.appCtx.Done():
 			return
 
 		case <-ticker.C:
@@ -272,17 +366,15 @@ func (m *RedisPubSubManager) pollAllKeys() {
 	m.logger.Debug().Int("keyCount", len(keys)).Msg("polling counter values")
 
 	for _, key := range keys {
-		if val, err := m.getCurrentValue(m.ctx, key); err == nil && val > 0 {
+		if val, err := m.getCurrentValue(m.appCtx, key); err == nil && val > 0 {
 			m.notifySubscribers(key, val)
-		} else if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-			m.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
 		}
 	}
 }
 
 // getCurrentValue fetches the current value of a counter
 func (m *RedisPubSubManager) getCurrentValue(ctx context.Context, key string) (int64, error) {
-	val, err := m.redisConnector.Get(ctx, ConnectorMainIndex, key, "value")
+	val, err := m.connector.Get(ctx, ConnectorMainIndex, key, "value")
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 			return 0, nil
@@ -299,26 +391,21 @@ func (m *RedisPubSubManager) getCurrentValue(ctx context.Context, key string) (i
 }
 
 // addSubscriber adds a channel to the subscribers for a key
-// This method is thread-safe and uses copy-on-write to avoid race conditions.
-// Concurrent readers (like notifySubscribers) will continue to use the old slice.
+// Uses copy-on-write pattern for thread-safety
 func (m *RedisPubSubManager) addSubscriber(key string, sc *subscriberChannel) {
-	// Load existing subscribers or create empty slice
 	value, _ := m.subscribers.LoadOrStore(key, []*subscriberChannel{})
 	existing := value.([]*subscriberChannel)
-	
-	// Create a new slice with the new subscriber (copy-on-write)
+
+	// Copy-on-write
 	newChannels := make([]*subscriberChannel, len(existing)+1)
 	copy(newChannels, existing)
 	newChannels[len(existing)] = sc
-	
-	// Store the new slice atomically
-	m.subscribers.Store(key, newChannels)
 
-	m.logger.Debug().Str("key", key).Int("subscribers", len(newChannels)).Msg("added subscriber")
+	m.subscribers.Store(key, newChannels)
 }
 
 // removeSubscriber removes a channel from the subscribers for a key
-// This method is thread-safe and uses copy-on-write to avoid race conditions.
+// Uses copy-on-write pattern for thread-safety
 func (m *RedisPubSubManager) removeSubscriber(key string, sc *subscriberChannel) {
 	value, ok := m.subscribers.Load(key)
 	if !ok {
@@ -326,8 +413,8 @@ func (m *RedisPubSubManager) removeSubscriber(key string, sc *subscriberChannel)
 	}
 
 	existing := value.([]*subscriberChannel)
-	
-	// Create a new slice without the subscriber (copy-on-write)
+
+	// Copy-on-write
 	newChannels := make([]*subscriberChannel, 0, len(existing)-1)
 	for _, c := range existing {
 		if c != sc {
@@ -337,10 +424,8 @@ func (m *RedisPubSubManager) removeSubscriber(key string, sc *subscriberChannel)
 
 	if len(newChannels) == 0 {
 		m.subscribers.Delete(key)
-		m.logger.Debug().Str("key", key).Msg("removed last subscriber")
 	} else {
 		m.subscribers.Store(key, newChannels)
-		m.logger.Debug().Str("key", key).Int("subscribers", len(newChannels)).Msg("removed subscriber")
 	}
 }
 

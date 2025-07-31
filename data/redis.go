@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -27,14 +26,14 @@ const (
 var _ Connector = &RedisConnector{}
 
 type RedisConnector struct {
-	id             string
-	logger         *zerolog.Logger
-	client         *redis.Client
-	initializer    *util.Initializer
-	cfg            *common.RedisConnectorConfig
-	redsync        *redsync.Redsync
-	pubsubManager  *RedisPubSubManager
-	appCtx         context.Context
+	id            string
+	logger        *zerolog.Logger
+	client        *redis.Client
+	initializer   *util.Initializer
+	cfg           *common.RedisConnectorConfig
+	redsync       *redsync.Redsync
+	pubsubManager *RedisPubSubManager
+	appCtx        context.Context
 
 	ttls        map[string]time.Duration
 	initTimeout time.Duration
@@ -81,6 +80,19 @@ func (r *RedisConnector) Id() string {
 
 // connectTask is the function that tries to establish a Redis connection (and pings to verify).
 func (r *RedisConnector) connectTask(ctx context.Context) error {
+	// First, check if existing connection is still healthy
+	if r.client != nil {
+		healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := r.client.Ping(healthCtx).Result()
+		cancel()
+
+		if err == nil {
+			r.logger.Debug().Msg("existing Redis connection is healthy, skipping reconnection")
+			return nil // Connection is healthy, no need to reconnect
+		}
+		r.logger.Debug().Err(err).Msg("existing Redis connection unhealthy, proceeding with reconnection")
+	}
+
 	var options *redis.Options
 	var err error
 
@@ -166,10 +178,12 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	pool := goredis.NewPool(client)
 	r.redsync = redsync.New(pool)
 
-	// Initialize the pubsub manager if not already done
+	// Handle pubsub manager - create once and let it handle reconnections
 	if r.pubsubManager == nil {
-		r.pubsubManager = NewRedisPubSubManager(r.appCtx, r.logger, client, r)
+		// First time initialization
+		r.pubsubManager = NewRedisPubSubManager(r.appCtx, r.logger, r)
 	}
+	// Manager will detect the client change and reconnect internally
 
 	r.logger.Info().Str("addr", options.Addr).Msg("successfully connected to Redis") // Use options.Addr for logging consistency
 	return nil
@@ -189,7 +203,27 @@ func (r *RedisConnector) markConnectionAsLostIfNecessary(err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 		return
 	}
-	r.initializer.MarkTaskAsFailed(fmt.Sprintf("redis-connect/%s", r.id), fmt.Errorf("connection lost or redis error: %w stack: %s", err, string(debug.Stack())))
+
+	// Let go-redis handle temporary network issues, timeouts, and retries internally
+	errStr := err.Error()
+
+	// Only trigger reconnection for critical connection failures
+	if strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "invalid connection") ||
+		strings.Contains(errStr, "connection closed") {
+
+		// Add some backoff to reduce pressure
+		r.logger.Warn().Err(err).Msg("detected critical connection failure, marking for reconnection")
+		r.initializer.MarkTaskAsFailed(fmt.Sprintf("redis-connect/%s", r.id), fmt.Errorf("critical connection failure: %w", err))
+		return
+	}
+
+	// For other errors, just log and let go-redis handle internally
+	r.logger.Debug().Err(err).Msg("redis operation failed, letting go-redis handle internally")
 }
 
 // checkReady returns an error if Redis is not in a ready state.
