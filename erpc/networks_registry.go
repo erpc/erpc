@@ -72,11 +72,6 @@ func NewNetwork(
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
-	// Ensure defaults are set and legacy conversion happens
-	if err := nwCfg.SetDefaults(nil, nil); err != nil {
-		return nil, fmt.Errorf("failed to set defaults for network config: %w", err)
-	}
-
 	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
 
 	// Create failsafe executors from configs

@@ -70,11 +70,6 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	// Ensure defaults are set and legacy conversion happens
-	if err := cfg.SetDefaults(nil); err != nil {
-		return nil, fmt.Errorf("failed to set defaults for upstream config: %w", err)
-	}
-
 	// Create failsafe executors from configs
 	var failsafeExecutors []*FailsafeExecutor
 	if len(cfg.Failsafe) > 0 {
@@ -254,12 +249,31 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 	}
 
 	for _, fe := range u.failsafeExecutors {
-		if fe.config != nil && len(fe.config.Matchers) > 0 {
-			// Use the matchers system
-			matcher := matchers.NewConfigMatcher(fe.config.Matchers)
-			result := matcher.MatchRequest(networkId, method, params, finality)
-			if result.Matched && result.Action == common.MatcherInclude {
-				return fe
+		if fe.config != nil {
+			// Check new matchers format first
+			if len(fe.config.Matchers) > 0 {
+				matcher := matchers.NewConfigMatcher(fe.config.Matchers)
+				result := matcher.MatchRequest(networkId, method, params, finality)
+				if result.Matched && result.Action == common.MatcherInclude {
+					return fe
+				}
+			} else {
+				// Legacy fallback: if no matchers but has legacy MatchMethod or is catch-all
+				methodMatch := fe.config.MatchMethod == "" || fe.config.MatchMethod == "*" || fe.config.MatchMethod == method
+				finalityMatch := len(fe.config.MatchFinality) == 0
+				if !finalityMatch {
+					// Check if the current finality is in the MatchFinality slice
+					for _, f := range fe.config.MatchFinality {
+						if f == finality {
+							finalityMatch = true
+							break
+						}
+					}
+				}
+
+				if methodMatch && finalityMatch {
+					return fe
+				}
 			}
 		}
 	}
