@@ -747,8 +747,8 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls: []int{
 				1, // test1 should be used
-				1, // test2 should be used
-				0, // test3 (leader) may not be called if consensus achieved early
+				1, // test2 should NOT be used
+				1, // test3 (leader) should be called
 			},
 			expectedResponse: common.NewNormalizedResponse().
 				WithJsonRpcResponse(successResponse),
