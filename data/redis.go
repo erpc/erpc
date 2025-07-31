@@ -14,6 +14,7 @@ import (
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -24,6 +25,31 @@ const (
 )
 
 var _ Connector = &RedisConnector{}
+
+// zerologAdapter adapts zerolog to work with go-redis internal logger
+type zerologAdapter struct {
+	logger *zerolog.Logger
+}
+
+// Printf implements the internal.Logging interface for go-redis
+func (z *zerologAdapter) Printf(ctx context.Context, format string, v ...interface{}) {
+	// Parse and clean up the message
+	msg := fmt.Sprintf(format, v...)
+
+	// Remove trailing newline if present
+	msg = strings.TrimSuffix(msg, "\n")
+
+	// Detect error conditions in pubsub and other components
+	if strings.Contains(msg, "discarding bad PubSub connection") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") {
+		z.logger.Warn().Str("component", "redis").Msg(msg)
+	} else {
+		// Log other messages at trace level to reduce noise
+		z.logger.Trace().Str("component", "redis").Msg(msg)
+	}
+}
 
 type RedisConnector struct {
 	id            string
@@ -39,6 +65,12 @@ type RedisConnector struct {
 	initTimeout time.Duration
 	getTimeout  time.Duration
 	setTimeout  time.Duration
+}
+
+func init() {
+	// Configure go-redis internal logger to use zerolog
+	lg := log.Logger.With().Str("component", "redis").Logger()
+	redis.SetLogger(&zerologAdapter{logger: &lg})
 }
 
 func NewRedisConnector(
@@ -278,7 +310,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 	}
 
 	if err := r.client.Set(ctx, key, value, duration).Err(); err != nil {
-		r.logger.Warn().Err(err).Str("key", key).Msg("failed to SET in Redis, marking connection lost")
+		r.logger.Warn().Err(err).Str("key", key).Msg("failed to SET in Redis")
 		r.markConnectionAsLostIfNecessary(err)
 		common.SetTraceSpanError(span, err)
 		return err
@@ -328,7 +360,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		revPartitionKey, revErr := r.client.Get(lookupCtx, revKey).Result()
 		lookupCancel()
 		if revErr != nil {
-			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to GET reverse index in Redis, marking connection lost")
+			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to GET reverse index in Redis")
 			r.markConnectionAsLostIfNecessary(revErr)
 			common.SetTraceSpanError(span, revErr)
 		}
@@ -392,14 +424,60 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 
 	// ttl parameter is now primarily for the lock's expiry in Redis.
 	// The acquisition timeout is governed by the deadline of the parent 'ctx'.
-	retryInterval := 500 * time.Millisecond
+	retryInterval := 500 * time.Millisecond // Faster retry interval for responsive operations
 	if r.cfg != nil && r.cfg.LockRetryInterval.Duration() > 0 {
 		retryInterval = r.cfg.LockRetryInterval.Duration()
 	}
 
-	// Set a large number of tries to ensure redsync retries for a significant duration,
-	// effectively bounded by the parent context's deadline.
-	const maxRetries = 10_000
+	// Calculate max retries based on context deadline and lock TTL
+	// We want to retry during the lock TTL period, but also ensure we leave time for operations
+	var maxRetries int
+	deadline, hasDeadline := ctx.Deadline()
+
+	// Calculate how long we should try to acquire the lock
+	// This is the minimum of: context deadline minus operation buffer, or lock TTL
+	var maxLockWaitTime time.Duration
+
+	if hasDeadline {
+		timeUntilDeadline := time.Until(deadline)
+		if timeUntilDeadline > DefaultOperationBuffer {
+			maxLockWaitTime = timeUntilDeadline - DefaultOperationBuffer
+		} else {
+			maxLockWaitTime = timeUntilDeadline / 2 // Use half if not enough time
+		}
+
+		// Cap at lock TTL since that's when the lock would be released anyway
+		if maxLockWaitTime > ttl {
+			maxLockWaitTime = ttl
+		}
+	} else {
+		// No deadline, wait up to lock TTL
+		maxLockWaitTime = ttl
+	}
+
+	// Calculate retries based on wait time
+	if maxLockWaitTime < retryInterval {
+		maxRetries = 1 // At least try once
+	} else {
+		maxRetries = int(maxLockWaitTime / retryInterval)
+		// Cap based on lockTtl to allow waiting for healthy contention
+		maxRetriesBasedOnTtl := int(ttl / retryInterval)
+		if maxRetries > maxRetriesBasedOnTtl {
+			maxRetries = maxRetriesBasedOnTtl
+		}
+		// Only enforce minimum retries if we have enough time for healthy contention
+		// Don't override short context deadlines that expect fast failure
+		if maxRetries < 3 && maxLockWaitTime > 2*retryInterval {
+			maxRetries = 3
+		}
+	}
+
+	r.logger.Debug().
+		Str("key", lockKey).
+		Dur("maxLockWaitTime", maxLockWaitTime).
+		Dur("retryInterval", retryInterval).
+		Int("maxRetries", maxRetries).
+		Msg("calculated lock acquisition strategy")
 
 	mutex := r.redsync.NewMutex(
 		fmt.Sprintf("lock:%s", lockKey),
@@ -471,12 +549,12 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 		common.SetTraceSpanError(span, err)
 		return err
 	}
-	r.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to Redis")
-
+	r.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to redis")
 	err := r.client.Publish(ctx, "counter:"+key, value).Err()
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
+	r.logger.Info().Str("key", key).Int64("value", value).Msg("published counter int64 update to redis")
 	return err
 }
 

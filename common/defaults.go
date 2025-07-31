@@ -668,7 +668,9 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 		return err
 	}
 	if c.FallbackTimeout == 0 {
-		c.FallbackTimeout = Duration(10 * time.Second)
+		// Default timeout for Redis operations (get/set/publish)
+		// Allow sufficient time for network latency to cloud Redis while still failing fast
+		c.FallbackTimeout = Duration(3 * time.Second)
 	}
 	if c.LockTtl == 0 {
 		c.LockTtl = Duration(30 * time.Second)
@@ -773,10 +775,10 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 		r.GetTimeout = Duration(1 * time.Second)
 	}
 	if r.SetTimeout == 0 {
-		r.SetTimeout = Duration(2 * time.Second)
+		r.SetTimeout = Duration(3 * time.Second)
 	}
 	if r.LockRetryInterval == 0 {
-		r.LockRetryInterval = Duration(300 * time.Millisecond)
+		r.LockRetryInterval = Duration(500 * time.Millisecond)
 	}
 
 	// URI is provided directly

@@ -15,6 +15,10 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+func init() {
+	util.ConfigureTestLogger()
+}
+
 func TestSharedVariable(t *testing.T) {
 	t.Run("basic remote sync updates local value", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -904,5 +908,157 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 		// Also check absolute performance - should be under 1000ns per operation even under load
 		// (increased from 100ns to account for CI environment variations)
 		assert.Less(t, contentionPerOp, int64(1000), "GetValue should be fast even under contention: %dns per op", contentionPerOp)
+	})
+}
+
+// TestSharedVariableTimeoutHandling verifies that when the remote backend is down,
+// the shared variable operations fail fast and leave enough time for the actual operation.
+func TestSharedVariableTimeoutHandling(t *testing.T) {
+	t.Run("operations respect timeout when remote is down", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create a connector that simulates a broken Redis connection
+		connector := NewMockConnector("broken")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			logger:          &log.Logger,
+			clusterKey:      "test",
+			connector:       connector,
+			fallbackTimeout: 1 * time.Second, // Short timeout for fast failure
+			lockTtl:         30 * time.Second,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		// Setup mock to simulate timeout on Lock
+		connector.On("Lock", mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				ctx := args.Get(0).(context.Context)
+				// Wait for context to timeout
+				<-ctx.Done()
+			}).
+			Return(nil, context.DeadlineExceeded)
+
+		// Setup mock for Get to return not found initially
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/timeout-counter", "value").
+			Return(nil, common.NewErrRecordNotFound("test/timeout-counter", "value", "mock"))
+
+		// Setup mock for WatchCounterInt64
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+		connector.On("WatchCounterInt64", mock.Anything, "test/timeout-counter").
+			Return(updates, cleanup, nil)
+
+		// Get a counter variable
+		counter := registry.GetCounterInt64("timeout-counter", 100).(*counterInt64)
+		time.Sleep(100 * time.Millisecond) // Allow initialization
+
+		// Test TryUpdateIfStale with a parent context that has enough time for lock wait + operations
+		operationCtx, operationCancel := context.WithTimeout(ctx, 35*time.Second)
+		defer operationCancel()
+
+		executionCount := atomic.Int32{}
+		start := time.Now()
+
+		value, err := counter.TryUpdateIfStale(operationCtx, 100*time.Millisecond, func(ctx context.Context) (int64, error) {
+			executionCount.Add(1)
+			// This simulates the actual operation (e.g., fetching block number)
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+				return 42, nil
+			}
+		})
+
+		elapsed := time.Since(start)
+
+		// The operation should succeed despite lock failure
+		assert.NoError(t, err)
+		assert.Equal(t, int64(42), value)
+		assert.Equal(t, int32(1), executionCount.Load(), "The fetch function should be called exactly once")
+
+		// The total time should be around lock wait time + operation time
+		// With fallbackTimeout=1s, operationBuffer=4s, maxLockWaitTime=30s-4s=26s
+		// So expect ~26s lock wait + 100ms operation = ~26.1s total
+		assert.Less(t, elapsed, 28*time.Second, "Operation should complete within expected time budget")
+		assert.Greater(t, elapsed, 25*time.Second, "Operation should wait for most of the allocated lock time")
+	})
+
+	t.Run("TryUpdate respects timeout when remote is down", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("broken2")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			logger:          &log.Logger,
+			clusterKey:      "test",
+			connector:       connector,
+			fallbackTimeout: 1 * time.Second,
+			lockTtl:         30 * time.Second,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		// Setup mock to simulate timeout on Lock
+		connector.On("Lock", mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				ctx := args.Get(0).(context.Context)
+				// Wait for context to timeout
+				<-ctx.Done()
+			}).
+			Return(nil, context.DeadlineExceeded)
+
+		// Setup other required mocks
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/update-counter", "value").
+			Return(nil, common.NewErrRecordNotFound("test/update-counter", "value", "mock"))
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+		connector.On("WatchCounterInt64", mock.Anything, "test/update-counter").
+			Return(updates, cleanup, nil)
+
+		counter := registry.GetCounterInt64("update-counter", 100).(*counterInt64)
+		time.Sleep(100 * time.Millisecond) // Allow initialization
+
+		operationCtx, operationCancel := context.WithTimeout(ctx, 35*time.Second)
+		defer operationCancel()
+
+		start := time.Now()
+		value := counter.TryUpdate(operationCtx, 100)
+		elapsed := time.Since(start)
+
+		assert.Equal(t, int64(100), value)
+		// Should wait for lock ttl when lock is held
+		assert.Less(t, elapsed, 35*time.Second, "TryUpdate should complete within lock ttl")
+	})
+
+	t.Run("validates fallback timeout configuration", func(t *testing.T) {
+		// Test that fallback timeout validation works
+		cfg := &common.SharedStateConfig{
+			ClusterKey:      "test",
+			FallbackTimeout: common.Duration(10 * time.Millisecond), // Too short
+			LockTtl:         common.Duration(30 * time.Second),
+			Connector: &common.ConnectorConfig{
+				Id:     "test-memory",
+				Driver: common.DriverMemory,
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100},
+			},
+		}
+
+		err := cfg.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "should be at least 100ms")
+
+		// Test minimum timeout
+		cfg.FallbackTimeout = common.Duration(50 * time.Millisecond)
+		err = cfg.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "should be at least 100ms")
+
+		// Test valid timeout
+		cfg.FallbackTimeout = common.Duration(1 * time.Second)
+		err = cfg.Validate()
+		assert.NoError(t, err)
 	})
 }

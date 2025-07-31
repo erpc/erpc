@@ -121,7 +121,7 @@ func (m *RedisPubSubManager) stop() {
 		return true
 	})
 
-	m.logger.Info().Msg("stopped Redis pubsub manager")
+	m.logger.Info().Msg("stopped redis pubsub manager")
 }
 
 // reconnectPubSub safely reconnects the pubsub subscription without disrupting subscribers
@@ -163,7 +163,7 @@ func (m *RedisPubSubManager) reconnectPubSub() error {
 	if err != nil {
 		// Clean up failed pubsub
 		if m.pubsub != nil {
-			m.pubsub.Close()
+			_ = m.pubsub.Close()
 			m.pubsub = nil
 		}
 		return fmt.Errorf("failed to subscribe to counter:* pattern: %w", err)
@@ -261,7 +261,7 @@ func (m *RedisPubSubManager) messageLoop() {
 				}
 
 				// Add jitter to prevent thundering herd
-				jitter := time.Duration(rand.Int63n(int64(retryDelay / 2)))
+				jitter := time.Duration(rand.Int63n(int64(retryDelay / 2))) // #nosec G404
 				actualDelay := retryDelay + jitter
 
 				m.logger.Debug().Dur("delay", actualDelay).Msg("waiting before pubsub reconnection attempt")
@@ -310,6 +310,7 @@ func (m *RedisPubSubManager) runMessageLoop() error {
 			if msg != nil && strings.HasPrefix(msg.Channel, "counter:") {
 				key := strings.TrimPrefix(msg.Channel, "counter:")
 				if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
+					m.logger.Info().Str("key", key).Int64("value", val).Msg("received counter update via pubsub")
 					m.notifySubscribers(key, val)
 				} else {
 					m.logger.Debug().

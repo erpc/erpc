@@ -15,6 +15,8 @@ import (
 
 type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
+	GetLockTtl() time.Duration
+	GetFallbackTimeout() time.Duration
 }
 
 type sharedStateRegistry struct {
@@ -150,10 +152,10 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 					return
 				}
 
-				r.logger.Debug().
+				r.logger.Info().
 					Str("key", counter.key).
 					Int64("newValue", newValue).
-					Msg("received new value from shared state")
+					Msg("received new value from shared state sync")
 				counter.processNewValue(newValue)
 			}
 		}
@@ -177,11 +179,19 @@ func (r *sharedStateRegistry) fetchValue(ctx context.Context, key string) (int64
 	}
 
 	var remoteValue int64
-	if remoteVal != nil && len(remoteVal) > 0 {
+	if len(remoteVal) > 0 {
 		if _, err := fmt.Sscanf(string(remoteVal), "%d", &remoteValue); err != nil {
 			return 0, err
 		}
 	}
 
 	return remoteValue, nil
+}
+
+func (r *sharedStateRegistry) GetLockTtl() time.Duration {
+	return r.lockTtl
+}
+
+func (r *sharedStateRegistry) GetFallbackTimeout() time.Duration {
+	return r.fallbackTimeout
 }
