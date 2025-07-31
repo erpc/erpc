@@ -90,6 +90,25 @@ func (e *executor[R]) isAgreedUponError(err error) bool {
 	)
 }
 
+// isConsensusResultEmptyish checks if the consensus result (identified by hash) is emptyish
+func (e *executor[R]) isConsensusResultEmptyish(responses []*execResult[R], consensusHash string, exec policy.ExecutionInternal[R]) bool {
+	// Find a response that matches the consensus hash
+	for _, r := range responses {			
+		// Skip error results - they're not emptyish in the traditional sense
+		if r.err != nil {
+			continue
+		}
+		// Check if this response matches the consensus hash
+		if resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec); err == nil && resultHash == consensusHash {
+			// Check if the successful result is emptyish
+			if resp, ok := any(r.result).(*common.NormalizedResponse); ok {
+				return resp.IsResultEmptyish(exec.Context())
+			}
+		}
+	}
+	return false
+}
+
 // errorToConsensusHash converts an error to a hash for consensus comparison
 // For errors with BaseError.Code, it uses the code
 // For JsonRpcExceptionInternal errors, it also includes the normalized code
@@ -523,6 +542,8 @@ func (e *executor[R]) hasConsensus(responses []*execResult[R], exec policy.Execu
 // checkShortCircuit determines if we can exit early based on current responses
 func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
 	// Count results by hash
+	mostCommonHash := ""
+	mostCommonCount := 0
 	resultCounts := make(map[string]int)
 	for _, r := range responses {
 		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
@@ -530,18 +551,26 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 			continue
 		}
 		resultCounts[resultHash]++
-	}
-
-	// Find the most common result
-	mostCommonCount := 0
-	for _, count := range resultCounts {
-		if count > mostCommonCount {
-			mostCommonCount = count
+		if resultCounts[resultHash] > mostCommonCount {
+			mostCommonCount = resultCounts[resultHash]
+			mostCommonHash = resultHash
 		}
 	}
 
 	// Check if consensus is reached
 	if mostCommonCount >= e.agreementThreshold {
+		// Check if the consensus result is emptyish - if so, avoid short-circuiting
+		// to allow more responses that might contain meaningful data
+		if e.isConsensusResultEmptyish(responses, mostCommonHash, exec) {
+			lg.Debug().
+				Int("responseCount", len(responses)).
+				Int("mostCommonCount", mostCommonCount).
+				Int("threshold", e.agreementThreshold).
+				Str("consensusHash", mostCommonHash).
+				Msg("consensus reached on emptyish result, avoiding short-circuit to collect more data")
+			return false
+		}
+
 		lg.Debug().
 			Int("responseCount", len(responses)).
 			Int("mostCommonCount", mostCommonCount).
