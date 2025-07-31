@@ -233,7 +233,6 @@ func (u *Upstream) Vendor() common.Vendor {
 }
 
 func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
-	// TODO Can we eliminate this circular dependency of upstream state poller <> network? e.g. by requiring network ID everywhere?
 	if cfg != nil && cfg.Evm != nil && u.evmStatePoller != nil {
 		u.evmStatePoller.SetNetworkConfig(cfg.Evm)
 	}
@@ -244,24 +243,17 @@ func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeE
 	finality := req.Finality(context.Background())
 	networkId := "" // For upstream-level matching, network is usually not relevant
 
-	// Get params from JsonRpcRequest
 	var params []interface{}
 	if jrpcReq, err := req.JsonRpcRequest(); err == nil && jrpcReq != nil {
 		params = jrpcReq.Params
 	}
 
-	// Try to find a matching executor using the new matcher system
 	for _, fe := range u.failsafeExecutors {
 		if fe.config != nil && len(fe.config.Matchers) > 0 {
 			// Use the matchers system
 			matcher := matchers.NewConfigMatcher(fe.config.Matchers)
 			result := matcher.MatchRequest(networkId, method, params, finality)
 			if result.Matched && result.Action == common.MatcherInclude {
-				return fe
-			}
-		} else {
-			// Default executor (no config or no matchers)
-			if fe.config == nil || (fe.method == "*" && len(fe.finalities) == 0) {
 				return fe
 			}
 		}
