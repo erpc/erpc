@@ -49,13 +49,13 @@ func validateMatchers(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
 		return append([]*MatcherConfig{catchAllExclude}, matchers...), nil
 	}
 
-	// Only exclude actions - add catch-all include at the end
+	// Only exclude actions - add catch-all include at the beginning (processed last)
 	if hasExclude && !hasInclude {
 		catchAllInclude := &MatcherConfig{
 			Method: "*",
 			Action: MatcherInclude,
 		}
-		return append(matchers, catchAllInclude), nil
+		return append([]*MatcherConfig{catchAllInclude}, matchers...), nil
 	}
 
 	// Mixed include and exclude - validate that the first rule determines the starting point
