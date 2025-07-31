@@ -93,7 +93,7 @@ func (e *executor[R]) isAgreedUponError(err error) bool {
 // isConsensusResultEmptyish checks if the consensus result (identified by hash) is emptyish
 func (e *executor[R]) isConsensusResultEmptyish(responses []*execResult[R], consensusHash string, exec policy.ExecutionInternal[R]) bool {
 	// Find a response that matches the consensus hash
-	for _, r := range responses {			
+	for _, r := range responses {
 		// Skip error results - they're not emptyish in the traditional sense
 		if r.err != nil {
 			continue
@@ -541,19 +541,55 @@ func (e *executor[R]) hasConsensus(responses []*execResult[R], exec policy.Execu
 
 // checkShortCircuit determines if we can exit early based on current responses
 func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
-	// Count results by hash
-	mostCommonHash := ""
-	mostCommonCount := 0
+	// Count results by hash, always preferring non-empty results
 	resultCounts := make(map[string]int)
+	emptyishHashes := make(map[string]bool)
+
 	for _, r := range responses {
 		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
 		if err != nil || resultHash == "" {
 			continue
 		}
 		resultCounts[resultHash]++
-		if resultCounts[resultHash] > mostCommonCount {
-			mostCommonCount = resultCounts[resultHash]
+
+		// Check if this result is emptyish (only for successful responses)
+		if r.err == nil {
+			if resp, ok := any(r.result).(*common.NormalizedResponse); ok {
+				emptyishHashes[resultHash] = resp.IsResultEmptyish(exec.Context())
+			}
+		}
+	}
+
+	// Separate empty and non-empty results
+	nonEmptyResults := make(map[string]int)
+	emptyResults := make(map[string]int)
+
+	for resultHash, count := range resultCounts {
+		if emptyishHashes[resultHash] {
+			emptyResults[resultHash] = count
+		} else {
+			nonEmptyResults[resultHash] = count
+		}
+	}
+
+	// Always prefer non-empty results if they exist
+	var activeResults map[string]int
+	if len(nonEmptyResults) > 0 {
+		activeResults = nonEmptyResults
+	} else {
+		activeResults = emptyResults
+	}
+
+	// Find the most common result from the active results
+	mostCommonHash := ""
+	mostCommonCount := 0
+	var mostCommonIsEmpty bool
+
+	for resultHash, count := range activeResults {
+		if count > mostCommonCount {
 			mostCommonHash = resultHash
+			mostCommonCount = count
+			mostCommonIsEmpty = emptyishHashes[resultHash]
 		}
 	}
 
@@ -561,12 +597,13 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	if mostCommonCount >= e.agreementThreshold {
 		// Check if the consensus result is emptyish - if so, avoid short-circuiting
 		// to allow more responses that might contain meaningful data
-		if e.isConsensusResultEmptyish(responses, mostCommonHash, exec) {
+		if mostCommonIsEmpty {
 			lg.Debug().
 				Int("responseCount", len(responses)).
 				Int("mostCommonCount", mostCommonCount).
 				Int("threshold", e.agreementThreshold).
 				Str("consensusHash", mostCommonHash).
+				Bool("consensusIsEmpty", mostCommonIsEmpty).
 				Msg("consensus reached on emptyish result, avoiding short-circuit to collect more data")
 			return false
 		}
@@ -575,6 +612,7 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 			Int("responseCount", len(responses)).
 			Int("mostCommonCount", mostCommonCount).
 			Int("threshold", e.agreementThreshold).
+			Bool("consensusIsEmpty", mostCommonIsEmpty).
 			Msg("consensus reached early, short-circuiting")
 		return true
 	}
@@ -837,9 +875,12 @@ func (e *executor[R]) countUniqueParticipants(responses []*execResult[R]) int {
 }
 
 // countResponsesByHash counts responses by their hash and returns the counts, most common hash and count
+// It always prefers non-empty results over empty ones, regardless of count
 func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R]) (map[string]int, string, int) {
 	resultCounts := make(map[string]int)
+	emptyishHashes := make(map[string]bool) // Track which hashes correspond to emptyish results
 	errorCount := 0
+
 	for _, r := range responses {
 		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
 		if err != nil || resultHash == "" {
@@ -847,6 +888,7 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 			if r.err != nil && e.isAgreedUponError(r.err) {
 				if hash := e.errorToConsensusHash(r.err); hash != "" {
 					resultCounts[hash]++
+					// Errors are not considered emptyish for preference purposes
 					continue
 				}
 			}
@@ -862,17 +904,64 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 			}
 		} else {
 			resultCounts[resultHash]++
+
+			// Check if this result is emptyish (only for successful responses)
+			if r.err == nil {
+				if resp, ok := any(r.result).(*common.NormalizedResponse); ok {
+					emptyishHashes[resultHash] = resp.IsResultEmptyish(exec.Context())
+				}
+			}
 		}
 	}
 
-	// Find the most common result
+	// Separate empty and non-empty results
+	nonEmptyResults := make(map[string]int)
+	emptyResults := make(map[string]int)
+
+	for resultHash, count := range resultCounts {
+		if emptyishHashes[resultHash] {
+			emptyResults[resultHash] = count
+		} else {
+			nonEmptyResults[resultHash] = count
+		}
+	}
+
+	// Always prefer non-empty results if they exist
+	var activeResults map[string]int
+	var preferenceReason string
+
+	if len(nonEmptyResults) > 0 {
+		activeResults = nonEmptyResults
+		preferenceReason = "using non-empty results (ignoring empty responses)"
+		if len(emptyResults) > 0 {
+			lg.Debug().
+				Interface("nonEmptyResults", nonEmptyResults).
+				Interface("emptyResults", emptyResults).
+				Msg("preferring non-empty results over empty results regardless of count")
+		}
+	} else {
+		activeResults = emptyResults
+		preferenceReason = "using empty results (no non-empty responses available)"
+	}
+
+	// Find the most common result from the active results
 	var mostCommonResultHash string
 	mostCommonResultCount := 0
-	for resultHash, count := range resultCounts {
+
+	for resultHash, count := range activeResults {
 		if count > mostCommonResultCount {
 			mostCommonResultHash = resultHash
 			mostCommonResultCount = count
 		}
+	}
+
+	if mostCommonResultHash != "" {
+		lg.Debug().
+			Str("reason", preferenceReason).
+			Str("mostCommonHash", mostCommonResultHash).
+			Int("mostCommonCount", mostCommonResultCount).
+			Bool("isEmptyish", emptyishHashes[mostCommonResultHash]).
+			Msg("selected most common result with non-empty preference")
 	}
 
 	return resultCounts, mostCommonResultHash, mostCommonResultCount
