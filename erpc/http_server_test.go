@@ -492,6 +492,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(200 * time.Millisecond),
 									},
@@ -508,6 +514,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(100 * time.Millisecond),
 									},
@@ -565,6 +577,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
@@ -583,6 +601,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
@@ -728,6 +752,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(1 * time.Second),
 									},
@@ -744,6 +774,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(100 * time.Millisecond),
 									},
@@ -886,6 +922,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(50 * time.Millisecond),
 									},
@@ -902,6 +944,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(5 * time.Second),
 									},
@@ -1043,6 +1091,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
@@ -1254,6 +1308,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
 										Delay:    common.Duration(10 * time.Millisecond),
@@ -1349,6 +1409,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
 										Delay:    common.Duration(10 * time.Millisecond),
@@ -1428,6 +1494,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: nil,
 									Retry:   nil,
 									Hedge: &common.HedgePolicyConfig{
@@ -1448,6 +1520,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: nil,
 									Retry:   nil,
 									Hedge:   nil,
@@ -1467,6 +1545,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: nil,
 									Retry:   nil,
 									Hedge:   nil,
@@ -1797,6 +1881,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(150 * time.Millisecond),
 									},
@@ -1816,6 +1906,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(200 * time.Millisecond),
 									},
@@ -8223,7 +8319,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
-									MatchMethod: "*",
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Consensus: &common.ConsensusPolicyConfig{
 										MaxParticipants:         3,
 										AgreementThreshold:      2,
@@ -8357,7 +8458,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
-									MatchMethod: "*",
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Consensus: &common.ConsensusPolicyConfig{
 										MaxParticipants:         3,
 										AgreementThreshold:      2,
@@ -8473,7 +8579,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
-									MatchMethod: "*",
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Consensus: &common.ConsensusPolicyConfig{
 										MaxParticipants:         3,
 										AgreementThreshold:      2,

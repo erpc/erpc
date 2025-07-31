@@ -43,6 +43,12 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 		{
 			name: "retry_only_no_delays",
 			failsafeConfig: &common.FailsafeConfig{
+				Matchers: []*common.MatcherConfig{
+					{
+						Method: "*",
+						Action: common.MatcherInclude,
+					},
+				},
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 3,
 					Delay:       0, // No delay between retries
@@ -82,6 +88,12 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 		{
 			name: "hedge_and_retry_reordered",
 			failsafeConfig: &common.FailsafeConfig{
+				Matchers: []*common.MatcherConfig{
+					{
+						Method: "*",
+						Action: common.MatcherInclude,
+					},
+				},
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 3,
 					Delay:       0, // No delay for retry
@@ -125,6 +137,12 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 		{
 			name: "hedge_only_slow_upstreams",
 			failsafeConfig: &common.FailsafeConfig{
+				Matchers: []*common.MatcherConfig{
+					{
+						Method: "*",
+						Action: common.MatcherInclude,
+					},
+				},
 				Hedge: &common.HedgePolicyConfig{
 					MaxCount: 2,
 					Delay:    common.Duration(100 * time.Millisecond),
@@ -585,6 +603,12 @@ func TestFourAttemptScenario(t *testing.T) {
 
 	// Configure with hedge and retry policies
 	failsafeConfig := &common.FailsafeConfig{
+		Matchers: []*common.MatcherConfig{
+			{
+				Method: "*",
+				Action: common.MatcherInclude,
+			},
+		},
 		Retry: &common.RetryPolicyConfig{
 			MaxAttempts: 5, // Enough to reach rpc4
 			Delay:       0, // No delay for retry on failure

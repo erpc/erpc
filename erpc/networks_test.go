@@ -1114,6 +1114,12 @@ func TestNetwork_Forward(t *testing.T) {
 		// Initialize various components for the test environment
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			Hedge:   nil,
 			Timeout: nil,
 			Retry: &common.RetryPolicyConfig{
@@ -4715,6 +4721,12 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
 					Timeout: &common.TimeoutPolicyConfig{
 						Duration: common.Duration(30 * time.Millisecond),
 					}},
@@ -5399,6 +5411,12 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
 				FailureThresholdCapacity: 4,
