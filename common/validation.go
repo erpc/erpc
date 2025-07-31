@@ -60,10 +60,6 @@ func validateMatchers(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
 
 	// Mixed include and exclude - validate that the first rule determines the starting point
 	if hasInclude && hasExclude {
-		if len(matchers) == 0 {
-			return nil, fmt.Errorf("matchers cannot be empty when mixing include and exclude rules")
-		}
-
 		firstMatcher := matchers[0]
 		firstAction := firstMatcher.Action
 
