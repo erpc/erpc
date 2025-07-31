@@ -79,6 +79,8 @@ type EvmStatePoller struct {
 	latestBlockSuccessfulOnce bool
 	latestBlockShared         data.CounterInt64SharedVariable
 
+	sharedStateRegistry data.SharedStateRegistry
+
 	stateMu sync.RWMutex
 }
 
@@ -104,6 +106,7 @@ func NewEvmStatePoller(
 		tracker:              tracker,
 		latestBlockShared:    lbs,
 		finalizedBlockShared: fbs,
+		sharedStateRegistry:  sharedState,
 	}
 
 	lbs.OnValue(func(value int64) {
@@ -152,7 +155,23 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 				return
 			case <-ticker.C:
-				timeout := 10 * time.Second
+				// Calculate timeout based on shared state config:
+				// 1. Wait for distributed lock (up to lockTtl)
+				// 2. Buffer for operations (fetch block, update remote)
+				const operationBuffer = 15 * time.Second
+				lockTtl := e.sharedStateRegistry.GetLockTtl()
+				timeout := lockTtl + operationBuffer
+
+				// Ensure minimum timeout for basic operations
+				if timeout < 30*time.Second {
+					timeout = 30 * time.Second
+				}
+
+				e.logger.Debug().
+					Dur("lockTtl", lockTtl).
+					Dur("timeout", timeout).
+					Msg("calculated poll timeout based on shared state config")
+
 				nctx, cancel := context.WithTimeout(e.appCtx, timeout)
 				err := e.Poll(nctx)
 				subCtxErr := nctx.Err()

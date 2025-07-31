@@ -4,18 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -27,18 +26,51 @@ const (
 
 var _ Connector = &RedisConnector{}
 
+// zerologAdapter adapts zerolog to work with go-redis internal logger
+type zerologAdapter struct {
+	logger *zerolog.Logger
+}
+
+// Printf implements the internal.Logging interface for go-redis
+func (z *zerologAdapter) Printf(ctx context.Context, format string, v ...interface{}) {
+	// Parse and clean up the message
+	msg := fmt.Sprintf(format, v...)
+
+	// Remove trailing newline if present
+	msg = strings.TrimSuffix(msg, "\n")
+
+	// Detect error conditions in pubsub and other components
+	if strings.Contains(msg, "discarding bad PubSub connection") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") {
+		z.logger.Warn().Str("component", "redis").Msg(msg)
+	} else {
+		// Log other messages at trace level to reduce noise
+		z.logger.Trace().Str("component", "redis").Msg(msg)
+	}
+}
+
 type RedisConnector struct {
-	id          string
-	logger      *zerolog.Logger
-	client      *redis.Client
-	initializer *util.Initializer
-	cfg         *common.RedisConnectorConfig
-	redsync     *redsync.Redsync
+	id            string
+	logger        *zerolog.Logger
+	client        *redis.Client
+	initializer   *util.Initializer
+	cfg           *common.RedisConnectorConfig
+	redsync       *redsync.Redsync
+	pubsubManager *RedisPubSubManager
+	appCtx        context.Context
 
 	ttls        map[string]time.Duration
 	initTimeout time.Duration
 	getTimeout  time.Duration
 	setTimeout  time.Duration
+}
+
+func init() {
+	// Configure go-redis internal logger to use zerolog
+	lg := log.Logger.With().Str("component", "redis").Logger()
+	redis.SetLogger(&zerologAdapter{logger: &lg})
 }
 
 func NewRedisConnector(
@@ -54,6 +86,7 @@ func NewRedisConnector(
 		id:          id,
 		logger:      &lg,
 		cfg:         cfg,
+		appCtx:      appCtx,
 		ttls:        make(map[string]time.Duration),
 		initTimeout: cfg.InitTimeout.Duration(),
 		getTimeout:  cfg.GetTimeout.Duration(),
@@ -79,6 +112,19 @@ func (r *RedisConnector) Id() string {
 
 // connectTask is the function that tries to establish a Redis connection (and pings to verify).
 func (r *RedisConnector) connectTask(ctx context.Context) error {
+	// First, check if existing connection is still healthy
+	if r.client != nil {
+		healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := r.client.Ping(healthCtx).Result()
+		cancel()
+
+		if err == nil {
+			r.logger.Debug().Msg("existing Redis connection is healthy, skipping reconnection")
+			return nil // Connection is healthy, no need to reconnect
+		}
+		r.logger.Debug().Err(err).Msg("existing Redis connection unhealthy, proceeding with reconnection")
+	}
+
 	var options *redis.Options
 	var err error
 
@@ -164,6 +210,13 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	pool := goredis.NewPool(client)
 	r.redsync = redsync.New(pool)
 
+	// Handle pubsub manager - create once and let it handle reconnections
+	if r.pubsubManager == nil {
+		// First time initialization
+		r.pubsubManager = NewRedisPubSubManager(r.appCtx, r.logger, r)
+	}
+	// Manager will detect the client change and reconnect internally
+
 	r.logger.Info().Str("addr", options.Addr).Msg("successfully connected to Redis") // Use options.Addr for logging consistency
 	return nil
 }
@@ -182,7 +235,27 @@ func (r *RedisConnector) markConnectionAsLostIfNecessary(err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 		return
 	}
-	r.initializer.MarkTaskAsFailed(fmt.Sprintf("redis-connect/%s", r.id), fmt.Errorf("connection lost or redis error: %w stack: %s", err, string(debug.Stack())))
+
+	// Let go-redis handle temporary network issues, timeouts, and retries internally
+	errStr := err.Error()
+
+	// Only trigger reconnection for critical connection failures
+	if strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no such host") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "connection reset by peer") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "invalid connection") ||
+		strings.Contains(errStr, "connection closed") {
+
+		// Add some backoff to reduce pressure
+		r.logger.Warn().Err(err).Msg("detected critical connection failure, marking for reconnection")
+		r.initializer.MarkTaskAsFailed(fmt.Sprintf("redis-connect/%s", r.id), fmt.Errorf("critical connection failure: %w", err))
+		return
+	}
+
+	// For other errors, just log and let go-redis handle internally
+	r.logger.Debug().Err(err).Msg("redis operation failed, letting go-redis handle internally")
 }
 
 // checkReady returns an error if Redis is not in a ready state.
@@ -237,7 +310,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 	}
 
 	if err := r.client.Set(ctx, key, value, duration).Err(); err != nil {
-		r.logger.Warn().Err(err).Str("key", key).Msg("failed to SET in Redis, marking connection lost")
+		r.logger.Warn().Err(err).Str("key", key).Msg("failed to SET in Redis")
 		r.markConnectionAsLostIfNecessary(err)
 		common.SetTraceSpanError(span, err)
 		return err
@@ -287,7 +360,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		revPartitionKey, revErr := r.client.Get(lookupCtx, revKey).Result()
 		lookupCancel()
 		if revErr != nil {
-			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to GET reverse index in Redis, marking connection lost")
+			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to GET reverse index in Redis")
 			r.markConnectionAsLostIfNecessary(revErr)
 			common.SetTraceSpanError(span, revErr)
 		}
@@ -351,14 +424,60 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 
 	// ttl parameter is now primarily for the lock's expiry in Redis.
 	// The acquisition timeout is governed by the deadline of the parent 'ctx'.
-	retryInterval := 500 * time.Millisecond
+	retryInterval := 500 * time.Millisecond // Faster retry interval for responsive operations
 	if r.cfg != nil && r.cfg.LockRetryInterval.Duration() > 0 {
 		retryInterval = r.cfg.LockRetryInterval.Duration()
 	}
 
-	// Set a large number of tries to ensure redsync retries for a significant duration,
-	// effectively bounded by the parent context's deadline.
-	const maxRetries = 10_000
+	// Calculate max retries based on context deadline and lock TTL
+	// We want to retry during the lock TTL period, but also ensure we leave time for operations
+	var maxRetries int
+	deadline, hasDeadline := ctx.Deadline()
+
+	// Calculate how long we should try to acquire the lock
+	// This is the minimum of: context deadline minus operation buffer, or lock TTL
+	var maxLockWaitTime time.Duration
+
+	if hasDeadline {
+		timeUntilDeadline := time.Until(deadline)
+		if timeUntilDeadline > DefaultOperationBuffer {
+			maxLockWaitTime = timeUntilDeadline - DefaultOperationBuffer
+		} else {
+			maxLockWaitTime = timeUntilDeadline / 2 // Use half if not enough time
+		}
+
+		// Cap at lock TTL since that's when the lock would be released anyway
+		if maxLockWaitTime > ttl {
+			maxLockWaitTime = ttl
+		}
+	} else {
+		// No deadline, wait up to lock TTL
+		maxLockWaitTime = ttl
+	}
+
+	// Calculate retries based on wait time
+	if maxLockWaitTime < retryInterval {
+		maxRetries = 1 // At least try once
+	} else {
+		maxRetries = int(maxLockWaitTime / retryInterval)
+		// Cap based on lockTtl to allow waiting for healthy contention
+		maxRetriesBasedOnTtl := int(ttl / retryInterval)
+		if maxRetries > maxRetriesBasedOnTtl {
+			maxRetries = maxRetriesBasedOnTtl
+		}
+		// Only enforce minimum retries if we have enough time for healthy contention
+		// Don't override short context deadlines that expect fast failure
+		if maxRetries < 3 && maxLockWaitTime > 2*retryInterval {
+			maxRetries = 3
+		}
+	}
+
+	r.logger.Debug().
+		Str("key", lockKey).
+		Dur("maxLockWaitTime", maxLockWaitTime).
+		Dur("retryInterval", retryInterval).
+		Int("maxRetries", maxRetries).
+		Msg("calculated lock acquisition strategy")
 
 	mutex := r.redsync.NewMutex(
 		fmt.Sprintf("lock:%s", lockKey),
@@ -401,95 +520,14 @@ func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-c
 	if err := r.checkReady(); err != nil {
 		return nil, nil, err
 	}
-	updates := make(chan int64, 1)
-	pubsub := r.client.Subscribe(ctx, "counter:"+key)
 
-	// Start a goroutine to handle updates
-	go func() {
-		defer close(updates)
-		defer func() {
-			if err := pubsub.Close(); err != nil {
-				r.logger.Warn().Err(err).Str("key", key).Msg("failed to close pubsub")
-				r.markConnectionAsLostIfNecessary(err)
-			}
-		}()
-
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		ch := pubsub.Channel()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-
-			case msg, ok := <-ch:
-				if ok && msg != nil {
-					if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
-						select {
-						case updates <- val:
-						default:
-						}
-					} else {
-						r.logger.Warn().Str("key", key).Str("payload", msg.Payload).Msg("failed to parse received payload")
-					}
-				} else {
-					r.logger.Warn().Str("key", key).Interface("msg", msg).Msg("pubsub channel closed")
-					return
-				}
-
-			case <-ticker.C:
-				r.logger.Debug().Str("key", key).Msg("polling current value")
-				if val, err := r.getCurrentValue(ctx, key); err != nil {
-					r.markConnectionAsLostIfNecessary(err)
-					return
-				} else {
-					select {
-					case updates <- val:
-					default:
-					}
-				}
-			}
-		}
-	}()
-
-	cleanup := func() {
-		err := pubsub.Close()
-		if err != nil {
-			r.logger.Warn().Err(err).Str("key", key).Msg("failed to close pubsub")
-			r.markConnectionAsLostIfNecessary(err)
-		}
+	// Ensure pubsub manager is initialized
+	if r.pubsubManager == nil {
+		return nil, nil, fmt.Errorf("pubsub manager not initialized")
 	}
 
-	go func() {
-		defer func() {
-			if rc := recover(); rc != nil {
-				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-					"redis-watch-counter-int64",
-					fmt.Sprintf("connector:%s", r.id),
-					common.ErrorFingerprint(rc),
-				).Inc()
-				r.logger.Error().
-					Interface("panic", rc).
-					Str("stack", string(debug.Stack())).
-					Msg("unexpected panic in redis WatchCounterInt64")
-			}
-		}()
-		// Get initial value
-		if val, err := r.getCurrentValue(ctx, key); err == nil {
-			select {
-			case updates <- val:
-			default:
-				r.logger.Warn().Str("key", key).Msg("skipping initial value send - channel full or closed")
-			}
-		} else {
-			r.logger.Warn().Err(err).Str("key", key).Msg("failed to get initial value")
-		}
-	}()
-
-	r.logger.Info().Str("key", key).Msg("started watching counter int64 in Redis")
-
-	return updates, cleanup, nil
+	// Subscribe through the centralized manager
+	return r.pubsubManager.Subscribe(key)
 }
 
 // PublishCounterInt64 publishes a counter value to Redis.
@@ -511,40 +549,13 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 		common.SetTraceSpanError(span, err)
 		return err
 	}
-	r.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to Redis")
-
+	r.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to redis")
 	err := r.client.Publish(ctx, "counter:"+key, value).Err()
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
+	r.logger.Info().Str("key", key).Int64("value", value).Msg("published counter int64 update to redis")
 	return err
-}
-
-func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
-	ctx, span := common.StartDetailSpan(ctx, "RedisConnector.getCurrentValue",
-		trace.WithAttributes(
-			attribute.String("key", key),
-		),
-	)
-	defer span.End()
-
-	val, err := r.Get(ctx, ConnectorMainIndex, key, "value")
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-			return 0, nil
-		}
-		return 0, err
-	}
-
-	value, err := strconv.ParseInt(string(val), 10, 64)
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return 0, err
-	}
-
-	span.SetAttributes(attribute.Int64("value", value))
-	return value, nil
 }
 
 var _ DistributedLock = &redisLock{}

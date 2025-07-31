@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/util"
 )
@@ -216,6 +217,34 @@ func (s *SharedStateConfig) Validate() error {
 	if s.FallbackTimeout == 0 {
 		return fmt.Errorf("sharedState.fallbackTimeout is required")
 	}
+	if s.FallbackTimeout.Duration() < 100*time.Millisecond {
+		return fmt.Errorf("sharedState.fallbackTimeout should be at least 100ms")
+	}
+	if s.LockTtl == 0 {
+		return fmt.Errorf("sharedState.lockTtl is required")
+	}
+	if s.LockTtl.Duration() < 1*time.Second {
+		return fmt.Errorf("sharedState.lockTtl should be at least 1s")
+	}
+
+	// Validate timeout relationships to prevent negative calculations in shared state flows
+	fallbackTimeout := s.FallbackTimeout.Duration()
+	lockTtl := s.LockTtl.Duration()
+
+	// TryUpdate uses operationBuffer = fallbackTimeout * 2
+	// Ensure lockTtl provides sufficient buffer for operations after lock acquisition
+	if fallbackTimeout*2 >= lockTtl {
+		return fmt.Errorf("sharedState.lockTtl (%v) must be greater than fallbackTimeout * 2 (%v) to prevent negative timeout calculations",
+			lockTtl, fallbackTimeout*2)
+	}
+
+	// TryUpdateIfStale uses operationBuffer = fallbackTimeout * 4 (more conservative)
+	// This is the more restrictive constraint and covers both update methods
+	if fallbackTimeout*4 >= lockTtl {
+		return fmt.Errorf("sharedState.lockTtl (%v) must be greater than fallbackTimeout * 4 (%v) to prevent negative timeout calculations",
+			lockTtl, fallbackTimeout*4)
+	}
+
 	return nil
 }
 
@@ -447,6 +476,11 @@ func (c *RedisConnectorConfig) Validate() error {
 	// Enforce supported schemes.
 	if !strings.HasPrefix(uri, "rediss://") && !strings.HasPrefix(uri, "redis://") {
 		return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
+	}
+
+	// Validate lock retry interval
+	if c.LockRetryInterval.Duration() < 100*time.Millisecond && c.LockRetryInterval.Duration() > 0 {
+		return fmt.Errorf("redis.lockRetryInterval should be at least 100ms to avoid excessive Redis load")
 	}
 
 	return nil

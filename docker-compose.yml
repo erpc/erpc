@@ -8,19 +8,19 @@ services:
   #   volumes:
   #     - ./erpc.yaml:/erpc.yaml
 
-  monitoring:
-    build: ./monitoring
-    ports:
-      - "3000:3000"  # Grafana
-      - "9090:9090"  # Prometheus
-    environment:
-      - SERVICE_ENDPOINT=host.docker.internal
-      - SERVICE_PORT=4001
-    volumes:
-      - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini
-      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
-      - prometheus_data:/prometheus
-      - grafana_data:/var/lib/grafana
+  # monitoring:
+  #   build: ./monitoring
+  #   ports:
+  #     - "3000:3000"  # Grafana
+  #     - "9090:9090"  # Prometheus
+  #   environment:
+  #     - SERVICE_ENDPOINT=host.docker.internal
+  #     - SERVICE_PORT=4001
+  #   volumes:
+  #     - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini
+  #     - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
+  #     - prometheus_data:/prometheus
+  #     - grafana_data:/var/lib/grafana
 
   redis:
     container_name: erpc-redis
