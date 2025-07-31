@@ -893,9 +893,10 @@ func TestMatchersValidate(t *testing.T) {
 		result, err := validateMatchers(matchers)
 		assert.NoError(t, err)
 		assert.Len(t, result, 2)
-		assert.Equal(t, MatcherExclude, result[0].Action) // original rule
-		assert.Equal(t, MatcherInclude, result[1].Action) // catch-all include added at end
-		assert.Equal(t, "*", result[1].Method)
+		assert.Equal(t, MatcherInclude, result[0].Action) // catch-all include added at beginning
+		assert.Equal(t, "*", result[0].Method)
+		assert.Equal(t, MatcherExclude, result[1].Action) // original rule
+		assert.Equal(t, "debug_*", result[1].Method)
 	})
 
 	t.Run("mixed rules with valid first action - should pass through", func(t *testing.T) {
@@ -1090,9 +1091,9 @@ func TestFailsafeValidation(t *testing.T) {
 		assert.Len(t, policies[0].Matchers, 2)
 		assert.Equal(t, MatcherExclude, policies[0].Matchers[0].Action)
 
-		// Second policy should have catch-all include added
+		// Second policy should have catch-all include added at beginning
 		assert.Len(t, policies[1].Matchers, 2)
-		assert.Equal(t, MatcherInclude, policies[1].Matchers[1].Action)
+		assert.Equal(t, MatcherInclude, policies[1].Matchers[0].Action)
 	})
 
 	t.Run("legacy mode with matchMethod", func(t *testing.T) {
