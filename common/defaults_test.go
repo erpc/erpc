@@ -101,8 +101,14 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		}
 		network.SetDefaults(nil, nil)
 
-		assert.EqualValues(t, &FailsafeConfig{
+		expected := &FailsafeConfig{
 			MatchMethod: "*",
+			Matchers: []*MatcherConfig{
+				{
+					Method: "*",
+					Action: MatcherInclude,
+				},
+			},
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     12345,
 				Delay:           Duration(0 * time.Millisecond),
@@ -110,7 +116,8 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 				BackoffFactor:   1.2,
 				Jitter:          Duration(0 * time.Millisecond),
 			},
-		}, network.Failsafe[0])
+		}
+		assert.EqualValues(t, expected, network.Failsafe[0])
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)

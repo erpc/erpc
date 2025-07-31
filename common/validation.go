@@ -49,13 +49,13 @@ func validateMatchers(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
 		return append([]*MatcherConfig{catchAllExclude}, matchers...), nil
 	}
 
-	// Only exclude actions - add catch-all include at the beginning (processed last)
+	// Only exclude actions - add catch-all include at the end
 	if hasExclude && !hasInclude {
 		catchAllInclude := &MatcherConfig{
 			Method: "*",
 			Action: MatcherInclude,
 		}
-		return append([]*MatcherConfig{catchAllInclude}, matchers...), nil
+		return append(matchers, catchAllInclude), nil
 	}
 
 	// Mixed include and exclude - validate that the first rule determines the starting point
@@ -879,6 +879,11 @@ func (f *FailsafeConfig) Validate() error {
 			return fmt.Errorf("failsafe.matchers validation failed: %v", err)
 		}
 		f.Matchers = processedMatchers
+	} else {
+		// Legacy mode validation - check MatchMethod when no Matchers are defined
+		if f.MatchMethod == "" {
+			return fmt.Errorf("failsafe.matchMethod cannot be empty")
+		}
 	}
 
 	if f.Timeout != nil {

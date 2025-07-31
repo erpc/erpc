@@ -265,7 +265,7 @@ failsafe:
 		assert.Len(t, nc.Failsafe[0].Matchers, 1)
 		assert.Equal(t, "evm:1", nc.Failsafe[0].Matchers[0].Network)
 		assert.Equal(t, "eth_*", nc.Failsafe[0].Matchers[0].Method)
-		assert.Equal(t, DataFinalityStateFinalized, nc.Failsafe[0].Matchers[0].Finality)
+		assert.Equal(t, DataFinalityStateSlice{DataFinalityStateFinalized}, nc.Failsafe[0].Matchers[0].Finality)
 		assert.Equal(t, MatcherInclude, nc.Failsafe[0].Matchers[0].Action)
 	})
 }
@@ -563,7 +563,7 @@ projects:
             duration: 5s
           retry:
             maxCount: 5
-			delay: "10ms"
+            delay: "10ms"
 `
 		// Create a temporary file
 		fs := afero.NewMemMapFs()
