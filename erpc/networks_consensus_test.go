@@ -3038,8 +3038,9 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 					"result":  "0xccc", // Non-empty
 				},
 			},
-			expectedError: true, // Should error because non-empty (count 1) < threshold (2)
-			description:   "2 empty arrays vs 1 non-empty → error (prefers non-empty but below threshold)",
+			expectedError:  false,
+			expectedResult: `"0xccc"`,
+			description:    "2 empty arrays vs 1 non-empty → non-empty preferred",
 		},
 		{
 			name: "tie_2v2_no_clear_winner",
@@ -3152,8 +3153,137 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 					"result":  "0xdata",
 				},
 			},
-			expectedError: true, // Non-empty preferred but count (1) < threshold (2)
-			description:   "4 empty, 1 non-empty → error (prefers non-empty but below threshold)",
+			expectedError:  false, // Non-empty preferred
+			expectedResult: `"0xdata"`,
+			description:    "4 empty, 1 non-empty → non-empty preferred",
+		},
+		{
+			name: "only_empty_results_insufficient_participants",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{},
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{},
+				},
+			},
+			expectedError: true,
+			description:   "Only empty results with participants (2) < threshold (3) → error instead of empty result",
+		},
+		{
+			name: "only_empty_results_meets_threshold",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{},
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{},
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{},
+				},
+			},
+			expectedError:  false,
+			expectedResult: `[]`,
+			description:    "Only empty results with participants (3) >= threshold (2) → accept empty result",
+		},
+		{
+			name: "non_empty_winner_ignores_threshold",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xwinner",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xwinner",
+				},
+			},
+			expectedError:  false,
+			expectedResult: `"0xwinner"`,
+			description:    "Non-empty winner with participants (2) < threshold (5) → accept anyway (ignore threshold for non-empty)",
+		},
+		{
+			name: "competing_nonempty_with_empty_results_error",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xresult1", // Non-empty 1
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xresult2", // Non-empty 2 (competing)
+				},
+			},
+			expectedError: true,
+			description:   "2 competing non-empty + 3 empty → error (no clear winner among non-empty)",
+		},
+		{
+			name: "nonempty_agreement_wins_over_minority_and_empty",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  []interface{}{}, // Empty
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xwinner", // Non-empty winner (2 votes)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xwinner", // Non-empty winner (2 votes)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xminority", // Non-empty minority (1 vote)
+				},
+			},
+			expectedError:  false,
+			expectedResult: `"0xwinner"`,
+			description:    "2 non-empty agreements + 1 different + 3 empty, threshold=3 → accepts most common non-empty",
 		},
 	}
 
@@ -3180,7 +3310,7 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 			for i, upstream := range upstreams {
 				gock.New(upstream.Endpoint).
 					Post("").
-					Times(1).
+					Persist().
 					Reply(200).
 					JSON(tc.mockResponses[i])
 			}
@@ -3194,6 +3324,19 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 			if tc.name == "tie_2v2_no_clear_winner" {
 				threshold = 3 // This ensures neither result meets threshold
 			}
+			if tc.name == "only_empty_results_insufficient_participants" {
+				threshold = 3 // Set threshold higher than participants (2) to test insufficient participants scenario
+			}
+			if tc.name == "only_empty_results_meets_threshold" {
+				threshold = 2 // Set threshold lower than participants (3) to test sufficient participants scenario
+			}
+			if tc.name == "non_empty_winner_ignores_threshold" {
+				threshold = 5 // Set threshold much higher than participants (2) to test ignoring threshold for non-empty
+			}
+			if tc.name == "nonempty_agreement_wins_over_minority_and_empty" {
+				threshold = 3 // Set threshold=3 to test non-empty winner (2 votes) below threshold but still wins
+			}
+
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
 				RequiredParticipants: len(upstreams),
 				AgreementThreshold:   threshold,
@@ -3213,7 +3356,7 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 					}
 				}
 				assert.Error(t, err)
-				assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusDispute))
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants))
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, resp)
@@ -3897,10 +4040,11 @@ func TestConsensusEmptyNonEmptyPreferenceBehaviors(t *testing.T) {
 		description     string
 	}{
 		{
-			name:            "accept_most_common_errors",
+			name:            "accept_most_common_accepts_clear_nonempty",
 			disputeBehavior: common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-			expectedError:   true,
-			description:     "AcceptMostCommon → error (non-empty count 1 < threshold 2)",
+			expectedError:   false,
+			expectedResult:  `"0xvaluable"`,
+			description:     "AcceptMostCommon → accepts clear non-empty winner (ignores threshold)",
 		},
 		{
 			name:            "accept_any_valid_returns_nonempty",

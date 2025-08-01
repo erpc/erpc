@@ -667,6 +667,16 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	// Only short-circuit if we have enough unique participants or will have enough
 	expectedUniqueParticipants := uniqueParticipantCount + remainingResponses
 	if !canReachConsensus && expectedUniqueParticipants >= e.requiredParticipants {
+		// Don't short-circuit if we have non-empty results, as they might be resolved in dispute handling
+		// where non-empty results can ignore threshold requirements
+		if len(nonEmptyResults) > 0 {
+			lg.Debug().
+				Int("responseCount", len(responses)).
+				Int("nonEmptyResults", len(nonEmptyResults)).
+				Msg("consensus impossible but have non-empty results, continuing to collect all responses for dispute resolution")
+			return false
+		}
+
 		lg.Debug().
 			Int("responseCount", len(responses)).
 			Int("uniqueParticipants", uniqueParticipantCount).
@@ -996,11 +1006,9 @@ func (e *executor[R]) findResultByHash(responses []*execResult[R], targetHash st
 }
 
 // isLowParticipants determines if we have enough valid responses from participants
+// This should only check if we meet the required participants, not the agreement threshold.
+// Agreement threshold checking is part of consensus/dispute logic, not participant sufficiency.
 func (e *executor[R]) isLowParticipants(participantCount int) bool {
-	if participantCount < e.agreementThreshold {
-		return true
-	}
-
 	if participantCount < e.requiredParticipants {
 		return true
 	}
@@ -1483,72 +1491,128 @@ func (e *executor[R]) handleAcceptMostCommon(ctx context.Context, logger *zerolo
 		}
 	}
 
-	// Always prefer non-empty results if they exist
-	var activeResults map[string]int
-	hasNonEmptyResults := len(nonEmptyResults) > 0
+	// Calculate max counts for both categories upfront
+	emptyMaxCount := 0
+	for _, count := range emptyResults {
+		if count > emptyMaxCount {
+			emptyMaxCount = count
+		}
+	}
 
-	if hasNonEmptyResults {
+	nonEmptyMaxCount := 0
+	for _, count := range nonEmptyResults {
+		if count > nonEmptyMaxCount {
+			nonEmptyMaxCount = count
+		}
+	}
+
+	// Check for tie between empty and non-empty results at global max
+	globalMax := emptyMaxCount
+	if nonEmptyMaxCount > globalMax {
+		globalMax = nonEmptyMaxCount
+	}
+
+	if emptyMaxCount == globalMax && nonEmptyMaxCount == globalMax && emptyMaxCount > 0 {
+		logger.Debug().
+			Int("emptyMaxCount", emptyMaxCount).
+			Int("nonEmptyMaxCount", nonEmptyMaxCount).
+			Msg("tie between empty and non-empty results, cannot determine most common")
+		return &failsafeCommon.PolicyResult[R]{
+			Error: errFn(),
+		}
+	}
+
+	// Determine which category to use (prefer non-empty when available)
+	var activeResults map[string]int
+	var activeMaxCount int
+	var isUsingNonEmpty bool
+
+	if len(nonEmptyResults) > 0 {
 		activeResults = nonEmptyResults
+		activeMaxCount = nonEmptyMaxCount
+		isUsingNonEmpty = true
 		logger.Debug().
 			Interface("nonEmptyResults", nonEmptyResults).
 			Interface("emptyResults", emptyResults).
 			Msg("preferring non-empty results in dispute resolution")
 	} else {
 		activeResults = emptyResults
+		activeMaxCount = emptyMaxCount
+		isUsingNonEmpty = false
 		logger.Debug().
 			Interface("emptyResults", emptyResults).
 			Msg("only empty results available")
 	}
 
-	// Find the most common result(s) from active results
-	var maxCount int
+	// Find all results with the maximum count in active category
 	var mostCommonHashes []string
-
 	for hash, count := range activeResults {
-		if count > maxCount {
-			maxCount = count
-			mostCommonHashes = []string{hash}
-		} else if count == maxCount {
+		if count == activeMaxCount {
 			mostCommonHashes = append(mostCommonHashes, hash)
 		}
 	}
 
-	// If there's a clear winner, return it
-	if len(mostCommonHashes) == 1 && maxCount > 0 {
-		logger.Debug().
-			Str("hash", mostCommonHashes[0]).
-			Int("count", maxCount).
-			Msg("found clear most common result")
-		return &failsafeCommon.PolicyResult[R]{
-			Result: resultsByHash[mostCommonHashes[0]],
-		}
-	}
-
-	// If there are multiple results with the same count, it's ambiguous
+	// If multiple results with same max count, it's ambiguous
 	if len(mostCommonHashes) > 1 {
 		logger.Debug().
 			Int("numTiedResults", len(mostCommonHashes)).
-			Int("count", maxCount).
+			Int("count", activeMaxCount).
 			Msg("multiple results have the same count, cannot determine most common")
 		return &failsafeCommon.PolicyResult[R]{
 			Error: errFn(),
 		}
 	}
 
-	// If no successful result, check for consensus-valid errors
-	for _, r := range responses {
-		if r.err != nil && e.isConsensusValidError(r.err) {
-			logger.Debug().Err(r.err).Msg("returning consensus-valid error as result")
-			return &failsafeCommon.PolicyResult[R]{
-				Error: r.err,
+	// If no results found, handle consensus-valid errors or return error
+	if len(mostCommonHashes) == 0 || activeMaxCount == 0 {
+		for _, r := range responses {
+			if r.err != nil && e.isConsensusValidError(r.err) {
+				logger.Debug().Err(r.err).Msg("returning consensus-valid error as result")
+				return &failsafeCommon.PolicyResult[R]{
+					Error: r.err,
+				}
 			}
+		}
+		logger.Debug().Interface("responses", responses).Msg("no valid results found, sending error")
+		return &failsafeCommon.PolicyResult[R]{
+			Error: errFn(),
 		}
 	}
 
-	// No valid results found
-	logger.Debug().Interface("responses", responses).Msg("no valid results found, sending error")
-	return &failsafeCommon.PolicyResult[R]{
-		Error: errFn(),
+	// We have exactly one clear winner - apply acceptance rules
+	winnerHash := mostCommonHashes[0]
+
+	if isUsingNonEmpty {
+		// Rule: non-empty result + other empty results → use and ignore threshold
+		logger.Debug().
+			Str("hash", winnerHash).
+			Int("nonEmptyCount", activeMaxCount).
+			Int("emptyMaxCount", emptyMaxCount).
+			Msg("accepting non-empty most common result, ignoring threshold")
+		return &failsafeCommon.PolicyResult[R]{
+			Result: resultsByHash[winnerHash],
+		}
+	} else {
+		// Empty-only results: must meet threshold
+		if activeMaxCount >= e.agreementThreshold {
+			logger.Debug().
+				Str("hash", winnerHash).
+				Int("count", activeMaxCount).
+				Int("threshold", e.agreementThreshold).
+				Msg("accepting empty most common result meeting threshold")
+			return &failsafeCommon.PolicyResult[R]{
+				Result: resultsByHash[winnerHash],
+			}
+		} else {
+			logger.Debug().
+				Str("hash", winnerHash).
+				Int("count", activeMaxCount).
+				Int("threshold", e.agreementThreshold).
+				Msg("rejecting empty result: insufficient count for threshold")
+			return &failsafeCommon.PolicyResult[R]{
+				Error: errFn(),
+			}
+		}
 	}
 }
 
