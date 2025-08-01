@@ -67,7 +67,7 @@ func BenchmarkConsensusExecution(b *testing.B) {
 			consensusCount := int(float64(scenario.numUpstreams) * scenario.consensusRatio)
 
 			for i := 0; i < scenario.numUpstreams; i++ {
-				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i), nil)
+				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
 
 				if i < consensusCount {
 					responses[i] = createResponse("consensus_result", upstreams[i])
@@ -181,7 +181,7 @@ func BenchmarkShortCircuit(b *testing.B) {
 			}
 
 			for i := 0; i < scenario.numUpstreams; i++ {
-				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i), nil)
+				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
 
 				if i >= consensusStart && i < consensusStart+consensusThreshold {
 					responses[i] = createResponse("consensus", upstreams[i])
@@ -292,7 +292,7 @@ func BenchmarkMisbehaviorTracking(b *testing.B) {
 			consensusCount := scenario.numUpstreams - misbehavingCount
 
 			for i := 0; i < scenario.numUpstreams; i++ {
-				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i), nil)
+				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
 
 				if i < consensusCount {
 					responses[i] = createResponse("consensus", upstreams[i])
@@ -366,7 +366,7 @@ func BenchmarkConcurrentConsensus(b *testing.B) {
 			responses := make([]*common.NormalizedResponse, numUpstreams)
 
 			for i := 0; i < numUpstreams; i++ {
-				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i), nil)
+				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
 				if i < 12 { // 60% consensus
 					responses[i] = createResponse("consensus", upstreams[i])
 				} else {
@@ -434,7 +434,7 @@ func BenchmarkHashCalculation(b *testing.B) {
 				data[i] = byte(i % 256)
 			}
 
-			upstream := common.NewFakeUpstream("test", nil)
+			upstream := common.NewFakeUpstream("test")
 			response := createResponse(string(data), upstream)
 
 			executor := &executor[*common.NormalizedResponse]{
@@ -475,7 +475,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 			responses := make([]*common.NormalizedResponse, scenario.numUpstreams)
 
 			for i := 0; i < scenario.numUpstreams; i++ {
-				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i), nil)
+				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
 				responses[i] = createResponse("consensus", upstreams[i])
 			}
 
@@ -524,6 +524,179 @@ func BenchmarkMemoryUsage(b *testing.B) {
 	}
 }
 
+// BenchmarkHotPathPerformance specifically targets the map allocation hot paths
+func BenchmarkHotPathPerformance(b *testing.B) {
+	scenarios := []struct {
+		name                 string
+		numUpstreams         int
+		requiredParticipants int
+		agreementThreshold   int
+		consensusRatio       float64
+	}{
+		{
+			name:                 "Small_Load_10_Upstreams",
+			numUpstreams:         10,
+			requiredParticipants: 10,
+			agreementThreshold:   6,
+			consensusRatio:       0.6,
+		},
+		{
+			name:                 "Medium_Load_50_Upstreams",
+			numUpstreams:         50,
+			requiredParticipants: 50,
+			agreementThreshold:   30,
+			consensusRatio:       0.6,
+		},
+		{
+			name:                 "Heavy_Load_100_Upstreams",
+			numUpstreams:         100,
+			requiredParticipants: 100,
+			agreementThreshold:   60,
+			consensusRatio:       0.6,
+		},
+	}
+
+	for _, scenario := range scenarios {
+		b.Run(scenario.name, func(b *testing.B) {
+			// Setup realistic responses with mix of empty and non-empty
+			upstreams := make([]common.Upstream, scenario.numUpstreams)
+			responses := make([]*common.NormalizedResponse, scenario.numUpstreams)
+
+			consensusCount := int(float64(scenario.numUpstreams) * scenario.consensusRatio)
+			emptyCount := scenario.numUpstreams / 4 // 25% empty responses
+
+			for i := 0; i < scenario.numUpstreams; i++ {
+				upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
+
+				if i < consensusCount {
+					responses[i] = createResponse("0x12345", upstreams[i]) // Non-empty consensus
+				} else if i < consensusCount+emptyCount {
+					responses[i] = createResponse("[]", upstreams[i]) // Empty response
+				} else {
+					responses[i] = createResponse(fmt.Sprintf("0xresult%d", i), upstreams[i]) // Different non-empty
+				}
+			}
+
+			logger := zerolog.Nop()
+			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+				WithRequiredParticipants(scenario.requiredParticipants).
+				WithAgreementThreshold(scenario.agreementThreshold).
+				WithLogger(&logger)
+
+			builtExecutor := policy.Build()
+			executor := builtExecutor.(*executor[*common.NormalizedResponse])
+
+			// Use real collectResponses and evaluateConsensus to exercise hot paths
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for n := 0; n < b.N; n++ {
+				// Create request context
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"]}`))
+				ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
+				ctx = context.WithValue(ctx, common.UpstreamsContextKey, upstreams)
+
+				// Mock execution that returns different responses
+				mockExec := &benchmarkMockExecution{
+					responses:     responses,
+					upstreams:     upstreams,
+					responseDelay: 0, // No delay for hot path focus
+					ctx:           ctx,
+				}
+
+				// Simulate the hot path execution
+				result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+					upstreamID := ""
+					if req := exec.Context().Value(common.RequestContextKey).(*common.NormalizedRequest); req != nil && req.Directives() != nil {
+						upstreamID = req.Directives().UseUpstream
+					}
+
+					for i, up := range upstreams {
+						if up.Id() == upstreamID {
+							return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: responses[i]}
+						}
+					}
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: fmt.Errorf("no response")}
+				})(mockExec)
+
+				if result == nil {
+					b.Fatalf("unexpected nil result")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkMapAllocations specifically measures map allocation overhead in hot paths
+func BenchmarkMapAllocations(b *testing.B) {
+	numUpstreams := 50
+	upstreams := make([]common.Upstream, numUpstreams)
+	responses := make([]*execResult[*common.NormalizedResponse], numUpstreams)
+
+	// Create realistic mix of responses
+	for i := 0; i < numUpstreams; i++ {
+		upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
+		if i < 30 {
+			resp := createResponse("0x12345", upstreams[i]) // Consensus result
+			responses[i] = &execResult[*common.NormalizedResponse]{
+				result:   resp,
+				err:      nil,
+				index:    i,
+				upstream: upstreams[i],
+			}
+		} else if i < 40 {
+			resp := createResponse("[]", upstreams[i]) // Empty result
+			responses[i] = &execResult[*common.NormalizedResponse]{
+				result:   resp,
+				err:      nil,
+				index:    i,
+				upstream: upstreams[i],
+			}
+		} else {
+			resp := createResponse(fmt.Sprintf("0xresult%d", i), upstreams[i]) // Different result
+			responses[i] = &execResult[*common.NormalizedResponse]{
+				result:   resp,
+				err:      nil,
+				index:    i,
+				upstream: upstreams[i],
+			}
+		}
+	}
+
+	logger := zerolog.Nop()
+	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		WithRequiredParticipants(numUpstreams).
+		WithAgreementThreshold(25).
+		WithLogger(&logger)
+
+	builtPolicy := policy.Build().(*consensusPolicy[*common.NormalizedResponse])
+	executor := builtPolicy.Build().(*executor[*common.NormalizedResponse])
+
+	mockExec := &benchmarkMockExecution{
+		responses: make([]*common.NormalizedResponse, numUpstreams),
+		upstreams: upstreams,
+		ctx:       context.Background(),
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for n := 0; n < b.N; n++ {
+		// Test the specific hot path functions that allocate maps
+
+		// 1. Test countResponsesByHash (allocates multiple maps)
+		_, _, _ = executor.countResponsesByHash(&logger, responses, mockExec)
+
+		// 2. Test checkShortCircuit (allocates resultCounts and emptyishHashes maps)
+		_ = executor.checkShortCircuit(&logger, responses, mockExec)
+
+		// 3. Test handleAcceptMostCommon (allocates nonEmptyResults, emptyResults, resultsByHash)
+		_ = executor.handleAcceptMostCommon(context.Background(), &logger, responses, mockExec, func() error {
+			return fmt.Errorf("test error")
+		})
+	}
+}
+
 // BenchmarkResponseCollectionStrategies compares different response collection patterns
 func BenchmarkResponseCollectionStrategies(b *testing.B) {
 	numUpstreams := 50
@@ -531,7 +704,7 @@ func BenchmarkResponseCollectionStrategies(b *testing.B) {
 	responses := make([]*common.NormalizedResponse, numUpstreams)
 
 	for i := 0; i < numUpstreams; i++ {
-		upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i), nil)
+		upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
 		if i < 30 { // 60% consensus
 			responses[i] = createResponse("consensus", upstreams[i])
 		} else {

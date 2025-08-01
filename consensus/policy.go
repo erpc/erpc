@@ -192,5 +192,27 @@ func (p *consensusPolicy[R]) Build() policy.Executor[R] {
 	return &executor[R]{
 		BaseExecutor:    &policy.BaseExecutor[R]{},
 		consensusPolicy: p,
+
+		// Initialize sync pools for hot path map allocations
+		hashCountsPool: sync.Pool{
+			New: func() interface{} {
+				return make(map[string]int, 16) // Pre-size for typical case
+			},
+		},
+		emptyResultsPool: sync.Pool{
+			New: func() interface{} {
+				return make(map[string]bool, 16)
+			},
+		},
+		nonEmptyResultsPool: sync.Pool{
+			New: func() interface{} {
+				return make(map[string]int, 16)
+			},
+		},
+		resultsByHashPool: sync.Pool{
+			New: func() interface{} {
+				return make(map[string]R, 16)
+			},
+		},
 	}
 }

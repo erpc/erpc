@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -23,6 +24,12 @@ import (
 type executor[R any] struct {
 	*policy.BaseExecutor[R]
 	*consensusPolicy[R]
+
+	// Sync pools for hot path map allocations
+	hashCountsPool      sync.Pool
+	emptyResultsPool    sync.Pool
+	nonEmptyResultsPool sync.Pool
+	resultsByHashPool   sync.Pool
 }
 
 var _ policy.Executor[any] = &executor[any]{}
@@ -42,6 +49,64 @@ type metricsLabels struct {
 	networkId   string
 	projectId   string
 	finalityStr string
+}
+
+// Pool helper methods for efficient map reuse
+func (e *executor[R]) getHashCountsFromPool() map[string]int {
+	m := e.hashCountsPool.Get().(map[string]int)
+	// Clear the map but keep underlying storage
+	for k := range m {
+		delete(m, k)
+	}
+	return m
+}
+
+func (e *executor[R]) returnHashCountsToPool(m map[string]int) {
+	if len(m) < 32 { // Don't pool oversized maps
+		e.hashCountsPool.Put(m)
+	}
+}
+
+func (e *executor[R]) getEmptyResultsFromPool() map[string]bool {
+	m := e.emptyResultsPool.Get().(map[string]bool)
+	for k := range m {
+		delete(m, k)
+	}
+	return m
+}
+
+func (e *executor[R]) returnEmptyResultsToPool(m map[string]bool) {
+	if len(m) < 32 {
+		e.emptyResultsPool.Put(m)
+	}
+}
+
+func (e *executor[R]) getNonEmptyResultsFromPool() map[string]int {
+	m := e.nonEmptyResultsPool.Get().(map[string]int)
+	for k := range m {
+		delete(m, k)
+	}
+	return m
+}
+
+func (e *executor[R]) returnNonEmptyResultsToPool(m map[string]int) {
+	if len(m) < 32 {
+		e.nonEmptyResultsPool.Put(m)
+	}
+}
+
+func (e *executor[R]) getResultsByHashFromPool() map[string]R {
+	m := e.resultsByHashPool.Get().(map[string]R)
+	for k := range m {
+		delete(m, k)
+	}
+	return m
+}
+
+func (e *executor[R]) returnResultsByHashToPool(m map[string]R) {
+	if len(m) < 32 {
+		e.resultsByHashPool.Put(m)
+	}
 }
 
 // extractMetricsLabels extracts metrics labels from request to avoid repeated extraction
@@ -550,8 +615,11 @@ func (e *executor[R]) hasConsensus(responses []*execResult[R], exec policy.Execu
 // checkShortCircuit determines if we can exit early based on current responses
 func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
 	// Count results by hash, always preferring non-empty results
-	resultCounts := make(map[string]int)
-	emptyishHashes := make(map[string]bool)
+	resultCounts := e.getHashCountsFromPool()
+	defer e.returnHashCountsToPool(resultCounts)
+
+	emptyishHashes := e.getEmptyResultsFromPool()
+	defer e.returnEmptyResultsToPool(emptyishHashes)
 
 	for _, r := range responses {
 		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
@@ -567,8 +635,11 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	}
 
 	// Separate empty and non-empty results
-	nonEmptyResults := make(map[string]int)
-	emptyResults := make(map[string]int)
+	nonEmptyResults := e.getNonEmptyResultsFromPool()
+	defer e.returnNonEmptyResultsToPool(nonEmptyResults)
+
+	emptyResults := e.getNonEmptyResultsFromPool() // Reuse same pool type for emptyResults
+	defer e.returnNonEmptyResultsToPool(emptyResults)
 
 	for resultHash, count := range resultCounts {
 		if emptyishHashes[resultHash] {
@@ -897,8 +968,11 @@ func (e *executor[R]) countUniqueParticipants(responses []*execResult[R]) int {
 // countResponsesByHash counts responses by their hash and returns the counts, most common hash and count
 // It always prefers non-empty results over empty ones, regardless of count
 func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R]) (map[string]int, string, int) {
-	resultCounts := make(map[string]int)
-	emptyishHashes := make(map[string]bool) // Track which hashes correspond to emptyish results
+	resultCounts := e.getHashCountsFromPool()
+	defer e.returnHashCountsToPool(resultCounts)
+
+	emptyishHashes := e.getEmptyResultsFromPool() // Track which hashes correspond to emptyish results
+	defer e.returnEmptyResultsToPool(emptyishHashes)
 	errorCount := 0
 
 	for _, r := range responses {
@@ -932,9 +1006,12 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 		}
 	}
 
-	// Separate empty and non-empty results
-	nonEmptyResults := make(map[string]int)
-	emptyResults := make(map[string]int)
+	// Separate empty and non-empty results - use pooled maps
+	nonEmptyResults := e.getNonEmptyResultsFromPool()
+	defer e.returnNonEmptyResultsToPool(nonEmptyResults)
+
+	emptyResults := e.getNonEmptyResultsFromPool() // Reuse same pool type for emptyResults
+	defer e.returnNonEmptyResultsToPool(emptyResults)
 
 	for resultHash, count := range resultCounts {
 		if emptyishHashes[resultHash] {
@@ -1463,10 +1540,15 @@ func (e *executor[R]) handleReturnError(logger *zerolog.Logger, errFn func() err
 func (e *executor[R]) handleAcceptMostCommon(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
 	logger.Debug().Msg("finding most common valid result preferring non-empty")
 
-	// Separate empty and non-empty results
-	nonEmptyResults := make(map[string]int)
-	emptyResults := make(map[string]int)
-	resultsByHash := make(map[string]R)
+	// Separate empty and non-empty results - use pooled maps for performance
+	nonEmptyResults := e.getNonEmptyResultsFromPool()
+	defer e.returnNonEmptyResultsToPool(nonEmptyResults)
+
+	emptyResults := e.getNonEmptyResultsFromPool()
+	defer e.returnNonEmptyResultsToPool(emptyResults)
+
+	resultsByHash := e.getResultsByHashFromPool()
+	defer e.returnResultsByHashToPool(resultsByHash)
 
 	for _, r := range responses {
 		if r.err == nil {
