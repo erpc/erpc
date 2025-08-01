@@ -611,7 +611,7 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 	r.resultMu.RUnlock()
 
 	var obj interface{}
-	if err := json.Unmarshal(resultCopy, &obj); err != nil {
+	if err := SonicCfg.Unmarshal(resultCopy, &obj); err != nil {
 		return "", err
 	}
 
@@ -658,7 +658,7 @@ func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, 
 	r.resultMu.RUnlock()
 
 	var obj interface{}
-	if err := json.Unmarshal(resultCopy, &obj); err != nil {
+	if err := SonicCfg.Unmarshal(resultCopy, &obj); err != nil {
 		return "", err
 	}
 
@@ -802,7 +802,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 			}
 			first = false
 
-			kj, _ := json.Marshal(k)
+			kj, _ := SonicCfg.Marshal(k)
 			buf.Write(kj)
 			buf.WriteByte(':')
 			buf.Write(vj)
@@ -868,7 +868,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 		return removeLeadingZeroes(val), nil
 
 	default:
-		b, err := json.Marshal(val)
+		b, err := SonicCfg.Marshal(val)
 		if err != nil {
 			return nil, err
 		}
@@ -933,7 +933,7 @@ func isEmptyishValue(v interface{}) bool {
 		return false
 	default:
 		// For other types, marshal and check
-		b, err := json.Marshal(val)
+		b, err := SonicCfg.Marshal(val)
 		if err != nil {
 			return false
 		}

@@ -20,16 +20,21 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// Static error instances to avoid allocations in hot paths
+var (
+	errNoJsonRpcResponse = errors.New("no json-rpc response available on result")
+	errNotConsensusValid = errors.New("error is not consensus-valid")
+	errPanicInConsensus  = errors.New("panic in consensus execution")
+)
+
 // executor is a policy.Executor that handles failures according to a ConsensusPolicy.
 type executor[R any] struct {
 	*policy.BaseExecutor[R]
 	*consensusPolicy[R]
 
 	// Sync pools for hot path map allocations
-	hashCountsPool      sync.Pool
-	emptyResultsPool    sync.Pool
-	nonEmptyResultsPool sync.Pool
-	resultsByHashPool   sync.Pool
+	simpleMapsPool    sync.Pool // interface{} - stores map[string]int and map[string]bool
+	resultsByHashPool sync.Pool // map[string]R
 }
 
 var _ policy.Executor[any] = &executor[any]{}
@@ -52,58 +57,61 @@ type metricsLabels struct {
 }
 
 // Pool helper methods for efficient map reuse
-func (e *executor[R]) getHashCountsFromPool() map[string]int {
-	m := e.hashCountsPool.Get().(map[string]int)
-	// Clear the map but keep underlying storage
-	for k := range m {
-		delete(m, k)
+func (e *executor[R]) getIntMapFromPool() map[string]int {
+	if m := e.simpleMapsPool.Get(); m != nil {
+		if intMap, ok := m.(map[string]int); ok {
+			// Clear the map but keep underlying storage
+			for k := range intMap {
+				delete(intMap, k)
+			}
+			return intMap
+		}
 	}
-	return m
+	// Fallback: create new map
+	return make(map[string]int)
 }
 
-func (e *executor[R]) returnHashCountsToPool(m map[string]int) {
+func (e *executor[R]) returnIntMapToPool(m map[string]int) {
 	if len(m) < 32 { // Don't pool oversized maps
-		e.hashCountsPool.Put(m)
+		e.simpleMapsPool.Put(m)
 	}
 }
 
-func (e *executor[R]) getEmptyResultsFromPool() map[string]bool {
-	m := e.emptyResultsPool.Get().(map[string]bool)
-	for k := range m {
-		delete(m, k)
+func (e *executor[R]) getBoolMapFromPool() map[string]bool {
+	if m := e.simpleMapsPool.Get(); m != nil {
+		if boolMap, ok := m.(map[string]bool); ok {
+			// Clear the map but keep underlying storage
+			for k := range boolMap {
+				delete(boolMap, k)
+			}
+			return boolMap
+		}
 	}
-	return m
+	// Fallback: create new map
+	return make(map[string]bool)
 }
 
-func (e *executor[R]) returnEmptyResultsToPool(m map[string]bool) {
+func (e *executor[R]) returnBoolMapToPool(m map[string]bool) {
 	if len(m) < 32 {
-		e.emptyResultsPool.Put(m)
+		e.simpleMapsPool.Put(m)
 	}
 }
 
-func (e *executor[R]) getNonEmptyResultsFromPool() map[string]int {
-	m := e.nonEmptyResultsPool.Get().(map[string]int)
-	for k := range m {
-		delete(m, k)
+func (e *executor[R]) getResultMapFromPool() map[string]R {
+	if m := e.resultsByHashPool.Get(); m != nil {
+		if hashMap, ok := m.(map[string]R); ok {
+			// Clear the map but keep underlying storage
+			for k := range hashMap {
+				delete(hashMap, k)
+			}
+			return hashMap
+		}
 	}
-	return m
+	// Fallback: create new map
+	return make(map[string]R)
 }
 
-func (e *executor[R]) returnNonEmptyResultsToPool(m map[string]int) {
-	if len(m) < 32 {
-		e.nonEmptyResultsPool.Put(m)
-	}
-}
-
-func (e *executor[R]) getResultsByHashFromPool() map[string]R {
-	m := e.resultsByHashPool.Get().(map[string]R)
-	for k := range m {
-		delete(m, k)
-	}
-	return m
-}
-
-func (e *executor[R]) returnResultsByHashToPool(m map[string]R) {
+func (e *executor[R]) returnResultMapToPool(m map[string]R) {
 	if len(m) < 32 {
 		e.resultsByHashPool.Put(m)
 	}
@@ -134,7 +142,7 @@ func (e *executor[R]) extractMetricsLabels(ctx context.Context, req *common.Norm
 func (e *executor[R]) resultToHash(result R, exec failsafe.Execution[R]) (string, error) {
 	jr := e.resultToJsonRpcResponse(result, exec)
 	if jr == nil {
-		return "", fmt.Errorf("no json-rpc response available on result")
+		return "", errNoJsonRpcResponse
 	}
 
 	// Check if this consensus policy has ignore fields configured
@@ -207,7 +215,7 @@ func (e *executor[R]) errorToConsensusHash(err error) string {
 				var jre *common.ErrJsonRpcExceptionInternal
 				if errors.As(err, &jre) {
 					// Include the normalized code for more specific matching
-					hash = fmt.Sprintf("%s:%d", hash, jre.NormalizedCode())
+					hash = hash + ":" + strconv.Itoa(int(jre.NormalizedCode()))
 				}
 			}
 
@@ -219,7 +227,7 @@ func (e *executor[R]) errorToConsensusHash(err error) string {
 	var jre *common.ErrJsonRpcExceptionInternal
 	if errors.As(err, &jre) {
 		// Use normalized code for JSON-RPC errors
-		return fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
+		return "jsonrpc:" + strconv.Itoa(int(jre.NormalizedCode()))
 	}
 
 	return ""
@@ -235,7 +243,7 @@ func (e *executor[R]) resultOrErrorToHash(result R, err error, exec failsafe.Exe
 	// Otherwise, use the result hash (for successful responses)
 	if err != nil {
 		// Non-consensus-valid errors don't contribute to consensus
-		return "", fmt.Errorf("error is not consensus-valid: %v", err)
+		return "", errNotConsensusValid
 	}
 
 	return e.resultToHash(result, exec)
@@ -383,7 +391,7 @@ func (e *executor[R]) collectResponses(
 						Interface("panic", r).
 						Msg("panic in consensus execution")
 
-					panicErr := fmt.Errorf("panic in consensus execution: %v", r)
+					panicErr := errPanicInConsensus
 					common.SetTraceSpanError(attemptSpan, panicErr)
 
 					// Record panic metric
@@ -615,11 +623,11 @@ func (e *executor[R]) hasConsensus(responses []*execResult[R], exec policy.Execu
 // checkShortCircuit determines if we can exit early based on current responses
 func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
 	// Count results by hash, always preferring non-empty results
-	resultCounts := e.getHashCountsFromPool()
-	defer e.returnHashCountsToPool(resultCounts)
+	resultCounts := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(resultCounts)
 
-	emptyishHashes := e.getEmptyResultsFromPool()
-	defer e.returnEmptyResultsToPool(emptyishHashes)
+	emptyishHashes := e.getBoolMapFromPool()
+	defer e.returnBoolMapToPool(emptyishHashes)
 
 	for _, r := range responses {
 		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
@@ -635,11 +643,10 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	}
 
 	// Separate empty and non-empty results
-	nonEmptyResults := e.getNonEmptyResultsFromPool()
-	defer e.returnNonEmptyResultsToPool(nonEmptyResults)
-
-	emptyResults := e.getNonEmptyResultsFromPool() // Reuse same pool type for emptyResults
-	defer e.returnNonEmptyResultsToPool(emptyResults)
+	nonEmptyResults := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(nonEmptyResults)
+	emptyResults := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(emptyResults)
 
 	for resultHash, count := range resultCounts {
 		if emptyishHashes[resultHash] {
@@ -685,7 +692,47 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 			return false
 		}
 
-		// Consensus reached on non-empty result - short-circuit
+		// For AcceptMostCommonValidResult, we need to ensure we get the actual most common result
+		// Only short-circuit if we can mathematically guarantee the current leader will remain most common
+		if e.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult {
+			remainingResponses := e.requiredParticipants - len(responses)
+
+			// Find the maximum count among non-leader results
+			maxOtherResultCount := 0
+			for resultHash, count := range activeResults {
+				if resultHash != mostCommonHash && count > maxOtherResultCount {
+					maxOtherResultCount = count
+				}
+			}
+
+			// Can short-circuit if current leader cannot be beaten:
+			// mostCommonCount > maxOtherResultCount + remainingResponses
+			if mostCommonCount > maxOtherResultCount+remainingResponses {
+				lg.Debug().
+					Int("responseCount", len(responses)).
+					Int("mostCommonCount", mostCommonCount).
+					Int("maxOtherResultCount", maxOtherResultCount).
+					Int("remainingResponses", remainingResponses).
+					Int("threshold", e.agreementThreshold).
+					Str("consensusHash", mostCommonHash).
+					Bool("consensusIsEmpty", mostCommonIsEmpty).
+					Msg("mathematically guaranteed most common result, short-circuiting")
+				return true
+			} else {
+				lg.Debug().
+					Int("responseCount", len(responses)).
+					Int("mostCommonCount", mostCommonCount).
+					Int("maxOtherResultCount", maxOtherResultCount).
+					Int("remainingResponses", remainingResponses).
+					Int("threshold", e.agreementThreshold).
+					Str("consensusHash", mostCommonHash).
+					Bool("consensusIsEmpty", mostCommonIsEmpty).
+					Msg("leader not mathematically guaranteed, waiting for more responses to determine true most common")
+				return false
+			}
+		}
+
+		// For other dispute behaviors, consensus reached on non-empty result - short-circuit
 		lg.Debug().
 			Int("responseCount", len(responses)).
 			Int("mostCommonCount", mostCommonCount).
@@ -738,13 +785,13 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 	// Only short-circuit if we have enough unique participants or will have enough
 	expectedUniqueParticipants := uniqueParticipantCount + remainingResponses
 	if !canReachConsensus && expectedUniqueParticipants >= e.requiredParticipants {
-		// Don't short-circuit if we have non-empty results, as they might be resolved in dispute handling
-		// where non-empty results can ignore threshold requirements
-		if len(nonEmptyResults) > 0 {
+		// Don't short-circuit if we have non-empty results AND we're using a dispute behavior
+		// that can ignore threshold requirements (like AcceptMostCommonValidResult)
+		if len(nonEmptyResults) > 0 && e.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult {
 			lg.Debug().
 				Int("responseCount", len(responses)).
 				Int("nonEmptyResults", len(nonEmptyResults)).
-				Msg("consensus impossible but have non-empty results, continuing to collect all responses for dispute resolution")
+				Msg("consensus impossible but have non-empty results with AcceptMostCommonValidResult, continuing to collect all responses for dispute resolution")
 			return false
 		}
 
@@ -968,11 +1015,11 @@ func (e *executor[R]) countUniqueParticipants(responses []*execResult[R]) int {
 // countResponsesByHash counts responses by their hash and returns the counts, most common hash and count
 // It always prefers non-empty results over empty ones, regardless of count
 func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R]) (map[string]int, string, int) {
-	resultCounts := e.getHashCountsFromPool()
-	defer e.returnHashCountsToPool(resultCounts)
+	resultCounts := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(resultCounts)
 
-	emptyishHashes := e.getEmptyResultsFromPool() // Track which hashes correspond to emptyish results
-	defer e.returnEmptyResultsToPool(emptyishHashes)
+	emptyishHashes := e.getBoolMapFromPool() // Track which hashes correspond to emptyish results
+	defer e.returnBoolMapToPool(emptyishHashes)
 	errorCount := 0
 
 	for _, r := range responses {
@@ -1006,12 +1053,11 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 		}
 	}
 
-	// Separate empty and non-empty results - use pooled maps
-	nonEmptyResults := e.getNonEmptyResultsFromPool()
-	defer e.returnNonEmptyResultsToPool(nonEmptyResults)
-
-	emptyResults := e.getNonEmptyResultsFromPool() // Reuse same pool type for emptyResults
-	defer e.returnNonEmptyResultsToPool(emptyResults)
+	// Separate empty and non-empty results
+	nonEmptyResults := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(nonEmptyResults)
+	emptyResults := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(emptyResults)
 
 	for resultHash, count := range resultCounts {
 		if emptyishHashes[resultHash] {
@@ -1540,15 +1586,15 @@ func (e *executor[R]) handleReturnError(logger *zerolog.Logger, errFn func() err
 func (e *executor[R]) handleAcceptMostCommon(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
 	logger.Debug().Msg("finding most common valid result preferring non-empty")
 
-	// Separate empty and non-empty results - use pooled maps for performance
-	nonEmptyResults := e.getNonEmptyResultsFromPool()
-	defer e.returnNonEmptyResultsToPool(nonEmptyResults)
+	// Separate empty and non-empty results
+	nonEmptyResults := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(nonEmptyResults)
 
-	emptyResults := e.getNonEmptyResultsFromPool()
-	defer e.returnNonEmptyResultsToPool(emptyResults)
+	emptyResults := e.getIntMapFromPool()
+	defer e.returnIntMapToPool(emptyResults)
 
-	resultsByHash := e.getResultsByHashFromPool()
-	defer e.returnResultsByHashToPool(resultsByHash)
+	resultsByHash := e.getResultMapFromPool()
+	defer e.returnResultMapToPool(resultsByHash)
 
 	for _, r := range responses {
 		if r.err == nil {
