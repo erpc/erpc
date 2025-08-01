@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/util"
@@ -50,6 +51,11 @@ type JsonRpcResponse struct {
 	// canonicalHash caches the canonical hash of the Result to avoid recomputing it.
 	// It is populated lazily on the first call to CanonicalHash using atomic.Value for thread-safe access.
 	canonicalHash atomic.Value
+
+	// canonicalHashWithIgnored caches hashes computed with ignored fields
+	// Key is the pointer to the first element of the ignoreFields slice (if non-empty)
+	// This works because consensus policy reuses the same slice for the same ignore patterns
+	canonicalHashWithIgnored sync.Map
 }
 
 func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
@@ -629,7 +635,24 @@ func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, 
 		return "", nil
 	}
 
-	// Compute hash with ignored fields (no caching for this variant)
+	// If no fields to ignore, use regular canonical hash
+	if len(ignoreFields) == 0 {
+		return r.CanonicalHash(ctx...)
+	}
+
+	// Use the slice's underlying array pointer as cache key
+	// This is safe because consensus policy reuses the same slice for the same ignore patterns
+	var cacheKey unsafe.Pointer
+	if len(ignoreFields) > 0 {
+		cacheKey = unsafe.Pointer(&ignoreFields[0])
+	}
+
+	// Check cache first
+	if cached, ok := r.canonicalHashWithIgnored.Load(cacheKey); ok {
+		return cached.(string), nil
+	}
+
+	// Compute hash with ignored fields
 	r.resultMu.RLock()
 	resultCopy := r.Result
 	r.resultMu.RUnlock()
@@ -640,9 +663,7 @@ func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, 
 	}
 
 	// Remove ignored fields before canonicalization
-	if len(ignoreFields) > 0 {
-		obj = removeFieldsByPaths(obj, ignoreFields)
-	}
+	obj = removeFieldsByPaths(obj, ignoreFields)
 
 	canonical, err := canonicalize(obj)
 	if err != nil {
@@ -651,6 +672,9 @@ func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, 
 
 	b := sha256.Sum256(canonical)
 	hash := fmt.Sprintf("%x", b)
+
+	// Store in cache
+	r.canonicalHashWithIgnored.Store(cacheKey, hash)
 
 	return hash, nil
 }

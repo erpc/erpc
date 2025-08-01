@@ -334,12 +334,6 @@ var (
 		Help:      "Total number of consensus operations attempted.",
 	}, []string{"project", "network", "category", "outcome", "finality"}) // outcome: success, consensus_on_error, agreed_error, dispute, low_participants, error
 
-	MetricConsensusAgreementRate = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "consensus_agreement_rate",
-		Help:      "Rate of consensus agreements achieved (moving average).",
-	}, []string{"project", "network"})
-
 	MetricConsensusResponsesCollected = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "consensus_responses_collected",
