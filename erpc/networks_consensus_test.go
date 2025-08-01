@@ -1471,6 +1471,10 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	for _, host := range []string{"upstream1", "upstream4", "upstream5"} {
 		gock.New("http://" + host + ".localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
 			Reply(200).
 			Delay(2 * time.Second).
 			JSON(map[string]interface{}{
@@ -1568,10 +1572,6 @@ func TestConsensusShortCircuitIntegration(t *testing.T) {
 		gock.New(upstream.Endpoint).
 			Post("").
 			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_chainId")
-			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -3277,6 +3277,7 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 			for i, upstream := range tt.upstreams {
 				gock.New(upstream.Endpoint).
 					Post("/").
+					Times(1).
 					Reply(200).
 					SetHeader("Content-Type", "application/json").
 					JSON(tt.mockResponses[i])
