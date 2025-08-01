@@ -109,7 +109,7 @@ func TestConsensusExecutor(t *testing.T) {
 			name:                 "dispute_with_accept_any_valid",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
+			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
 			disputeThreshold:     1,
 			responses: []*struct {
 				response                  string
@@ -126,6 +126,24 @@ func TestConsensusExecutor(t *testing.T) {
 				"result2",
 				"result3",
 			},
+		},
+		{
+			name:                 "dispute_with_accept_most_common_no_clear_winner",
+			requiredParticipants: 3,
+			agreementThreshold:   2,
+			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
+			disputeThreshold:     1,
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result2", "upstream2", 1},
+				{"result3", "upstream3", 1},
+			},
+			expectedError:  pointer("ErrConsensusDispute: no clear most common result"),
+			expectedResult: nil,
 		},
 		{
 			name:                    "low_participants_with_return_error",

@@ -823,6 +823,7 @@ type ConsensusLowParticipantsBehavior string
 const (
 	ConsensusLowParticipantsBehaviorReturnError                 ConsensusLowParticipantsBehavior = "returnError"
 	ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult ConsensusLowParticipantsBehavior = "acceptMostCommonValidResult"
+	ConsensusLowParticipantsBehaviorAcceptAnyValidResult        ConsensusLowParticipantsBehavior = "acceptAnyValidResult"
 	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader       ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
 	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader         ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
 )
@@ -832,6 +833,7 @@ type ConsensusDisputeBehavior string
 const (
 	ConsensusDisputeBehaviorReturnError                 ConsensusDisputeBehavior = "returnError"
 	ConsensusDisputeBehaviorAcceptMostCommonValidResult ConsensusDisputeBehavior = "acceptMostCommonValidResult"
+	ConsensusDisputeBehaviorAcceptAnyValidResult        ConsensusDisputeBehavior = "acceptAnyValidResult"
 	ConsensusDisputeBehaviorPreferBlockHeadLeader       ConsensusDisputeBehavior = "preferBlockHeadLeader"
 	ConsensusDisputeBehaviorOnlyBlockHeadLeader         ConsensusDisputeBehavior = "onlyBlockHeadLeader"
 )

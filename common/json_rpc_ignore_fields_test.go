@@ -109,10 +109,10 @@ func BenchmarkCanonicalHashWithIgnoredFields(b *testing.B) {
 	resp := &JsonRpcResponse{
 		Result: []byte(`{"hash": "0xa52b", "status": "0x1", "transactions": [{"hash": "0x18c4", "from": "0x3d2f", "chainId": null, "accessList": [], "v": "0x1c"}, {"hash": "0x2", "input": "0xdef", "v": "0x1b"}]}`),
 	}
-	
+
 	// Same slice reused (simulating consensus policy behavior)
 	ignoreFields := []string{"transactions.*.chainId", "transactions.*.accessList", "transactions.*.v"}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = resp.CanonicalHashWithIgnoredFields(ignoreFields)
