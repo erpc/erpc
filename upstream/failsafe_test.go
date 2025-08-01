@@ -717,7 +717,7 @@ func TestFailsafeMatcherFinality(t *testing.T) {
 			Matchers: []*common.MatcherConfig{
 				{
 					Method:   "eth_getBlockByNumber",
-					Finality: common.DataFinalityStateSlice{common.DataFinalityStateFinalized},
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
 					Action:   common.MatcherInclude,
 				},
 			},
@@ -740,7 +740,7 @@ func TestFailsafeMatcherFinality(t *testing.T) {
 			Matchers: []*common.MatcherConfig{
 				{
 					Method:   "eth_*",
-					Finality: common.DataFinalityStateSlice{common.DataFinalityStateFinalized, common.DataFinalityStateUnfinalized},
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized, common.DataFinalityStateUnfinalized},
 					Action:   common.MatcherInclude,
 				},
 			},

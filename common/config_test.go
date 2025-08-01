@@ -252,7 +252,7 @@ failsafe:
   - matchers:
     - network: "evm:1"
       method: "eth_*"
-      finality: "finalized"
+      finality: ["finalized"]
       action: "include"
     retry:
       maxAttempts: 3
@@ -265,7 +265,7 @@ failsafe:
 		assert.Len(t, nc.Failsafe[0].Matchers, 1)
 		assert.Equal(t, "evm:1", nc.Failsafe[0].Matchers[0].Network)
 		assert.Equal(t, "eth_*", nc.Failsafe[0].Matchers[0].Method)
-		assert.Equal(t, DataFinalityStateSlice{DataFinalityStateFinalized}, nc.Failsafe[0].Matchers[0].Finality)
+		assert.Equal(t, []DataFinalityState{DataFinalityStateFinalized}, nc.Failsafe[0].Matchers[0].Finality)
 		assert.Equal(t, MatcherInclude, nc.Failsafe[0].Matchers[0].Action)
 	})
 }

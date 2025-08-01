@@ -58,27 +58,6 @@ func (f *DataFinalityState) UnmarshalYAML(unmarshal func(interface{}) error) err
 	return fmt.Errorf("invalid data finality state: %s", s)
 }
 
-// DataFinalityStateSlice provides custom YAML unmarshaling for []DataFinalityState
-type DataFinalityStateSlice []DataFinalityState
-
-func (f *DataFinalityStateSlice) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// Try to unmarshal as a single value first
-	var single DataFinalityState
-	if err := unmarshal(&single); err == nil {
-		*f = DataFinalityStateSlice{single}
-		return nil
-	}
-
-	// If that fails, try to unmarshal as an array
-	var array []DataFinalityState
-	if err := unmarshal(&array); err != nil {
-		return err
-	}
-
-	*f = DataFinalityStateSlice(array)
-	return nil
-}
-
 type CacheEmptyBehavior int
 
 const (
