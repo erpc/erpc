@@ -507,8 +507,8 @@ collectLoop:
 	return responses
 }
 
-// isResultEmptyishCached checks if a result is emptyish, using cached value if available
-func (e *executor[R]) isResultEmptyishCached(r *execResult[R], ctx context.Context) bool {
+// isResultEmptyish checks if a result is emptyish, using cached value if available
+func (e *executor[R]) isResultEmptyish(r *execResult[R], ctx context.Context) bool {
 	// Return false for errors
 	if r.err != nil {
 		return false
@@ -562,7 +562,7 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 
 		// Check if this result is emptyish (only for successful responses)
 		if r.err == nil {
-			emptyishHashes[resultHash] = e.isResultEmptyishCached(r, exec.Context())
+			emptyishHashes[resultHash] = e.isResultEmptyish(r, exec.Context())
 		}
 	}
 
@@ -614,13 +614,30 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 			return false
 		}
 
+		// Consensus reached on non-empty result - short-circuit
 		lg.Debug().
 			Int("responseCount", len(responses)).
 			Int("mostCommonCount", mostCommonCount).
 			Int("threshold", e.agreementThreshold).
+			Str("consensusHash", mostCommonHash).
 			Bool("consensusIsEmpty", mostCommonIsEmpty).
-			Msg("consensus reached early, short-circuiting")
+			Msg("consensus reached on non-empty result, short-circuiting")
 		return true
+	} else if len(emptyResults) > 0 {
+		// Check if we would have consensus on empty results
+		// This handles the case where we have both empty and non-empty results
+		// but we're preferring non-empty (which might not meet threshold yet)
+		for _, count := range emptyResults {
+			if count >= e.agreementThreshold {
+				lg.Debug().
+					Int("responseCount", len(responses)).
+					Int("emptyConsensusCount", count).
+					Int("threshold", e.agreementThreshold).
+					Bool("hasNonEmptyResults", len(nonEmptyResults) > 0).
+					Msg("would have consensus on empty results, avoiding short-circuit to wait for more non-empty data")
+				return false
+			}
+		}
 	}
 
 	// Check if consensus is impossible
@@ -900,7 +917,7 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 
 			// Check if this result is emptyish (only for successful responses)
 			if r.err == nil {
-				emptyishHashes[resultHash] = e.isResultEmptyishCached(r, exec.Context())
+				emptyishHashes[resultHash] = e.isResultEmptyish(r, exec.Context())
 			}
 		}
 	}
@@ -1069,7 +1086,15 @@ func (e *executor[R]) handleLowParticipants(
 	case common.ConsensusLowParticipantsBehaviorReturnError:
 		return e.handleReturnError(lg, errFn)
 	case common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult:
-		return e.handleAcceptMostCommon(lg, responses, func() error {
+		return e.handleAcceptMostCommon(exec.Context(), lg, responses, exec, func() error {
+			return common.NewErrConsensusLowParticipants(
+				"no clear most common result",
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
+			)
+		})
+	case common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult:
+		return e.handleAcceptAnyValid(exec.Context(), lg, responses, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no valid results found",
 				e.extractParticipants(responses, exec),
@@ -1077,7 +1102,7 @@ func (e *executor[R]) handleLowParticipants(
 			)
 		})
 	case common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader:
-		return e.handlePreferBlockHeadLeader(exec.Context(), lg, responses, func() error {
+		return e.handlePreferBlockHeadLeader(exec.Context(), lg, responses, exec, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no block head leader found",
 				e.extractParticipants(responses, exec),
@@ -1115,7 +1140,15 @@ func (e *executor[R]) handleDispute(
 	case common.ConsensusDisputeBehaviorReturnError:
 		return e.handleReturnError(lg, errFn)
 	case common.ConsensusDisputeBehaviorAcceptMostCommonValidResult:
-		return e.handleAcceptMostCommon(lg, responses, func() error {
+		return e.handleAcceptMostCommon(exec.Context(), lg, responses, exec, func() error {
+			return common.NewErrConsensusDispute(
+				"no clear most common result",
+				e.extractParticipants(responses, exec),
+				e.extractCauses(responses),
+			)
+		})
+	case common.ConsensusDisputeBehaviorAcceptAnyValidResult:
+		return e.handleAcceptAnyValid(exec.Context(), lg, responses, func() error {
 			return common.NewErrConsensusDispute(
 				"no valid results found",
 				e.extractParticipants(responses, exec),
@@ -1123,7 +1156,7 @@ func (e *executor[R]) handleDispute(
 			)
 		})
 	case common.ConsensusDisputeBehaviorPreferBlockHeadLeader:
-		return e.handlePreferBlockHeadLeader(exec.Context(), lg, responses, func() error {
+		return e.handlePreferBlockHeadLeader(exec.Context(), lg, responses, exec, func() error {
 			return common.NewErrConsensusDispute(
 				"no block head leader found",
 				e.extractParticipants(responses, exec),
@@ -1152,8 +1185,10 @@ func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 	responses []*execResult[R],
 	parentExecution policy.ExecutionInternal[R],
 ) {
-	// Skip if punishment is not configured
-	if e.punishMisbehavior == nil {
+	// Skip if punishment is not configured or has invalid values
+	if e.punishMisbehavior == nil ||
+		e.punishMisbehavior.DisputeThreshold == 0 ||
+		e.punishMisbehavior.DisputeWindow.Duration() == 0 {
 		return
 	}
 
@@ -1295,7 +1330,7 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 			// Record misbehavior detection
 			emptyish := "n/a"
 			if response != nil && response.err == nil {
-				emptyish = strconv.FormatBool(e.isResultEmptyishCached(response, ctx))
+				emptyish = strconv.FormatBool(e.isResultEmptyish(response, ctx))
 			}
 			telemetry.MetricConsensusMisbehaviorDetected.WithLabelValues(labels.projectId, labels.networkId, upstreamId, labels.category, labels.finalityStr, emptyish).Inc()
 
@@ -1417,23 +1452,86 @@ func (e *executor[R]) handleReturnError(logger *zerolog.Logger, errFn func() err
 	}
 }
 
-func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
-	logger.Debug().Msg("sending most common valid result")
+func (e *executor[R]) handleAcceptMostCommon(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
+	logger.Debug().Msg("finding most common valid result preferring non-empty")
 
-	// First try to find a successful result
-	var finalResult R
-	foundValidResult := false
+	// Separate empty and non-empty results
+	nonEmptyResults := make(map[string]int)
+	emptyResults := make(map[string]int)
+	resultsByHash := make(map[string]R)
+
 	for _, r := range responses {
 		if r.err == nil {
-			finalResult = r.result
-			foundValidResult = true
-			break
+			// Use the same hash calculation as the main consensus logic
+			hash, err := e.resultToHash(r.result, exec)
+			if err != nil || hash == "" {
+				continue
+			}
+
+			// Check if result is emptyish
+			isEmptyish := e.isResultEmptyish(r, ctx)
+
+			if isEmptyish {
+				emptyResults[hash]++
+			} else {
+				nonEmptyResults[hash]++
+			}
+
+			if _, exists := resultsByHash[hash]; !exists {
+				resultsByHash[hash] = r.result
+			}
 		}
 	}
 
-	if foundValidResult {
+	// Always prefer non-empty results if they exist
+	var activeResults map[string]int
+	hasNonEmptyResults := len(nonEmptyResults) > 0
+
+	if hasNonEmptyResults {
+		activeResults = nonEmptyResults
+		logger.Debug().
+			Interface("nonEmptyResults", nonEmptyResults).
+			Interface("emptyResults", emptyResults).
+			Msg("preferring non-empty results in dispute resolution")
+	} else {
+		activeResults = emptyResults
+		logger.Debug().
+			Interface("emptyResults", emptyResults).
+			Msg("only empty results available")
+	}
+
+	// Find the most common result(s) from active results
+	var maxCount int
+	var mostCommonHashes []string
+
+	for hash, count := range activeResults {
+		if count > maxCount {
+			maxCount = count
+			mostCommonHashes = []string{hash}
+		} else if count == maxCount {
+			mostCommonHashes = append(mostCommonHashes, hash)
+		}
+	}
+
+	// If there's a clear winner, return it
+	if len(mostCommonHashes) == 1 && maxCount > 0 {
+		logger.Debug().
+			Str("hash", mostCommonHashes[0]).
+			Int("count", maxCount).
+			Msg("found clear most common result")
 		return &failsafeCommon.PolicyResult[R]{
-			Result: finalResult,
+			Result: resultsByHash[mostCommonHashes[0]],
+		}
+	}
+
+	// If there are multiple results with the same count, it's ambiguous
+	if len(mostCommonHashes) > 1 {
+		logger.Debug().
+			Int("numTiedResults", len(mostCommonHashes)).
+			Int("count", maxCount).
+			Msg("multiple results have the same count, cannot determine most common")
+		return &failsafeCommon.PolicyResult[R]{
+			Error: errFn(),
 		}
 	}
 
@@ -1449,6 +1547,45 @@ func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, responses [
 
 	// No valid results found
 	logger.Debug().Interface("responses", responses).Msg("no valid results found, sending error")
+	return &failsafeCommon.PolicyResult[R]{
+		Error: errFn(),
+	}
+}
+
+func (e *executor[R]) handleAcceptAnyValid(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
+	logger.Debug().Msg("accepting any valid result (prefer non-empty)")
+
+	// Only look for non-empty successful results
+	// For acceptAnyValidResult in dispute scenarios, empty results are not considered "valid"
+	for _, r := range responses {
+		if r.err == nil && !e.isResultEmptyish(r, ctx) {
+			// Found non-empty result, use it immediately
+			upstreamId := ""
+			if r.upstream != nil && r.upstream.Config() != nil {
+				upstreamId = r.upstream.Config().Id
+			}
+			logger.Debug().
+				Str("upstream", upstreamId).
+				Msg("found non-empty result")
+			return &failsafeCommon.PolicyResult[R]{
+				Result: r.result,
+			}
+		}
+	}
+
+	logger.Debug().Msg("no non-empty results found, empty results not valid for acceptAnyValidResult in dispute")
+
+	// If no successful result, check for consensus-valid errors
+	for _, r := range responses {
+		if r.err != nil && e.isConsensusValidError(r.err) {
+			logger.Debug().Err(r.err).Msg("returning consensus-valid error")
+			return &failsafeCommon.PolicyResult[R]{
+				Error: r.err,
+			}
+		}
+	}
+
+	// No valid result found
 	return &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}
@@ -1484,7 +1621,7 @@ func (e *executor[R]) findBlockHeadLeaderResult(ctx context.Context, responses [
 	return nil
 }
 
-func (e *executor[R]) handlePreferBlockHeadLeader(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
+func (e *executor[R]) handlePreferBlockHeadLeader(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], exec failsafe.Execution[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
 	blockLeaderResult := e.findBlockHeadLeaderResult(ctx, responses)
 	if blockLeaderResult != nil {
 		logger.Debug().Msg("sending block head leader result")
@@ -1499,7 +1636,7 @@ func (e *executor[R]) handlePreferBlockHeadLeader(ctx context.Context, logger *z
 	}
 
 	// Fall back to most common result
-	return e.handleAcceptMostCommon(logger, responses, errFn)
+	return e.handleAcceptMostCommon(ctx, logger, responses, exec, errFn)
 }
 
 func (e *executor[R]) handleOnlyBlockHeadLeader(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
