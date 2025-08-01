@@ -225,9 +225,9 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return leader
 }
 
-func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
 	for _, fe := range n.failsafeExecutors {
-		if fe.config != nil && matchers.Match(fe.config.Matchers, req, nil) {
+		if fe.config != nil && matchers.Match(ctx, fe.config.Matchers, req, nil) {
 			return fe
 		}
 	}
@@ -390,7 +390,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// This is the only way to pass additional values to failsafe policy executors context
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	failsafeExecutor := n.getFailsafeExecutor(req)
+	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
 	if failsafeExecutor == nil {
 		return nil, errors.New("no failsafe executor found for this request")
 	}

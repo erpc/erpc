@@ -238,9 +238,9 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
-func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+func (u *Upstream) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
 	for _, fe := range u.failsafeExecutors {
-		if fe.config != nil && matchers.Match(fe.config.Matchers, req, nil) {
+		if fe.config != nil && matchers.Match(ctx, fe.config.Matchers, req, nil) {
 			return fe
 		}
 	}
@@ -448,7 +448,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nrs, nil
 		}
 
-		failsafeExecutor := u.getFailsafeExecutor(nrq)
+		failsafeExecutor := u.getFailsafeExecutor(ctx, nrq)
 		if failsafeExecutor == nil {
 			return nil, fmt.Errorf("no failsafe executor found for request")
 		}

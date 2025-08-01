@@ -1,6 +1,7 @@
 package matchers
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -148,14 +149,14 @@ func paramToString(param interface{}) string {
 }
 
 // Match provides a simplified interface for request/response matching
-func Match(configs []*common.MatcherConfig, req *common.NormalizedRequest, resp *common.NormalizedResponse) bool {
+func Match(ctx context.Context, configs []*common.MatcherConfig, req *common.NormalizedRequest, resp *common.NormalizedResponse) bool {
 	if len(configs) == 0 {
 		return false
 	}
 
 	// Extract required fields from request
 	method, _ := req.Method()
-	finality := req.Finality(nil)
+	finality := req.Finality(ctx)
 	networkId := ""
 	if req.NetworkId() != "" {
 		networkId = req.NetworkId()
@@ -169,7 +170,7 @@ func Match(configs []*common.MatcherConfig, req *common.NormalizedRequest, resp 
 	// Determine if response is empty
 	isEmptyish := false
 	if resp != nil {
-		isEmptyish = resp.IsObjectNull() || resp.IsResultEmptyish()
+		isEmptyish = resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
 	}
 
 	// Check each config from last to first (last takes precedence)
