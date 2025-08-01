@@ -83,10 +83,17 @@ func (r *NormalizedResponse) FromCache() bool {
 	if r == nil {
 		return false
 	}
+	r.RLock()
+	defer r.RUnlock()
 	return r.fromCache
 }
 
 func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.Lock()
+	defer r.Unlock()
 	r.fromCache = fromCache
 	return r
 }
@@ -191,7 +198,10 @@ func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Upstream() Upstream {
-	if r == nil || r.upstream == nil {
+	if r == nil {
+		return nil
+	}
+	if r.upstream == nil {
 		return nil
 	}
 
@@ -199,7 +209,10 @@ func (r *NormalizedResponse) Upstream() Upstream {
 }
 
 func (r *NormalizedResponse) UpstreamId() string {
-	if r == nil || r.upstream == nil {
+	if r == nil {
+		return ""
+	}
+	if r.upstream == nil {
 		return ""
 	}
 
@@ -211,16 +224,33 @@ func (r *NormalizedResponse) UpstreamId() string {
 }
 
 func (r *NormalizedResponse) SetUpstream(upstream Upstream) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+
+	r.Lock()
+	defer r.Unlock()
+
 	r.upstream = upstream
 	return r
 }
 
 func (r *NormalizedResponse) WithRequest(req *NormalizedRequest) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.Lock()
+	defer r.Unlock()
 	r.request = req
 	return r
 }
 
 func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.Lock()
+	defer r.Unlock()
 	r.fromCache = fromCache
 	return r
 }
@@ -242,9 +272,12 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 
 	// Ensure parsing happens only once
 	r.parseOnce.Do(func() {
-		if r.body != nil {
+		body := r.body
+		expectedSize := r.expectedSize
+
+		if body != nil {
 			jrr := &JsonRpcResponse{}
-			err := jrr.ParseFromStream(ctx, r.body, r.expectedSize)
+			err := jrr.ParseFromStream(ctx, body, expectedSize)
 			if err != nil {
 				r.parseErr = err
 				return
@@ -263,11 +296,21 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 }
 
 func (r *NormalizedResponse) WithBody(body io.ReadCloser) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.Lock()
+	defer r.Unlock()
 	r.body = body
 	return r
 }
 
 func (r *NormalizedResponse) WithExpectedSize(expectedSize int) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.Lock()
+	defer r.Unlock()
 	r.expectedSize = expectedSize
 	return r
 }
@@ -281,6 +324,8 @@ func (r *NormalizedResponse) Request() *NormalizedRequest {
 	if r == nil {
 		return nil
 	}
+	r.RLock()
+	defer r.RUnlock()
 	return r.request
 }
 
@@ -372,18 +417,24 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 		return
 	}
 
-	e.Bool("fromCache", r.fromCache)
+	// Capture fields that need synchronization under a single lock
+	r.RLock()
+	fromCache := r.fromCache
+	upstream := r.upstream
+	r.RUnlock()
+
+	e.Bool("fromCache", fromCache)
 	e.Int("attempts", r.Attempts())
 	e.Int("retries", r.Retries())
 	e.Int("hedges", r.Hedges())
 	e.Interface("evmBlockRef", r.evmBlockRef.Load())
 	e.Interface("evmBlockNumber", r.evmBlockNumber.Load())
 
-	if r.upstream != nil {
-		if r.upstream.Config() != nil {
-			e.Str("upstream", r.upstream.Id())
+	if upstream != nil {
+		if upstream.Config() != nil {
+			e.Str("upstream", upstream.Id())
 		} else {
-			e.Str("upstream", fmt.Sprintf("%p", r.upstream))
+			e.Str("upstream", fmt.Sprintf("%p", upstream))
 		}
 	} else {
 		e.Str("upstream", "nil")

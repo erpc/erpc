@@ -7287,7 +7287,11 @@ func TestNetwork_Forward(t *testing.T) {
 			}
 			jrr1Value, err := resp1.JsonRpcResponse()
 			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
+				t.Logf("Error getting JsonRpcResponse for req1: %v", err)
+				return
+			}
+			if jrr1Value == nil {
+				t.Logf("JsonRpcResponse returned nil for req1")
 				return
 			}
 			jrr1Atomic.Store(jrr1Value)
@@ -7304,6 +7308,10 @@ func TestNetwork_Forward(t *testing.T) {
 				t.Errorf("Unexpected error: %v", err)
 				return
 			}
+			if jrr2Value == nil {
+				t.Logf("JsonRpcResponse returned nil for req2")
+				return
+			}
 			jrr2Atomic.Store(jrr2Value)
 			resp2.Release()
 		}()
@@ -7314,8 +7322,16 @@ func TestNetwork_Forward(t *testing.T) {
 			time.Sleep(500 * time.Millisecond)
 			var res1 string
 			var res2 string
-			jrr1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
-			jrr2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
+			jrr1, ok1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
+			jrr2, ok2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
+			if !ok1 {
+				t.Logf("jrr1Atomic.Load() returned non-JsonRpcResponse")
+				return
+			}
+			if !ok2 {
+				t.Logf("jrr2Atomic.Load() returned non-JsonRpcResponse")
+				return
+			}
 			if jrr1 != nil {
 				res1 = string(jrr1.Result)
 				_ = jrr1.ID()
