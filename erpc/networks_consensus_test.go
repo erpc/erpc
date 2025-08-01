@@ -1265,10 +1265,6 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 	gock.New("http://rpc1-dispute.localhost").
 		Post("/").
 		Times(1).
-		Filter(func(request *http.Request) bool {
-			body := util.SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber")
-		}).
 		Reply(200).
 		SetHeader("Content-Type", "application/json").
 		JSON(map[string]interface{}{
@@ -1280,10 +1276,6 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 	gock.New("http://rpc2-dispute.localhost").
 		Post("/").
 		Times(1).
-		Filter(func(request *http.Request) bool {
-			body := util.SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber")
-		}).
 		Reply(503).
 		SetHeader("Content-Type", "application/json").
 		JSON(map[string]interface{}{
@@ -1298,10 +1290,6 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 	gock.New("http://rpc2-dispute.localhost").
 		Post("/").
 		Times(1).
-		Filter(func(request *http.Request) bool {
-			body := util.SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber")
-		}).
 		Reply(200).
 		SetHeader("Content-Type", "application/json").
 		JSON(map[string]interface{}{
@@ -1404,7 +1392,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0) // All mocks should be consumed
+	defer util.AssertNoPendingMocks(t, 0)
 
 	// Create upstreams
 	upstreams := []*common.UpstreamConfig{
@@ -1453,7 +1441,6 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	// Mock responses - upstream2 and upstream3 return consensus result quickly
 	gock.New("http://upstream2.localhost").
 		Post("").
-		Times(1).
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
 			return strings.Contains(body, "eth_getBalance")
@@ -1468,7 +1455,6 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 
 	gock.New("http://upstream3.localhost").
 		Post("").
-		Times(1).
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
 			return strings.Contains(body, "eth_getBalance")
@@ -1481,16 +1467,10 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 			"result":  "0x1234567890",
 		})
 
-	// Other upstreams are slow and should be cancelled - but we still need to set up the mocks
-	// Use Times(1) to expect at most 1 call, but they may be cancelled before being called
+	// Other upstreams are slow and should be cancelled
 	for _, host := range []string{"upstream1", "upstream4", "upstream5"} {
 		gock.New("http://" + host + ".localhost").
 			Post("").
-			Times(1).
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBalance")
-			}).
 			Reply(200).
 			Delay(2 * time.Second).
 			JSON(map[string]interface{}{
@@ -2792,9 +2772,6 @@ func TestConsensusInsufficientParticipants(t *testing.T) {
 }
 
 func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
-	// Skip this test for now as it has fundamental issues with the matcher system
-	t.Skip("Skipping consensus ignore fields test - needs investigation of matcher system")
-
 	tests := []struct {
 		name               string
 		upstreams          []*common.UpstreamConfig
@@ -3300,7 +3277,6 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 			for i, upstream := range tt.upstreams {
 				gock.New(upstream.Endpoint).
 					Post("/").
-					Persist(). // Use Persist() since consensus may not call all upstreams
 					Reply(200).
 					SetHeader("Content-Type", "application/json").
 					JSON(tt.mockResponses[i])
@@ -5715,15 +5691,6 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 				gock.New(upstream.Endpoint).
 					Post("/").
 					Persist().
-					Filter(func(request *http.Request) bool {
-						body := util.SafeReadBody(request)
-						// Filter for the specific method in the test request
-						if methodVal, ok := tt.request["method"]; ok {
-							method := methodVal.(string)
-							return strings.Contains(body, method)
-						}
-						return true
-					}).
 					Reply(200).
 					SetHeader("Content-Type", "application/json").
 					JSON(tt.mockResponses[i])

@@ -81,7 +81,7 @@ func matchParams(pattern []interface{}, params []interface{}) (bool, error) {
 	return true, nil
 }
 
-// matchParam matches a single parameter (extracted from cache policy)
+// matchParam matches a single parameter
 func matchParam(pattern interface{}, param interface{}) (bool, error) {
 	switch p := pattern.(type) {
 	case map[string]interface{}:
