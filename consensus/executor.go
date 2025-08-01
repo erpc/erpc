@@ -28,10 +28,41 @@ type executor[R any] struct {
 var _ policy.Executor[any] = &executor[any]{}
 
 type execResult[R any] struct {
-	result   R
-	err      error
-	index    int
-	upstream common.Upstream
+	result         R
+	err            error
+	index          int
+	upstream       common.Upstream
+	cachedEmptyish *bool // Cache for IsResultEmptyish
+}
+
+// metricsLabels contains pre-extracted labels for metrics to avoid repeated extraction
+type metricsLabels struct {
+	method      string
+	category    string
+	networkId   string
+	projectId   string
+	finalityStr string
+}
+
+// extractMetricsLabels extracts metrics labels from request to avoid repeated extraction
+func (e *executor[R]) extractMetricsLabels(ctx context.Context, req *common.NormalizedRequest) metricsLabels {
+	method := "unknown"
+	if m, err := req.Method(); err == nil {
+		method = m
+	}
+
+	projectId := ""
+	if req.Network() != nil {
+		projectId = req.Network().ProjectId()
+	}
+
+	return metricsLabels{
+		method:      method,
+		category:    method, // category is same as method
+		networkId:   req.NetworkId(),
+		projectId:   projectId,
+		finalityStr: req.Finality(ctx).String(),
+	}
 }
 
 // resultToHash converts a result to a string representation for comparison
@@ -88,25 +119,6 @@ func (e *executor[R]) isAgreedUponError(err error) bool {
 		common.ErrCodeEndpointUnsupported,         // Method not supported
 		common.ErrCodeEndpointMissingData,         // Missing data
 	)
-}
-
-// isConsensusResultEmptyish checks if the consensus result (identified by hash) is emptyish
-func (e *executor[R]) isConsensusResultEmptyish(responses []*execResult[R], consensusHash string, exec policy.ExecutionInternal[R]) bool {
-	// Find a response that matches the consensus hash
-	for _, r := range responses {
-		// Skip error results - they're not emptyish in the traditional sense
-		if r.err != nil {
-			continue
-		}
-		// Check if this response matches the consensus hash
-		if resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec); err == nil && resultHash == consensusHash {
-			// Check if the successful result is emptyish
-			if resp, ok := any(r.result).(*common.NormalizedResponse); ok {
-				return resp.IsResultEmptyish(exec.Context())
-			}
-		}
-	}
-	return false
 }
 
 // errorToConsensusHash converts an error to a hash for consensus comparison
@@ -178,25 +190,14 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 			return innerFn(exec)
 		}
 
-		// Extract method and network info for metrics
-		method := "unknown"
-		if m, err := originalReq.Method(); err == nil {
-			method = m
-		}
-		category := method
-		networkId := originalReq.NetworkId()
-		projectId := ""
-		if originalReq.Network() != nil {
-			projectId = originalReq.Network().ProjectId()
-		}
-		finality := originalReq.Finality(ctx)
-		finalityStr := finality.String()
+		// Extract metrics labels once
+		labels := e.extractMetricsLabels(ctx, originalReq)
 
 		// Start main consensus span
 		ctx, consensusSpan := common.StartSpan(ctx, "Consensus.Apply",
 			trace.WithAttributes(
-				attribute.String("network.id", networkId),
-				attribute.String("request.method", method),
+				attribute.String("network.id", labels.networkId),
+				attribute.String("request.method", labels.method),
 				attribute.Int("execution.attempts", exec.Attempts()),
 			),
 		)
@@ -210,19 +211,19 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 		lg := e.logger.With().
 			Interface("id", originalReq.ID()).
 			Str("component", "consensus").
-			Str("networkId", networkId).
+			Str("networkId", labels.networkId).
 			Logger()
 
 		parentExecution := exec.(policy.ExecutionInternal[R])
 
 		// Phase 1: Fire off requests and collect responses
-		responses := e.collectResponses(ctx, &lg, originalReq, parentExecution, innerFn)
+		responses := e.collectResponses(ctx, &lg, originalReq, labels, parentExecution, innerFn)
 
 		// Phase 2: Evaluate consensus
-		result := e.evaluateConsensus(ctx, &lg, responses, exec)
+		result := e.evaluateConsensus(ctx, &lg, originalReq, labels, responses, exec)
 
 		// Phase 3: Track misbehaving upstreams (only if we have a clear majority)
-		e.checkAndPunishMisbehavingUpstreams(ctx, &lg, responses, parentExecution)
+		e.checkAndPunishMisbehavingUpstreams(ctx, &lg, originalReq, labels, responses, parentExecution)
 
 		// Set final consensus result attributes
 		consensusSpan.SetAttributes(
@@ -251,15 +252,8 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 
 		// Record metrics
 		duration := time.Since(startTime).Seconds()
-		telemetry.MetricConsensusTotal.WithLabelValues(projectId, networkId, category, outcome, finalityStr).Inc()
-		telemetry.MetricConsensusDuration.WithLabelValues(projectId, networkId, category, outcome, finalityStr).Observe(duration)
-
-		// Update agreement rate (simplified moving average)
-		if outcome == "success" || outcome == "consensus_on_error" || outcome == "agreed_error" {
-			telemetry.MetricConsensusAgreementRate.WithLabelValues(projectId, networkId).Set(1.0)
-		} else {
-			telemetry.MetricConsensusAgreementRate.WithLabelValues(projectId, networkId).Set(0.0)
-		}
+		telemetry.MetricConsensusTotal.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Inc()
+		telemetry.MetricConsensusDuration.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Observe(duration)
 
 		return result
 	}
@@ -272,22 +266,10 @@ func (e *executor[R]) collectResponses(
 	ctx context.Context,
 	lg *zerolog.Logger,
 	originalReq *common.NormalizedRequest,
+	labels metricsLabels,
 	parentExecution policy.ExecutionInternal[R],
 	innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R],
 ) []*execResult[R] {
-	// Extract metrics labels
-	method := "unknown"
-	if m, err := originalReq.Method(); err == nil {
-		method = m
-	}
-	category := method
-	networkId := originalReq.NetworkId()
-	projectId := ""
-	if originalReq.Network() != nil {
-		projectId = originalReq.Network().ProjectId()
-	}
-	finality := originalReq.Finality(ctx)
-	finalityStr := finality.String()
 
 	// Start collection span
 	ctx, collectionSpan := common.StartDetailSpan(ctx, "Consensus.CollectResponses",
@@ -340,7 +322,7 @@ func (e *executor[R]) collectResponses(
 					common.SetTraceSpanError(attemptSpan, panicErr)
 
 					// Record panic metric
-					telemetry.MetricConsensusPanics.WithLabelValues(projectId, networkId, category, finalityStr).Inc()
+					telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).Inc()
 
 					// Send error result
 					select {
@@ -364,7 +346,7 @@ func (e *executor[R]) collectResponses(
 				lg.Debug().Int("index", execIdx).Msg("skipping execution, context cancelled")
 				attemptSpan.SetAttributes(attribute.Bool("cancelled_before_execution", true))
 				attemptSpan.SetStatus(codes.Error, "cancelled before execution")
-				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "before_execution", finalityStr).Inc()
+				telemetry.MetricConsensusCancellations.WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr).Inc()
 				// Still send a nil result so the collector knows this goroutine is done
 				select {
 				case responseChan <- nil:
@@ -383,7 +365,7 @@ func (e *executor[R]) collectResponses(
 				lg.Debug().Int("index", execIdx).Msg("context cancelled before execution")
 				attemptSpan.SetAttributes(attribute.Bool("cancelled_before_execution", true))
 				attemptSpan.SetStatus(codes.Error, "cancelled before execution")
-				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "before_execution", finalityStr).Inc()
+				telemetry.MetricConsensusCancellations.WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr).Inc()
 				select {
 				case responseChan <- nil:
 				case <-attemptCtx.Done():
@@ -400,7 +382,7 @@ func (e *executor[R]) collectResponses(
 				lg.Debug().Int("index", execIdx).Msg("discarding result, context cancelled after execution")
 				attemptSpan.SetAttributes(attribute.Bool("cancelled_after_execution", true))
 				attemptSpan.SetStatus(codes.Error, "cancelled after execution")
-				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "after_execution", finalityStr).Inc()
+				telemetry.MetricConsensusCancellations.WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).Inc()
 				// Still send nil to unblock collector
 				select {
 				case responseChan <- nil:
@@ -448,7 +430,7 @@ func (e *executor[R]) collectResponses(
 				// Context cancelled, still try to send nil to unblock collector
 				lg.Debug().Int("index", execIdx).Msg("discarding response due to context cancellation")
 				attemptSpan.SetAttributes(attribute.Bool("response_discarded", true))
-				telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "after_execution", finalityStr).Inc()
+				telemetry.MetricConsensusCancellations.WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).Inc()
 				select {
 				case responseChan <- nil:
 				case <-attemptCtx.Done():
@@ -490,7 +472,7 @@ collectLoop:
 				)
 
 				// Record short-circuit metric
-				telemetry.MetricConsensusShortCircuit.WithLabelValues(projectId, networkId, category, shortCircuitReason, finalityStr).Inc()
+				telemetry.MetricConsensusShortCircuit.WithLabelValues(labels.projectId, labels.networkId, labels.category, shortCircuitReason, labels.finalityStr).Inc()
 
 				// Drain any remaining responses in the background
 				go e.drainResponses(responseChan, actualGoroutineCount-(i+1))
@@ -505,7 +487,7 @@ collectLoop:
 				Msg("context cancelled while waiting for consensus responses")
 			cancelRemaining()
 			common.SetTraceSpanError(collectionSpan, ctx.Err())
-			telemetry.MetricConsensusCancellations.WithLabelValues(projectId, networkId, category, "collection", finalityStr).Inc()
+			telemetry.MetricConsensusCancellations.WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).Inc()
 			break collectLoop
 		}
 	}
@@ -520,9 +502,35 @@ collectLoop:
 	if shortCircuited {
 		shortCircuitedStr = "true"
 	}
-	telemetry.MetricConsensusResponsesCollected.WithLabelValues(projectId, networkId, category, shortCircuitedStr, finalityStr).Observe(float64(len(responses)))
+	telemetry.MetricConsensusResponsesCollected.WithLabelValues(labels.projectId, labels.networkId, labels.category, shortCircuitedStr, labels.finalityStr).Observe(float64(len(responses)))
 
 	return responses
+}
+
+// isResultEmptyishCached checks if a result is emptyish, using cached value if available
+func (e *executor[R]) isResultEmptyishCached(r *execResult[R], ctx context.Context) bool {
+	// Return false for errors
+	if r.err != nil {
+		return false
+	}
+
+	// Check cache first
+	if r.cachedEmptyish != nil {
+		return *r.cachedEmptyish
+	}
+
+	// Calculate and cache
+	resp, ok := any(r.result).(*common.NormalizedResponse)
+	if !ok {
+		// Not a normalized response, consider not emptyish
+		emptyish := false
+		r.cachedEmptyish = &emptyish
+		return false
+	}
+
+	emptyish := resp.IsResultEmptyish(ctx)
+	r.cachedEmptyish = &emptyish
+	return emptyish
 }
 
 // hasConsensus checks if consensus has been reached in the current responses
@@ -554,9 +562,7 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 
 		// Check if this result is emptyish (only for successful responses)
 		if r.err == nil {
-			if resp, ok := any(r.result).(*common.NormalizedResponse); ok {
-				emptyishHashes[resultHash] = resp.IsResultEmptyish(exec.Context())
-			}
+			emptyishHashes[resultHash] = e.isResultEmptyishCached(r, exec.Context())
 		}
 	}
 
@@ -676,24 +682,11 @@ func (e *executor[R]) drainResponses(responseChan <-chan *execResult[R], remaini
 func (e *executor[R]) evaluateConsensus(
 	ctx context.Context,
 	lg *zerolog.Logger,
+	req *common.NormalizedRequest,
+	labels metricsLabels,
 	responses []*execResult[R],
 	exec failsafe.Execution[R],
 ) *failsafeCommon.PolicyResult[R] {
-	// Get request metadata for metrics
-	req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-	method := "unknown"
-	if m, err := req.Method(); err == nil {
-		method = m
-	}
-	category := method
-	networkId := req.NetworkId()
-	projectId := ""
-	if req.Network() != nil {
-		projectId = req.Network().ProjectId()
-	}
-	finality := req.Finality(ctx)
-	finalityStr := finality.String()
-
 	// Start evaluation span
 	ctx, evalSpan := common.StartDetailSpan(ctx, "Consensus.Evaluate",
 		trace.WithAttributes(
@@ -716,7 +709,7 @@ func (e *executor[R]) evaluateConsensus(
 
 	// Record agreement count metric
 	if mostCommonResultCount > 0 {
-		telemetry.MetricConsensusAgreementCount.WithLabelValues(projectId, networkId, category, finalityStr).Observe(float64(mostCommonResultCount))
+		telemetry.MetricConsensusAgreementCount.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).Observe(float64(mostCommonResultCount))
 	}
 
 	evalSpan.SetAttributes(
@@ -775,7 +768,7 @@ func (e *executor[R]) evaluateConsensus(
 			evalSpan.SetStatus(codes.Ok, "consensus achieved on error")
 
 			// Track this as a special type of successful consensus
-			telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "consensus_on_error", finalityStr).Inc()
+			telemetry.MetricConsensusErrors.WithLabelValues(labels.projectId, labels.networkId, labels.category, "consensus_on_error", labels.finalityStr).Inc()
 
 			return &failsafeCommon.PolicyResult[R]{
 				Error: consensusError,
@@ -807,7 +800,7 @@ func (e *executor[R]) evaluateConsensus(
 		result := e.handleLowParticipants(lg, responses, exec)
 		if result.Error != nil {
 			common.SetTraceSpanError(evalSpan, result.Error)
-			telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "low_participants", finalityStr).Inc()
+			telemetry.MetricConsensusErrors.WithLabelValues(labels.projectId, labels.networkId, labels.category, "low_participants", labels.finalityStr).Inc()
 		}
 		return result
 	}
@@ -839,7 +832,7 @@ func (e *executor[R]) evaluateConsensus(
 					Int("agreementCount", mostCommonResultCount).
 					Msg("consensus on agreed-upon error, returning agreed error")
 				evalSpan.SetStatus(codes.Ok, "consensus achieved on agreed-upon error")
-				telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "agreed_error", finalityStr).Inc()
+				telemetry.MetricConsensusErrors.WithLabelValues(labels.projectId, labels.networkId, labels.category, "agreed_error", labels.finalityStr).Inc()
 				return &failsafeCommon.PolicyResult[R]{
 					Error: r.err,
 				}
@@ -851,7 +844,7 @@ func (e *executor[R]) evaluateConsensus(
 	result := e.handleDispute(lg, responses, exec)
 	if result.Error != nil {
 		common.SetTraceSpanError(evalSpan, result.Error)
-		telemetry.MetricConsensusErrors.WithLabelValues(projectId, networkId, category, "dispute", finalityStr).Inc()
+		telemetry.MetricConsensusErrors.WithLabelValues(labels.projectId, labels.networkId, labels.category, "dispute", labels.finalityStr).Inc()
 	}
 	return result
 }
@@ -907,9 +900,7 @@ func (e *executor[R]) countResponsesByHash(lg *zerolog.Logger, responses []*exec
 
 			// Check if this result is emptyish (only for successful responses)
 			if r.err == nil {
-				if resp, ok := any(r.result).(*common.NormalizedResponse); ok {
-					emptyishHashes[resultHash] = resp.IsResultEmptyish(exec.Context())
-				}
+				emptyishHashes[resultHash] = e.isResultEmptyishCached(r, exec.Context())
 			}
 		}
 	}
@@ -1156,6 +1147,8 @@ func (e *executor[R]) handleDispute(
 func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 	ctx context.Context,
 	lg *zerolog.Logger,
+	req *common.NormalizedRequest,
+	labels metricsLabels,
 	responses []*execResult[R],
 	parentExecution policy.ExecutionInternal[R],
 ) {
@@ -1163,21 +1156,6 @@ func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 	if e.punishMisbehavior == nil {
 		return
 	}
-
-	// Get request metadata for metrics
-	req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-	method := "unknown"
-	if m, err := req.Method(); err == nil {
-		method = m
-	}
-	category := method
-	networkId := req.NetworkId()
-	projectId := ""
-	if req.Network() != nil {
-		projectId = req.Network().ProjectId()
-	}
-	finality := req.Finality(ctx)
-	finalityStr := finality.String()
 
 	// Start punishment span
 	ctx, punishSpan := common.StartDetailSpan(ctx, "Consensus.CheckMisbehavior")
@@ -1211,7 +1189,7 @@ func (e *executor[R]) checkAndPunishMisbehavingUpstreams(
 
 	// Only track misbehaving upstreams if we have a clear majority (>50%)
 	if mostCommonResultCount > len(responses)/2 {
-		e.trackMisbehavingUpstreams(ctx, lg, responses, resultCounts, mostCommonResultHash, parentExecution, projectId, networkId, category, finalityStr)
+		e.trackMisbehavingUpstreams(ctx, lg, req, labels, responses, resultCounts, mostCommonResultHash, parentExecution)
 	}
 }
 
@@ -1270,7 +1248,7 @@ func (e *executor[R]) createRateLimiter(logger *zerolog.Logger, upstreamId strin
 	return actual.(ratelimiter.RateLimiter[any])
 }
 
-func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zerolog.Logger, responses []*execResult[R], resultCounts map[string]int, mostCommonResultHash string, execution policy.ExecutionInternal[R], projectId, networkId, category, finalityStr string) {
+func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zerolog.Logger, req *common.NormalizedRequest, labels metricsLabels, responses []*execResult[R], resultCounts map[string]int, mostCommonResultHash string, execution policy.ExecutionInternal[R]) {
 	// Start tracking span
 	_, trackingSpan := common.StartDetailSpan(ctx, "Consensus.TrackMisbehavior")
 	defer trackingSpan.End()
@@ -1312,25 +1290,18 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 			upstreamId := upstream.Config().Id
 
 			// Log warning with detailed comparison
-			e.logMisbehavingUpstreamWarning(ctx, logger, response, responses, mostCommonResultHash, upstreamId, execution)
+			e.logMisbehavingUpstreamWarning(logger, req, response, responses, mostCommonResultHash, upstreamId, execution)
 
 			// Record misbehavior detection
 			emptyish := "n/a"
-			if response != nil {
-				res, ok := any(response.result).(*common.NormalizedResponse)
-				if ok {
-					emptyish = strconv.FormatBool(
-						res == nil ||
-							res.IsObjectNull(ctx) ||
-							res.IsResultEmptyish(ctx),
-					)
-				}
+			if response != nil && response.err == nil {
+				emptyish = strconv.FormatBool(e.isResultEmptyishCached(response, ctx))
 			}
-			telemetry.MetricConsensusMisbehaviorDetected.WithLabelValues(projectId, networkId, upstreamId, category, finalityStr, emptyish).Inc()
+			telemetry.MetricConsensusMisbehaviorDetected.WithLabelValues(labels.projectId, labels.networkId, upstreamId, labels.category, labels.finalityStr, emptyish).Inc()
 
 			limiter := e.createRateLimiter(logger, upstreamId)
 			if !limiter.TryAcquirePermit() {
-				e.handleMisbehavingUpstream(logger, upstream, upstreamId, projectId, networkId)
+				e.handleMisbehavingUpstream(logger, upstream, upstreamId, labels.projectId, labels.networkId)
 			}
 		}
 	}
@@ -1341,9 +1312,7 @@ func (e *executor[R]) trackMisbehavingUpstreams(ctx context.Context, logger *zer
 	)
 }
 
-func (e *executor[R]) logMisbehavingUpstreamWarning(ctx context.Context, logger *zerolog.Logger, misbehavingResponse *execResult[R], allResponses []*execResult[R], correctHash string, upstreamId string, execution policy.ExecutionInternal[R]) {
-	// Extract the original request from context
-	req := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+func (e *executor[R]) logMisbehavingUpstreamWarning(logger *zerolog.Logger, req *common.NormalizedRequest, misbehavingResponse *execResult[R], allResponses []*execResult[R], correctHash string, upstreamId string, execution policy.ExecutionInternal[R]) {
 
 	// Find a correct response to compare against
 	var correctResponse *execResult[R]
