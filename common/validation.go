@@ -381,12 +381,25 @@ func (c *CompressionConfig) Validate() error {
 }
 
 func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
-	if p.Network == "" {
-		return fmt.Errorf("cache.*.policies.*.network is required")
+	// Validate matchers if present
+	if len(p.Matchers) > 0 {
+		// Validate matchers with the global validation function
+		validatedMatchers, err := validateMatchers(p.Matchers)
+		if err != nil {
+			return fmt.Errorf("cache.*.policies.*.matchers: %w", err)
+		}
+		p.Matchers = validatedMatchers
+	} else {
+		// Legacy validation - network and method are required only if no matchers
+		if p.Network == "" {
+			return fmt.Errorf("cache.*.policies.*.network is required when not using matchers")
+		}
+		if p.Method == "" {
+			return fmt.Errorf("cache.*.policies.*.method is required when not using matchers")
+		}
 	}
-	if p.Method == "" {
-		return fmt.Errorf("cache.*.policies.*.method is required")
-	}
+
+	// Connector is always required
 	if p.Connector == "" {
 		return fmt.Errorf("cache.*.policies.*.connector is required")
 	}

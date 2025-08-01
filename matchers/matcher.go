@@ -8,8 +8,8 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-// matchConfig checks if all fields in the config match
-func matchConfig(config *common.MatcherConfig, networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) bool {
+// MatchConfig checks if all fields in the config match
+func MatchConfig(config *common.MatcherConfig, networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) bool {
 	// Match network
 	if config.Network != "" {
 		match, err := common.WildcardMatch(config.Network, networkId)
@@ -28,7 +28,7 @@ func matchConfig(config *common.MatcherConfig, networkId, method string, params 
 
 	// Match params
 	if len(config.Params) > 0 {
-		match, err := matchParams(config.Params, params)
+		match, err := MatchParams(config.Params, params)
 		if err != nil || !match {
 			return false
 		}
@@ -49,19 +49,18 @@ func matchConfig(config *common.MatcherConfig, networkId, method string, params 
 	}
 
 	// Check empty behavior if specified (only matters when we have a response)
-	if config.Empty != 0 && isEmptyish {
-		if config.Empty == common.CacheEmptyBehaviorIgnore {
-			return false
-		}
-	} else if config.Empty == common.CacheEmptyBehaviorOnly && !isEmptyish {
+	if isEmptyish && config.Empty == common.CacheEmptyBehaviorIgnore {
+		return false
+	}
+	if !isEmptyish && config.Empty == common.CacheEmptyBehaviorOnly {
 		return false
 	}
 
 	return true
 }
 
-// matchParams checks if params match the pattern
-func matchParams(pattern []interface{}, params []interface{}) (bool, error) {
+// MatchParams checks if params match the pattern
+func MatchParams(pattern []interface{}, params []interface{}) (bool, error) {
 	if len(pattern) == 0 {
 		return true, nil
 	}
@@ -176,7 +175,7 @@ func Match(ctx context.Context, configs []*common.MatcherConfig, req *common.Nor
 	// Check each config from last to first (last takes precedence)
 	for i := len(configs) - 1; i >= 0; i-- {
 		config := configs[i]
-		if matchConfig(config, networkId, method, params, finality, isEmptyish) {
+		if MatchConfig(config, networkId, method, params, finality, isEmptyish) {
 			return config.Action == common.MatcherInclude
 		}
 	}

@@ -194,15 +194,75 @@ type CacheMethodConfig struct {
 }
 
 type CachePolicyConfig struct {
-	Connector   string             `yaml:"connector" json:"connector"`
-	Network     string             `yaml:"network,omitempty" json:"network"`
-	Method      string             `yaml:"method,omitempty" json:"method"`
-	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
-	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
-	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
-	TTL         Duration           `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+	Matchers    []*MatcherConfig `yaml:"matchers,omitempty" json:"matchers"`
+	Connector   string           `yaml:"connector" json:"connector"`
+	MinItemSize *string          `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
+	MaxItemSize *string          `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
+	TTL         Duration         `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+
+	// Deprecated fields (kept for backward compatibility)
+	Network  string             `yaml:"network,omitempty" json:"network"`
+	Method   string             `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}      `yaml:"params,omitempty" json:"params"`
+	Finality DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty    CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+}
+
+func (c *CachePolicyConfig) ConvertCacheLegacyMatchers() {
+	if c == nil {
+		return
+	}
+
+	// If we already have matchers, don't convert legacy fields
+	if len(c.Matchers) > 0 {
+		return
+	}
+
+	// Convert legacy fields to new matcher format if any are present
+	hasLegacyFields := c.Network != "" || c.Method != "" || len(c.Params) > 0
+
+	// For finality and empty, we need to check if they were explicitly set by looking at the struct
+	// Since we can't distinguish between unset and zero value, we'll convert if any other field is set
+	if hasLegacyFields {
+		matcher := &MatcherConfig{
+			Action: MatcherInclude, // Default action for cache policies
+		}
+
+		// Convert Network
+		if c.Network != "" {
+			matcher.Network = c.Network
+		}
+
+		// Convert Method
+		if c.Method != "" {
+			matcher.Method = c.Method
+		}
+
+		// Convert Params
+		if len(c.Params) > 0 {
+			matcher.Params = make([]interface{}, len(c.Params))
+			copy(matcher.Params, c.Params)
+		}
+
+		// Convert Finality - single state to array
+		// Always include finality when converting legacy fields
+		matcher.Finality = []DataFinalityState{c.Finality}
+
+		// Convert Empty behavior
+		// Always include empty behavior when converting legacy fields
+		matcher.Empty = c.Empty
+
+		// Add the matcher
+		c.Matchers = append(c.Matchers, matcher)
+	}
+
+	// If no matchers exist at all, create a default catch-all matcher
+	if len(c.Matchers) == 0 {
+		c.Matchers = append(c.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
+	}
 }
 
 type ConnectorDriverType string

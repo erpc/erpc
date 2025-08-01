@@ -24,6 +24,20 @@ database:
     
     # Cache policies for different network/method/finality states
     policies:
+      # New matcher-based format (recommended)
+      - matchers:
+          - network: string # Optional
+            method: string # Optional  
+            params: []any # Optional
+            finality: []finality # Optional - array of [finalized | unfinalized | realtime | unknown]
+            empty: ignore | allow | only # Optional
+            action: include | exclude # Optional (default: include)
+        connector: string # Required
+        minItemSize: string # Optional - xB | xKB | xMB
+        maxItemSize: string # Optional - xB | xKB | xMB
+        ttl: duration # Optional (default: "0" means forever) - 100ms, 5s, 1m, ...
+      
+      # Legacy format (still supported for backward compatibility)
       - network: string # Optional (default: "*")
         method: string # Optional (default: "*")
         params: []any # Optional
@@ -264,8 +278,45 @@ database:
         method: "eth_getLogs | trace_*" # "method" supports * as wildcard and | as OR operator
         finality: finalized
         empty: allow
-        connector: postgres-cache
+        
+      # New matcher-based examples:
+      # Example: Cache everything except eth_getLogs
+      - matchers:
+          - method: "*"
+            action: include
+          - method: "eth_getLogs"
+            action: exclude
+        connector: memory-cache
         ttl: 0
+        
+      # Example: Cache only specific methods for specific networks with different finality states
+      - matchers:
+          - network: "1"
+            method: "eth_call | eth_getBalance"
+            finality: [finalized, safe]
+            action: include
+          - network: "137"
+            method: "eth_*"
+            finality: [finalized]
+            action: include
+          - method: "eth_getTransactionReceipt"
+            finality: [finalized, unfinalized]
+            action: include
+        connector: redis-cache
+        ttl: 5m
+        
+      # Example: Advanced caching with empty behavior and size limits
+      - matchers:
+          - method: "eth_call"
+            empty: ignore  # Don't cache empty results
+            action: include
+          - method: "eth_getCode"
+            empty: only    # Only cache empty results (useful for EOA checks)
+            action: include
+        connector: memory-cache
+        minItemSize: 100B    # Don't cache tiny responses
+        maxItemSize: 1MB     # Don't cache huge responses
+        ttl: 1h
       - network: "evm:42161 | evm:10"
         method: "arbtrace_*"
         finality: finalized

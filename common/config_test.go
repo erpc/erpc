@@ -1229,3 +1229,87 @@ func TestFailsafeValidation(t *testing.T) {
 		assert.Equal(t, DataFinalityStateFinalized, policy.Matchers[1].Finality[0])
 	})
 }
+
+func TestConvertCacheLegacyMatchers(t *testing.T) {
+	t.Run("legacy fields are converted to matchers", func(t *testing.T) {
+		policy := &CachePolicyConfig{
+			Network:  "1",
+			Method:   "eth_call",
+			Params:   []interface{}{"0x123"},
+			Finality: DataFinalityStateFinalized,
+			Empty:    CacheEmptyBehaviorIgnore,
+		}
+
+		policy.ConvertCacheLegacyMatchers()
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, "1", policy.Matchers[0].Network)
+		assert.Equal(t, "eth_call", policy.Matchers[0].Method)
+		assert.Equal(t, []interface{}{"0x123"}, policy.Matchers[0].Params)
+		assert.Equal(t, []DataFinalityState{DataFinalityStateFinalized}, policy.Matchers[0].Finality)
+		assert.Equal(t, CacheEmptyBehaviorIgnore, policy.Matchers[0].Empty)
+		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
+	})
+
+	t.Run("empty legacy fields create default catch-all include matcher", func(t *testing.T) {
+		policy := &CachePolicyConfig{}
+
+		policy.ConvertCacheLegacyMatchers()
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, "*", policy.Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
+	})
+
+	t.Run("existing matchers are not modified", func(t *testing.T) {
+		policy := &CachePolicyConfig{
+			Network: "1",
+			Method:  "eth_call",
+			Matchers: []*MatcherConfig{
+				{
+					Method: "eth_getBalance",
+					Action: MatcherInclude,
+				},
+			},
+		}
+
+		policy.ConvertCacheLegacyMatchers()
+
+		// Should still have only one matcher - the original
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, "eth_getBalance", policy.Matchers[0].Method)
+	})
+
+	t.Run("partial legacy fields are converted correctly", func(t *testing.T) {
+		policy := &CachePolicyConfig{
+			Network: "1",
+			Method:  "eth_*",
+			// Finality and Empty are zero values
+		}
+
+		policy.ConvertCacheLegacyMatchers()
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, "1", policy.Matchers[0].Network)
+		assert.Equal(t, "eth_*", policy.Matchers[0].Method)
+		assert.Equal(t, []DataFinalityState{DataFinalityStateFinalized}, policy.Matchers[0].Finality) // Zero value (finalized) is included
+		assert.Equal(t, CacheEmptyBehavior(0), policy.Matchers[0].Empty)                              // Zero value passed through
+		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
+	})
+
+	t.Run("params are deep copied", func(t *testing.T) {
+		originalParams := []interface{}{"0x123", map[string]interface{}{"key": "value"}}
+		policy := &CachePolicyConfig{
+			Params: originalParams,
+		}
+
+		policy.ConvertCacheLegacyMatchers()
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, originalParams, policy.Matchers[0].Params)
+
+		// Modify original params to ensure deep copy
+		originalParams[0] = "0x456"
+		assert.Equal(t, "0x123", policy.Matchers[0].Params[0])
+	})
+}
