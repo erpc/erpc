@@ -216,3 +216,29 @@ func paramToString(param interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
+
+// Match provides a simplified interface for request matching
+func Match(configs []*common.MatcherConfig, req *common.NormalizedRequest, resp *common.NormalizedResponse) bool {
+	if len(configs) == 0 {
+		return false
+	}
+
+	// Extract required fields from request
+	method, _ := req.Method()
+	finality := req.Finality(nil)
+	networkId := ""
+	if req.NetworkId() != "" {
+		networkId = req.NetworkId()
+	}
+
+	var params []interface{}
+	if jrpcReq, err := req.JsonRpcRequest(); err == nil && jrpcReq != nil {
+		params = jrpcReq.Params
+	}
+
+	// Create matcher and check
+	matcher := NewConfigMatcher(configs)
+	result := matcher.MatchRequest(networkId, method, params, finality)
+
+	return result.Matched && result.Action == common.MatcherInclude
+}

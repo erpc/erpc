@@ -239,22 +239,9 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 }
 
 func (u *Upstream) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
-	method, _ := req.Method()
-	finality := req.Finality(context.Background())
-	networkId := "" // For upstream-level matching, network is usually not relevant
-
-	var params []interface{}
-	if jrpcReq, err := req.JsonRpcRequest(); err == nil && jrpcReq != nil {
-		params = jrpcReq.Params
-	}
-
 	for _, fe := range u.failsafeExecutors {
-		if fe.config != nil && len(fe.config.Matchers) > 0 {
-			matcher := matchers.NewConfigMatcher(fe.config.Matchers)
-			result := matcher.MatchRequest(networkId, method, params, finality)
-			if result.Matched && result.Action == common.MatcherInclude {
-				return fe
-			}
+		if fe.config != nil && matchers.Match(fe.config.Matchers, req, nil) {
+			return fe
 		}
 	}
 

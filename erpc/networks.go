@@ -226,23 +226,9 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 }
 
 func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
-	method, _ := req.Method()
-	finality := req.Finality(context.Background())
-	networkId := n.networkId
-
-	// Get params from JsonRpcRequest
-	var params []interface{}
-	if jrpcReq, err := req.JsonRpcRequest(); err == nil && jrpcReq != nil {
-		params = jrpcReq.Params
-	}
-
 	for _, fe := range n.failsafeExecutors {
-		if fe.config != nil && len(fe.config.Matchers) > 0 {
-			matcher := matchers.NewConfigMatcher(fe.config.Matchers)
-			result := matcher.MatchRequest(networkId, method, params, finality)
-			if result.Matched && result.Action == common.MatcherInclude {
-				return fe
-			}
+		if fe.config != nil && matchers.Match(fe.config.Matchers, req, nil) {
+			return fe
 		}
 	}
 
