@@ -129,6 +129,15 @@ func (p *CachePolicy) MatchesSizeLimits(size int) bool {
 }
 
 func (p *CachePolicy) EmptyState() common.CacheEmptyBehavior {
+	// Check matchers first (new format)
+	if len(p.config.Matchers) > 0 {
+		// Return the empty behavior from the first matcher
+		// (all matchers should have the same empty behavior for a single policy)
+		if len(p.config.Matchers) > 0 && p.config.Matchers[0] != nil {
+			return p.config.Matchers[0].Empty
+		}
+	}
+	// Fall back to legacy field
 	return p.config.Empty
 }
 

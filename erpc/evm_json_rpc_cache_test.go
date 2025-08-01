@@ -142,11 +142,18 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getTransactionReceipt",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getTransactionReceipt",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
+			Connector: "mock1",
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
 			policy,
@@ -172,10 +179,17 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBlockByNumber",
+					Action:  common.MatcherInclude,
+				},
+			},
+			Connector: "mock1",
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
 			policy,
@@ -247,11 +261,18 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
-				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-					Network:  "evm:123",
-					Method:   tc.method,
-					Finality: tc.finality,
-				}, mockConnectors[0])
+				cfg := &common.CachePolicyConfig{
+					Matchers: []*common.MatcherConfig{
+						{
+							Network:  "evm:123",
+							Method:   tc.method,
+							Finality: []common.DataFinalityState{tc.finality},
+							Action:   common.MatcherInclude,
+						},
+					},
+					Connector: "mock1",
+				}
+				policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 				require.NoError(t, err)
 				cache.SetPolicies([]*data.CachePolicy{
 					policy,
@@ -281,10 +302,17 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBlockByNumber",
+					Action:  common.MatcherInclude,
+				},
+			},
+			Connector: "mock1",
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
 			policy,
@@ -405,11 +433,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			Empty:   common.CacheEmptyBehaviorAllow,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getBalance",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Empty:    common.CacheEmptyBehaviorAllow,
+					Action:   common.MatcherInclude,
+				},
+			},
+			Connector: "mock1",
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
 			policy,
@@ -438,20 +474,32 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetLastValidResponse(ctx, resp)
 
 		// Create two policies with different connectors and finality states
-		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg1 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		policy1, err := data.NewCachePolicy(cfg1, mockConnectors[0])
 		require.NoError(t, err)
 
-		policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg2 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock2",
-		}, mockConnectors[1])
+		}
+		policy2, err := data.NewCachePolicy(cfg2, mockConnectors[1])
 		require.NoError(t, err)
 
 		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
@@ -481,20 +529,32 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetLastValidResponse(ctx, resp)
 
 		// Create policies with different finality states
-		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg1 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		policy1, err := data.NewCachePolicy(cfg1, mockConnectors[0])
 		require.NoError(t, err)
 
-		policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateUnfinalized,
+		cfg2 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock2",
-		}, mockConnectors[1])
+		}
+		policy2, err := data.NewCachePolicy(cfg2, mockConnectors[1])
 		require.NoError(t, err)
 
 		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
@@ -519,31 +579,49 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Create default policies as defined in common/defaults.go
-		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+		cfgFinalized := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       0, // Forever
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		finalizedPolicy, err := data.NewCachePolicy(cfgFinalized, mockConnectors[0])
 		require.NoError(t, err)
 
-		unknownPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateUnknown,
+		cfgUnknown := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateUnknown},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       common.Duration(30 * time.Second),
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		unknownPolicy, err := data.NewCachePolicy(cfgUnknown, mockConnectors[0])
 		require.NoError(t, err)
 
-		unfinalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateUnfinalized,
+		cfgUnfinalized := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       common.Duration(30 * time.Second),
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		unfinalizedPolicy, err := data.NewCachePolicy(cfgUnfinalized, mockConnectors[0])
 		require.NoError(t, err)
 
 		testCases := []struct {
@@ -732,13 +810,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Create a custom policy specifically for latest block requests
-		latestBlockPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Params:   []interface{}{"latest", "*"},
-			TTL:      common.Duration(5 * time.Second),
-			Finality: common.DataFinalityStateRealtime,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getBlockByNumber",
+					Params:   []interface{}{"latest", "*"},
+					Finality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+					Action:   common.MatcherInclude,
+				},
+			},
+			TTL: common.Duration(5 * time.Second),
+		}
+		latestBlockPolicy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{latestBlockPolicy})
 
@@ -766,13 +850,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Create a custom policy specifically for finalized block requests
-		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Params:   []interface{}{"finalized", "*"},
-			TTL:      common.Duration(5 * time.Second),
-			Finality: common.DataFinalityStateRealtime,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getBlockByNumber",
+					Params:   []interface{}{"finalized", "*"},
+					Finality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+					Action:   common.MatcherInclude,
+				},
+			},
+			TTL: common.Duration(5 * time.Second),
+		}
+		finalizedPolicy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
 
@@ -803,13 +893,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Default-style Finalized wildcard policy.
-		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       0, // forever
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		finalizedDefault, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
 
@@ -840,13 +936,15 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Default-style Finalized wildcard policy.
-		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
+		finalizedCfg := &common.CachePolicyConfig{
 			Network:   "*",
 			Method:    "*",
 			Finality:  common.DataFinalityStateFinalized,
 			TTL:       0, // forever
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		finalizedCfg.ConvertCacheLegacyMatchers()
+		finalizedDefault, err := data.NewCachePolicy(finalizedCfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
 
@@ -886,24 +984,36 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Realtime policy: cache "latest" for 5 min
-		realtimePolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBlockByNumber",
-			Params:    []interface{}{"latest", "*"},
+		cfg1 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getBlockByNumber",
+					Params:   []interface{}{"latest", "*"},
+					Finality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       common.Duration(5 * time.Minute),
-			Finality:  common.DataFinalityStateRealtime,
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		realtimePolicy, err := data.NewCachePolicy(cfg1, mockConnectors[0])
 		require.NoError(t, err)
 
 		// Default-style Finalized wildcard policy.
-		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg2 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       0,
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		finalizedPolicy, err := data.NewCachePolicy(cfg2, mockConnectors[0])
 		require.NoError(t, err)
 
 		cache.SetPolicies([]*data.CachePolicy{realtimePolicy, finalizedPolicy})
@@ -942,13 +1052,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Default-style Finalized wildcard policy.
-		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       0, // forever
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		finalizedPolicy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
 
@@ -989,12 +1105,18 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Policy that caches finalized eth_getLogs requests on mock1
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123", // Matches mockNetwork
-			Method:    "eth_getLogs",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123", // Matches mockNetwork
+					Method:   "eth_getLogs",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock1", // Matches mockConnectors[0].Id()
-		}, mockConnectors[0])
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -1040,12 +1162,18 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getLogs",
-			Finality:  common.DataFinalityStateFinalized,
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getLogs",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock1",
-		}, mockConnectors[0])
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -1087,12 +1215,15 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Create a policy with empty behavior set to "ignore"
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBalance",
-			Finality: common.DataFinalityStateFinalized,
-			Empty:    common.CacheEmptyBehaviorIgnore,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBalance",
+			Finality:  common.DataFinalityStateFinalized,
+			Empty:     common.CacheEmptyBehaviorIgnore,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -1118,12 +1249,15 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		})
 
 		// Create a policy with empty behavior set to "allow"
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBalance",
-			Finality: common.DataFinalityStateFinalized,
-			Empty:    common.CacheEmptyBehaviorAllow,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBalance",
+			Finality:  common.DataFinalityStateFinalized,
+			Empty:     common.CacheEmptyBehaviorAllow,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -1151,11 +1285,18 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		})
 
 		ttl := time.Duration(5 * time.Minute)
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			TTL:     common.Duration(ttl),
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBalance",
+					Action:  common.MatcherInclude,
+				},
+			},
+			TTL:       common.Duration(ttl),
+			Connector: "mock1",
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
 			policy,
@@ -1199,19 +1340,33 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		defer cancel()
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
-		policy0, err0 := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-			TTL:     common.Duration(2 * time.Minute),
-		}, mockConnectors[0])
+		cfg0 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBlockByNumber",
+					Action:  common.MatcherInclude,
+				},
+			},
+			TTL:       common.Duration(2 * time.Minute),
+			Connector: "mock1",
+		}
+		policy0, err0 := data.NewCachePolicy(cfg0, mockConnectors[0])
 		require.NoError(t, err0)
 
 		ttl := common.Duration(6 * time.Minute)
-		policy1, err1 := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			TTL:     ttl,
-		}, mockConnectors[1])
+		cfg1 := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBalance",
+					Action:  common.MatcherInclude,
+				},
+			},
+			TTL:       ttl,
+			Connector: "mock2",
+		}
+		policy1, err1 := data.NewCachePolicy(cfg1, mockConnectors[1])
 		require.NoError(t, err1)
 
 		cache.SetPolicies([]*data.CachePolicy{
@@ -1247,10 +1402,17 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBlockByNumber",
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBlockByNumber",
+					Action:  common.MatcherInclude,
+				},
+			},
+			Connector: "mock1",
+		}
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
 			policy,
@@ -1297,15 +1459,25 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 
 		// Create two policies with different connectors
 		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBlockByNumber",
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBlockByNumber",
+					Action:  common.MatcherInclude,
+				},
+			},
 			Connector: "mock1",
 		}, mockConnectors[0])
 		require.NoError(t, err)
 
 		policy2, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBlockByNumber",
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBlockByNumber",
+					Action:  common.MatcherInclude,
+				},
+			},
 			Connector: "mock2",
 		}, mockConnectors[1])
 		require.NoError(t, err)
@@ -1395,9 +1567,15 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:  "eth_getBalance",
-			Empty:   common.CacheEmptyBehaviorAllow,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network: "evm:123",
+					Method:  "eth_getBalance",
+					Empty:   common.CacheEmptyBehaviorAllow,
+					Action:  common.MatcherInclude,
+				},
+			},
+			Connector: "mock1",
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
@@ -1632,6 +1810,8 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Convert legacy matchers
+			tc.config.ConvertCacheLegacyMatchers()
 			policy, err := data.NewCachePolicy(tc.config, mockConnector)
 			require.NoError(t, err)
 
@@ -1736,12 +1916,15 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				// Create policy with specific empty behavior
-				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-					Network:  "evm:123",
-					Method:   "eth_getBalance",
-					Empty:    tc.emptyBehavior,
-					Finality: common.DataFinalityStateFinalized,
-				}, mockConnectors[0])
+				cfg := &common.CachePolicyConfig{
+					Network:   "evm:123",
+					Method:    "eth_getBalance",
+					Empty:     tc.emptyBehavior,
+					Finality:  common.DataFinalityStateFinalized,
+					Connector: "mock1",
+				}
+				cfg.ConvertCacheLegacyMatchers()
+				policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 				require.NoError(t, err)
 				cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -1846,13 +2029,16 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			cfg := &common.CachePolicyConfig{
 				Network:     "evm:123",
 				Method:      "eth_getBalance",
 				MinItemSize: tc.minSize,
 				MaxItemSize: tc.maxSize,
 				Finality:    common.DataFinalityStateFinalized,
-			}, mockConnectors[0])
+				Connector:   "mock1",
+			}
+			cfg.ConvertCacheLegacyMatchers()
+			policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 
 			if tc.expectedError {
 				assert.Error(t, err)
@@ -2655,11 +2841,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -2715,11 +2904,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -2762,11 +2954,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -2805,11 +3000,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -2916,11 +3114,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
-				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-					Network:  "evm:123",
-					Method:   "eth_call",
-					Finality: common.DataFinalityStateFinalized,
-				}, mockConnectors[0])
+				cfg := &common.CachePolicyConfig{
+					Network:   "evm:123",
+					Method:    "eth_call",
+					Finality:  common.DataFinalityStateFinalized,
+					Connector: "mock1",
+				}
+				cfg.ConvertCacheLegacyMatchers()
+				policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 				require.NoError(t, err)
 				cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -2959,11 +3160,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 				ZstdLevel: "fastest",
 			})
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -3014,11 +3218,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 				ZstdLevel: "fastest",
 			})
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -3070,11 +3277,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
 
-		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:  "evm:123",
-			Method:   "eth_getBlockByNumber",
-			Finality: common.DataFinalityStateFinalized,
-		}, mockConnectors[0])
+		cfg := &common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}
+		cfg.ConvertCacheLegacyMatchers()
+		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
 
@@ -3135,11 +3345,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
-				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-					Network:  "evm:123",
-					Method:   "eth_getBlockByNumber",
-					Finality: common.DataFinalityStateFinalized,
-				}, mockConnectors[0])
+				cfg := &common.CachePolicyConfig{
+					Network:   "evm:123",
+					Method:    "eth_getBlockByNumber",
+					Finality:  common.DataFinalityStateFinalized,
+					Connector: "mock1",
+				}
+				cfg.ConvertCacheLegacyMatchers()
+				policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 				require.NoError(t, err)
 				cache.SetPolicies([]*data.CachePolicy{policy})
 
