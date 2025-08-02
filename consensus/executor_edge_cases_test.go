@@ -41,7 +41,7 @@ func TestHashCalculationError(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(3).
+		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).
@@ -98,7 +98,7 @@ func TestContextCancellation(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(3).
+		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).
@@ -152,32 +152,32 @@ func TestContextCancellation(t *testing.T) {
 // TestLargeScaleConsensus tests consensus with many upstreams
 func TestLargeScaleConsensus(t *testing.T) {
 	tests := []struct {
-		name                 string
-		numUpstreams         int
-		requiredParticipants int
-		agreementThreshold   int
-		consensusRatio       float64 // What fraction should agree
+		name               string
+		numUpstreams       int
+		maxParticipants    int
+		agreementThreshold int
+		consensusRatio     float64 // What fraction should agree
 	}{
 		{
-			name:                 "20_upstreams_consensus",
-			numUpstreams:         20,
-			requiredParticipants: 15,
-			agreementThreshold:   11,
-			consensusRatio:       0.6,
+			name:               "20_upstreams_consensus",
+			numUpstreams:       20,
+			maxParticipants:    15,
+			agreementThreshold: 11,
+			consensusRatio:     0.6,
 		},
 		{
-			name:                 "50_upstreams_consensus",
-			numUpstreams:         50,
-			requiredParticipants: 30,
-			agreementThreshold:   20,
-			consensusRatio:       0.5,
+			name:               "50_upstreams_consensus",
+			numUpstreams:       50,
+			maxParticipants:    30,
+			agreementThreshold: 20,
+			consensusRatio:     0.5,
 		},
 		{
-			name:                 "100_upstreams_consensus",
-			numUpstreams:         100,
-			requiredParticipants: 60,
-			agreementThreshold:   40,
-			consensusRatio:       0.5,
+			name:               "100_upstreams_consensus",
+			numUpstreams:       100,
+			maxParticipants:    60,
+			agreementThreshold: 40,
+			consensusRatio:     0.5,
 		},
 	}
 
@@ -206,9 +206,10 @@ func TestLargeScaleConsensus(t *testing.T) {
 
 			logger := zerolog.Nop()
 			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(tt.requiredParticipants).
+				WithMaxParticipants(tt.maxParticipants).
 				WithAgreementThreshold(tt.agreementThreshold).
 				WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
+				WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 				WithLogger(&logger).
 				Build()
 
@@ -287,7 +288,7 @@ func TestMixedErrorScenarios(t *testing.T) {
 				for i := 0; i < 6; i++ {
 					upstreams[i] = common.NewFakeUpstream(fmt.Sprintf("upstream%d", i))
 					// Alternate between error and valid responses within the first 3 upstreams
-					// that will be selected by selectUpstreams (requiredParticipants = 3)
+					// that will be selected by selectUpstreams (maxParticipants = 3)
 					if i == 0 {
 						// Error response
 						responses[i] = nil
@@ -332,7 +333,7 @@ func TestMixedErrorScenarios(t *testing.T) {
 
 			logger := log.Logger
 			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(3).
+				WithMaxParticipants(3).
 				WithAgreementThreshold(2).
 				WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 				WithLogger(&logger).
@@ -400,8 +401,9 @@ func TestGoroutineLeakDetection(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(5).
+		WithMaxParticipants(5).
 		WithAgreementThreshold(5).
+		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 		WithLogger(&logger).
 		Build()
 
@@ -465,7 +467,7 @@ func TestPanicRecovery(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(3).
+		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithLogger(&logger).
 		Build()
@@ -538,8 +540,9 @@ func TestEmptyUpstreamsList(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(3).
+		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
+		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 		WithLogger(&logger).
 		Build()
 
@@ -576,8 +579,9 @@ func TestResponseChannelSaturation(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(50).
+		WithMaxParticipants(50).
 		WithAgreementThreshold(50).
+		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 		WithLogger(&logger).
 		Build()
 
@@ -717,7 +721,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 	// Create consensus policy that will reach consensus with 2 out of 5
 	log := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(5).
+		WithMaxParticipants(5).
 		WithAgreementThreshold(2). // Consensus with just 2 responses
 		WithLogger(&log).
 		Build()
@@ -841,7 +845,7 @@ func TestCloneFailureGoroutineLeak(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(3).
+		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).
@@ -937,7 +941,7 @@ func TestCancellationRaceCondition(t *testing.T) {
 
 	logger := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(3).
+		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).

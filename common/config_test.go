@@ -396,7 +396,7 @@ projects:
         quantile: 0.95
         minDelay: "500ms"
       consensus:
-        requiredParticipants: 10
+        maxParticipants: 10
         agreementThreshold: 2
         disputeBehavior: "returnError"
         lowParticipantsBehavior: "acceptMostCommonValidResult"

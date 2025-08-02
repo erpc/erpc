@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog/log"
 )
 
 func (c *Config) Validate() error {
@@ -866,6 +867,41 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	}
 	if c.SuccessThresholdCount > c.SuccessThresholdCapacity {
 		return fmt.Errorf("failsafe.circuitBreaker.successThresholdCount must be less than or equal to failureThresholdCapacity")
+	}
+	return nil
+}
+
+func (c *ConsensusPolicyConfig) Validate() error {
+	if c.RequiredParticipants > 0 {
+		log.Warn().Msg("consensus.requiredParticipants is deprecated, use consensus.maxParticipants instead")
+	}
+	if c.MaxParticipants <= 0 {
+		return fmt.Errorf("consensus.maxParticipants must be greater than 0")
+	}
+	if c.AgreementThreshold <= 0 {
+		return fmt.Errorf("consensus.agreementThreshold must be greater than 0")
+	}
+	if c.MaxParticipants < c.AgreementThreshold {
+		return fmt.Errorf("consensus.maxParticipants must be greater than or equal to agreementThreshold")
+	}
+	if c.PunishMisbehavior != nil {
+		if err := c.PunishMisbehavior.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *PunishMisbehaviorConfig) Validate() error {
+	if p.DisputeThreshold <= 0 {
+		return fmt.Errorf("consensus.punishMisbehavior.disputeThreshold must be greater than 0")
+	}
+	if p.DisputeWindow <= 0 {
+		return fmt.Errorf("consensus.punishMisbehavior.disputeWindow must be greater than 0")
+	}
+	if p.SitOutPenalty <= 0 {
+		return fmt.Errorf("consensus.punishMisbehavior.sitOutPenalty must be greater than 0")
 	}
 	return nil
 }

@@ -18,11 +18,11 @@ type NormalizedResponse struct {
 	body         io.ReadCloser
 	expectedSize int
 
-	fromCache bool
+	fromCache atomic.Bool
 	attempts  atomic.Value
 	retries   atomic.Value
 	hedges    atomic.Value
-	upstream  Upstream
+	upstream  atomic.Value
 
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
 	evmBlockNumber  atomic.Value
@@ -83,18 +83,14 @@ func (r *NormalizedResponse) FromCache() bool {
 	if r == nil {
 		return false
 	}
-	r.RLock()
-	defer r.RUnlock()
-	return r.fromCache
+	return r.fromCache.Load()
 }
 
 func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 	if r == nil {
 		return r
 	}
-	r.Lock()
-	defer r.Unlock()
-	r.fromCache = fromCache
+	r.fromCache.Store(fromCache)
 	return r
 }
 
@@ -201,26 +197,29 @@ func (r *NormalizedResponse) Upstream() Upstream {
 	if r == nil {
 		return nil
 	}
-	if r.upstream == nil {
+	upstream := r.upstream.Load()
+	if upstream == nil {
 		return nil
 	}
 
-	return r.upstream
+	return upstream.(Upstream)
 }
 
 func (r *NormalizedResponse) UpstreamId() string {
 	if r == nil {
 		return ""
 	}
-	if r.upstream == nil {
+	upstream := r.upstream.Load()
+	if upstream == nil {
 		return ""
 	}
 
-	if r.upstream.Config() == nil {
+	up := upstream.(Upstream)
+	if up.Config() == nil {
 		return ""
 	}
 
-	return r.upstream.Id()
+	return up.Id()
 }
 
 func (r *NormalizedResponse) SetUpstream(upstream Upstream) *NormalizedResponse {
@@ -228,10 +227,9 @@ func (r *NormalizedResponse) SetUpstream(upstream Upstream) *NormalizedResponse 
 		return r
 	}
 
-	r.Lock()
-	defer r.Unlock()
-
-	r.upstream = upstream
+	if upstream != nil {
+		r.upstream.Store(upstream)
+	}
 	return r
 }
 
@@ -249,9 +247,7 @@ func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
 	if r == nil {
 		return r
 	}
-	r.Lock()
-	defer r.Unlock()
-	r.fromCache = fromCache
+	r.fromCache.Store(fromCache)
 	return r
 }
 
@@ -370,9 +366,6 @@ func (r *NormalizedResponse) IsObjectNull(ctx ...context.Context) bool {
 }
 
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
-	r.RLock()
-	defer r.RUnlock()
-
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
 		return SonicCfg.Marshal(jrr)
 	}
@@ -417,11 +410,8 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 		return
 	}
 
-	// Capture fields that need synchronization under a single lock
-	r.RLock()
-	fromCache := r.fromCache
-	upstream := r.upstream
-	r.RUnlock()
+	fromCache := r.fromCache.Load()
+	upstream := r.upstream.Load()
 
 	e.Bool("fromCache", fromCache)
 	e.Int("attempts", r.Attempts())
@@ -431,10 +421,11 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 	e.Interface("evmBlockNumber", r.evmBlockNumber.Load())
 
 	if upstream != nil {
-		if upstream.Config() != nil {
-			e.Str("upstream", upstream.Id())
+		up := upstream.(Upstream)
+		if up.Config() != nil {
+			e.Str("upstream", up.Id())
 		} else {
-			e.Str("upstream", fmt.Sprintf("%p", upstream))
+			e.Str("upstream", fmt.Sprintf("%p", up))
 		}
 	} else {
 		e.Str("upstream", "nil")

@@ -374,7 +374,7 @@ export declare const ConsensusDisputeBehaviorAcceptMostCommonValidResult: Consen
 export declare const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBehavior;
 export declare const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior;
 export interface ConsensusPolicyConfig {
-    requiredParticipants: number;
+    maxParticipants: number;
     agreementThreshold?: number;
     disputeBehavior?: ConsensusDisputeBehavior;
     lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;

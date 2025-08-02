@@ -1913,6 +1913,45 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 	return nil
 }
 
+func (c *ConsensusPolicyConfig) SetDefaults() error {
+	if c.RequiredParticipants > 0 {
+		// @deprecated: use MaxParticipants instead
+		c.MaxParticipants = c.RequiredParticipants
+	}
+	if c.MaxParticipants == 0 {
+		c.MaxParticipants = 5
+	}
+	if c.AgreementThreshold == 0 {
+		c.AgreementThreshold = 2
+	}
+	if c.DisputeBehavior == "" {
+		c.DisputeBehavior = ConsensusDisputeBehaviorReturnError
+	}
+	if c.LowParticipantsBehavior == "" {
+		c.LowParticipantsBehavior = ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult
+	}
+	if c.DisputeLogLevel == "" {
+		c.DisputeLogLevel = "warn"
+	}
+	if c.IgnoreFields == nil {
+		c.IgnoreFields = map[string][]string{
+			"eth_getLogs": {
+				"*.blockTimestamp",
+			},
+			"eth_getTransactionReceipt": {
+				"blockTimestamp",
+				"logs.*.blockTimestamp",
+			},
+			"eth_getBlockReceipts": {
+				"*.blockTimestamp",
+				"*.logs.*.blockTimestamp",
+			},
+		}
+	}
+
+	return nil
+}
+
 func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 	if r.Enabled == nil {
 		r.Enabled = util.BoolPtr(true)

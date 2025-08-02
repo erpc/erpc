@@ -22,7 +22,7 @@ flowchart TD
     CheckShortCircuit -->|No, or Empty consensus| WaitAll[Wait for all responses]
     
     WaitAll --> CountParticipants[Count Valid Participants<br/>Exclude network errors]
-    CountParticipants --> CheckMinParticipants{Participants >= RequiredParticipants?}
+    CountParticipants --> CheckMinParticipants{Participants >= MaxParticipants?}
     
     CheckMinParticipants -->|No| LowParticipants[Handle Low Participants]
     CheckMinParticipants -->|Yes| CountByHash[Count Responses by Hash<br/>Separate Empty vs Non-empty]
@@ -137,7 +137,7 @@ projects:
           - matchMethod: "*" # Define different consensus thresholds for different methods
             matchFinality: ["finalized", "unknown"] # Read more in Failsafe docs -> Finality states
             consensus:
-              requiredParticipants: 4
+              maxParticipants: 4
               agreementThreshold: 2
               disputeBehavior: returnError
               lowParticipantsBehavior: acceptAnyValidResult
@@ -162,7 +162,7 @@ export default createConfig({
           {
             matchMethod: "*",      // Can be configured per-method
             consensus: {
-              requiredParticipants: 3,
+              maxParticipants: 3,
               agreementThreshold: 2,
               disputeBehavior: "acceptAnyValidResult",
               lowParticipantsBehavior: "acceptMostCommonValidResult",
@@ -184,11 +184,11 @@ export default createConfig({
 
 ## Participation options
 
-### `requiredParticipants`
+### `maxParticipants`
 Number of upstreams to query in each consensus round. The policy selects the first N healthy upstreams based on their scores.
 
 ### `agreementThreshold`
-Minimum number of identical responses needed to reach consensus. For example, with `requiredParticipants: 3` and `agreementThreshold: 2`, at least 2 upstreams must return the same result.
+Minimum number of identical responses needed to reach consensus. For example, with `maxParticipants: 3` and `agreementThreshold: 2`, at least 2 upstreams must return the same result.
 
 <Callout type="info">
   Response comparison uses canonical JSON-RPC hashing. **Non-empty responses are always preferred over empty ones**, regardless of count (e.g., 1 non-empty beats 3 empty responses).
@@ -197,22 +197,22 @@ Minimum number of identical responses needed to reach consensus. For example, wi
 ## Behavior options
 
 ### `disputeBehavior`
-When upstreams disagree (no consensus reached):
+When upstreams disagree (no consensus reached), sorted from most loose to strictest:
 
-- **`returnError`**: Returns dispute error. Strict agreement required among upstreams.
+- **`acceptAnyValidResult`**: Returns any valid response, preferring non-empty.
 - **`acceptMostCommonValidResult`**: Returns most common response if it meets `agreementThreshold`. Prefers non-empty over empty responses. Errors if no clear winner.
-- **`acceptAnyValidResult`**: Returns any valid response, preferring non-empty. Lenient fallback.
 - **`preferBlockHeadLeader`**: Uses highest block number upstream, falls back to most common.
 - **`onlyBlockHeadLeader`**: Only uses highest block upstream, errors otherwise.
+- **`returnError`**: Returns dispute error. Strict agreement required among upstreams.
 
 ### `lowParticipantsBehavior`
-When fewer than `agreementThreshold` responses are available:
+When fewer than `agreementThreshold` responses are available, sorted from most loose to strictest:
 
-- **`returnError`**: Fails request. Strict participation requirement.
-- **`acceptMostCommonValidResult`**: Uses available upstreams, returns most common if meets threshold. Same non-empty preference and clear winner rules as dispute behavior.
 - **`acceptAnyValidResult`**: Uses any available upstream, prefers non-empty. Maximum availability.
+- **`acceptMostCommonValidResult`**: Uses available upstreams, returns most common if meets threshold. Same non-empty preference and clear winner rules as dispute behavior.
 - **`preferBlockHeadLeader`**: Uses response from block head leader if available, otherwise use most common response.
 - **`onlyBlockHeadLeader`**: Only proceeds if block head leader is agrees with the response.
+- **`returnError`**: Fails request. Strict participation requirement.
 
 <Callout type="info">
   **Block Head Leader**: The upstream reporting the highest block number. This is determined by each upstream's state poller and ensures you're getting data from the most synchronized node.

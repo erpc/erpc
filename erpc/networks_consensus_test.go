@@ -37,7 +37,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		hasRetries              bool
 		request                 map[string]interface{}
 		mockResponses           []map[string]interface{}
-		requiredParticipants    int
+		maxParticipants         int
 		agreementThreshold      *int
 		disputeBehavior         *common.ConsensusDisputeBehavior
 		lowParticipantsBehavior *common.ConsensusLowParticipantsBehavior
@@ -47,8 +47,8 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		expectedMsg             *string
 	}{
 		{
-			name:                 "successful_consensus",
-			requiredParticipants: 3,
+			name:            "successful_consensus",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -105,8 +105,8 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				WithJsonRpcResponse(successResponse),
 		},
 		{
-			name:                 "successful_consensus_only_necessary_participants",
-			requiredParticipants: 2,
+			name:            "successful_consensus_only_necessary_participants",
+			maxParticipants: 2,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -157,14 +157,14 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			expectedCalls: []int{
 				1, // test1 will be called once (for its consensus execution)
 				1, // test2 will be called once (for its consensus execution)
-				0, // test3 will NOT be called since requiredParticipants is 2
+				0, // test3 will NOT be called since maxParticipants is 2
 			},
 			expectedResponse: common.NewNormalizedResponse().
 				WithJsonRpcResponse(successResponse),
 		},
 		{
-			name:                 "low_participants_error",
-			requiredParticipants: 3,
+			name:            "low_participants_error",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -187,12 +187,14 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				},
 			},
 			expectedCalls: []int{1},
-			expectedError: pointer(common.ErrCodeConsensusLowParticipants),
-			expectedMsg:   pointer("not enough participants"),
+			expectedResponse: func() *common.NormalizedResponse {
+				jrr, _ := common.NewJsonRpcResponse(1, "0x7b", nil)
+				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+			}(),
 		},
 		{
-			name:                 "dispute_error",
-			requiredParticipants: 3,
+			name:            "dispute_error",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -245,8 +247,8 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			expectedMsg:   pointer("not enough agreement among responses"),
 		},
 		{
-			name:                 "retried_dispute_error",
-			requiredParticipants: 2,
+			name:            "retried_dispute_error",
+			maxParticipants: 2,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -286,12 +288,14 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			},
 			hasRetries:    true,
 			expectedCalls: []int{1, 2},
-			expectedError: pointer(common.ErrCodeConsensusLowParticipants),
-			expectedMsg:   pointer("not enough participants"),
+			expectedResponse: func() *common.NormalizedResponse {
+				jrr, _ := common.NewJsonRpcResponse(1, "0x1", nil)
+				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+			}(),
 		},
 		{
-			name:                 "retry_on_error_and_success_on_next_upstream",
-			requiredParticipants: 3,
+			name:            "retry_on_error_and_success_on_next_upstream",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -348,8 +352,8 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				WithJsonRpcResponse(successResponse),
 		},
 		{
-			name:                 "error_response_on_upstreams",
-			requiredParticipants: 3,
+			name:            "error_response_on_upstreams",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -408,12 +412,12 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			},
 			expectedCalls: []int{1, 1, 1}, // Each upstream called once
 			expectedError: pointer(common.ErrCodeConsensusLowParticipants),
-			expectedMsg:   pointer("not enough participants"),
+			expectedMsg:   pointer("no clear most common result"),
 		},
 		{
-			name:                 "some_participants_return_error",
-			requiredParticipants: 3,
-			agreementThreshold:   pointer(3),
+			name:               "some_participants_return_error",
+			maxParticipants:    3,
+			agreementThreshold: pointer(3),
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -465,12 +469,12 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				},
 			},
 			expectedCalls: []int{1, 1, 1},
-			expectedError: pointer(common.ErrCodeConsensusLowParticipants),
-			expectedMsg:   pointer("not enough participants"),
+			expectedResponse: common.NewNormalizedResponse().
+				WithJsonRpcResponse(successResponse),
 		},
 		{
 			name:                    "some_participants_return_error_and_return_error_on_low_participants",
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			agreementThreshold:      pointer(3),
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorReturnError),
 			upstreams: []*common.UpstreamConfig{
@@ -529,7 +533,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:                    "some_participants_return_error_but_accept_most_common_valid_result",
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			agreementThreshold:      pointer(3),
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult),
 			upstreams: []*common.UpstreamConfig{
@@ -588,7 +592,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:                    "not_enough_upstreams_low_participants_behavior_accept_most_common_valid_result",
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			agreementThreshold:      pointer(3),
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult),
 			upstreams: []*common.UpstreamConfig{
@@ -635,7 +639,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		{
 			name:                    "only_block_head_leader_selects_highest_block_upstream",
 			agreementThreshold:      pointer(2),
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader),
 			disputeBehavior:         pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
 			upstreams: []*common.UpstreamConfig{
@@ -696,7 +700,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 		{
 			name:                    "prefer_block_head_leader_includes_leader_in_participants",
 			agreementThreshold:      pointer(2),
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
 			upstreams: []*common.UpstreamConfig{
 				{
@@ -737,28 +741,21 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0x7a",
+					"result":  "0x7a", // Same result achieves consensus
 				},
-				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"error": map[string]interface{}{
-						"code":    -32000,
-						"message": "internal error",
-					},
-				},
+				// test3 not mocked since it won't be called due to early consensus
 			},
 			expectedCalls: []int{
 				1, // test1 should be used
-				1, // test2 should NOT be used
-				1, // test3 (leader) should be called
+				1, // test2 should be used (both return 0x7a, achieving consensus)
+				0, // test3 (leader) not called due to early consensus
 			},
 			expectedResponse: common.NewNormalizedResponse().
 				WithJsonRpcResponse(successResponse),
 		},
 		{
 			name:                    "only_block_head_leader_no_leader_available_uses_normal_selection",
-			requiredParticipants:    2,
+			maxParticipants:         2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader),
 			upstreams: []*common.UpstreamConfig{
 				{
@@ -797,6 +794,108 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			expectedCalls: []int{
 				1, // test1 should be called (normal selection)
 				1, // test2 should be called (normal selection)
+			},
+			expectedResponse: common.NewNormalizedResponse().
+				WithJsonRpcResponse(successResponse),
+		},
+		{
+			name:                    "low_participants_with_prefer_block_head_leader_fallback",
+			maxParticipants:         3,
+			agreementThreshold:      pointer(2),
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-fallback.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-fallback.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+			},
+			expectedCalls: []int{
+				1, // test1 should be called
+				1, // test2 should be called
+			},
+			expectedResponse: common.NewNormalizedResponse().
+				WithJsonRpcResponse(successResponse),
+		},
+		{
+			name:                    "low_participants_with_prefer_block_head_leader",
+			maxParticipants:         3,
+			agreementThreshold:      pointer(4),
+			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-leader.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-follower.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc3-follower.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
+			},
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7b", // test2 response (needed to detect low participants)
+				},
+				// test3 not mocked since it won't be called due to block head leader short-circuit
+			},
+			expectedCalls: []int{
+				1, // test1 (leader) should be called and its result used
+				1, // test2 (needed to detect low participants)
+				0, // test3 (not called due to block head leader short-circuit)
 			},
 			expectedResponse: common.NewNormalizedResponse().
 				WithJsonRpcResponse(successResponse),
@@ -871,7 +970,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				agreementThreshold = *tt.agreementThreshold
 			}
 
-			lowParticipantsBehavior := common.ConsensusLowParticipantsBehaviorReturnError
+			var lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 			if tt.lowParticipantsBehavior != nil {
 				lowParticipantsBehavior = *tt.lowParticipantsBehavior
 			}
@@ -879,6 +978,22 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 			disputeBehavior := common.ConsensusDisputeBehaviorReturnError
 			if tt.disputeBehavior != nil {
 				disputeBehavior = *tt.disputeBehavior
+			}
+
+			// Create consensus config and apply defaults
+			consensusConfig := &common.ConsensusPolicyConfig{
+				MaxParticipants:         tt.maxParticipants,
+				AgreementThreshold:      agreementThreshold,
+				DisputeBehavior:         disputeBehavior,
+				LowParticipantsBehavior: lowParticipantsBehavior,
+				PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+			}
+			// Apply defaults when behavior is not explicitly set
+			if tt.lowParticipantsBehavior == nil {
+				err := consensusConfig.SetDefaults()
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			ntw, err := NewNetwork(
@@ -894,13 +1009,7 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 						{
 							MatchMethod: "*", // Match all methods to ensure consensus executor is selected
 							Retry:       retryPolicy,
-							Consensus: &common.ConsensusPolicyConfig{
-								RequiredParticipants:    tt.requiredParticipants,
-								AgreementThreshold:      agreementThreshold,
-								DisputeBehavior:         disputeBehavior,
-								LowParticipantsBehavior: lowParticipantsBehavior,
-								PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
-							},
+							Consensus:   consensusConfig,
 						},
 					},
 				},
@@ -939,6 +1048,20 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 				upsList := upsReg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 				for _, ups := range upsList {
 					ups.EvmStatePoller().SuggestLatestBlock(0)
+				}
+			} else if tt.name == "low_participants_with_prefer_block_head_leader_fallback" {
+				// For the fallback test, set all upstreams to same block number (no clear leader)
+				upsList := upsReg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+				for _, ups := range upsList {
+					ups.EvmStatePoller().SuggestLatestBlock(100) // All at same block
+				}
+			} else if tt.name == "low_participants_with_prefer_block_head_leader" {
+				// For the leader test, set test1 as leader with higher block
+				upsList := upsReg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+				if len(upsList) >= 3 {
+					upsList[0].EvmStatePoller().SuggestLatestBlock(200) // test1 (leader)
+					upsList[1].EvmStatePoller().SuggestLatestBlock(100) // test2 (follower)
+					upsList[2].EvmStatePoller().SuggestLatestBlock(50)  // test3 (follower)
 				}
 			}
 
@@ -1095,7 +1218,7 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 						Delay:       common.Duration(0),
 					},
 					Consensus: &common.ConsensusPolicyConfig{
-						RequiredParticipants:    2,
+						MaxParticipants:         2,
 						AgreementThreshold:      2,
 						DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 						LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -1192,6 +1315,10 @@ func pointer[T any](v T) *T {
 
 // setupTestNetworkWithConsensusPolicy creates a test network with consensus policy for integration testing
 func setupTestNetworkWithConsensusPolicy(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig, consensusConfig *common.ConsensusPolicyConfig) *Network {
+	// Apply defaults to consensus policy
+	err := consensusConfig.SetDefaults()
+	require.NoError(t, err)
+
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -1341,7 +1468,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	defer cancel()
 
 	network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-		RequiredParticipants:    5,
+		MaxParticipants:         5,
 		AgreementThreshold:      2, // Consensus with just 2 responses to trigger early short-circuit
 		DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -1436,10 +1563,10 @@ func TestConsensusShortCircuitIntegration(t *testing.T) {
 	defer cancel()
 
 	network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-		RequiredParticipants: 3,
-		AgreementThreshold:   2, // Should short-circuit after 2 matching responses
-		DisputeBehavior:      common.ConsensusDisputeBehaviorReturnError,
-		PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+		MaxParticipants:    3,
+		AgreementThreshold: 2, // Should short-circuit after 2 matching responses
+		DisputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+		PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 	})
 
 	// Make request
@@ -1650,10 +1777,10 @@ func TestConsensusEmptyishShortCircuitPrevention(t *testing.T) {
 			defer cancel()
 
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: 3,
-				AgreementThreshold:   2,                                                   // Should normally short-circuit after 2 matching responses
-				DisputeBehavior:      common.ConsensusDisputeBehaviorAcceptAnyValidResult, // Use AcceptAnyValid to prefer non-empty
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    3,
+				AgreementThreshold: 2,                                                   // Should normally short-circuit after 2 matching responses
+				DisputeBehavior:    common.ConsensusDisputeBehaviorAcceptAnyValidResult, // Use AcceptAnyValid to prefer non-empty
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -1810,10 +1937,10 @@ func TestConsensusEmptyishMixedScenarios(t *testing.T) {
 			defer cancel()
 
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: 3,
-				AgreementThreshold:   2,
-				DisputeBehavior:      common.ConsensusDisputeBehaviorAcceptAnyValidResult,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				DisputeBehavior:    common.ConsensusDisputeBehaviorAcceptAnyValidResult,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -1845,15 +1972,15 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	tests := []struct {
-		name                 string
-		mockResponses        []map[string]interface{}
-		requiredParticipants int
-		agreementThreshold   int
-		disputeBehavior      *common.ConsensusDisputeBehavior
-		expectedResult       interface{}
-		expectedError        bool
-		expectedConsensus    bool
-		description          string
+		name               string
+		mockResponses      []map[string]interface{}
+		maxParticipants    int
+		agreementThreshold int
+		disputeBehavior    *common.ConsensusDisputeBehavior
+		expectedResult     interface{}
+		expectedError      bool
+		expectedConsensus  bool
+		description        string
 	}{
 		{
 			name: "prefer_non_empty_2v2_tie",
@@ -1879,12 +2006,12 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 					"result":  "0x123", // Same non-empty result (2 non-empty)
 				},
 			},
-			requiredParticipants: 4,
-			agreementThreshold:   2,
-			disputeBehavior:      nil,       // Default behavior
-			expectedResult:       `"0x123"`, // Should prefer non-empty
-			expectedConsensus:    true,
-			description:          "4 participants: 2 empty, 2 non-empty → prefer non-empty",
+			maxParticipants:    4,
+			agreementThreshold: 2,
+			disputeBehavior:    nil,       // Default behavior
+			expectedResult:     `"0x123"`, // Should prefer non-empty
+			expectedConsensus:  true,
+			description:        "4 participants: 2 empty, 2 non-empty → prefer non-empty",
 		},
 		{
 			name: "prefer_non_empty_3v1_always_prefer_non_empty",
@@ -1910,12 +2037,12 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 					"result":  "0x456", // Non-empty result (1 non-empty)
 				},
 			},
-			requiredParticipants: 4,
-			agreementThreshold:   2,    // Non-empty count (1) doesn't meet threshold
-			disputeBehavior:      nil,  // Default behavior (return error)
-			expectedError:        true, // Should trigger dispute behavior
-			expectedConsensus:    false,
-			description:          "4 participants: 3 empty, 1 non-empty → prefer non-empty but fails threshold check",
+			maxParticipants:    4,
+			agreementThreshold: 2,    // Non-empty count (1) doesn't meet threshold
+			disputeBehavior:    nil,  // Default behavior (return error)
+			expectedError:      true, // Should trigger dispute behavior
+			expectedConsensus:  false,
+			description:        "4 participants: 3 empty, 1 non-empty → prefer non-empty but fails threshold check",
 		},
 		{
 			name: "prefer_non_empty_3v1_with_accept_behavior",
@@ -1941,12 +2068,12 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 					"result":  "0x789", // Non-empty result (1 non-empty)
 				},
 			},
-			requiredParticipants: 4,
-			agreementThreshold:   2, // Non-empty count (1) doesn't meet threshold
-			disputeBehavior:      &[]common.ConsensusDisputeBehavior{common.ConsensusDisputeBehaviorAcceptAnyValidResult}[0],
-			expectedResult:       `"0x789"`, // Should accept the non-empty result via dispute behavior
-			expectedConsensus:    true,
-			description:          "4 participants: 3 empty, 1 non-empty → prefer non-empty, accept via dispute behavior",
+			maxParticipants:    4,
+			agreementThreshold: 2, // Non-empty count (1) doesn't meet threshold
+			disputeBehavior:    &[]common.ConsensusDisputeBehavior{common.ConsensusDisputeBehaviorAcceptAnyValidResult}[0],
+			expectedResult:     `"0x789"`, // Should accept the non-empty result via dispute behavior
+			expectedConsensus:  true,
+			description:        "4 participants: 3 empty, 1 non-empty → prefer non-empty, accept via dispute behavior",
 		},
 		{
 			name: "prefer_non_empty_1v3_clear_winner",
@@ -1972,12 +2099,12 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 					"result":  "0xabc", // Same non-empty result (3 non-empty)
 				},
 			},
-			requiredParticipants: 4,
-			agreementThreshold:   2,
-			disputeBehavior:      nil,       // Default behavior
-			expectedResult:       `"0xabc"`, // Clear winner by count
-			expectedConsensus:    true,
-			description:          "4 participants: 1 empty, 3 non-empty → non-empty wins by count",
+			maxParticipants:    4,
+			agreementThreshold: 2,
+			disputeBehavior:    nil,       // Default behavior
+			expectedResult:     `"0xabc"`, // Clear winner by count
+			expectedConsensus:  true,
+			description:        "4 participants: 1 empty, 3 non-empty → non-empty wins by count",
 		},
 		{
 			name: "mixed_empty_types_prefer_non_empty",
@@ -2003,12 +2130,12 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 					"result":  "0xdef", // Same non-empty result
 				},
 			},
-			requiredParticipants: 4,
-			agreementThreshold:   2,
-			disputeBehavior:      nil,       // Default behavior
-			expectedResult:       `"0xdef"`, // Should prefer non-empty
-			expectedConsensus:    true,
-			description:          "Mixed empty types vs non-empty → prefer non-empty",
+			maxParticipants:    4,
+			agreementThreshold: 2,
+			disputeBehavior:    nil,       // Default behavior
+			expectedResult:     `"0xdef"`, // Should prefer non-empty
+			expectedConsensus:  true,
+			description:        "Mixed empty types vs non-empty → prefer non-empty",
 		},
 	}
 
@@ -2019,8 +2146,8 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 			util.SetupMocksForEvmStatePoller()
 
 			// Create upstreams
-			upstreams := make([]*common.UpstreamConfig, tc.requiredParticipants)
-			for i := 0; i < tc.requiredParticipants; i++ {
+			upstreams := make([]*common.UpstreamConfig, tc.maxParticipants)
+			for i := 0; i < tc.maxParticipants; i++ {
 				upstreams[i] = &common.UpstreamConfig{
 					Id:       fmt.Sprintf("upstream%d", i+1),
 					Endpoint: fmt.Sprintf("http://upstream%d.localhost", i+1),
@@ -2051,10 +2178,10 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 			}
 
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: tc.requiredParticipants,
-				AgreementThreshold:   tc.agreementThreshold,
-				DisputeBehavior:      disputeBehavior,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    tc.maxParticipants,
+				AgreementThreshold: tc.agreementThreshold,
+				DisputeBehavior:    disputeBehavior,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -2086,14 +2213,14 @@ func TestConsensusNonEmptyPreferenceWithDisputes(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	tests := []struct {
-		name                 string
-		mockResponses        []map[string]interface{}
-		requiredParticipants int
-		agreementThreshold   int
-		disputeBehavior      common.ConsensusDisputeBehavior
-		expectedError        bool
-		expectedResult       interface{}
-		description          string
+		name               string
+		mockResponses      []map[string]interface{}
+		maxParticipants    int
+		agreementThreshold int
+		disputeBehavior    common.ConsensusDisputeBehavior
+		expectedError      bool
+		expectedResult     interface{}
+		description        string
 	}{
 		{
 			name: "dispute_with_empty_preference_return_error",
@@ -2114,11 +2241,11 @@ func TestConsensusNonEmptyPreferenceWithDisputes(t *testing.T) {
 					"result":  "0x456", // Different non-empty result
 				},
 			},
-			requiredParticipants: 3,
-			agreementThreshold:   2, // No consensus possible
-			disputeBehavior:      common.ConsensusDisputeBehaviorReturnError,
-			expectedError:        true, // Should return dispute error
-			description:          "Dispute scenario with mixed empty/non-empty → error",
+			maxParticipants:    3,
+			agreementThreshold: 2, // No consensus possible
+			disputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+			expectedError:      true, // Should return dispute error
+			description:        "Dispute scenario with mixed empty/non-empty → error",
 		},
 		{
 			name: "dispute_accept_most_common_no_clear_winner",
@@ -2139,11 +2266,11 @@ func TestConsensusNonEmptyPreferenceWithDisputes(t *testing.T) {
 					"result":  "0xabc", // Different non-empty result
 				},
 			},
-			requiredParticipants: 3,
-			agreementThreshold:   2, // No consensus possible
-			disputeBehavior:      common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-			expectedError:        true, // Should error because all results have count 1
-			description:          "Dispute with accept most common → error when no clear winner",
+			maxParticipants:    3,
+			agreementThreshold: 2, // No consensus possible
+			disputeBehavior:    common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+			expectedError:      true, // Should error because all results have count 1
+			description:        "Dispute with accept most common → error when no clear winner",
 		},
 		{
 			name: "dispute_accept_any_valid_prefers_non_empty",
@@ -2164,12 +2291,12 @@ func TestConsensusNonEmptyPreferenceWithDisputes(t *testing.T) {
 					"result":  "0xabc", // Different non-empty result
 				},
 			},
-			requiredParticipants: 3,
-			agreementThreshold:   2, // No consensus possible
-			disputeBehavior:      common.ConsensusDisputeBehaviorAcceptAnyValidResult,
-			expectedError:        false,
-			expectedResult:       `"0x789"`, // Should return first non-empty result
-			description:          "Dispute with accept any valid → prefers non-empty",
+			maxParticipants:    3,
+			agreementThreshold: 2, // No consensus possible
+			disputeBehavior:    common.ConsensusDisputeBehaviorAcceptAnyValidResult,
+			expectedError:      false,
+			expectedResult:     `"0x789"`, // Should return first non-empty result
+			description:        "Dispute with accept any valid → prefers non-empty",
 		},
 	}
 
@@ -2180,8 +2307,8 @@ func TestConsensusNonEmptyPreferenceWithDisputes(t *testing.T) {
 			util.SetupMocksForEvmStatePoller()
 
 			// Create upstreams
-			upstreams := make([]*common.UpstreamConfig, tc.requiredParticipants)
-			for i := 0; i < tc.requiredParticipants; i++ {
+			upstreams := make([]*common.UpstreamConfig, tc.maxParticipants)
+			for i := 0; i < tc.maxParticipants; i++ {
 				upstreams[i] = &common.UpstreamConfig{
 					Id:       fmt.Sprintf("upstream%d", i+1),
 					Endpoint: fmt.Sprintf("http://upstream%d.localhost", i+1),
@@ -2207,10 +2334,10 @@ func TestConsensusNonEmptyPreferenceWithDisputes(t *testing.T) {
 			defer cancel()
 
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: tc.requiredParticipants,
-				AgreementThreshold:   tc.agreementThreshold,
-				DisputeBehavior:      tc.disputeBehavior,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    tc.maxParticipants,
+				AgreementThreshold: tc.agreementThreshold,
+				DisputeBehavior:    tc.disputeBehavior,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -2255,7 +2382,7 @@ func TestConsensusNonEmptyPreferenceWithLowParticipants(t *testing.T) {
 		name                    string
 		mockResponses           []map[string]interface{}
 		availableUpstreams      int
-		requiredParticipants    int
+		maxParticipants         int
 		agreementThreshold      int
 		lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 		expectedError           bool
@@ -2277,8 +2404,8 @@ func TestConsensusNonEmptyPreferenceWithLowParticipants(t *testing.T) {
 				},
 			},
 			availableUpstreams:      2,
-			requiredParticipants:    4, // More than available
-			agreementThreshold:      2,
+			maxParticipants:         4, // More than available
+			agreementThreshold:      3, // Higher than available participants (2) to trigger low participants
 			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
 			expectedError:           false,
 			expectedResult:          `"0x999"`, // Should prefer non-empty
@@ -2299,8 +2426,8 @@ func TestConsensusNonEmptyPreferenceWithLowParticipants(t *testing.T) {
 				},
 			},
 			availableUpstreams:      2,
-			requiredParticipants:    4, // More than available
-			agreementThreshold:      2,
+			maxParticipants:         4, // More than available
+			agreementThreshold:      3, // Higher than available participants (2) to trigger low participants
 			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
 			expectedError:           true, // Should return low participants error
 			description:             "Low participants with return error → error regardless of empty preference",
@@ -2341,7 +2468,7 @@ func TestConsensusNonEmptyPreferenceWithLowParticipants(t *testing.T) {
 			defer cancel()
 
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants:    tc.requiredParticipants,
+				MaxParticipants:         tc.maxParticipants,
 				AgreementThreshold:      tc.agreementThreshold,
 				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 				LowParticipantsBehavior: tc.lowParticipantsBehavior,
@@ -2372,7 +2499,7 @@ func TestConsensusNonEmptyPreferenceWithLowParticipants(t *testing.T) {
 	}
 }
 
-// TestConsensusInsufficientParticipants tests behavior when requiredParticipants > available upstreams
+// TestConsensusInsufficientParticipants tests behavior when maxParticipants > available upstreams
 func TestConsensusInsufficientParticipants(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -2417,8 +2544,8 @@ func TestConsensusInsufficientParticipants(t *testing.T) {
 	defer cancel()
 
 	network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-		RequiredParticipants:    5, // More than available upstreams
-		AgreementThreshold:      2,
+		MaxParticipants:         5, // More than available upstreams
+		AgreementThreshold:      3, // Higher than available participants (2) to trigger low participants
 		DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 		PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
@@ -2443,22 +2570,22 @@ func TestConsensusInsufficientParticipants(t *testing.T) {
 
 func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 	tests := []struct {
-		name                 string
-		upstreams            []*common.UpstreamConfig
-		request              map[string]interface{}
-		mockResponses        []map[string]interface{}
-		requiredParticipants int
-		agreementThreshold   int
-		ignoreFields         map[string][]string
-		expectedSuccess      bool
-		expectedResult       string
-		expectedError        *common.ErrorCode
-		expectedMsg          *string
+		name               string
+		upstreams          []*common.UpstreamConfig
+		request            map[string]interface{}
+		mockResponses      []map[string]interface{}
+		maxParticipants    int
+		agreementThreshold int
+		ignoreFields       map[string][]string
+		expectedSuccess    bool
+		expectedResult     string
+		expectedError      *common.ErrorCode
+		expectedMsg        *string
 	}{
 		{
-			name:                 "consensus_achieved_with_ignored_timestamp",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
+			name:               "consensus_achieved_with_ignored_timestamp",
+			maxParticipants:    3,
+			agreementThreshold: 2,
 			ignoreFields: map[string][]string{
 				"eth_getBlockByNumber": {"timestamp"},
 			},
@@ -2531,9 +2658,9 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 			expectedResult:  "0x1", // Should get consensus from first 2 responses
 		},
 		{
-			name:                 "consensus_dispute_with_ignored_timestamp_but_different_core_fields",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
+			name:               "consensus_dispute_with_ignored_timestamp_but_different_core_fields",
+			maxParticipants:    3,
+			agreementThreshold: 2,
 			ignoreFields: map[string][]string{
 				"eth_getBlockByNumber": {"timestamp"},
 			},
@@ -2607,9 +2734,9 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 			expectedMsg:     pointer("not enough agreement among responses"),
 		},
 		{
-			name:                 "consensus_achieved_with_ignored_multiple_fields",
-			requiredParticipants: 3,
-			agreementThreshold:   3,
+			name:               "consensus_achieved_with_ignored_multiple_fields",
+			maxParticipants:    3,
+			agreementThreshold: 3,
 			ignoreFields: map[string][]string{
 				"eth_getBlockByNumber": {"timestamp", "gasLimit", "gasUsed"},
 			},
@@ -2682,9 +2809,9 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 			expectedResult:  "0x1", // Should get consensus on the number field
 		},
 		{
-			name:                 "consensus_for_different_method_no_ignore_fields",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
+			name:               "consensus_for_different_method_no_ignore_fields",
+			maxParticipants:    3,
+			agreementThreshold: 2,
 			ignoreFields: map[string][]string{
 				"eth_getBlockByNumber": {"timestamp"}, // Only for eth_getBlockByNumber
 			},
@@ -2739,9 +2866,9 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 			expectedResult:  "0x7a", // Should get consensus from first 2 responses
 		},
 		{
-			name:                 "consensus_method_specific_ignore_fields_dispute",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
+			name:               "consensus_method_specific_ignore_fields_dispute",
+			maxParticipants:    3,
+			agreementThreshold: 2,
 			ignoreFields: map[string][]string{
 				"eth_getBlockByNumber": {"timestamp"}, // Only for eth_getBlockByNumber
 			},
@@ -2797,9 +2924,9 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 			expectedMsg:     pointer("not enough agreement among responses"),
 		},
 		{
-			name:                 "consensus_achieved_when_all_responses_identical",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
+			name:               "consensus_achieved_when_all_responses_identical",
+			maxParticipants:    3,
+			agreementThreshold: 2,
 			ignoreFields: map[string][]string{
 				"eth_getBlockByNumber": {"timestamp", "gasLimit"},
 			},
@@ -2920,10 +3047,10 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 						{
 							MatchMethod: "*",
 							Consensus: &common.ConsensusPolicyConfig{
-								RequiredParticipants:    tt.requiredParticipants,
+								MaxParticipants:         tt.maxParticipants,
 								AgreementThreshold:      tt.agreementThreshold,
 								DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-								LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+								LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 								IgnoreFields:            tt.ignoreFields,
 							},
 						},
@@ -3070,36 +3197,69 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 			description:   "2 of result A, 2 of result B → errors (no clear winner)",
 		},
 		{
-			name: "clear_majority_3v2",
+			name: "clear_majority_4v1",
 			mockResponses: []map[string]interface{}{
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0xmajority",
+					"result":  "0x123",
 				},
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0xmajority",
+					"result":  "0x123",
 				},
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0xmajority",
+					"result":  "0x123",
 				},
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0xminority",
+					"result":  "0x123",
 				},
 				{
 					"jsonrpc": "2.0",
 					"id":      1,
-					"result":  "0xminority",
+					"result":  "0x999",
 				},
 			},
 			expectedError:  false,
-			expectedResult: `"0xmajority"`,
+			expectedResult: `"0x123"`,
+			description:    "4 identical vs 1 different → returns result with count 4",
+		},
+		{
+			name: "clear_majority_3v2_alt",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xabc",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xabc",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xabc",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xdef",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0xdef",
+				},
+			},
+			expectedError:  false,
+			expectedResult: `"0xabc"`,
 			description:    "3 identical vs 2 different → returns result with count 3",
 		},
 		{
@@ -3290,15 +3450,24 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			defer func() {
+				// Wait a moment before cleanup to avoid race with ongoing requests
+				time.Sleep(50 * time.Millisecond)
+				util.ResetGock()
+			}()
 			util.SetupMocksForEvmStatePoller()
 
-			// Create upstreams based on number of responses
+			// Create upstreams with fully unique endpoints to guarantee deterministic mock matching
 			upstreams := make([]*common.UpstreamConfig, len(tc.mockResponses))
 			for i := range tc.mockResponses {
+				upstreamId := fmt.Sprintf("upstream%d", i+1)
+				// Use completely unique hostnames to eliminate any possibility of cross-contamination
+				uniqueHost := fmt.Sprintf("test-upstream-%d-%s.localhost", i+1, tc.name)
+				fullEndpoint := fmt.Sprintf("http://%s/rpc", uniqueHost)
+
 				upstreams[i] = &common.UpstreamConfig{
-					Id:       fmt.Sprintf("upstream%d", i+1),
-					Endpoint: fmt.Sprintf("http://upstream%d.localhost", i+1),
+					Id:       upstreamId,
+					Endpoint: fullEndpoint,
 					Type:     common.UpstreamTypeEvm,
 					Evm: &common.EvmUpstreamConfig{
 						ChainId: 123,
@@ -3306,11 +3475,13 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 				}
 			}
 
-			// Mock responses
-			for i, upstream := range upstreams {
-				gock.New(upstream.Endpoint).
-					Post("").
-					Persist().
+			// Create highly specific mocks with unique hosts - one mock per upstream
+			for i := range upstreams {
+				uniqueHost := fmt.Sprintf("test-upstream-%d-%s.localhost", i+1, tc.name)
+
+				gock.New(fmt.Sprintf("http://%s", uniqueHost)).
+					Post("/rpc").
+					Times(1).
 					Reply(200).
 					JSON(tc.mockResponses[i])
 			}
@@ -3336,12 +3507,15 @@ func TestConsensusAcceptMostCommonValidResultScenarios(t *testing.T) {
 			if tc.name == "nonempty_agreement_wins_over_minority_and_empty" {
 				threshold = 3 // Set threshold=3 to test non-empty winner (2 votes) below threshold but still wins
 			}
+			if tc.name == "clear_majority_3v2_alt" {
+				threshold = 3 // Set threshold=3 so only majority (3 votes) meets threshold, minority (2 votes) doesn't
+			}
 
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: len(upstreams),
-				AgreementThreshold:   threshold,
-				DisputeBehavior:      common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    len(upstreams),
+				AgreementThreshold: threshold,
+				DisputeBehavior:    common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -3483,9 +3657,10 @@ func TestConsensusAcceptAnyValidResultScenarios(t *testing.T) {
 					"result":  "0xbest",
 				},
 			},
-			hasErrors:     true,
-			expectedError: true, // Low participants (only 2 valid responses, need 3)
-			description:   "1 error, 1 empty, 1 non-empty → low participants",
+			hasErrors:      true,
+			expectedError:  false, // AcceptAnyValidResult should select non-empty result
+			expectedResult: `"0xbest"`,
+			description:    "1 error, 1 empty, 1 non-empty → prefer non-empty",
 		},
 	}
 
@@ -3538,10 +3713,10 @@ func TestConsensusAcceptAnyValidResultScenarios(t *testing.T) {
 
 			// Create network with AcceptAnyValidResult for disputes
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: len(upstreams),
-				AgreementThreshold:   2,
-				DisputeBehavior:      common.ConsensusDisputeBehaviorAcceptAnyValidResult,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    len(upstreams),
+				AgreementThreshold: 2,
+				DisputeBehavior:    common.ConsensusDisputeBehaviorAcceptAnyValidResult,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -3657,10 +3832,10 @@ func TestConsensusDisputeBehaviorComparison(t *testing.T) {
 
 			// Create network with specific dispute behavior
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: 3,
-				AgreementThreshold:   2,
-				DisputeBehavior:      tc.disputeBehavior,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				DisputeBehavior:    tc.disputeBehavior,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -3726,9 +3901,9 @@ func TestConsensusLowParticipantsBehaviorComparison(t *testing.T) {
 		{
 			name:                    "accept_most_common_with_data",
 			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
-			expectedError:           true, // With stricter behavior, errors when no clear winner
+			expectedError:           true, // Tie between two results → no clear winner
 			expectedErrorCode:       pointer(common.ErrCodeConsensusLowParticipants),
-			description:             "AcceptMostCommon → errors when no clear winner (all count 1)",
+			description:             "AcceptMostCommon → errors when no clear winner (tie: all count 1)",
 		},
 		{
 			name:                    "accept_any_valid_prefers_nonempty",
@@ -3781,8 +3956,8 @@ func TestConsensusLowParticipantsBehaviorComparison(t *testing.T) {
 
 			// Create network with specific low participants behavior
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants:    4, // Require 4 but only 2 will respond
-				AgreementThreshold:      2,
+				MaxParticipants:         4, // Require 4 but only 2 will respond
+				AgreementThreshold:      3, // Higher than participant count (2) to trigger low participants
 				LowParticipantsBehavior: tc.lowParticipantsBehavior,
 				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 				PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
@@ -3822,19 +3997,19 @@ func TestConsensusLowParticipantsBehaviorComparison(t *testing.T) {
 // TestConsensusThresholdEdgeCases tests edge cases around agreement threshold
 func TestConsensusThresholdEdgeCases(t *testing.T) {
 	tests := []struct {
-		name                 string
-		requiredParticipants int
-		agreementThreshold   int
-		mockResponses        []map[string]interface{}
-		expectedError        bool
-		expectedErrorCode    *common.ErrorCode
-		expectedResult       string
-		description          string
+		name               string
+		maxParticipants    int
+		agreementThreshold int
+		mockResponses      []map[string]interface{}
+		expectedError      bool
+		expectedErrorCode  *common.ErrorCode
+		expectedResult     string
+		description        string
 	}{
 		{
-			name:                 "threshold_1_single_response",
-			requiredParticipants: 1,
-			agreementThreshold:   1,
+			name:               "threshold_1_single_response",
+			maxParticipants:    1,
+			agreementThreshold: 1,
 			mockResponses: []map[string]interface{}{
 				{
 					"jsonrpc": "2.0",
@@ -3847,9 +4022,9 @@ func TestConsensusThresholdEdgeCases(t *testing.T) {
 			description:    "Threshold 1, 1 response → consensus achieved",
 		},
 		{
-			name:                 "threshold_2_single_response_dispute",
-			requiredParticipants: 2,
-			agreementThreshold:   2,
+			name:               "threshold_2_single_response_dispute",
+			maxParticipants:    2,
+			agreementThreshold: 2,
 			mockResponses: []map[string]interface{}{
 				{
 					"jsonrpc": "2.0",
@@ -3863,9 +4038,9 @@ func TestConsensusThresholdEdgeCases(t *testing.T) {
 			description:       "Threshold 2, 1 response → low participants",
 		},
 		{
-			name:                 "threshold_2_two_identical",
-			requiredParticipants: 2,
-			agreementThreshold:   2,
+			name:               "threshold_2_two_identical",
+			maxParticipants:    2,
+			agreementThreshold: 2,
 			mockResponses: []map[string]interface{}{
 				{
 					"jsonrpc": "2.0",
@@ -3883,9 +4058,9 @@ func TestConsensusThresholdEdgeCases(t *testing.T) {
 			description:    "Threshold 2, 2 identical → consensus achieved",
 		},
 		{
-			name:                 "threshold_3_two_identical_dispute",
-			requiredParticipants: 3,
-			agreementThreshold:   3,
+			name:               "threshold_3_two_identical_dispute",
+			maxParticipants:    3,
+			agreementThreshold: 3,
 			mockResponses: []map[string]interface{}{
 				{
 					"jsonrpc": "2.0",
@@ -3908,9 +4083,9 @@ func TestConsensusThresholdEdgeCases(t *testing.T) {
 			description: "Threshold 3, 2 identical → error (below threshold)",
 		},
 		{
-			name:                 "threshold_2_with_empty_consensus",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
+			name:               "threshold_2_with_empty_consensus",
+			maxParticipants:    3,
+			agreementThreshold: 2,
 			mockResponses: []map[string]interface{}{
 				{
 					"jsonrpc": "2.0",
@@ -3941,7 +4116,7 @@ func TestConsensusThresholdEdgeCases(t *testing.T) {
 			util.SetupMocksForEvmStatePoller()
 
 			// Create upstreams
-			upstreams := make([]*common.UpstreamConfig, tc.requiredParticipants)
+			upstreams := make([]*common.UpstreamConfig, tc.maxParticipants)
 			for i := range upstreams {
 				upstreams[i] = &common.UpstreamConfig{
 					Id:       fmt.Sprintf("upstream%d", i+1),
@@ -3976,7 +4151,7 @@ func TestConsensusThresholdEdgeCases(t *testing.T) {
 
 			// Create network
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants:    tc.requiredParticipants,
+				MaxParticipants:         tc.maxParticipants,
 				AgreementThreshold:      tc.agreementThreshold,
 				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -4094,10 +4269,10 @@ func TestConsensusEmptyNonEmptyPreferenceBehaviors(t *testing.T) {
 
 			// Create network
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: 4,
-				AgreementThreshold:   2,
-				DisputeBehavior:      tc.disputeBehavior,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    4,
+				AgreementThreshold: 2,
+				DisputeBehavior:    tc.disputeBehavior,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -4124,7 +4299,7 @@ func TestConsensusEmptyNonEmptyPreferenceBehaviors(t *testing.T) {
 func TestConsensusComplexRealWorldScenarios(t *testing.T) {
 	tests := []struct {
 		name                    string
-		requiredParticipants    int
+		maxParticipants         int
 		agreementThreshold      int
 		disputeBehavior         common.ConsensusDisputeBehavior
 		lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
@@ -4136,7 +4311,7 @@ func TestConsensusComplexRealWorldScenarios(t *testing.T) {
 	}{
 		{
 			name:                    "low_participants_accept_any_mixed",
-			requiredParticipants:    5,
+			maxParticipants:         5,
 			agreementThreshold:      3,
 			disputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
@@ -4161,7 +4336,7 @@ func TestConsensusComplexRealWorldScenarios(t *testing.T) {
 		},
 		{
 			name:                    "dispute_most_common_tie_empty_nonempty",
-			requiredParticipants:    4,
+			maxParticipants:         4,
 			agreementThreshold:      3, // Forces dispute
 			disputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
 			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -4192,7 +4367,7 @@ func TestConsensusComplexRealWorldScenarios(t *testing.T) {
 		},
 		{
 			name:                    "short_circuit_prevention_late_nonempty",
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			agreementThreshold:      2,
 			disputeBehavior:         common.ConsensusDisputeBehaviorAcceptAnyValidResult,
 			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -4224,7 +4399,7 @@ func TestConsensusComplexRealWorldScenarios(t *testing.T) {
 		},
 		{
 			name:                    "complex_mixed_scenario",
-			requiredParticipants:    6,
+			maxParticipants:         6,
 			agreementThreshold:      3,
 			disputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
 			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
@@ -4269,7 +4444,7 @@ func TestConsensusComplexRealWorldScenarios(t *testing.T) {
 			util.SetupMocksForEvmStatePoller()
 
 			// Create upstreams
-			upstreams := make([]*common.UpstreamConfig, tc.requiredParticipants)
+			upstreams := make([]*common.UpstreamConfig, tc.maxParticipants)
 			for i := range upstreams {
 				upstreams[i] = &common.UpstreamConfig{
 					Id:       fmt.Sprintf("upstream%d", i+1),
@@ -4312,7 +4487,7 @@ func TestConsensusComplexRealWorldScenarios(t *testing.T) {
 
 			// Create network
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants:    tc.requiredParticipants,
+				MaxParticipants:         tc.maxParticipants,
 				AgreementThreshold:      tc.agreementThreshold,
 				DisputeBehavior:         tc.disputeBehavior,
 				LowParticipantsBehavior: tc.lowParticipantsBehavior,
@@ -4509,12 +4684,17 @@ func TestConsensusMixedErrorScenarios(t *testing.T) {
 			defer util.ResetGock()
 			util.SetupMocksForEvmStatePoller()
 
-			// Create upstreams
+			// Create upstreams with unique endpoints from the start to avoid race conditions
 			upstreams := make([]*common.UpstreamConfig, len(tc.mockResponses))
 			for i := range upstreams {
+				upstreamId := fmt.Sprintf("upstream%d", i+1)
+				baseUrl := fmt.Sprintf("http://upstream%d.localhost", i+1)
+				uniquePath := fmt.Sprintf("/%s", upstreamId)
+				fullEndpoint := baseUrl + uniquePath
+
 				upstreams[i] = &common.UpstreamConfig{
-					Id:       fmt.Sprintf("upstream%d", i+1),
-					Endpoint: fmt.Sprintf("http://upstream%d.localhost", i+1),
+					Id:       upstreamId,
+					Endpoint: fullEndpoint, // Use unique endpoint from creation
 					Type:     common.UpstreamTypeEvm,
 					Evm: &common.EvmUpstreamConfig{
 						ChainId: 123,
@@ -4522,15 +4702,19 @@ func TestConsensusMixedErrorScenarios(t *testing.T) {
 				}
 			}
 
-			// Mock responses
+			// Mock responses with unique paths
 			for i, upstream := range upstreams {
+				upstreamId := upstream.Id
+				baseUrl := fmt.Sprintf("http://upstream%d.localhost", i+1)
+				uniquePath := fmt.Sprintf("/%s", upstreamId)
+
 				switch resp := tc.mockResponses[i].(type) {
 				case string:
 					if resp == "network_error" {
 						// Simulate network error
-						gock.New(upstream.Endpoint).
-							Post("").
-							Times(1).
+						gock.New(baseUrl).
+							Post(uniquePath).
+							Times(1). // Use Times(1) with unique paths for deterministic behavior
 							ReplyError(fmt.Errorf("network timeout"))
 					}
 				case map[string]interface{}:
@@ -4543,9 +4727,9 @@ func TestConsensusMixedErrorScenarios(t *testing.T) {
 					for k, v := range resp {
 						response[k] = v
 					}
-					gock.New(upstream.Endpoint).
-						Post("").
-						Times(1).
+					gock.New(baseUrl).
+						Post(uniquePath).
+						Times(1). // Use Times(1) with unique paths for deterministic behavior
 						Reply(200).
 						JSON(response)
 				}
@@ -4556,10 +4740,10 @@ func TestConsensusMixedErrorScenarios(t *testing.T) {
 
 			// Create network with consensus
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: len(upstreams),
-				AgreementThreshold:   2,
-				DisputeBehavior:      common.ConsensusDisputeBehaviorReturnError,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    len(upstreams),
+				AgreementThreshold: 2,
+				DisputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -4690,16 +4874,9 @@ func TestConsensusDisputeBehaviorWithMinorityNonEmpty(t *testing.T) {
 				},
 			},
 			disputeBehavior: common.ConsensusDisputeBehaviorAcceptAnyValidResult,
-			expectedError:   true, // Empty responses are not "valid" for acceptAnyValidResult in dispute scenarios
-			expectedResult: func(err error) bool {
-				if err == nil {
-					return false
-				}
-				// Should be low participants error since missing data errors don't count as participants
-				// and empty response is not "valid" for acceptAnyValidResult in dispute resolution
-				return common.HasErrorCode(err, common.ErrCodeConsensusLowParticipants)
-			},
-			description: "1 empty response, 2 missing data errors + acceptAnyValidResult → error (empty not valid in dispute)",
+			expectedError:   false, // AcceptAnyValidResult accepts the empty array as a valid result
+			expectedResult:  "[]",  // Empty array result
+			description:     "1 empty response, 2 missing data errors + acceptAnyValidResult → empty array accepted",
 		},
 		{
 			name: "accept_most_common_empty_consensus_only_empty_responses",
@@ -4813,10 +4990,10 @@ func TestConsensusDisputeBehaviorWithMinorityNonEmpty(t *testing.T) {
 
 			// Create network with the specific dispute behavior
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants: len(upstreams),
-				AgreementThreshold:   2,
-				DisputeBehavior:      tc.disputeBehavior,
-				PunishMisbehavior:    &common.PunishMisbehaviorConfig{},
+				MaxParticipants:    len(upstreams),
+				AgreementThreshold: 2,
+				DisputeBehavior:    tc.disputeBehavior,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
 			})
 
 			// Make request
@@ -4848,35 +5025,35 @@ func TestConsensusDisputeBehaviorWithMinorityNonEmpty(t *testing.T) {
 // Note: Complex timeout scenarios are covered by existing integration tests
 func TestConsensusParticipantRequirements(t *testing.T) {
 	tests := []struct {
-		name                 string
-		upstreams            int
-		requiredParticipants int
-		agreementThreshold   int
-		mockResponses        []string
-		expectedError        bool
-		expectedErrorCode    *common.ErrorCode
-		expectedResult       string
-		description          string
+		name               string
+		upstreams          int
+		maxParticipants    int
+		agreementThreshold int
+		mockResponses      []string
+		expectedError      bool
+		expectedErrorCode  *common.ErrorCode
+		expectedResult     string
+		description        string
 	}{
 		{
-			name:                 "normal_consensus_achieved",
-			upstreams:            3,
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			mockResponses:        []string{"0xaaa", "0xaaa", "0xbbb"},
-			expectedError:        false,
-			expectedResult:       `"0xaaa"`,
-			description:          "Normal consensus: 3 participants, 2 agree → consensus",
+			name:               "normal_consensus_achieved",
+			upstreams:          3,
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			mockResponses:      []string{"0xaaa", "0xaaa", "0xbbb"},
+			expectedError:      false,
+			expectedResult:     `"0xaaa"`,
+			description:        "Normal consensus: 3 participants, 2 agree → consensus",
 		},
 		{
-			name:                 "low_threshold_single_response",
-			upstreams:            3,
-			requiredParticipants: 1,
-			agreementThreshold:   1,
-			mockResponses:        []string{"0xsame", "0xsame", "0xsame"},
-			expectedError:        false,
-			expectedResult:       `"0xsame"`, // All same response, threshold 1
-			description:          "Low threshold: 1 required, threshold 1 → consensus achieved",
+			name:               "low_threshold_single_response",
+			upstreams:          3,
+			maxParticipants:    1,
+			agreementThreshold: 1,
+			mockResponses:      []string{"0xsame", "0xsame", "0xsame"},
+			expectedError:      false,
+			expectedResult:     `"0xsame"`, // All same response, threshold 1
+			description:        "Low threshold: 1 required, threshold 1 → consensus achieved",
 		},
 	}
 
@@ -4915,7 +5092,7 @@ func TestConsensusParticipantRequirements(t *testing.T) {
 
 			// Create network
 			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
-				RequiredParticipants:    tc.requiredParticipants,
+				MaxParticipants:         tc.maxParticipants,
 				AgreementThreshold:      tc.agreementThreshold,
 				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -4960,18 +5137,18 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                 string
-		upstreams            []*common.UpstreamConfig
-		request              map[string]interface{}
-		mockResponses        []map[string]interface{}
-		requiredParticipants int
-		expectedError        bool
-		expectedErrorCode    *int // Expected JSON-RPC error code
-		expectedErrorMsg     string
+		name              string
+		upstreams         []*common.UpstreamConfig
+		request           map[string]interface{}
+		mockResponses     []map[string]interface{}
+		maxParticipants   int
+		expectedError     bool
+		expectedErrorCode *int // Expected JSON-RPC error code
+		expectedErrorMsg  string
 	}{
 		{
-			name:                 "consensus_on_invalid_params_error",
-			requiredParticipants: 3,
+			name:            "consensus_on_invalid_params_error",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -5012,8 +5189,8 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 			expectedErrorMsg:  "Invalid params",
 		},
 		{
-			name:                 "consensus_on_method_not_found",
-			requiredParticipants: 3,
+			name:            "consensus_on_method_not_found",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -5054,8 +5231,8 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 			expectedErrorMsg:  "Method not found",
 		},
 		{
-			name:                 "consensus_on_missing_data",
-			requiredParticipants: 3,
+			name:            "consensus_on_missing_data",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -5096,8 +5273,8 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 			expectedErrorMsg:  "requested data is not available",
 		},
 		{
-			name:                 "consensus_on_execution_reverted",
-			requiredParticipants: 3,
+			name:            "consensus_on_execution_reverted",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -5144,8 +5321,8 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 			expectedErrorMsg:  "execution reverted",
 		},
 		{
-			name:                 "mixed_errors_returns_dispute",
-			requiredParticipants: 3,
+			name:            "mixed_errors_returns_dispute",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -5186,8 +5363,8 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 			expectedErrorMsg:  "not enough participants",
 		},
 		{
-			name:                 "majority_agreement_on_error_with_one_success",
-			requiredParticipants: 3,
+			name:            "majority_agreement_on_error_with_one_success",
+			maxParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -5280,7 +5457,7 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 						{
 							MatchMethod: "*",
 							Consensus: &common.ConsensusPolicyConfig{
-								RequiredParticipants:    tt.requiredParticipants,
+								MaxParticipants:         tt.maxParticipants,
 								AgreementThreshold:      2, // Majority agreement
 								DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 								LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,

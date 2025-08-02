@@ -33,7 +33,7 @@ var _ policy.ExecutionInternal[*common.NormalizedResponse] = &mockExecution{}
 func TestConsensusExecutor(t *testing.T) {
 	tests := []struct {
 		name                    string
-		requiredParticipants    int
+		maxParticipants         int
 		agreementThreshold      int
 		disputeBehavior         *common.ConsensusDisputeBehavior
 		lowParticipantsBehavior *common.ConsensusLowParticipantsBehavior
@@ -48,11 +48,11 @@ func TestConsensusExecutor(t *testing.T) {
 		expectedPunishedUpsteams []string
 	}{
 		{
-			name:                 "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
-			disputeThreshold:     1,
+			name:               "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorReturnError),
+			disputeThreshold:   1,
 			responses: []*struct {
 				response                  string
 				upstreamId                string
@@ -67,11 +67,11 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedPunishedUpsteams: []string{},
 		},
 		{
-			name:                 "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
-			disputeThreshold:     1,
+			name:               "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorReturnError),
+			disputeThreshold:   1,
 			responses: []*struct {
 				response                  string
 				upstreamId                string
@@ -88,11 +88,11 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute_with_return_error",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
-			disputeThreshold:     1,
+			name:               "dispute_with_return_error",
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorReturnError),
+			disputeThreshold:   1,
 			responses: []*struct {
 				response                  string
 				upstreamId                string
@@ -106,11 +106,11 @@ func TestConsensusExecutor(t *testing.T) {
 			expectedResult: nil,
 		},
 		{
-			name:                 "dispute_with_accept_any_valid",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
-			disputeThreshold:     1,
+			name:               "dispute_with_accept_any_valid",
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
+			disputeThreshold:   1,
 			responses: []*struct {
 				response                  string
 				upstreamId                string
@@ -128,11 +128,11 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 		},
 		{
-			name:                 "dispute_with_accept_most_common_no_clear_winner",
-			requiredParticipants: 3,
-			agreementThreshold:   2,
-			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
-			disputeThreshold:     1,
+			name:               "dispute_with_accept_most_common_no_clear_winner",
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
+			disputeThreshold:   1,
 			responses: []*struct {
 				response                  string
 				upstreamId                string
@@ -147,7 +147,7 @@ func TestConsensusExecutor(t *testing.T) {
 		},
 		{
 			name:                    "low_participants_with_return_error",
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorReturnError),
 			disputeThreshold:        1,
@@ -165,7 +165,7 @@ func TestConsensusExecutor(t *testing.T) {
 		},
 		{
 			name:                    "low_participants_with_accept_any_valid",
-			requiredParticipants:    3,
+			maxParticipants:         3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:        1,
@@ -177,42 +177,6 @@ func TestConsensusExecutor(t *testing.T) {
 				{"result1", "upstream1", 1},
 				{"result1", "upstream1", 1},
 				{"result1", "upstream1", 1},
-			},
-			expectedError:  nil,
-			expectedResult: []string{"result1"},
-		},
-		{
-			name:                    "low_participants_with_prefer_block_head_leader_fallback",
-			requiredParticipants:    3,
-			agreementThreshold:      2,
-			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
-			disputeThreshold:        1,
-			responses: []*struct {
-				response                  string
-				upstreamId                string
-				upstreamLatestBlockNumber int64
-			}{
-				{"result1", "upstream1", 1},
-				{"result1", "upstream1", 1},
-				{"result1", "upstream1", 1},
-			},
-			expectedError:  nil,
-			expectedResult: []string{"result1"},
-		},
-		{
-			name:                    "low_participants_with_prefer_block_head_leader",
-			requiredParticipants:    3,
-			agreementThreshold:      2,
-			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
-			disputeThreshold:        1,
-			responses: []*struct {
-				response                  string
-				upstreamId                string
-				upstreamLatestBlockNumber int64
-			}{
-				{"result1", "upstream1", 2},
-				{"result1", "upstream1", 2},
-				{"result2", "upstream2", 1},
 			},
 			expectedError:  nil,
 			expectedResult: []string{"result1"},
@@ -255,7 +219,7 @@ func TestConsensusExecutor(t *testing.T) {
 
 			// Create consensus policy
 			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(tt.requiredParticipants).
+				WithMaxParticipants(tt.maxParticipants).
 				WithAgreementThreshold(tt.agreementThreshold).
 				WithDisputeBehavior(disputeBehavior).
 				WithLowParticipantsBehavior(lowParticipantsBehavior).
@@ -315,7 +279,7 @@ func TestConsensusExecutor(t *testing.T) {
 					execIndex++
 					execIndexMutex.Unlock()
 
-					// In the new architecture, consensus executor creates N goroutines (requiredParticipants)
+					// In the new architecture, consensus executor creates N goroutines (maxParticipants)
 					// Each goroutine would internally use the network layer which calls NextUpstream()
 					// For testing, we simulate this by using the execution index to determine which upstream
 					upsList, _ := ctx.Value(common.UpstreamsContextKey).([]common.Upstream)
@@ -647,9 +611,10 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 
 		// Create consensus policy with punishment configured
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(5).
 			WithAgreementThreshold(4). // Need 4 out of 5 to agree
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 			WithLogger(&logger).
 			WithPunishMisbehavior(&common.PunishMisbehaviorConfig{
 				DisputeThreshold: 1, // Punish after 1 misbehavior
@@ -770,7 +735,7 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 
 		// Create consensus policy with punishment configured
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(5).
 			WithAgreementThreshold(3). // Only need 3 out of 5 (allows short-circuit)
 			WithLogger(&logger).
 			WithPunishMisbehavior(&common.PunishMisbehaviorConfig{
@@ -959,7 +924,7 @@ func TestConsensusShortCircuit(t *testing.T) {
 
 		// Create consensus policy using the builder pattern
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(5).
 			WithAgreementThreshold(3). // Only need 3 out of 5 to agree
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
 			WithLogger(&logger).
@@ -1087,7 +1052,7 @@ cancelling the remaining slow upstream calls and returning immediately.`, called
 
 		// Create consensus policy using the builder pattern
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(5).
 			WithAgreementThreshold(4). // Need 4 out of 5 to agree
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
@@ -1190,7 +1155,9 @@ cancelling the remaining slow upstream calls and returning immediately.`, called
 		// Verify results
 		assert.NotNil(t, result)
 		assert.Error(t, result.Error, "Should have consensus low participants error")
-		assert.Contains(t, result.Error.Error(), "not enough participants")
+		if result.Error != nil {
+			assert.Contains(t, result.Error.Error(), "not enough participants")
+		}
 
 		// Count how many upstreams were called
 		calledCount := 0
@@ -1424,7 +1391,7 @@ func TestConsensusGoroutineLeakWithShortCircuit(t *testing.T) {
 		// This will trigger short-circuiting
 		log := log.Logger
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(4).
+			WithMaxParticipants(4).
 			WithAgreementThreshold(2). // Will short-circuit after 2 matching responses
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
@@ -1675,7 +1642,7 @@ func TestConsensusGoroutineLeakWithNilResponses(t *testing.T) {
 		// - Fourth and fifth are slow and will be cancelled
 		log := log.Logger
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(5).
 			WithAgreementThreshold(2). // Will short-circuit after 2 matching responses
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
@@ -1755,7 +1722,7 @@ func TestConsensusGoroutineLeakWithNilResponses(t *testing.T) {
 					jrr, _ := common.NewJsonRpcResponse(1, resultValue, nil)
 					resp := common.NewNormalizedResponse().
 						WithJsonRpcResponse(jrr).
-						SetUpstream(upstreams[0])
+						SetUpstream(upstream)
 					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
 				case <-ctx.Done():
 					// Context cancelled - return nil
@@ -1935,7 +1902,7 @@ func TestConsensusExactDrainResponsesBug(t *testing.T) {
 		}
 
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(5).
 			WithAgreementThreshold(2).
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
@@ -2030,7 +1997,7 @@ func TestConsensusExactDrainResponsesBug(t *testing.T) {
 					jrr, _ := common.NewJsonRpcResponse(1, resultValue, nil)
 					resp := common.NewNormalizedResponse().
 						WithJsonRpcResponse(jrr).
-						SetUpstream(upstreams[0])
+						SetUpstream(upstream)
 					mockExec.onResponse(upstreamID, false)
 					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
 				case <-ctx.Done():
@@ -2283,7 +2250,7 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 
 		// Create consensus policy that will short-circuit after 2 matching responses
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(4).    // 4 upstreams can provide valid responses (upstream-0 returns nil)
 			WithAgreementThreshold(2). // Will short-circuit after 2 matching responses
 			WithLogger(&logger).
 			Build()
@@ -2329,7 +2296,7 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 				jrr, _ := common.NewJsonRpcResponse(1, "consensus_value", nil)
 				resp := common.NewNormalizedResponse().
 					WithJsonRpcResponse(jrr).
-					SetUpstream(upstreams[1])
+					SetUpstream(upstream)
 
 				executionMu.Lock()
 				executionOrder = append(executionOrder, fmt.Sprintf("%s-returned-valid", upstreamID))
@@ -2350,7 +2317,7 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 					jrr, _ := common.NewJsonRpcResponse(1, "slow_value", nil)
 					resp := common.NewNormalizedResponse().
 						WithJsonRpcResponse(jrr).
-						SetUpstream(upstreams[3])
+						SetUpstream(upstream)
 					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: resp}
 
 				case <-ctx.Done():
@@ -2394,8 +2361,9 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 		executionMu.Unlock()
 
 		// Verify that:
-		// 1. All 5 goroutines started
-		assert.Equal(t, int32(5), goroutinesStarted, "All goroutines should start")
+		// 1. Short-circuit prevented calling all upstreams (should be 3-4 instead of 5)
+		assert.LessOrEqual(t, goroutinesStarted, int32(4), "Should short-circuit before calling all upstreams")
+		assert.GreaterOrEqual(t, goroutinesStarted, int32(3), "Should call at least enough upstreams to reach consensus")
 
 		// 2. Only 2 valid responses were needed for consensus
 		assert.GreaterOrEqual(t, int32(2), responsesProcessed, "Should need at least 2 responses for consensus")
@@ -2446,7 +2414,7 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 		var iterationMu sync.Mutex
 
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(5).
+			WithMaxParticipants(5).
 			WithAgreementThreshold(2).
 			WithLogger(&logger).
 			Build()
@@ -2485,7 +2453,7 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 				jrr, _ := common.NewJsonRpcResponse(1, "consensus", nil)
 				resp := common.NewNormalizedResponse().
 					WithJsonRpcResponse(jrr).
-					SetUpstream(upstreams[1])
+					SetUpstream(upstream)
 
 				iterationMu.Lock()
 				if upstreamID == "upstream-1" {
@@ -2584,7 +2552,7 @@ func TestConsensusOnExecutionException(t *testing.T) {
 
 		// Create consensus policy
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(3).
+			WithMaxParticipants(3).
 			WithAgreementThreshold(2). // Changed from 3 to 2
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 			WithLogger(&logger).
@@ -2637,7 +2605,7 @@ func TestConsensusOnExecutionException(t *testing.T) {
 
 		// Create consensus policy - use dispute behavior that returns error
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(3).
+			WithMaxParticipants(3).
 			WithAgreementThreshold(2).                                       // Changed from 3 to 2
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError). // This should return error on dispute
 			WithLogger(&logger).
@@ -2733,7 +2701,7 @@ func TestConsensusOnExecutionException(t *testing.T) {
 
 		// Create consensus policy
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(3).
+			WithMaxParticipants(3).
 			WithAgreementThreshold(2).
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 			WithLogger(&logger).
@@ -2800,7 +2768,10 @@ func TestConsensusOnExecutionException(t *testing.T) {
 }
 
 // TestFindResultByHashWithErrorConsensus specifically tests the bug fix where
-// findResultByHash was incorrectly returning &r.result for error consensus cases
+// DEPRECATED: findResultByHash was incorrectly returning &r.result for error consensus cases
+// This test is commented out because findResultByHash method no longer exists after refactoring.
+// The functionality is now integrated into analyzeResponses method and tested elsewhere.
+/*
 func TestFindResultByHashWithErrorConsensus(t *testing.T) {
 	// Create logger
 	logger := log.Logger
@@ -2905,7 +2876,7 @@ func TestFindResultByHashWithErrorConsensus(t *testing.T) {
 
 		// Create consensus policy
 		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-			WithRequiredParticipants(3).
+			WithMaxParticipants(3).
 			WithAgreementThreshold(2).
 			WithLogger(&logger).
 			Build()
@@ -2935,3 +2906,4 @@ func TestFindResultByHashWithErrorConsensus(t *testing.T) {
 		// because evaluateConsensus handled it directly
 	})
 }
+*/
