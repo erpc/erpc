@@ -21,7 +21,7 @@ type ConsensusPolicy[R any] interface {
 // R is the execution result type. This type is not concurrency safe.
 type ConsensusPolicyBuilder[R any] interface {
 	WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder[R]
-	WithRequiredParticipants(requiredParticipants int) ConsensusPolicyBuilder[R]
+	WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder[R]
 	WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder[R]
 	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder[R]
 	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder[R]
@@ -39,7 +39,7 @@ type ConsensusPolicyBuilder[R any] interface {
 type config[R any] struct {
 	*policy.BaseAbortablePolicy[R]
 
-	requiredParticipants    int
+	maxParticipants         int
 	agreementThreshold      int
 	disputeBehavior         common.ConsensusDisputeBehavior
 	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
@@ -72,8 +72,8 @@ type consensusPolicy[R any] struct {
 
 var _ ConsensusPolicy[any] = &consensusPolicy[any]{}
 
-func (c *config[R]) WithRequiredParticipants(requiredParticipants int) ConsensusPolicyBuilder[R] {
-	c.requiredParticipants = requiredParticipants
+func (c *config[R]) WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder[R] {
+	c.maxParticipants = maxParticipants
 	return c
 }
 
@@ -153,9 +153,9 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 	}
 }
 
-func (p *consensusPolicy[R]) WithRequiredParticipants(required int) ConsensusPolicy[R] {
+func (p *consensusPolicy[R]) WithMaxParticipants(required int) ConsensusPolicy[R] {
 	pCopy := *p
-	pCopy.requiredParticipants = required
+	pCopy.maxParticipants = required
 	return &pCopy
 }
 

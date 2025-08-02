@@ -644,7 +644,7 @@ func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, 
 	// This is safe because consensus policy reuses the same slice for the same ignore patterns
 	var cacheKey unsafe.Pointer
 	if len(ignoreFields) > 0 {
-		cacheKey = unsafe.Pointer(&ignoreFields[0])
+		cacheKey = unsafe.Pointer(&ignoreFields[0]) // #nosec G103
 	}
 
 	// Check cache first

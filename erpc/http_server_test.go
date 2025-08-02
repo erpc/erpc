@@ -8167,7 +8167,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								{
 									MatchMethod: "*",
 									Consensus: &common.ConsensusPolicyConfig{
-										RequiredParticipants:    3,
+										MaxParticipants:         3,
 										AgreementThreshold:      2,
 										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -8301,7 +8301,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								{
 									MatchMethod: "*",
 									Consensus: &common.ConsensusPolicyConfig{
-										RequiredParticipants:    3,
+										MaxParticipants:         3,
 										AgreementThreshold:      2,
 										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
@@ -8417,7 +8417,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 								{
 									MatchMethod: "*",
 									Consensus: &common.ConsensusPolicyConfig{
-										RequiredParticipants:    3,
+										MaxParticipants:         3,
 										AgreementThreshold:      2,
 										DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 										LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,

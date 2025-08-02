@@ -839,7 +839,9 @@ const (
 )
 
 type ConsensusPolicyConfig struct {
-	RequiredParticipants    int                              `yaml:"requiredParticipants" json:"requiredParticipants"`
+	MaxParticipants int `yaml:"maxParticipants" json:"maxParticipants"`
+	// @deprecated: use MaxParticipants instead
+	RequiredParticipants    int                              `yaml:"requiredParticipants" json:"-"`
 	AgreementThreshold      int                              `yaml:"agreementThreshold,omitempty" json:"agreementThreshold"`
 	DisputeBehavior         ConsensusDisputeBehavior         `yaml:"disputeBehavior,omitempty" json:"disputeBehavior"`
 	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`

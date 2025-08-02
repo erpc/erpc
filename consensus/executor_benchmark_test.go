@@ -18,44 +18,44 @@ import (
 // BenchmarkConsensusExecution benchmarks consensus execution with varying parameters
 func BenchmarkConsensusExecution(b *testing.B) {
 	scenarios := []struct {
-		name                 string
-		numUpstreams         int
-		requiredParticipants int
-		agreementThreshold   int
-		consensusRatio       float64
-		responseDelay        time.Duration
+		name               string
+		numUpstreams       int
+		maxParticipants    int
+		agreementThreshold int
+		consensusRatio     float64
+		responseDelay      time.Duration
 	}{
 		{
-			name:                 "Small_5_Upstreams",
-			numUpstreams:         5,
-			requiredParticipants: 3,
-			agreementThreshold:   3,
-			consensusRatio:       0.6,
-			responseDelay:        1 * time.Millisecond,
+			name:               "Small_5_Upstreams",
+			numUpstreams:       5,
+			maxParticipants:    3,
+			agreementThreshold: 3,
+			consensusRatio:     0.6,
+			responseDelay:      1 * time.Millisecond,
 		},
 		{
-			name:                 "Medium_20_Upstreams",
-			numUpstreams:         20,
-			requiredParticipants: 10,
-			agreementThreshold:   10,
-			consensusRatio:       0.6,
-			responseDelay:        1 * time.Millisecond,
+			name:               "Medium_20_Upstreams",
+			numUpstreams:       20,
+			maxParticipants:    10,
+			agreementThreshold: 10,
+			consensusRatio:     0.6,
+			responseDelay:      1 * time.Millisecond,
 		},
 		{
-			name:                 "Large_50_Upstreams",
-			numUpstreams:         50,
-			requiredParticipants: 25,
-			agreementThreshold:   25,
-			consensusRatio:       0.6,
-			responseDelay:        1 * time.Millisecond,
+			name:               "Large_50_Upstreams",
+			numUpstreams:       50,
+			maxParticipants:    25,
+			agreementThreshold: 25,
+			consensusRatio:     0.6,
+			responseDelay:      1 * time.Millisecond,
 		},
 		{
-			name:                 "VeryLarge_100_Upstreams",
-			numUpstreams:         100,
-			requiredParticipants: 50,
-			agreementThreshold:   50,
-			consensusRatio:       0.6,
-			responseDelay:        1 * time.Millisecond,
+			name:               "VeryLarge_100_Upstreams",
+			numUpstreams:       100,
+			maxParticipants:    50,
+			agreementThreshold: 50,
+			consensusRatio:     0.6,
+			responseDelay:      1 * time.Millisecond,
 		},
 	}
 
@@ -79,7 +79,7 @@ func BenchmarkConsensusExecution(b *testing.B) {
 
 			logger := zerolog.Nop()
 			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(scenario.requiredParticipants).
+				WithMaxParticipants(scenario.maxParticipants).
 				WithAgreementThreshold(scenario.agreementThreshold).
 				WithLogger(&logger)
 
@@ -110,14 +110,14 @@ func BenchmarkConsensusExecution(b *testing.B) {
 				// Test key consensus functions that are used in high RPS scenarios
 				logger := zerolog.Nop()
 
-				// 1. Test countResponsesByHash - core consensus evaluation
-				_, _, _ = executor.countResponsesByHash(&logger, execResults, mockExec)
+				// 1. Test analyzeResponses - core consensus evaluation
+				analysis := executor.analyzeResponses(&logger, execResults, mockExec)
 
 				// 2. Test checkShortCircuit - early termination logic
 				_ = executor.checkShortCircuit(&logger, execResults, mockExec)
 
 				// 3. Test handleAcceptMostCommon - dispute resolution
-				_ = executor.handleAcceptMostCommon(context.Background(), &logger, execResults, mockExec, func() error {
+				_ = executor.handleAcceptMostCommon(&logger, analysis, func() error {
 					return fmt.Errorf("test dispute")
 				})
 			}
@@ -193,7 +193,7 @@ func BenchmarkShortCircuit(b *testing.B) {
 
 			logger := zerolog.Nop()
 			builtPolicy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(scenario.numUpstreams).
+				WithMaxParticipants(scenario.numUpstreams).
 				WithAgreementThreshold(consensusThreshold).
 				WithLogger(&logger).
 				Build()
@@ -246,7 +246,7 @@ func BenchmarkShortCircuit(b *testing.B) {
 				shortCircuited := executor.checkShortCircuit(&logger, partialResults, mockExec)
 
 				// Also test related consensus functions
-				_, _, _ = executor.countResponsesByHash(&logger, partialResults, mockExec)
+				_ = executor.analyzeResponses(&logger, partialResults, mockExec)
 
 				_ = shortCircuited // Use the result to prevent optimization
 			}
@@ -312,7 +312,7 @@ func BenchmarkMisbehaviorTracking(b *testing.B) {
 
 			logger := zerolog.Nop()
 			builder := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(scenario.numUpstreams).
+				WithMaxParticipants(scenario.numUpstreams).
 				WithAgreementThreshold(consensusCount).
 				WithLogger(&logger)
 
@@ -351,10 +351,10 @@ func BenchmarkMisbehaviorTracking(b *testing.B) {
 				logger := zerolog.Nop()
 
 				// Test the core consensus functions that handle misbehavior tracking
-				_, _, _ = executor.countResponsesByHash(&logger, execResults, mockExec)
+				analysis := executor.analyzeResponses(&logger, execResults, mockExec)
 
 				// Test dispute resolution logic which triggers misbehavior tracking
-				_ = executor.handleAcceptMostCommon(context.Background(), &logger, execResults, mockExec, func() error {
+				_ = executor.handleAcceptMostCommon(&logger, analysis, func() error {
 					return fmt.Errorf("test dispute for misbehavior")
 				})
 
@@ -386,7 +386,7 @@ func BenchmarkConcurrentConsensus(b *testing.B) {
 
 			logger := zerolog.Nop()
 			builtPolicy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(numUpstreams).
+				WithMaxParticipants(numUpstreams).
 				WithAgreementThreshold(11).
 				WithLogger(&logger).
 				Build()
@@ -418,9 +418,9 @@ func BenchmarkConcurrentConsensus(b *testing.B) {
 					logger := zerolog.Nop()
 
 					// Test concurrent execution of core consensus functions
-					_, _, _ = executor.countResponsesByHash(&logger, execResults, mockExec)
+					analysis := executor.analyzeResponses(&logger, execResults, mockExec)
 					_ = executor.checkShortCircuit(&logger, execResults, mockExec)
-					_ = executor.handleAcceptMostCommon(context.Background(), &logger, execResults, mockExec, func() error {
+					_ = executor.handleAcceptMostCommon(&logger, analysis, func() error {
 						return fmt.Errorf("concurrent test dispute")
 					})
 				}
@@ -488,7 +488,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 
 			logger := zerolog.Nop()
 			builtPolicy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(scenario.numUpstreams).
+				WithMaxParticipants(scenario.numUpstreams).
 				WithAgreementThreshold(scenario.numUpstreams/2 + 1).
 				WithLogger(&logger).
 				Build()
@@ -520,9 +520,9 @@ func BenchmarkMemoryUsage(b *testing.B) {
 				logger := zerolog.Nop()
 
 				// Test memory allocations in core consensus functions
-				_, _, _ = executor.countResponsesByHash(&logger, execResults, mockExec)
+				analysis := executor.analyzeResponses(&logger, execResults, mockExec)
 				_ = executor.checkShortCircuit(&logger, execResults, mockExec)
-				_ = executor.handleAcceptMostCommon(context.Background(), &logger, execResults, mockExec, func() error {
+				_ = executor.handleAcceptMostCommon(&logger, analysis, func() error {
 					return fmt.Errorf("memory test dispute")
 				})
 			}
@@ -533,32 +533,32 @@ func BenchmarkMemoryUsage(b *testing.B) {
 // BenchmarkHotPathPerformance specifically targets the map allocation hot paths
 func BenchmarkHotPathPerformance(b *testing.B) {
 	scenarios := []struct {
-		name                 string
-		numUpstreams         int
-		requiredParticipants int
-		agreementThreshold   int
-		consensusRatio       float64
+		name               string
+		numUpstreams       int
+		maxParticipants    int
+		agreementThreshold int
+		consensusRatio     float64
 	}{
 		{
-			name:                 "Small_Load_10_Upstreams",
-			numUpstreams:         10,
-			requiredParticipants: 10,
-			agreementThreshold:   6,
-			consensusRatio:       0.6,
+			name:               "Small_Load_10_Upstreams",
+			numUpstreams:       10,
+			maxParticipants:    10,
+			agreementThreshold: 6,
+			consensusRatio:     0.6,
 		},
 		{
-			name:                 "Medium_Load_50_Upstreams",
-			numUpstreams:         50,
-			requiredParticipants: 50,
-			agreementThreshold:   30,
-			consensusRatio:       0.6,
+			name:               "Medium_Load_50_Upstreams",
+			numUpstreams:       50,
+			maxParticipants:    50,
+			agreementThreshold: 30,
+			consensusRatio:     0.6,
 		},
 		{
-			name:                 "Heavy_Load_100_Upstreams",
-			numUpstreams:         100,
-			requiredParticipants: 100,
-			agreementThreshold:   60,
-			consensusRatio:       0.6,
+			name:               "Heavy_Load_100_Upstreams",
+			numUpstreams:       100,
+			maxParticipants:    100,
+			agreementThreshold: 60,
+			consensusRatio:     0.6,
 		},
 	}
 
@@ -585,7 +585,7 @@ func BenchmarkHotPathPerformance(b *testing.B) {
 
 			logger := zerolog.Nop()
 			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(scenario.requiredParticipants).
+				WithMaxParticipants(scenario.maxParticipants).
 				WithAgreementThreshold(scenario.agreementThreshold).
 				WithLogger(&logger)
 
@@ -622,9 +622,9 @@ func BenchmarkHotPathPerformance(b *testing.B) {
 				logger := zerolog.Nop()
 
 				// Test the actual hot path functions that are used in high RPS scenarios
-				_, _, _ = executor.countResponsesByHash(&logger, execResults, mockExec)
+				analysis := executor.analyzeResponses(&logger, execResults, mockExec)
 				_ = executor.checkShortCircuit(&logger, execResults, mockExec)
-				_ = executor.handleAcceptMostCommon(context.Background(), &logger, execResults, mockExec, func() error {
+				_ = executor.handleAcceptMostCommon(&logger, analysis, func() error {
 					return fmt.Errorf("hot path test dispute")
 				})
 			}
@@ -670,7 +670,7 @@ func BenchmarkMapAllocations(b *testing.B) {
 
 	logger := zerolog.Nop()
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-		WithRequiredParticipants(numUpstreams).
+		WithMaxParticipants(numUpstreams).
 		WithAgreementThreshold(25).
 		WithLogger(&logger)
 
@@ -689,14 +689,14 @@ func BenchmarkMapAllocations(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		// Test the specific hot path functions that allocate maps
 
-		// 1. Test countResponsesByHash (allocates multiple maps)
-		_, _, _ = executor.countResponsesByHash(&logger, responses, mockExec)
+		// 1. Test analyzeResponses (allocates analysis maps in single pass)
+		analysis := executor.analyzeResponses(&logger, responses, mockExec)
 
-		// 2. Test checkShortCircuit (allocates resultCounts and emptyishHashes maps)
+		// 2. Test checkShortCircuit (re-uses analysis)
 		_ = executor.checkShortCircuit(&logger, responses, mockExec)
 
-		// 3. Test handleAcceptMostCommon (allocates nonEmptyResults, emptyResults, resultsByHash)
-		_ = executor.handleAcceptMostCommon(context.Background(), &logger, responses, mockExec, func() error {
+		// 3. Test handleAcceptMostCommon (uses pre-computed analysis)
+		_ = executor.handleAcceptMostCommon(&logger, analysis, func() error {
 			return fmt.Errorf("test error")
 		})
 	}
@@ -743,7 +743,7 @@ func BenchmarkResponseCollectionStrategies(b *testing.B) {
 		b.Run(scenario.name, func(b *testing.B) {
 			logger := zerolog.Nop()
 			builtPolicy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
-				WithRequiredParticipants(30).
+				WithMaxParticipants(30).
 				WithAgreementThreshold(26).
 				WithLogger(&logger).
 				Build()
@@ -774,14 +774,14 @@ func BenchmarkResponseCollectionStrategies(b *testing.B) {
 				// Test response collection and consensus functions directly
 				logger := zerolog.Nop()
 
-				// 1. Test countResponsesByHash - response collection and consensus evaluation
-				_, _, _ = executor.countResponsesByHash(&logger, execResults, mockExec)
+				// 1. Test analyzeResponses - response collection and consensus evaluation
+				analysis := executor.analyzeResponses(&logger, execResults, mockExec)
 
 				// 2. Test checkShortCircuit - early termination based on response patterns
 				_ = executor.checkShortCircuit(&logger, execResults, mockExec)
 
 				// 3. Test handleAcceptMostCommon - response validation and acceptance
-				_ = executor.handleAcceptMostCommon(context.Background(), &logger, execResults, mockExec, func() error {
+				_ = executor.handleAcceptMostCommon(&logger, analysis, func() error {
 					return fmt.Errorf("test collection strategy")
 				})
 			}
