@@ -102,7 +102,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		network.SetDefaults(nil, nil)
 
 		expected := &FailsafeConfig{
-			MatchMethod: "", // Legacy field is not set anymore - only Matchers is populated
+			MatchMethod: "",
 			Matchers: []*MatcherConfig{
 				{
 					Method: "*",
