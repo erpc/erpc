@@ -743,7 +743,11 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 					"id":      1,
 					"result":  "0x7a", // Same result achieves consensus
 				},
-				// test3 not mocked since it won't be called due to early consensus
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x7a", // test3 (leader) response
+				},
 			},
 			expectedCalls: []int{
 				1, // test1 should be used
