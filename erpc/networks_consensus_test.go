@@ -743,16 +743,12 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 					"id":      1,
 					"result":  "0x7a", // Same result achieves consensus
 				},
-				{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x7a", // test3 (leader) response
-				},
+				// test3 not mocked since it won't be called due to early consensus
 			},
 			expectedCalls: []int{
 				1, // test1 should be used
-				1, // test2 should NOT be used
-				1, // test3 (leader) should be called
+				1, // test2 should be used (both return 0x7a, achieving consensus)
+				0, // test3 (leader) not called due to early consensus
 			},
 			expectedResponse: common.NewNormalizedResponse().
 				WithJsonRpcResponse(successResponse),
