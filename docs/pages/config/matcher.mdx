@@ -1,38 +1,103 @@
 ---
-description: Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values...
+description: Certain configurations accept a matcher object with fields for fine-grained control.
 ---
 
-# Matcher syntax
+## Matcher Objects
 
-Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values.
+Certain configurations accept a matcher object with fields for fine-grained control. These include:
 
-Matchers are used in the following configurations:
-- [Upstream](/config/projects/upstreams)'s allowMethods or ignoreMethods.
-- [Cache policy](/config/database/evm-json-rpc-cache#cache-policies) patterns for network/method/params.
-- [Aliasing](/operation/url#domain-aliasing) rules for `Host` header.
-- [Failsafe](/config/failsafe) `matchMethod` patterns.
+- [cache policies](/config/database/evm-json-rpc-cache)
+- [failsafe policies](/config/failsafe))
 
-## Examples
+### Fields
+- `method`: Method pattern using the syntax above (optional, defaults to `*`)
+- `network`: Network identifier pattern (optional, defaults to `*`)
+- `params`: Array of parameter values to match (optional)
+- `finality`: Array of finality states to match (optional)
+- `empty`: Empty response behavior - `ignore`, `allow`, or `only` (cache only, optional)
+- `action`: Either `include` or `exclude` (optional, defaults to `include`)
 
-```js
-// Match one exact method OR any eth_ method
-arbtrace_transaction | eth_*
+### Action Field
+The `action` field determines how the matcher behaves:
+- `include`: Requests matching this pattern will be included/processed
+- `exclude`: Requests matching this pattern will be excluded/skipped
 
-// Match all methods expect those prefixed with alchemy_*
-!alchemy_*
+**Important**: Only `include` and `exclude` are valid values. Any other value will cause configuration validation to fail.
 
-// Match a number between 1 and 100
->=1 & <=100
+## Cache Policy Examples
 
-// Match some block tags AND any numeric blocks higher than 1000 (also with hex example)
-(latest | safe | finalized) | >=1000
-(latest | safe | finalized) | >=0x4096
+```yaml
+# Cache all finalized eth_call and eth_getBalance requests
+policies:
+  - matchers:
+      - method: "eth_call|eth_getBalance"
+        finality: ["finalized"]
+        action: include
+    connector: redis-cache
+    ttl: 1h
 
-// Match only numeric values (e.g. ignore block tags)
-0x*
+# Cache everything except eth_getLogs (which can be large)
+policies:
+  - matchers:
+      - method: "*"
+        action: include
+      - method: "eth_getLogs"
+        action: exclude
+    connector: memory-cache
+    ttl: 30s
+
+# Cache only empty responses for eth_getCode (useful for EOA checks)
+policies:
+  - matchers:
+      - method: "eth_getCode"
+        empty: only
+        action: include
+    connector: memory-cache
+    ttl: 24h
 ```
 
-## Operations
+## Failsafe Policy Examples
+
+```yaml
+# Apply aggressive retry policy only to Ethereum mainnet eth_call methods
+failsafe:
+  - matchers:
+      - network: "evm:1"
+        method: "eth_call"
+        action: include
+    retry:
+      maxAttempts: 5
+      delay: 100ms
+
+# Exclude expensive trace methods from retry policies
+failsafe:
+  - matchers:
+      - method: "*"
+        action: include
+      - method: "debug_traceTransaction|trace_*"
+        action: exclude
+    retry:
+      maxAttempts: 3
+
+# Different timeouts for finalized vs realtime data
+failsafe:
+  - matchers:
+      - method: "*"
+        finality: ["realtime"]
+        action: include
+    timeout:
+      duration: 5s
+  - matchers:
+      - method: "*"
+        finality: ["finalized"]
+        action: include
+    timeout:
+      duration: 30s
+```
+
+## Pattern Syntax
+
+For any of the fields above, you can use the following syntaxes for more fine-grained matching:
 
 ### Wildcards
 - `*` - matches any number of characters
@@ -50,3 +115,23 @@ arbtrace_transaction | eth_*
 - `>=` - greater than or equal
 - `<=` - less than or equal
 - `=` - equal to
+
+### Examples
+
+```js
+// Match one exact method OR any eth_ method
+arbtrace_transaction | eth_*
+
+// Match all methods except those prefixed with alchemy_*
+!alchemy_*
+
+// Match a number between 1 and 100
+>=1 & <=100
+
+// Match some block tags AND any numeric blocks higher than 1000 (also with hex example)
+(latest | safe | finalized) | >=1000
+(latest | safe | finalized) | >=0x4096
+
+// Match only numeric values (e.g. ignore block tags)
+0x*
+```
