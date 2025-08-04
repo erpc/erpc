@@ -2206,6 +2206,188 @@ func TestConsensusNonEmptyPreference(t *testing.T) {
 	}
 }
 
+func TestConsensusEvmEmptyLogsPreference(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	// Transaction receipt with actual logs (what the winning upstream returns)
+	receiptWithLogs := map[string]interface{}{
+		"blockHash":         "0xae648a30096d5249966117b30d52210b63b6ca3467496e25c578a31eb981add5",
+		"blockNumber":       "0x4723110",
+		"contractAddress":   nil,
+		"cumulativeGasUsed": "0x0",
+		"effectiveGasPrice": "0x105",
+		"from":              "0x0000000000000000000000000000000000000000",
+		"gasUsed":           "0x0",
+		"logs": []interface{}{
+			map[string]interface{}{
+				"address": "0x8f3cf7ad23cd3cadbd9735aff958023239c6a063",
+				"topics": []interface{}{
+					"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+					"0x0000000000000000000000000000000000000000000000000000000000000000",
+					"0x0000000000000000000000002ce910fbba65b454bbaf6a18c952a70f3bcd8299",
+				},
+				"data":             "0x000000000000000000000000000000000000000000004110907a4408eab20000",
+				"blockNumber":      "0x4723110",
+				"transactionHash":  "0xce77f4de5787a3bc16a12ea0c833f9041e1b664c8f2a4076e8c8c27dfffe5526",
+				"transactionIndex": "0xb6",
+				"blockHash":        "0xae648a30096d5249966117b30d52210b63b6ca3467496e25c578a31eb981add5",
+				"logIndex":         "0x0",
+				"removed":          false,
+			},
+		},
+		"logsBloom":        "0x00000000000000001000000000000800000000000000000004000000000000000000000002000000000040000000000000000000000080002000200000000000000000000000200008000008000000000000000000000000000200000000000000000000020000000000000000000800000000000000000100004010000000000001000000000000000000000000000000000000000200000000000000000000000000000000200000000000000000000000100000000000000000000000000000000022000000000000000000000000000000000000000000000000000020000008008000022000000000000020000000000000000000000000020000000000",
+		"status":           "0x1",
+		"to":               "0x0000000000000000000000000000000000000000",
+		"transactionHash":  "0xce77f4de5787a3bc16a12ea0c833f9041e1b664c8f2a4076e8c8c27dfffe5526",
+		"transactionIndex": "0xb6",
+		"type":             "0x0",
+	}
+
+	// Same receipt structure but with empty logs array
+	receiptWithEmptyLogs := map[string]interface{}{
+		"blockHash":         "0xae648a30096d5249966117b30d52210b63b6ca3467496e25c578a31eb981add5",
+		"blockNumber":       "0x4723110",
+		"contractAddress":   nil,
+		"cumulativeGasUsed": "0x0",
+		"effectiveGasPrice": "0x105",
+		"from":              "0x0000000000000000000000000000000000000000",
+		"gasUsed":           "0x0",
+		"logs":              []interface{}{}, // Empty logs array
+		"logsBloom":         "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+		"status":            "0x1",
+		"to":                "0x0000000000000000000000000000000000000000",
+		"transactionHash":   "0xce77f4de5787a3bc16a12ea0c833f9041e1b664c8f2a4076e8c8c27dfffe5526",
+		"transactionIndex":  "0xb6",
+		"type":              "0x0",
+	}
+
+	tests := []struct {
+		name               string
+		mockResponses      []map[string]interface{}
+		maxParticipants    int
+		agreementThreshold int
+		disputeBehavior    *common.ConsensusDisputeBehavior
+		expectedResult     interface{}
+		expectedError      bool
+		expectedConsensus  bool
+		description        string
+	}{
+		{
+			name: "prefer_transaction_receipt_with_logs_over_empty_logs",
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  receiptWithEmptyLogs, // Empty logs
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  receiptWithEmptyLogs, // Empty logs
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  receiptWithEmptyLogs, // Empty logs (3 total with empty logs)
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  receiptWithLogs, // Has actual logs (1 with logs)
+				},
+			},
+			maxParticipants:    4,
+			agreementThreshold: 2, // Need 2 to agree, but should prefer non-empty
+			disputeBehavior:    &[]common.ConsensusDisputeBehavior{common.ConsensusDisputeBehaviorAcceptAnyValidResult}[0],
+			expectedConsensus:  true,
+			description:        "4 participants: 3 with empty logs, 1 with actual logs → prefer non-empty logs",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset gock for each test
+			gock.Clean()
+			util.SetupMocksForEvmStatePoller()
+
+			// Create upstreams
+			upstreams := make([]*common.UpstreamConfig, tc.maxParticipants)
+			for i := 0; i < tc.maxParticipants; i++ {
+				upstreams[i] = &common.UpstreamConfig{
+					Id:       fmt.Sprintf("upstream%d", i+1),
+					Endpoint: fmt.Sprintf("http://upstream%d.localhost", i+1),
+					Type:     common.UpstreamTypeEvm,
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				}
+			}
+
+			// Mock responses for each upstream
+			for i, upstream := range upstreams {
+				if i < len(tc.mockResponses) {
+					gock.New(upstream.Endpoint).
+						Post("").
+						Times(1).
+						Reply(200).
+						JSON(tc.mockResponses[i])
+				}
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			disputeBehavior := common.ConsensusDisputeBehaviorReturnError
+			if tc.disputeBehavior != nil {
+				disputeBehavior = *tc.disputeBehavior
+			}
+
+			network := setupTestNetworkWithConsensusPolicy(t, ctx, upstreams, &common.ConsensusPolicyConfig{
+				MaxParticipants:    tc.maxParticipants,
+				AgreementThreshold: tc.agreementThreshold,
+				DisputeBehavior:    disputeBehavior,
+				PunishMisbehavior:  &common.PunishMisbehaviorConfig{},
+			})
+
+			// Make eth_getTransactionReceipt request
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xce77f4de5787a3bc16a12ea0c833f9041e1b664c8f2a4076e8c8c27dfffe5526"],"id":1}`))
+
+			resp, err := network.Forward(ctx, req)
+
+			if tc.expectedError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+
+				// Verify response content
+				jrr, err := resp.JsonRpcResponse()
+				require.NoError(t, err)
+
+				// Extract logs from the result to verify we got the non-empty logs response
+				var resultObj map[string]interface{}
+				err = common.SonicCfg.Unmarshal(jrr.Result, &resultObj)
+				require.NoError(t, err)
+
+				logs, exists := resultObj["logs"]
+				require.True(t, exists, "Response should contain logs field")
+
+				logsArray, ok := logs.([]interface{})
+				require.True(t, ok, "Logs should be an array")
+
+				// Should prefer the response with actual logs, not empty logs
+				assert.Greater(t, len(logsArray), 0, "Should prefer response with non-empty logs array")
+
+				t.Logf("Got response with %d logs entries", len(logsArray))
+			}
+
+			t.Logf("%s: test completed successfully", tc.description)
+		})
+	}
+}
+
 // TestConsensusNonEmptyPreferenceWithDisputes tests non-empty preference with dispute scenarios
 func TestConsensusNonEmptyPreferenceWithDisputes(t *testing.T) {
 	util.ResetGock()

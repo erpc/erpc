@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -332,10 +333,43 @@ func (r *NormalizedResponse) IsResultEmptyish(ctx ...context.Context) bool {
 	}
 
 	if jrr != nil {
-		return jrr.IsResultEmptyish(ctx...)
+		// Check generic emptyish first
+		emptyish := jrr.IsResultEmptyish(ctx...)
+		if emptyish {
+			return true
+		}
+
+		// If not generically emptyish, check EVM-specific emptyish conditions
+		return r.isEvmResultEmptyish(jrr, ctx...)
 	}
 
 	return true
+}
+
+func (r *NormalizedResponse) isEvmResultEmptyish(jrr *JsonRpcResponse, ctx ...context.Context) bool {
+	if r.request == nil || r.request.network == nil || r.request.network.Architecture() != ArchitectureEvm {
+		return false
+	}
+
+	if len(ctx) == 0 {
+		ctx = []context.Context{context.Background()}
+	}
+
+	method, _ := r.request.Method()
+	switch method {
+	case "eth_getTransactionReceipt":
+		logsBytes, err := jrr.PeekBytesByPath(ctx[0], "logs")
+		if err != nil {
+			// If we can't peek the logs field, consider it not emptyish
+			return false
+		}
+
+		// Use the existing utility to check if the bytes represent an empty array
+		// This handles cases like "[]" (empty array) with zero memory copy
+		return util.IsBytesEmptyish(logsBytes)
+	}
+
+	return false
 }
 
 func (r *NormalizedResponse) IsObjectNull(ctx ...context.Context) bool {
