@@ -317,6 +317,33 @@ func (r *JsonRpcResponse) PeekStringByPath(ctx context.Context, path ...interfac
 	return n.String()
 }
 
+func (r *JsonRpcResponse) PeekBytesByPath(ctx context.Context, path ...interface{}) ([]byte, error) {
+	_, span := StartDetailSpan(ctx, "JsonRpcResponse.PeekBytesByPath")
+	defer span.End()
+
+	err := r.ensureCachedNode()
+	if err != nil {
+		return nil, err
+	}
+
+	r.resultMu.Lock()
+	defer r.resultMu.Unlock()
+	n := r.cachedNode.GetByPath(path...)
+	if n == nil {
+		return nil, fmt.Errorf("could not get '%s' from json-rpc response", path)
+	}
+	if n.Error() != "" {
+		return nil, fmt.Errorf("error getting '%s' from json-rpc response: %s", path, n.Error())
+	}
+
+	// Use Raw() method to get zero-copy access to the underlying JSON bytes
+	rawStr, err := n.Raw()
+	if err != nil {
+		return nil, fmt.Errorf("error getting raw JSON from node: %s", err)
+	}
+	return util.S2Bytes(rawStr), nil
+}
+
 func (r *JsonRpcResponse) Size(ctx ...context.Context) (int, error) {
 	if r == nil {
 		return 0, nil
