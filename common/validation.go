@@ -20,6 +20,10 @@ func validateMatchers(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
 		if matcher.Action == "" {
 			matcher.Action = MatcherInclude
 		}
+		// Validate that action is one of the allowed values
+		if matcher.Action != MatcherInclude && matcher.Action != MatcherExclude {
+			return nil, fmt.Errorf("invalid action '%s' in matcher (method=%s): must be either 'include' or 'exclude'", matcher.Action, matcher.Method)
+		}
 	}
 
 	// Check if this is a single auto-generated default catch-all include matcher.
