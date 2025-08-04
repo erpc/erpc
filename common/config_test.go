@@ -1117,7 +1117,7 @@ func TestMatchersValidate(t *testing.T) {
 	t.Run("matchers with valid actions should pass validation", func(t *testing.T) {
 		matchers := []*MatcherConfig{
 			{
-				Method: "*", // Catch-all first rule for mixed scenario
+				Method: "*",            // Catch-all first rule for mixed scenario
 				Action: MatcherInclude, // Valid action
 			},
 			{
