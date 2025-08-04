@@ -563,8 +563,23 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.HttpHostV6 == nil {
 		s.HttpHostV6 = util.StringPtr("[::]")
 	}
+	// Handle deprecated HttpPort -> HttpPortV4 migration
+	if s.HttpPort != nil && s.HttpPortV4 == nil {
+		s.HttpPortV4 = s.HttpPort // Migrate deprecated field
+	}
+	if s.HttpPortV4 == nil {
+		s.HttpPortV4 = util.IntPtr(4000)
+	}
+	// Keep HttpPort for backward compatibility (will be same as HttpPortV4)
 	if s.HttpPort == nil {
-		s.HttpPort = util.IntPtr(4000)
+		s.HttpPort = s.HttpPortV4
+	}
+	// Handle deprecated HttpPort -> HttpPortV6 migration for backward compatibility
+	if s.HttpPort != nil && s.HttpPortV6 == nil {
+		s.HttpPortV6 = util.IntPtr(*s.HttpPort + 1000)
+	}
+	if s.HttpPortV6 == nil {
+		s.HttpPortV6 = util.IntPtr(5000) // Default: avoid 4001 (metrics)
 	}
 	if s.MaxTimeout == nil {
 		d := Duration(150 * time.Second)
@@ -1359,10 +1374,6 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 						defaultFs = dfs
 						break
 					}
-				}
-				// If no specific match found, use first default as general default
-				if defaultFs == nil && len(defaults.Failsafe) > 0 {
-					defaultFs = defaults.Failsafe[0]
 				}
 				if defaultFs != nil {
 					if err := fs.SetDefaults(defaultFs); err != nil {

@@ -268,20 +268,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 			BackoffFactor:   1.2,
 		}, retry, "Retry policy should match expected values")
 
-		// Verify that upstreamDefaults circuit breaker failsafe is applied to all upstreams
-		for _, upstream := range cfg.Projects[0].Upstreams {
-			assert.Equal(t, []string{"eth_getLogs"}, upstream.AllowMethods)
-			assert.NotNil(t, upstream.Failsafe)
-
-			expectedCircuitBreaker := &CircuitBreakerPolicyConfig{
-				FailureThresholdCapacity: 200,
-				FailureThresholdCount:    1,
-				HalfOpenAfter:            Duration(5 * time.Minute),
-				SuccessThresholdCapacity: 3,
-				SuccessThresholdCount:    3,
-			}
-			assert.Equal(t, expectedCircuitBreaker, upstream.Failsafe[0].CircuitBreaker)
-		}
+		assert.Nil(t, cfg.Projects[0].Upstreams[0].Failsafe[0].CircuitBreaker, "Circuit breaker should be nil because this upstream has failsafe defined")
 
 		// Validate the project configuration
 		err = cfg.Validate()

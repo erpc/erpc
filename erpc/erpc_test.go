@@ -29,7 +29,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		Server: &common.ServerConfig{
 			HttpHostV4: util.StringPtr("0.0.0.0"),
 			HttpHostV6: util.StringPtr("[::]"),
-			HttpPort:   util.IntPtr(port),
+			HttpPortV4: util.IntPtr(port),
 			MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 		},
 		Projects: []*common.ProjectConfig{

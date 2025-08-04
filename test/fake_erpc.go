@@ -243,7 +243,7 @@ func prepareERPCConfig(config StressTestConfig) (*common.Config, string, error) 
 		Server: &common.ServerConfig{
 			HttpHostV4: util.StringPtr("0.0.0.0"),
 			HttpHostV6: util.StringPtr("[::]"),
-			HttpPort:   util.IntPtr(config.ServicePort),
+			HttpPortV4: util.IntPtr(config.ServicePort),
 		},
 		Metrics: &common.MetricsConfig{
 			Enabled: util.BoolPtr(true),

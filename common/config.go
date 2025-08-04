@@ -91,7 +91,9 @@ type ServerConfig struct {
 	HttpHostV4          *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
 	ListenV6            *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
 	HttpHostV6          *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort            *int            `yaml:"httpPort,omitempty" json:"httpPort"`
+	HttpPort            *int            `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
+	HttpPortV4          *int            `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
+	HttpPortV6          *int            `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
 	MaxTimeout          *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
 	ReadTimeout         *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
 	WriteTimeout        *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`

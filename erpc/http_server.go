@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path"
@@ -35,7 +34,8 @@ type HttpServer struct {
 	serverCfg               *common.ServerConfig
 	healthCheckCfg          *common.HealthCheckConfig
 	adminCfg                *common.AdminConfig
-	server                  *http.Server
+	serverV4                *http.Server
+	serverV6                *http.Server
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
@@ -84,13 +84,26 @@ func NewHttpServer(
 	if cfg.EnableGzip != nil && *cfg.EnableGzip {
 		h = gzipHandler(h)
 	}
-	srv.server = &http.Server{
-		Handler: TimeoutHandler(
-			h,
-			reqMaxTimeout,
-		),
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
+
+	// Create handler with timeout
+	handlerWithTimeout := TimeoutHandler(h, reqMaxTimeout)
+
+	// Create IPv4 server if configured
+	if cfg.ListenV4 != nil && *cfg.ListenV4 {
+		srv.serverV4 = &http.Server{
+			Handler:      handlerWithTimeout,
+			ReadTimeout:  readTimeout,
+			WriteTimeout: writeTimeout,
+		}
+	}
+
+	// Create IPv6 server if configured
+	if cfg.ListenV6 != nil && *cfg.ListenV6 {
+		srv.serverV6 = &http.Server{
+			Handler:      handlerWithTimeout,
+			ReadTimeout:  readTimeout,
+			WriteTimeout: writeTimeout,
+		}
 	}
 
 	if healthCheckCfg != nil && healthCheckCfg.Auth != nil {
@@ -1118,90 +1131,170 @@ func handleErrorResponse(
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	var err error
-	var ln net.Listener
-	var ln4 net.Listener
-	var ln6 net.Listener
-
-	if s.serverCfg.HttpPort == nil {
-		return fmt.Errorf("server.httpPort is not configured")
+	// Validate that at least one server is configured
+	if s.serverV4 == nil && s.serverV6 == nil {
+		return fmt.Errorf("you must configure at least one of server.listenV4 or server.listenV6")
 	}
 
-	if s.serverCfg.HttpHostV4 != nil && s.serverCfg.ListenV4 != nil && *s.serverCfg.ListenV4 {
-		addrV4 := fmt.Sprintf("%s:%d", *s.serverCfg.HttpHostV4, *s.serverCfg.HttpPort)
-		logger.Info().Msgf("starting http server on port: %d IPv4: %s", *s.serverCfg.HttpPort, addrV4)
-		ln4, err = net.Listen("tcp4", addrV4)
-		if err != nil {
-			return fmt.Errorf("error listening on IPv4: %w", err)
+	// Channel to collect errors from server goroutines
+	errChan := make(chan error, 2)
+	serversStarted := 0
+
+	// Start IPv4 server if configured
+	if s.serverV4 != nil && s.serverCfg.ListenV4 != nil && *s.serverCfg.ListenV4 {
+		if s.serverCfg.HttpPortV4 == nil {
+			return fmt.Errorf("server.httpPortV4 is not configured")
 		}
-	}
-	if s.serverCfg.HttpHostV6 != nil && s.serverCfg.ListenV6 != nil && *s.serverCfg.ListenV6 {
-		addrV6 := fmt.Sprintf("%s:%d", *s.serverCfg.HttpHostV6, *s.serverCfg.HttpPort)
-		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.serverCfg.HttpPort, addrV6)
-		ln6, err = net.Listen("tcp6", addrV6)
-		if err != nil {
-			if ln4 != nil {
-				err := ln4.Close()
-				if err != nil {
-					logger.Error().Err(err).Msgf("failed to close IPv4 listener")
-				}
-			}
-			return fmt.Errorf("error listening on IPv6: %w", err)
-		}
-	}
+		addrV4 := fmt.Sprintf("%s:%d", *s.serverCfg.HttpHostV4, *s.serverCfg.HttpPortV4)
+		logger.Info().Msgf("starting IPv4 HTTP server on %s", addrV4)
 
-	if ln4 != nil && ln6 != nil {
-		ln = &dualStackListener{ln4, ln6}
-	} else if ln4 != nil {
-		ln = ln4
-	} else if ln6 != nil {
-		ln = ln6
-	}
-
-	if ln == nil {
-		return fmt.Errorf("you must configure at least one of server.httpHostV4 or server.httpHostV6")
-	}
-
-	// Handle TLS configuration if enabled
-	if s.serverCfg.TLS != nil && s.serverCfg.TLS.Enabled {
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-
-		// Load certificate and key
-		cert, err := tls.LoadX509KeyPair(s.serverCfg.TLS.CertFile, s.serverCfg.TLS.KeyFile)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS certificate and key: %w", err)
-		}
-		tlsConfig.Certificates = []tls.Certificate{cert}
-
-		// Load CA if specified
-		if s.serverCfg.TLS.CAFile != "" {
-			caCert, err := os.ReadFile(s.serverCfg.TLS.CAFile)
+		// Handle TLS for IPv4 server
+		if s.serverCfg.TLS != nil && s.serverCfg.TLS.Enabled {
+			tlsConfig, err := s.createTLSConfig()
 			if err != nil {
-				return fmt.Errorf("failed to read CA file: %w", err)
+				return fmt.Errorf("failed to create TLS config: %w", err)
 			}
-			caCertPool := x509.NewCertPool()
-			if !caCertPool.AppendCertsFromPEM(caCert) {
-				return fmt.Errorf("failed to parse CA certificate")
-			}
-			tlsConfig.ClientCAs = caCertPool
-			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			s.serverV4.TLSConfig = tlsConfig
+			logger.Info().Msg("TLS enabled for IPv4 HTTP server")
 		}
 
-		tlsConfig.InsecureSkipVerify = s.serverCfg.TLS.InsecureSkipVerify
-
-		// Wrap the listener with TLS
-		ln = tls.NewListener(ln, tlsConfig)
-		logger.Info().Msg("TLS enabled for HTTP server")
+		serversStarted++
+		go func() {
+			var err error
+			s.serverV4.Addr = addrV4
+			if s.serverCfg.TLS != nil && s.serverCfg.TLS.Enabled {
+				err = s.serverV4.ListenAndServeTLS(s.serverCfg.TLS.CertFile, s.serverCfg.TLS.KeyFile)
+			} else {
+				err = s.serverV4.ListenAndServe()
+			}
+			if err != nil && err != http.ErrServerClosed {
+				errChan <- fmt.Errorf("IPv4 server error: %w", err)
+			} else {
+				errChan <- nil
+			}
+		}()
 	}
 
-	return s.server.Serve(ln)
+	// Start IPv6 server if configured
+	if s.serverV6 != nil && s.serverCfg.ListenV6 != nil && *s.serverCfg.ListenV6 {
+		if s.serverCfg.HttpPortV6 == nil {
+			return fmt.Errorf("server.httpPortV6 is not configured")
+		}
+		addrV6 := fmt.Sprintf("%s:%d", *s.serverCfg.HttpHostV6, *s.serverCfg.HttpPortV6)
+		logger.Info().Msgf("starting IPv6 HTTP server on %s", addrV6)
+
+		// Handle TLS for IPv6 server
+		if s.serverCfg.TLS != nil && s.serverCfg.TLS.Enabled {
+			tlsConfig, err := s.createTLSConfig()
+			if err != nil {
+				return fmt.Errorf("failed to create TLS config: %w", err)
+			}
+			s.serverV6.TLSConfig = tlsConfig
+			logger.Info().Msg("TLS enabled for IPv6 HTTP server")
+		}
+
+		serversStarted++
+		go func() {
+			var err error
+			s.serverV6.Addr = addrV6
+			if s.serverCfg.TLS != nil && s.serverCfg.TLS.Enabled {
+				err = s.serverV6.ListenAndServeTLS(s.serverCfg.TLS.CertFile, s.serverCfg.TLS.KeyFile)
+			} else {
+				err = s.serverV6.ListenAndServe()
+			}
+			if err != nil && err != http.ErrServerClosed {
+				errChan <- fmt.Errorf("IPv6 server error: %w", err)
+			} else {
+				errChan <- nil
+			}
+		}()
+	}
+
+	// Wait for the first error or all servers to finish
+	for i := 0; i < serversStarted; i++ {
+		if err := <-errChan; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// createTLSConfig creates a TLS configuration from server config
+func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	// Load certificate and key
+	cert, err := tls.LoadX509KeyPair(s.serverCfg.TLS.CertFile, s.serverCfg.TLS.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load TLS certificate and key: %w", err)
+	}
+	tlsConfig.Certificates = []tls.Certificate{cert}
+
+	// Load CA if specified
+	if s.serverCfg.TLS.CAFile != "" {
+		caCert, err := os.ReadFile(s.serverCfg.TLS.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA file: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+		tlsConfig.ClientCAs = caCertPool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	tlsConfig.InsecureSkipVerify = s.serverCfg.TLS.InsecureSkipVerify
+	return tlsConfig, nil
 }
 
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
-	logger.Info().Msg("stopping http server...")
-	return s.server.Shutdown(context.Background())
+	logger.Info().Msg("stopping http servers...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	errChan := make(chan error, 2)
+	serversToShutdown := 0
+
+	// Shutdown IPv4 server if running
+	if s.serverV4 != nil {
+		serversToShutdown++
+		go func() {
+			if err := s.serverV4.Shutdown(ctx); err != nil {
+				errChan <- fmt.Errorf("IPv4 server shutdown error: %w", err)
+			} else {
+				logger.Info().Msg("IPv4 HTTP server stopped")
+				errChan <- nil
+			}
+		}()
+	}
+
+	// Shutdown IPv6 server if running
+	if s.serverV6 != nil {
+		serversToShutdown++
+		go func() {
+			if err := s.serverV6.Shutdown(ctx); err != nil {
+				errChan <- fmt.Errorf("IPv6 server shutdown error: %w", err)
+			} else {
+				logger.Info().Msg("IPv6 HTTP server stopped")
+				errChan <- nil
+			}
+		}()
+	}
+
+	// Wait for all servers to shutdown
+	var lastErr error
+	for i := 0; i < serversToShutdown; i++ {
+		if err := <-errChan; err != nil {
+			lastErr = err
+		}
+	}
+
+	return lastErr
 }
 
 type gzipResponseWriter struct {

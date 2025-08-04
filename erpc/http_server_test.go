@@ -62,6 +62,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(), // Set a very short timeout for testing
+				ListenV4:   util.BoolPtr(true),                            // Explicitly enable IPv4 for test
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -114,12 +115,12 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		port := listener.Addr().(*net.TCPAddr).Port
 
 		go func() {
-			err := httpServer.server.Serve(listener)
+			err := httpServer.serverV4.Serve(listener)
 			if err != nil && err != http.ErrServerClosed {
 				t.Errorf("Server error: %v", err)
 			}
 		}()
-		defer httpServer.server.Shutdown(ctx)
+		defer httpServer.serverV4.Shutdown(ctx)
 
 		// Wait for the server to start
 		time.Sleep(100 * time.Millisecond)
@@ -205,6 +206,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(), // Set a very short timeout for testing
+				ListenV4:   util.BoolPtr(true),                            // Explicitly enable IPv4 for test
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -257,12 +259,12 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		port := listener.Addr().(*net.TCPAddr).Port
 
 		go func() {
-			err := httpServer.server.Serve(listener)
+			err := httpServer.serverV4.Serve(listener)
 			if err != nil && err != http.ErrServerClosed {
 				t.Errorf("Server error: %v", err)
 			}
 		}()
-		defer httpServer.server.Shutdown(ctx)
+		defer httpServer.serverV4.Shutdown(ctx)
 
 		// Wait for the server to start
 		time.Sleep(100 * time.Millisecond)
@@ -350,6 +352,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(), // Set a very short timeout for testing
+				ListenV4:   util.BoolPtr(true),                            // Explicitly enable IPv4 for test
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -402,12 +405,12 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		port := listener.Addr().(*net.TCPAddr).Port
 
 		go func() {
-			err := httpServer.server.Serve(listener)
+			err := httpServer.serverV4.Serve(listener)
 			if err != nil && err != http.ErrServerClosed {
 				t.Errorf("Server error: %v", err)
 			}
 		}()
-		defer httpServer.server.Shutdown(ctx)
+		defer httpServer.serverV4.Shutdown(ctx)
 
 		// Wait for the server to start
 		time.Sleep(100 * time.Millisecond)
@@ -471,6 +474,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		assert.True(t, successes > 0, "Expected some successes")
 	})
 }
+
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		cfg := &common.Config{
@@ -1227,6 +1231,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Empty(t, result, "Result should be an empty array")
 	})
 }
+
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
 		util.ResetGock()
@@ -2152,7 +2157,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0xPRIMARY",
+				"result":  "0x1234567", // Valid hex string for primary upstream
 			})
 
 		// Mock second upstream - hedge request goes to this upstream
@@ -2168,7 +2173,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0xBACKUP",
+				"result":  "0x7890123", // Valid hex string for backup upstream
 			})
 
 		// Launch test server with config
@@ -2182,7 +2187,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Verify correct response was returned
 		assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK response")
-		assert.Contains(t, body, "0xPRIMARY", "Expected result from primary upstream")
+		assert.Contains(t, body, "0x1234567", "Expected result from primary upstream")
 
 		// Check that response time is approximately equal to the first request latency
 		// and NOT waiting for the second request to finish (which would be ~1000ms)
@@ -3553,6 +3558,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		assert.Contains(t, body, "0x0000000000000000000000000000000000000000000000056bc75e2d63100000")
 	})
 }
+
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		cfg := &common.Config{
@@ -4280,6 +4286,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		assert.Empty(t, headers["Access-Control-Allow-Methods"])
 	})
 }
+
 func TestHttpServer_ParseUrlPath(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -4610,6 +4617,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 		})
 	}
 }
+
 func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	testCtx, testCtxCancel := context.WithCancel(context.Background())
 	defer testCtxCancel()
@@ -5818,6 +5826,8 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				ListenV4:   util.BoolPtr(true),
+				HttpPortV4: util.IntPtr(4000),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -5904,6 +5914,52 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				},
 			})
 
+		// Add mocks for EVM state poller bootstrap requests
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+			}).
+			Persist(). // State poller may call this multiple times
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  false, // Not syncing
+			})
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_blockNumber")
+			}).
+			Persist(). // State poller may call this multiple times
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456", // Current block number
+			})
+
+		// Mock finalized block requests that state poller makes
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "finalized")
+			}).
+			Persist(). // State poller may call this multiple times
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number":    "0x123456",
+					"hash":      "0x1234567890",
+					"timestamp": "0x123456789",
+				},
+			})
+
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
@@ -5925,6 +5981,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		assert.Nilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should not be set")
 	})
 }
+
 func TestHttpServer_EvmGetLogs(t *testing.T) {
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
@@ -6354,6 +6411,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, errorObj["message"].(string), "missing")
 	})
 }
+
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -8555,6 +8613,19 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	if err != nil {
 		panic(err)
 	}
+
+	// Apply defaults to set up IPv4 server configuration if cfg is provided
+	if cfg != nil {
+		err = cfg.SetDefaults(nil)
+		require.NoError(t, err)
+
+		// Force IPv4 server to be enabled for all tests (override test mode defaults)
+		// In test mode, SetDefaults() doesn't enable IPv4 unless FORCE_TEST_LISTEN_V4=true
+		if cfg.Server != nil {
+			cfg.Server.ListenV4 = util.BoolPtr(true)
+		}
+	}
+
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 	require.NoError(t, err)
 
@@ -8569,7 +8640,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	port := listener.Addr().(*net.TCPAddr).Port
 
 	go func() {
-		err := httpServer.server.Serve(listener)
+		err := httpServer.serverV4.Serve(listener)
 		if err != nil && err != http.ErrServerClosed {
 			t.Errorf("Server error: %v", err)
 		}
@@ -8646,7 +8717,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	}
 
 	return sendRequest, sendOptionsRequest, baseURL, func() {
-		httpServer.server.Shutdown(ctx)
+		httpServer.serverV4.Shutdown(ctx)
 		listener.Close()
 		cancel()
 
