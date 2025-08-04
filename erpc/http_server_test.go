@@ -671,6 +671,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
@@ -860,6 +866,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
@@ -1116,6 +1128,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: nil,
 									Timeout: &common.TimeoutPolicyConfig{
@@ -1770,6 +1788,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
@@ -1792,6 +1816,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(1000 * time.Millisecond),
@@ -1811,6 +1841,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Timeout: &common.TimeoutPolicyConfig{
 										Duration: common.Duration(1000 * time.Millisecond),
@@ -1889,6 +1925,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Retry: nil,
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
@@ -2020,6 +2062,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
 										Delay:    common.Duration(10 * time.Millisecond),
@@ -2125,6 +2173,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
 										Delay:    common.Duration(10 * time.Millisecond),
@@ -2227,6 +2281,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								// Network-level hedge configuration
 								{
+									Matchers: []*common.MatcherConfig{
+										{
+											Method: "*",
+											Action: common.MatcherInclude,
+										},
+									},
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
 										Delay:    common.Duration(100 * time.Millisecond),
