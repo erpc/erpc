@@ -2,6 +2,7 @@ package data
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -36,16 +37,27 @@ func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CacheP
 		maxSize = &parsed
 	}
 
-	var str string
-	if len(cfg.Matchers) > 0 {
-		str = fmt.Sprintf("matchers=%d", len(cfg.Matchers))
-	} else {
-		// Legacy format
-		str = fmt.Sprintf("network=%s method=%s finality=%s", cfg.Network, cfg.Method, cfg.Finality.String())
-		if cfg.Params != nil {
-			str = fmt.Sprintf("%s params=%v", str, cfg.Params != nil)
+	// Build matcher details string
+	var matcherStrs []string
+	for _, matcher := range cfg.Matchers {
+		matcherStr := fmt.Sprintf("method=%s", matcher.Method)
+		if matcher.Network != "" {
+			matcherStr += fmt.Sprintf(" network=%s", matcher.Network)
 		}
+		if len(matcher.Finality) > 0 {
+			finalityStrs := make([]string, len(matcher.Finality))
+			for i, f := range matcher.Finality {
+				finalityStrs[i] = f.String()
+			}
+			matcherStr += fmt.Sprintf(" finality=[%s]", strings.Join(finalityStrs, ","))
+		}
+		if matcher.Params != nil && len(matcher.Params) > 0 {
+			matcherStr += fmt.Sprintf(" params=%d", len(matcher.Params))
+		}
+		matcherStr += fmt.Sprintf(" action=%s", matcher.Action)
+		matcherStrs = append(matcherStrs, fmt.Sprintf("{%s}", matcherStr))
 	}
+	str := fmt.Sprintf("matchers=[%s]", strings.Join(matcherStrs, " "))
 
 	if minSize != nil || maxSize != nil {
 		str = fmt.Sprintf("%s minSize=%d maxSize=%d", str, minSize, maxSize)

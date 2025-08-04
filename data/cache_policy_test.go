@@ -154,7 +154,7 @@ func TestCachePolicy_MatchersIntegration(t *testing.T) {
 			Connector: "test",
 		}, mockConnector)
 		assert.NoError(t, err)
-		assert.Contains(t, policy.String(), "matchers=1")
+		assert.Contains(t, policy.String(), "matchers=[{method=* action=include}]")
 	})
 
 	t.Run("size limits work with matchers", func(t *testing.T) {
