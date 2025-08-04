@@ -2491,6 +2491,10 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		GetTimeout:   common.Duration(2 * time.Second),
 		SetTimeout:   common.Duration(2 * time.Second),
 	}
+	
+	// Apply defaults to construct URI from discrete fields
+	err = redisInnerCfg.SetDefaults()
+	require.NoError(t, err)
 
 	redisCfg := &common.ConnectorConfig{
 		Id:     "redis1",

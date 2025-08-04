@@ -154,17 +154,26 @@ failsafe:
 		assert.Equal(t, 2, nc.Failsafe[1].Retry.MaxAttempts)
 	})
 
-	t.Run("FailsafeConfig validation rejects empty MatchMethod", func(t *testing.T) {
+	t.Run("FailsafeConfig validation works with matchers after SetDefaults", func(t *testing.T) {
 		fs := &FailsafeConfig{
-			MatchMethod: "", // empty should be rejected
+			MatchMethod: "", // empty - should be converted to matchers by SetDefaults
 			Retry: &RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
 		}
 
-		err := fs.Validate()
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failsafe.matchMethod cannot be empty")
+		// Apply defaults first (this converts legacy fields to matchers)
+		err := fs.SetDefaults(nil)
+		assert.NoError(t, err)
+
+		// Then validate should pass
+		err = fs.Validate()
+		assert.NoError(t, err)
+		
+		// Should have created a default matcher
+		assert.Len(t, fs.Matchers, 1)
+		assert.Equal(t, "*", fs.Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, fs.Matchers[0].Action)
 	})
 
 	t.Run("FailsafeConfig validation accepts wildcard", func(t *testing.T) {
@@ -181,9 +190,9 @@ failsafe:
 		assert.NoError(t, err)
 	})
 
-	t.Run("FailsafeConfig SetDefaults sets MatchMethod to wildcard", func(t *testing.T) {
+	t.Run("FailsafeConfig SetDefaults converts empty MatchMethod to default matcher", func(t *testing.T) {
 		fs := &FailsafeConfig{
-			MatchMethod: "", // empty
+			MatchMethod: "", // empty - should be converted to matchers
 			Retry: &RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -191,7 +200,11 @@ failsafe:
 
 		err := fs.SetDefaults(nil)
 		assert.NoError(t, err)
-		assert.Equal(t, "*", fs.MatchMethod)
+		
+		// Should have created a default matcher (legacy MatchMethod may remain empty)
+		assert.Len(t, fs.Matchers, 1)
+		assert.Equal(t, "*", fs.Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, fs.Matchers[0].Action)
 	})
 
 	t.Run("MatchFinality with all string values", func(t *testing.T) {
