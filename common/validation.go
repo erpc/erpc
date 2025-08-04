@@ -71,8 +71,8 @@ func (s *ServerConfig) Validate() error {
 			if s.HttpHostV4 == nil {
 				return fmt.Errorf("server.listenV4 is true but server.httpHostV4 is not set")
 			}
-			if s.HttpPort == nil {
-				return fmt.Errorf("server.listenV4 is true but server.httpPort is not set")
+			if s.HttpPortV4 == nil {
+				return fmt.Errorf("server.listenV4 is true but server.httpPortV4 is not set")
 			}
 		}
 	}
@@ -81,8 +81,8 @@ func (s *ServerConfig) Validate() error {
 			if s.HttpHostV6 == nil {
 				return fmt.Errorf("server.listenV6 is true but server.httpHostV6 is not set")
 			}
-			if s.HttpPort == nil {
-				return fmt.Errorf("server.listenV6 is true but server.httpPort is not set")
+			if s.HttpPortV6 == nil {
+				return fmt.Errorf("server.listenV6 is true but server.httpPortV6 is not set")
 			}
 		}
 	}

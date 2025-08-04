@@ -217,7 +217,7 @@ func fetchRemoteData(ctx context.Context, urlStr string) (map[int64][]string, er
 		Transport: &http.Transport{
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   10,
-			MaxConnsPerHost:       0,    // Unlimited active connections
+			MaxConnsPerHost:       0, // Unlimited active connections
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 10 * time.Second,

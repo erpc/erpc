@@ -111,9 +111,10 @@ logLevel: warn
 server:
   listenV4: true
   httpHostV4: "0.0.0.0"
-  listenV6: false
-  httpHostV6: "[::]"
-  httpPort: 4000
+  httpPortV4: 4000
+  # listenV6: false
+  # httpHostV6: "[::]"
+  # httpPortV6: 5000
   maxTimeout: 30s
   readTimeout: 10s
   writeTimeout: 20s
@@ -436,9 +437,10 @@ export default createConfig({
   server: {
     listenV4: true,
     httpHostV4: "0.0.0.0",
-    listenV6: false,
-    httpHostV6: "[::]",
-    httpPort: 4000,
+    httpPortV4: 4000,
+    // listenV6: false,             // IPv6 disabled by default (recommended)
+    // httpHostV6: "[::]",
+    // httpPortV6: 5000,
     maxTimeout: "30s",
     enableGzip: true,
     waitBeforeShutdown: "30s",

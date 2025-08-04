@@ -41,7 +41,10 @@ database:
   #  evmJsonRpcCache: ~ 
 server:
   httpHostV4: 0.0.0.0
-  httpPort: 4000
+  httpPortV4: 4000
+  # listenV6: false
+  # httpHostV6: "[::]"
+  # httpPortV6: 5000
   maxTimeout: 50s
 metrics:
   enabled: true

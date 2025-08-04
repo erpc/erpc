@@ -67,7 +67,7 @@ func TestInit_AllGood(t *testing.T) {
 		Server: &common.ServerConfig{
 			HttpHostV4: &localHost,
 			ListenV4:   util.BoolPtr(true),
-			HttpPort:   &localPort,
+			HttpPortV4: &localPort,
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -150,7 +150,7 @@ func TestInit_InvalidHttpPort(t *testing.T) {
 		Server: &common.ServerConfig{
 			HttpHostV4: util.StringPtr("localhost"),
 			ListenV4:   util.BoolPtr(true),
-			HttpPort:   util.IntPtr(-1),
+			HttpPortV4: util.IntPtr(-1),
 		},
 	}
 
