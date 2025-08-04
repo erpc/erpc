@@ -84,10 +84,15 @@ func NewGenericHttpJsonRpcClient(
 	}
 
 	// Default fallback transport (no proxy)
+	// Optimized for high-latency, high-RPS scenarios to prevent connection churn
 	transport := &http.Transport{
-		MaxIdleConns:        1024,
-		MaxIdleConnsPerHost: 256,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:          1024,
+		MaxIdleConnsPerHost:   256,
+		MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 
 	if util.IsTest() {

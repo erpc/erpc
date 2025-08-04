@@ -79,10 +79,14 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 		}
 
 		transport := &http.Transport{
-			MaxIdleConns:        1024,
-			MaxIdleConnsPerHost: 256,
-			IdleConnTimeout:     90 * time.Second,
-			Proxy:               http.ProxyURL(proxyURL),
+			MaxIdleConns:          1024,
+			MaxIdleConnsPerHost:   256,
+			MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)
+			IdleConnTimeout:       90 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			Proxy:                 http.ProxyURL(proxyURL),
 		}
 		client := &http.Client{
 			Timeout:   60 * time.Second,
