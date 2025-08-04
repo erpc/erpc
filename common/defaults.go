@@ -523,18 +523,7 @@ func (c *CompressionConfig) SetDefaults() error {
 }
 
 func (c *CachePolicyConfig) SetDefaults() error {
-	// Convert legacy matchers first (if needed)
 	c.convertLegacyMatchers()
-
-	// Set defaults for legacy fields (only if no matchers exist)
-	if len(c.Matchers) == 0 {
-		if c.Method == "" {
-			c.Method = "*"
-		}
-		if c.Network == "" {
-			c.Network = "*"
-		}
-	}
 
 	return nil
 }
@@ -1769,17 +1758,7 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 }
 
 func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
-	// Convert legacy matchers first (if needed)
 	f.convertLegacyMatchers()
-
-	// Set default for MatchMethod if empty (only if no matchers exist)
-	if len(f.Matchers) == 0 && f.MatchMethod == "" {
-		if defaults != nil && defaults.MatchMethod != "" {
-			f.MatchMethod = defaults.MatchMethod
-		} else {
-			f.MatchMethod = "*" // Default to match any method
-		}
-	}
 
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
