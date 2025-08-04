@@ -1013,14 +1013,8 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 									Action: common.MatcherInclude,
 								},
 							},
-							Retry: retryPolicy,
-							Consensus: &common.ConsensusPolicyConfig{
-								MaxParticipants:         tt.maxParticipants,
-								AgreementThreshold:      agreementThreshold,
-								DisputeBehavior:         disputeBehavior,
-								LowParticipantsBehavior: lowParticipantsBehavior,
-								PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
-							},
+							Retry:     retryPolicy,
+							Consensus: consensusConfig, // Use the config that already has defaults applied
 						},
 					},
 				},
