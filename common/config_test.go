@@ -1067,19 +1067,22 @@ func TestMatchersValidate(t *testing.T) {
 		assert.Equal(t, MatcherExclude, result[0].Action)
 	})
 
-	t.Run("matcher with invalid action - should error", func(t *testing.T) {
+	t.Run("matcher with invalid action - should pass validation but not match at runtime", func(t *testing.T) {
 		matchers := []*MatcherConfig{
 			{
 				Method: "eth_call",
-				Action: "invalid_action", // Invalid action
+				Action: "invalid_action", // Invalid action - no longer validated
 			},
 		}
 
 		result, err := validateMatchers(matchers)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "matcher[0] has invalid action 'invalid_action'")
-		assert.Contains(t, err.Error(), "must be either 'include' or 'exclude'")
-		assert.Nil(t, result)
+		assert.NoError(t, err, "Validation should pass since we only default empty actions")
+		assert.NotNil(t, result)
+		assert.Len(t, result, 1) // Only the original matcher (no catch-all added since no valid actions detected)
+
+		// The invalid action matcher should remain unchanged
+		assert.Equal(t, "eth_call", result[0].Method)
+		assert.Equal(t, MatcherAction("invalid_action"), result[0].Action)
 	})
 
 	t.Run("multiple matchers with mixed missing and invalid actions", func(t *testing.T) {
@@ -1090,14 +1093,26 @@ func TestMatchersValidate(t *testing.T) {
 			},
 			{
 				Method: "eth_getBalance",
-				Action: "wrong", // Invalid action - should error
+				Action: "wrong", // Invalid action - no longer causes validation error
 			},
 		}
 
 		result, err := validateMatchers(matchers)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "matcher[1] has invalid action 'wrong'")
-		assert.Nil(t, result)
+		assert.NoError(t, err, "Validation should pass")
+		assert.NotNil(t, result)
+		assert.Len(t, result, 3) // 2 original + 1 catch-all exclude
+
+		// First matcher should have defaulted to include
+		assert.Equal(t, "eth_call", result[1].Method)
+		assert.Equal(t, MatcherInclude, result[1].Action)
+
+		// Second matcher should keep its invalid action
+		assert.Equal(t, "eth_getBalance", result[2].Method)
+		assert.Equal(t, MatcherAction("wrong"), result[2].Action)
+
+		// Catch-all exclude should be added (since only one valid include found)
+		assert.Equal(t, "*", result[0].Method)
+		assert.Equal(t, MatcherExclude, result[0].Action)
 	})
 
 	t.Run("mixed include/exclude with missing action in catch-all first rule", func(t *testing.T) {
@@ -1213,13 +1228,13 @@ func TestFailsafeValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("multiple policies with truly invalid action values", func(t *testing.T) {
+	t.Run("multiple policies with invalid action values should pass validation", func(t *testing.T) {
 		policies := []*FailsafeConfig{
 			{
 				Matchers: []*MatcherConfig{
 					{
 						Method: "*",
-						Action: "invalid_action", // Truly invalid action value
+						Action: "invalid_action", // Invalid action value - no longer validated
 					},
 					{
 						Method: "debug_*",
@@ -1231,8 +1246,7 @@ func TestFailsafeValidation(t *testing.T) {
 
 		for i, policy := range policies {
 			err := policy.Validate()
-			assert.Error(t, err, "Policy %d should fail validation", i)
-			assert.Contains(t, err.Error(), "invalid action 'invalid_action'")
+			assert.NoError(t, err, "Policy %d should pass validation since we no longer validate action values", i)
 		}
 	})
 
