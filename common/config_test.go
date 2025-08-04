@@ -169,7 +169,7 @@ failsafe:
 		// Then validate should pass
 		err = fs.Validate()
 		assert.NoError(t, err)
-		
+
 		// Should have created a default matcher
 		assert.Len(t, fs.Matchers, 1)
 		assert.Equal(t, "*", fs.Matchers[0].Method)
@@ -200,7 +200,7 @@ failsafe:
 
 		err := fs.SetDefaults(nil)
 		assert.NoError(t, err)
-		
+
 		// Should have created a default matcher (legacy MatchMethod may remain empty)
 		assert.Len(t, fs.Matchers, 1)
 		assert.Equal(t, "*", fs.Matchers[0].Method)

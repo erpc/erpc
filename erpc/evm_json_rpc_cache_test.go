@@ -934,15 +934,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
-		// Default-style Finalized wildcard policy.
+		// Default-style Finalized wildcard policy using new matcher format.
 		finalizedCfg := &common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			TTL:       0, // forever
 			Connector: "mock1",
 		}
-		finalizedCfg.SetDefaults()
 		finalizedDefault, err := data.NewCachePolicy(finalizedCfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
@@ -1213,15 +1217,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
-		// Create a policy with empty behavior set to "ignore"
+		// Create a policy with empty behavior set to "ignore" using new matcher format
 		cfg := &common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBalance",
-			Finality:  common.DataFinalityStateFinalized,
-			Empty:     common.CacheEmptyBehaviorIgnore,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getBalance",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Empty:    common.CacheEmptyBehaviorIgnore,
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock1",
 		}
-		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -1247,15 +1255,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
-		// Create a policy with empty behavior set to "allow"
+		// Create a policy with empty behavior set to "allow" using new matcher format
 		cfg := &common.CachePolicyConfig{
-			Network:   "evm:123",
-			Method:    "eth_getBalance",
-			Finality:  common.DataFinalityStateFinalized,
-			Empty:     common.CacheEmptyBehaviorAllow,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "evm:123",
+					Method:   "eth_getBalance",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Empty:    common.CacheEmptyBehaviorAllow,
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "mock1",
 		}
-		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -2131,25 +2143,40 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 	}
 	cacheCfg.Connectors = []*common.ConnectorConfig{dynamoDBCfg}
 
-	// Create appropriate cache policies
+	// Create appropriate cache policies using new matcher format
 	cacheCfg.Policies = []*common.CachePolicyConfig{
 		{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "dynamodb1",
 		},
 		{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateUnfinalized,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "dynamodb1",
 			TTL:       common.Duration(5 * time.Minute),
 		},
 		{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateRealtime,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "dynamodb1",
 			TTL:       common.Duration(30 * time.Second),
 		},
@@ -2491,10 +2518,9 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		GetTimeout:   common.Duration(2 * time.Second),
 		SetTimeout:   common.Duration(2 * time.Second),
 	}
-	
-	// Apply defaults to construct URI from discrete fields
-	err = redisInnerCfg.SetDefaults()
-	require.NoError(t, err)
+
+	// Construct URI directly instead of using SetDefaults
+	redisInnerCfg.URI = fmt.Sprintf("redis://%s/%d", redisAddr, redisInnerCfg.DB)
 
 	redisCfg := &common.ConnectorConfig{
 		Id:     "redis1",
