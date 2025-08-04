@@ -16,6 +16,12 @@ func validateMatchers(matchers []*MatcherConfig) ([]*MatcherConfig, error) {
 		return matchers, nil
 	}
 
+	for _, matcher := range matchers {
+		if matcher.Action == "" {
+			matcher.Action = MatcherInclude
+		}
+	}
+
 	// Check if this is a single auto-generated default catch-all include matcher.
 	// If so, skip the global override logic to avoid breaking user expectations
 	if len(matchers) == 1 {

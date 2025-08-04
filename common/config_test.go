@@ -918,11 +918,11 @@ func TestMatchersValidate(t *testing.T) {
 		assert.Equal(t, MatcherExclude, result[1].Action)
 	})
 
-	t.Run("mixed rules with invalid first action - should error", func(t *testing.T) {
+	t.Run("mixed rules with missing first action - should default to include and pass", func(t *testing.T) {
 		matchers := []*MatcherConfig{
 			{
 				Method: "*",
-				Action: "", // Invalid empty action in mixed scenario
+				Action: "", // Empty action should default to include
 			},
 			{
 				Method: "debug_*",
@@ -935,9 +935,9 @@ func TestMatchersValidate(t *testing.T) {
 		}
 
 		result, err := validateMatchers(matchers)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "FIRST rule must have action")
-		assert.Nil(t, result)
+		assert.NoError(t, err, "Should pass since empty action defaults to include")
+		assert.NotNil(t, result)
+		assert.Equal(t, MatcherInclude, result[0].Action, "First matcher should have defaulted to include")
 	})
 
 	t.Run("mixed rules with non-catch-all first rule - should error", func(t *testing.T) {
@@ -1037,6 +1037,109 @@ func TestMatchersValidate(t *testing.T) {
 		assert.Equal(t, "*", result[0].Method)
 		assert.Equal(t, MatcherInclude, result[0].Action)
 	})
+
+	t.Run("matchers with missing action - should default to include", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "eth_call",
+				// Action is intentionally missing (empty string)
+			},
+			{
+				Method: "eth_getBalance",
+				// Action is also missing - should default to include
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.NoError(t, err)
+		assert.Len(t, result, 3) // Original 2 + 1 catch-all exclude (since all are includes)
+
+		// First matcher should have defaulted to include
+		assert.Equal(t, "eth_call", result[1].Method) // Index 1 because catch-all exclude is added at 0
+		assert.Equal(t, MatcherInclude, result[1].Action)
+
+		// Second matcher should have defaulted to include
+		assert.Equal(t, "eth_getBalance", result[2].Method)
+		assert.Equal(t, MatcherInclude, result[2].Action)
+
+		// Catch-all exclude should be added first
+		assert.Equal(t, "*", result[0].Method)
+		assert.Equal(t, MatcherExclude, result[0].Action)
+	})
+
+	t.Run("matcher with invalid action - should error", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "eth_call",
+				Action: "invalid_action", // Invalid action
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "matcher[0] has invalid action 'invalid_action'")
+		assert.Contains(t, err.Error(), "must be either 'include' or 'exclude'")
+		assert.Nil(t, result)
+	})
+
+	t.Run("multiple matchers with mixed missing and invalid actions", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "eth_call",
+				// Action missing - should default to include
+			},
+			{
+				Method: "eth_getBalance",
+				Action: "wrong", // Invalid action - should error
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "matcher[1] has invalid action 'wrong'")
+		assert.Nil(t, result)
+	})
+
+	t.Run("mixed include/exclude with missing action in catch-all first rule", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "*", // Catch-all first rule
+				// Action missing - should default to include
+			},
+			{
+				Method: "debug_*",
+				Action: MatcherExclude, // This makes it mixed
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.NoError(t, err, "Should pass with catch-all first rule")
+		assert.Len(t, result, 2)
+
+		// First matcher should have defaulted to include
+		assert.Equal(t, "*", result[0].Method)
+		assert.Equal(t, MatcherInclude, result[0].Action)
+
+		// Second matcher should remain as exclude
+		assert.Equal(t, "debug_*", result[1].Method)
+		assert.Equal(t, MatcherExclude, result[1].Action)
+	})
+
+	t.Run("single matcher with missing action - should default to include and skip global override", func(t *testing.T) {
+		matchers := []*MatcherConfig{
+			{
+				Method: "*",
+				// Action missing - should default to include
+				// This should be recognized as auto-generated default
+			},
+		}
+
+		result, err := validateMatchers(matchers)
+		assert.NoError(t, err)
+		assert.Len(t, result, 1, "Should not add catch-all exclude for auto-generated default")
+		assert.Equal(t, "*", result[0].Method)
+		assert.Equal(t, MatcherInclude, result[0].Action)
+	})
 }
 
 func TestFailsafeValidation(t *testing.T) {
@@ -1110,21 +1213,17 @@ func TestFailsafeValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("multiple policies with mixed invalid rules", func(t *testing.T) {
+	t.Run("multiple policies with truly invalid action values", func(t *testing.T) {
 		policies := []*FailsafeConfig{
 			{
 				Matchers: []*MatcherConfig{
 					{
 						Method: "*",
-						Action: "", // Invalid empty action in first rule
+						Action: "invalid_action", // Truly invalid action value
 					},
 					{
 						Method: "debug_*",
 						Action: MatcherExclude,
-					},
-					{
-						Method: "eth_*",
-						Action: MatcherInclude, // This makes it mixed
 					},
 				},
 			},
@@ -1133,7 +1232,7 @@ func TestFailsafeValidation(t *testing.T) {
 		for i, policy := range policies {
 			err := policy.Validate()
 			assert.Error(t, err, "Policy %d should fail validation", i)
-			assert.Contains(t, err.Error(), "FIRST rule must have action")
+			assert.Contains(t, err.Error(), "invalid action 'invalid_action'")
 		}
 	})
 
