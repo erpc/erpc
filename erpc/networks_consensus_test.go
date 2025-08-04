@@ -1007,9 +1007,20 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 					},
 					Failsafe: []*common.FailsafeConfig{
 						{
-							MatchMethod: "*", // Match all methods to ensure consensus executor is selected
-							Retry:       retryPolicy,
-							Consensus:   consensusConfig,
+							Matchers: []*common.MatcherConfig{
+								{
+									Method: "*",
+									Action: common.MatcherInclude,
+								},
+							},
+							Retry: retryPolicy,
+							Consensus: &common.ConsensusPolicyConfig{
+								MaxParticipants:         tt.maxParticipants,
+								AgreementThreshold:      agreementThreshold,
+								DisputeBehavior:         disputeBehavior,
+								LowParticipantsBehavior: lowParticipantsBehavior,
+								PunishMisbehavior:       &common.PunishMisbehaviorConfig{},
+							},
 						},
 					},
 				},
@@ -1212,7 +1223,12 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 			},
 			Failsafe: []*common.FailsafeConfig{
 				{
-					MatchMethod: "*", // Match all methods to ensure consensus executor is selected
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 2,
 						Delay:       common.Duration(0),
@@ -1249,6 +1265,10 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 	gock.New("http://rpc1-dispute.localhost").
 		Post("/").
 		Times(1).
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber")
+		}).
 		Reply(200).
 		SetHeader("Content-Type", "application/json").
 		JSON(map[string]interface{}{
@@ -1260,6 +1280,10 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 	gock.New("http://rpc2-dispute.localhost").
 		Post("/").
 		Times(1).
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber")
+		}).
 		Reply(503).
 		SetHeader("Content-Type", "application/json").
 		JSON(map[string]interface{}{
@@ -1274,6 +1298,10 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 	gock.New("http://rpc2-dispute.localhost").
 		Post("/").
 		Times(1).
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber")
+		}).
 		Reply(200).
 		SetHeader("Content-Type", "application/json").
 		JSON(map[string]interface{}{
@@ -1349,8 +1377,13 @@ func setupTestNetworkWithConsensusPolicy(t *testing.T, ctx context.Context, upst
 			},
 			Failsafe: []*common.FailsafeConfig{
 				{
-					MatchMethod: "*",
-					Consensus:   consensusConfig,
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
+					Consensus: consensusConfig,
 				},
 			},
 		},
@@ -1371,7 +1404,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	defer util.AssertNoPendingMocks(t, 0) // All mocks should be consumed
 
 	// Create upstreams
 	upstreams := []*common.UpstreamConfig{
@@ -1420,6 +1453,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	// Mock responses - upstream2 and upstream3 return consensus result quickly
 	gock.New("http://upstream2.localhost").
 		Post("").
+		Times(1).
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
 			return strings.Contains(body, "eth_getBalance")
@@ -1434,6 +1468,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 
 	gock.New("http://upstream3.localhost").
 		Post("").
+		Times(1).
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
 			return strings.Contains(body, "eth_getBalance")
@@ -1446,10 +1481,12 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 			"result":  "0x1234567890",
 		})
 
-	// Other upstreams are slow and should be cancelled
+	// Other upstreams are slow and should be cancelled - but we still need to set up the mocks
+	// Use Times(1) to expect at most 1 call, but they may be cancelled before being called
 	for _, host := range []string{"upstream1", "upstream4", "upstream5"} {
 		gock.New("http://" + host + ".localhost").
 			Post("").
+			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBalance")
@@ -1551,6 +1588,10 @@ func TestConsensusShortCircuitIntegration(t *testing.T) {
 		gock.New(upstream.Endpoint).
 			Post("").
 			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_chainId")
+			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -3227,7 +3268,12 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 					},
 					Failsafe: []*common.FailsafeConfig{
 						{
-							MatchMethod: "*",
+							Matchers: []*common.MatcherConfig{
+								{
+									Method: "*",
+									Action: common.MatcherInclude,
+								},
+							},
 							Consensus: &common.ConsensusPolicyConfig{
 								MaxParticipants:         tt.maxParticipants,
 								AgreementThreshold:      tt.agreementThreshold,
@@ -3252,6 +3298,15 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 				gock.New(upstream.Endpoint).
 					Post("/").
 					Times(1).
+					Filter(func(request *http.Request) bool {
+						body := util.SafeReadBody(request)
+						// Filter for the specific method in the test request
+						if methodVal, ok := tt.request["method"]; ok {
+							method := methodVal.(string)
+							return strings.Contains(body, method)
+						}
+						return true
+					}).
 					Reply(200).
 					SetHeader("Content-Type", "application/json").
 					JSON(tt.mockResponses[i])
@@ -5637,7 +5692,12 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 					},
 					Failsafe: []*common.FailsafeConfig{
 						{
-							MatchMethod: "*",
+							Matchers: []*common.MatcherConfig{
+								{
+									Method: "*",
+									Action: common.MatcherInclude,
+								},
+							},
 							Consensus: &common.ConsensusPolicyConfig{
 								MaxParticipants:         tt.maxParticipants,
 								AgreementThreshold:      2, // Majority agreement
@@ -5661,6 +5721,15 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 				gock.New(upstream.Endpoint).
 					Post("/").
 					Persist().
+					Filter(func(request *http.Request) bool {
+						body := util.SafeReadBody(request)
+						// Filter for the specific method in the test request
+						if methodVal, ok := tt.request["method"]; ok {
+							method := methodVal.(string)
+							return strings.Contains(body, method)
+						}
+						return true
+					}).
 					Reply(200).
 					SetHeader("Content-Type", "application/json").
 					JSON(tt.mockResponses[i])
