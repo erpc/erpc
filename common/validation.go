@@ -395,17 +395,8 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 			return fmt.Errorf("cache.*.policies.*.matchers: %w", err)
 		}
 		p.Matchers = validatedMatchers
-	} else {
-		// Legacy validation - network and method are required only if no matchers
-		if p.Network == "" {
-			return fmt.Errorf("cache.*.policies.*.network is required when not using matchers")
-		}
-		if p.Method == "" {
-			return fmt.Errorf("cache.*.policies.*.method is required when not using matchers")
-		}
 	}
 
-	// Connector is always required
 	if p.Connector == "" {
 		return fmt.Errorf("cache.*.policies.*.connector is required")
 	}
@@ -894,11 +885,6 @@ func (f *FailsafeConfig) Validate() error {
 			return fmt.Errorf("failsafe.matchers validation failed: %v", err)
 		}
 		f.Matchers = processedMatchers
-	} else {
-		// Legacy mode validation - check MatchMethod when no Matchers are defined
-		if f.MatchMethod == "" {
-			return fmt.Errorf("failsafe.matchMethod cannot be empty")
-		}
 	}
 
 	if f.Timeout != nil {
