@@ -1382,13 +1382,16 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create config with default policy
+		evalFunction, err := common.CompileFunction(common.DefaultPolicyFunction)
+		require.NoError(t, err)
+
 		config := &common.SelectionPolicyConfig{
 			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
+			EvalFunction:     evalFunction,
 		}
-		config.SetDefaults() // This will set the default policy function
 
 		mt := ntw.metricsTracker
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
@@ -1445,12 +1448,15 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		// Create config with default policy
+		evalFunction, err := common.CompileFunction(common.DefaultPolicyFunction)
+		require.NoError(t, err)
+
 		config := &common.SelectionPolicyConfig{
 			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			ResampleExcluded: false,
+			EvalFunction:     evalFunction,
 		}
-		config.SetDefaults() // This will set the default policy function
 
 		mt := ntw.metricsTracker
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
@@ -1521,11 +1527,14 @@ func TestPolicyEvaluator(t *testing.T) {
 		t.Setenv("ROUTING_POLICY_MAX_ERROR_RATE", "0.3")
 		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "5")
 
+		evalFunction, err := common.CompileFunction(common.DefaultPolicyFunction)
+		require.NoError(t, err)
+
 		config := &common.SelectionPolicyConfig{
 			EvalInterval:  common.Duration(50 * time.Millisecond),
 			EvalPerMethod: false,
+			EvalFunction:  evalFunction,
 		}
-		config.SetDefaults() // This will set the default policy function
 
 		mt := ntw.metricsTracker
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
@@ -1590,11 +1599,14 @@ func TestPolicyEvaluator(t *testing.T) {
 		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "3")
 		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
 
+		evalFunction, err := common.CompileFunction(common.DefaultPolicyFunction)
+		require.NoError(t, err)
+
 		config := &common.SelectionPolicyConfig{
 			EvalInterval:  common.Duration(50 * time.Millisecond),
 			EvalPerMethod: false,
+			EvalFunction:  evalFunction,
 		}
-		config.SetDefaults()
 
 		mt := ntw.metricsTracker
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
@@ -1645,11 +1657,14 @@ func TestPolicyEvaluator(t *testing.T) {
 		t.Setenv("ROUTING_POLICY_MAX_ERROR_RATE", "0.25")
 		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
 
+		evalFunction, err := common.CompileFunction(common.DefaultPolicyFunction)
+		require.NoError(t, err)
+
 		config := &common.SelectionPolicyConfig{
 			EvalInterval:  common.Duration(50 * time.Millisecond),
 			EvalPerMethod: false,
+			EvalFunction:  evalFunction,
 		}
-		config.SetDefaults()
 
 		mt := ntw.metricsTracker
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)

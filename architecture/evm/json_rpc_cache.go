@@ -52,9 +52,6 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	// Create policies
 	var policies []*data.CachePolicy
 	for _, policyCfg := range cfg.Policies {
-		// Convert legacy matchers before creating the policy
-		policyCfg.ConvertCacheLegacyMatchers()
-
 		connector, exists := connectors[policyCfg.Connector]
 		if !exists {
 			return nil, fmt.Errorf("connector %s not found for policy", policyCfg.Connector)

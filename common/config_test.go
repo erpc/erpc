@@ -1300,11 +1300,12 @@ func TestFailsafeValidation(t *testing.T) {
 			MatchMethod: "", // Empty matchMethod with no Matchers - should mean "match all"
 		}
 
-		// First convert legacy matchers
-		policy.ConvertFailsafeLegacyMatchers()
+		// SetDefaults includes legacy conversion
+		err := policy.SetDefaults(nil)
+		assert.NoError(t, err)
 
 		// Then validate
-		err := policy.Validate()
+		err = policy.Validate()
 		assert.NoError(t, err, "Empty matchMethod should be valid (means match all)")
 
 		// Should create a default catch-all matcher since no legacy fields were present
@@ -1319,11 +1320,12 @@ func TestFailsafeValidation(t *testing.T) {
 			MatchFinality: []DataFinalityState{DataFinalityStateFinalized},
 		}
 
-		// First convert legacy matchers
-		policy.ConvertFailsafeLegacyMatchers()
+		// SetDefaults includes legacy conversion
+		err := policy.SetDefaults(nil)
+		assert.NoError(t, err)
 
 		// Then validate
-		err := policy.Validate()
+		err = policy.Validate()
 		assert.NoError(t, err, "Empty matchMethod with finality should be valid")
 
 		// Should create a matcher with finality constraint + global override catch-all exclude
@@ -1343,8 +1345,8 @@ func TestFailsafeValidation(t *testing.T) {
 	})
 }
 
-func TestConvertCacheLegacyMatchers(t *testing.T) {
-	t.Run("legacy fields are converted to matchers", func(t *testing.T) {
+func TestCachePolicySetDefaults(t *testing.T) {
+	t.Run("legacy fields are converted to matchers via SetDefaults", func(t *testing.T) {
 		policy := &CachePolicyConfig{
 			Network:  "1",
 			Method:   "eth_call",
@@ -1353,7 +1355,8 @@ func TestConvertCacheLegacyMatchers(t *testing.T) {
 			Empty:    CacheEmptyBehaviorIgnore,
 		}
 
-		policy.ConvertCacheLegacyMatchers()
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
 
 		assert.Len(t, policy.Matchers, 1)
 		assert.Equal(t, "1", policy.Matchers[0].Network)
@@ -1367,7 +1370,8 @@ func TestConvertCacheLegacyMatchers(t *testing.T) {
 	t.Run("empty legacy fields create default catch-all include matcher", func(t *testing.T) {
 		policy := &CachePolicyConfig{}
 
-		policy.ConvertCacheLegacyMatchers()
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
 
 		assert.Len(t, policy.Matchers, 1)
 		assert.Equal(t, "*", policy.Matchers[0].Method)
@@ -1386,7 +1390,8 @@ func TestConvertCacheLegacyMatchers(t *testing.T) {
 			},
 		}
 
-		policy.ConvertCacheLegacyMatchers()
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
 
 		// Should still have only one matcher - the original
 		assert.Len(t, policy.Matchers, 1)
@@ -1400,7 +1405,8 @@ func TestConvertCacheLegacyMatchers(t *testing.T) {
 			// Finality and Empty are zero values
 		}
 
-		policy.ConvertCacheLegacyMatchers()
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
 
 		assert.Len(t, policy.Matchers, 1)
 		assert.Equal(t, "1", policy.Matchers[0].Network)
@@ -1416,7 +1422,8 @@ func TestConvertCacheLegacyMatchers(t *testing.T) {
 			Params: originalParams,
 		}
 
-		policy.ConvertCacheLegacyMatchers()
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
 
 		assert.Len(t, policy.Matchers, 1)
 		assert.Equal(t, originalParams, policy.Matchers[0].Params)

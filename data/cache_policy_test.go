@@ -129,8 +129,9 @@ func TestCachePolicy_MatchersIntegration(t *testing.T) {
 			Connector: "test",
 		}
 
-		// Convert legacy fields
-		cfg.ConvertCacheLegacyMatchers()
+		// Set defaults (includes legacy conversion)
+		err := cfg.SetDefaults()
+		assert.NoError(t, err)
 
 		policy, err := NewCachePolicy(cfg, mockConnector)
 		assert.NoError(t, err)

@@ -208,63 +208,6 @@ type CachePolicyConfig struct {
 	Empty    CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
 }
 
-func (c *CachePolicyConfig) ConvertCacheLegacyMatchers() {
-	if c == nil {
-		return
-	}
-
-	// If we already have matchers, don't convert legacy fields
-	if len(c.Matchers) > 0 {
-		return
-	}
-
-	// Convert legacy fields to new matcher format if any are present
-	hasLegacyFields := c.Network != "" || c.Method != "" || len(c.Params) > 0
-
-	// For finality and empty, we need to check if they were explicitly set by looking at the struct
-	// Since we can't distinguish between unset and zero value, we'll convert if any other field is set
-	if hasLegacyFields {
-		matcher := &MatcherConfig{
-			Action: MatcherInclude, // Default action for cache policies
-		}
-
-		// Convert Network
-		if c.Network != "" {
-			matcher.Network = c.Network
-		}
-
-		// Convert Method
-		if c.Method != "" {
-			matcher.Method = c.Method
-		}
-
-		// Convert Params
-		if len(c.Params) > 0 {
-			matcher.Params = make([]interface{}, len(c.Params))
-			copy(matcher.Params, c.Params)
-		}
-
-		// Convert Finality - single state to array
-		// Always include finality when converting legacy fields
-		matcher.Finality = []DataFinalityState{c.Finality}
-
-		// Convert Empty behavior
-		// Always include empty behavior when converting legacy fields
-		matcher.Empty = c.Empty
-
-		// Add the matcher
-		c.Matchers = append(c.Matchers, matcher)
-	}
-
-	// If no matchers exist at all, create a default catch-all matcher
-	if len(c.Matchers) == 0 {
-		c.Matchers = append(c.Matchers, &MatcherConfig{
-			Method: "*",
-			Action: MatcherInclude,
-		})
-	}
-}
-
 type ConnectorDriverType string
 
 const (
@@ -853,48 +796,6 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 	}
 
 	return copied
-}
-
-func (f *FailsafeConfig) ConvertFailsafeLegacyMatchers() {
-	if f == nil {
-		return
-	}
-
-	// If we already have matchers, don't convert legacy fields
-	if len(f.Matchers) > 0 {
-		return
-	}
-
-	// Convert legacy fields to new matcher format if any are present
-	// Note: Empty MatchMethod now means "match all methods" (consistent with new matcher system)
-	if f.MatchMethod != "" || len(f.MatchFinality) > 0 {
-		matcher := &MatcherConfig{
-			Action: MatcherInclude, // Default action for legacy configs
-		}
-
-		// Convert MatchMethod - empty MatchMethod means match all methods
-		if f.MatchMethod != "" {
-			matcher.Method = f.MatchMethod
-		}
-		// If MatchMethod is empty, leave Method empty (which means match all)
-
-		// Convert MatchFinality - include all finality states in a single matcher
-		if len(f.MatchFinality) > 0 {
-			// Convert the slice to DataFinalityStateArray and assign to matcher
-			matcher.Finality = f.MatchFinality
-		}
-
-		// Add the matcher (with or without finality states)
-		f.Matchers = append(f.Matchers, matcher)
-	}
-
-	// If no matchers exist at all, create a default catch-all matcher
-	if len(f.Matchers) == 0 {
-		f.Matchers = append(f.Matchers, &MatcherConfig{
-			Method: "*",
-			Action: MatcherInclude,
-		})
-	}
 }
 
 type RetryPolicyConfig struct {

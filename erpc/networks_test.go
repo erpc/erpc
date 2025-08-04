@@ -7489,14 +7489,18 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Policies: []*common.CachePolicyConfig{
 				{
-					Network:   "*",
-					Method:    "*",
+					Matchers: []*common.MatcherConfig{
+						{
+							Network: "*",
+							Method:  "*",
+							Action:  common.MatcherInclude,
+						},
+					},
 					TTL:       common.Duration(5 * time.Minute),
 					Connector: "mock",
 				},
 			},
 		}
-		cacheCfg.SetDefaults()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7841,7 +7845,6 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			EvalInterval:     common.Duration(100 * time.Millisecond),
 			EvalFunction:     evalFn,
 		}
-		selectionPolicy.SetDefaults()
 
 		// Mock failing responses for evm state poller
 		gock.New("http://rpc1.localhost").
@@ -9522,15 +9525,19 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			},
 			Policies: []*common.CachePolicyConfig{
 				{
-					Network:   "*",
-					Method:    "*",
+					Matchers: []*common.MatcherConfig{
+						{
+							Network:  "*",
+							Method:   "*",
+							Finality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
+							Action:   common.MatcherInclude,
+						},
+					},
 					TTL:       common.Duration(5 * time.Minute),
 					Connector: "mock",
-					Finality:  common.DataFinalityStateUnfinalized,
 				},
 			},
 		}
-		cacheCfg.SetDefaults()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

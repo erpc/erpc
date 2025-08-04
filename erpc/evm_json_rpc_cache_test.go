@@ -102,7 +102,6 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 	}
 
 	cacheCfg := &common.CacheConfig{}
-	cacheCfg.SetDefaults()
 	cache, err := evm.NewEvmJsonRpcCache(context.Background(), &logger, cacheCfg)
 	if err != nil {
 		panic(err)
@@ -943,7 +942,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			TTL:       0, // forever
 			Connector: "mock1",
 		}
-		finalizedCfg.ConvertCacheLegacyMatchers()
+		finalizedCfg.SetDefaults()
 		finalizedDefault, err := data.NewCachePolicy(finalizedCfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
@@ -1222,7 +1221,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Empty:     common.CacheEmptyBehaviorIgnore,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -1256,7 +1255,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Empty:     common.CacheEmptyBehaviorAllow,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -1811,7 +1810,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Convert legacy matchers
-			tc.config.ConvertCacheLegacyMatchers()
+			tc.config.SetDefaults()
 			policy, err := data.NewCachePolicy(tc.config, mockConnector)
 			require.NoError(t, err)
 
@@ -1923,7 +1922,7 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 					Finality:  common.DataFinalityStateFinalized,
 					Connector: "mock1",
 				}
-				cfg.ConvertCacheLegacyMatchers()
+				cfg.SetDefaults()
 				policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 				require.NoError(t, err)
 				cache.SetPolicies([]*data.CachePolicy{policy})
@@ -2037,7 +2036,7 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 				Finality:    common.DataFinalityStateFinalized,
 				Connector:   "mock1",
 			}
-			cfg.ConvertCacheLegacyMatchers()
+			cfg.SetDefaults()
 			policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 
 			if tc.expectedError {
@@ -2107,7 +2106,6 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 
 	// Create cache with DynamoDB connector for testing
 	cacheCfg := &common.CacheConfig{}
-	cacheCfg.SetDefaults()
 
 	// Create a DynamoDB connector config
 	dynamoDBCfg := &common.ConnectorConfig{
@@ -2493,8 +2491,6 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		GetTimeout:   common.Duration(2 * time.Second),
 		SetTimeout:   common.Duration(2 * time.Second),
 	}
-	err = redisInnerCfg.SetDefaults()
-	require.NoError(t, err, "failed to set defaults for redis inner config")
 
 	redisCfg := &common.ConnectorConfig{
 		Id:     "redis1",
@@ -2503,32 +2499,44 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 	}
 	cacheCfg.Connectors = []*common.ConnectorConfig{redisCfg}
 
-	// Create appropriate cache policies
+	// Create appropriate cache policies using new matcher format
 	cacheCfg.Policies = []*common.CachePolicyConfig{
 		{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateFinalized,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "redis1",
 		},
 		{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateUnfinalized,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "redis1",
 			TTL:       common.Duration(5 * time.Minute),
 		},
 		{
-			Network:   "*",
-			Method:    "*",
-			Finality:  common.DataFinalityStateRealtime,
+			Matchers: []*common.MatcherConfig{
+				{
+					Network:  "*",
+					Method:   "*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+					Action:   common.MatcherInclude,
+				},
+			},
 			Connector: "redis1",
 			TTL:       common.Duration(30 * time.Second),
 		},
 	}
-
-	err = cacheCfg.SetDefaults()
-	require.NoError(t, err, "failed to set defaults for cache config")
 
 	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 	require.NoError(t, err, "failed to create cache")
@@ -2808,7 +2816,6 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		// Create cache without compression
 		cacheCfg := &common.CacheConfig{}
-		cacheCfg.SetDefaults()
 
 		_, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 		require.NoError(t, err)
@@ -2847,7 +2854,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			Finality:  common.DataFinalityStateFinalized,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -2910,7 +2917,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			Finality:  common.DataFinalityStateFinalized,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -2960,7 +2967,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			Finality:  common.DataFinalityStateFinalized,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -3006,7 +3013,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			Finality:  common.DataFinalityStateFinalized,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -3049,7 +3056,6 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 						ZstdLevel: tc.level,
 					},
 				}
-				cacheCfg.SetDefaults()
 
 				cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 				require.NoError(t, err)
@@ -3120,7 +3126,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 					Finality:  common.DataFinalityStateFinalized,
 					Connector: "mock1",
 				}
-				cfg.ConvertCacheLegacyMatchers()
+				cfg.SetDefaults()
 				policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 				require.NoError(t, err)
 				cache.SetPolicies([]*data.CachePolicy{policy})
@@ -3166,7 +3172,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			Finality:  common.DataFinalityStateFinalized,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -3224,7 +3230,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			Finality:  common.DataFinalityStateFinalized,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -3283,7 +3289,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			Finality:  common.DataFinalityStateFinalized,
 			Connector: "mock1",
 		}
-		cfg.ConvertCacheLegacyMatchers()
+		cfg.SetDefaults()
 		policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{policy})
@@ -3351,7 +3357,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 					Finality:  common.DataFinalityStateFinalized,
 					Connector: "mock1",
 				}
-				cfg.ConvertCacheLegacyMatchers()
+				cfg.SetDefaults()
 				policy, err := data.NewCachePolicy(cfg, mockConnectors[0])
 				require.NoError(t, err)
 				cache.SetPolicies([]*data.CachePolicy{policy})
@@ -3444,7 +3450,6 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 	cacheCfg := &common.CacheConfig{
 		Compression: compressionCfg,
 	}
-	cacheCfg.SetDefaults()
 	cache, err := evm.NewEvmJsonRpcCache(context.Background(), &logger, cacheCfg)
 	if err != nil {
 		panic(err)
