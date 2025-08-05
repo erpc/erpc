@@ -203,21 +203,9 @@ func (p *consensusPolicy[R]) ToExecutor(_ R) any {
 }
 
 func (p *consensusPolicy[R]) Build() policy.Executor[R] {
-	return &executor[R]{
+	e := &executor[R]{
 		BaseExecutor:    &policy.BaseExecutor[R]{},
 		consensusPolicy: p,
-
-		// Initialize sync pools for hot path map allocations
-		simpleMapsPool: sync.Pool{
-			New: func() interface{} {
-				// Return nil by default, getter methods will create appropriate map types
-				return nil
-			},
-		},
-		resultsByHashPool: sync.Pool{
-			New: func() interface{} {
-				return make(map[string]R, 16)
-			},
-		},
 	}
+	return e
 }

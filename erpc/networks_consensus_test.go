@@ -6142,7 +6142,7 @@ func TestNetwork_ConsensusPolicy_LargerResponsePreference(t *testing.T) {
 			for i, upstream := range tt.upstreams {
 				gock.New(upstream.Endpoint).
 					Post("/").
-					Persist().
+					Times(1). // Each upstream should only be called once
 					Reply(200).
 					SetHeader("Content-Type", "application/json").
 					JSON(tt.mockResponses[i])

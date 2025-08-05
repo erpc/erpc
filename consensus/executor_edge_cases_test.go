@@ -713,16 +713,16 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 			createResponse("result1", upstreams[0]),
 			createResponse("consensus_result", upstreams[1]),
 			createResponse("consensus_result", upstreams[2]),
-			createResponse("result4", upstreams[3]),
+			createResponse("consensus_result", upstreams[3]),
 			createResponse("result5", upstreams[4]),
 		},
 	}
 
-	// Create consensus policy that will reach consensus with 2 out of 5
+	// Create consensus policy that will reach consensus with 3 out of 5
 	log := log.Logger
 	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
 		WithMaxParticipants(5).
-		WithAgreementThreshold(2). // Consensus with just 2 responses
+		WithAgreementThreshold(3).
 		WithLogger(&log).
 		Build()
 
@@ -766,7 +766,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 
 			// For specific upstreams, respond quickly with consensus result
 			switch upstreamID {
-			case "upstream2", "upstream3":
+			case "upstream2", "upstream3", "upstream4":
 				responseCount.Add(1)
 				jrr, _ := common.NewJsonRpcResponse(1, "consensus_result", nil)
 				resp := common.NewNormalizedResponse().
@@ -806,7 +806,7 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 
 	// The fix ensures that even with cancellation, the executor doesn't hang
 	// The successful completion of this test verifies that:
-	// 1. Consensus was achieved (2 upstreams returned consensus_result)
+	// 1. Consensus was achieved (3 upstreams returned consensus_result)
 	// 2. The executor didn't hang waiting for cancelled goroutines
 	// 3. The drainResponses function properly handled remaining messages
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -20,7 +19,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Static error instances to avoid allocations in hot paths
 var (
 	errNoJsonRpcResponse = errors.New("no json-rpc response available on result")
 	errNotConsensusValid = errors.New("error is not consensus-valid")
@@ -30,16 +28,13 @@ var (
 	labelRespTypeEmpty    = "empty"
 	labelRespTypeNonEmpty = "non-empty"
 	labelRespTypeError    = "error"
+
+	decisionRules []DecisionRule = buildDecisionRules()
 )
 
-// executor is a policy.Executor that handles failures according to a ConsensusPolicy.
 type executor[R any] struct {
 	*policy.BaseExecutor[R]
 	*consensusPolicy[R]
-
-	// Sync pools for hot path map allocations
-	simpleMapsPool    sync.Pool // interface{} - stores map[string]int and map[string]bool
-	resultsByHashPool sync.Pool // map[string]R
 }
 
 var _ policy.Executor[any] = &executor[any]{}
@@ -89,6 +84,61 @@ type consensusAnalysis[R any] struct {
 	errorGroups    map[string]*responseGroup[R]
 }
 
+// Decision Matrix Types for Short-Circuit Logic
+
+// ResponseType classifies the type of response
+type ResponseType int
+
+const (
+	ResponseTypeError ResponseType = iota
+	ResponseTypeEmpty
+	ResponseTypeNonEmpty
+)
+
+// ConsensusState describes the current consensus situation
+type ConsensusState int
+
+const (
+	ConsensusStateNone ConsensusState = iota
+	ConsensusStateThresholdMet
+	ConsensusStateDominant // Winner is dominant but doesn't meet threshold
+	ConsensusStateTie
+)
+
+// CompetitionState describes whether the current winner can be beaten
+type CompetitionState int
+
+const (
+	CompetitionStateUnbeatable  CompetitionState = iota // Mathematically cannot be beaten
+	CompetitionStateBeatable                            // Can be beaten by count
+	CompetitionStateQualityRisk                         // Can be beaten by quality (larger/non-empty)
+)
+
+// DecisionDimensions captures all factors that influence short-circuit decisions
+type DecisionDimensions struct {
+	WinnerType            ResponseType
+	ConsensusState        ConsensusState
+	CompetitionState      CompetitionState
+	HasRemaining          bool
+	IsLowParticipants     bool
+	PreferNonEmpty        bool
+	PreferLargerResponses bool
+}
+
+// ShortCircuitDecision represents the outcome of the decision matrix
+type ShortCircuitDecision struct {
+	ShouldShortCircuit bool
+	Reason             string
+}
+
+// DecisionRule defines a single rule in the decision matrix
+type DecisionRule struct {
+	Priority  int
+	Name      string
+	Condition func(dims DecisionDimensions) bool
+	Decision  ShortCircuitDecision
+}
+
 // findBestGroup finds the best group in a category based on preference settings
 // NEVER applies size preference to error or empty responses
 func (a *consensusAnalysis[R]) findBestGroup(groups map[string]*responseGroup[R], preferLargerResponses bool, agreementThreshold int) (string, *responseGroup[R]) {
@@ -118,19 +168,29 @@ func (a *consensusAnalysis[R]) findBestGroup(groups map[string]*responseGroup[R]
 			}
 		}
 
-		// If we have candidates that meet threshold, pick the largest one (but only consider size for non-empty success)
+		// If we have candidates that meet threshold, pick the best one
 		if len(thresholdCandidates) > 0 {
+			// First, try to find the largest non-empty response
 			for i, group := range thresholdCandidates {
 				// For non-empty success responses, use size preference
 				if !group.isError && !group.isEmpty && group.responseSize == maxSizeAmongThreshold {
-					bestGroup = group
-					bestHash = thresholdHashes[i]
-					break
+					// If we already have a best candidate at this size, pick the one with higher count
+					if bestGroup == nil || group.count > bestGroup.count {
+						bestGroup = group
+						bestHash = thresholdHashes[i]
+					}
 				}
-				// For errors/empty, if no size winner found yet, pick the first one that meets threshold
-				if bestGroup == nil {
-					bestGroup = group
-					bestHash = thresholdHashes[i]
+			}
+
+			// If no size winner found (all same size or all error/empty), pick by highest count
+			if bestGroup == nil {
+				maxCountInThreshold := 0
+				for i, group := range thresholdCandidates {
+					if group.count > maxCountInThreshold {
+						maxCountInThreshold = group.count
+						bestGroup = group
+						bestHash = thresholdHashes[i]
+					}
 				}
 			}
 		} else {
@@ -157,21 +217,21 @@ func (a *consensusAnalysis[R]) findBestGroup(groups map[string]*responseGroup[R]
 		// Highest count wins, no size preference at all
 		maxCount := 0
 
-		for hash, group := range groups {
-			isBetter := false
-
+		// First pass: find the max count
+		for _, group := range groups {
 			if group.count > maxCount {
-				// Clear winner by count
-				isBetter = true
-			} else if group.count == maxCount && bestGroup == nil {
-				// Tie by count, just pick the first one encountered
-				isBetter = true
-			}
-
-			if isBetter {
 				maxCount = group.count
-				bestHash = hash
-				bestGroup = group
+			}
+		}
+
+		// Second pass: among groups with max count, pick deterministically
+		// Use lexicographic ordering of hash as tiebreaker for determinism
+		for hash, group := range groups {
+			if group.count == maxCount {
+				if bestGroup == nil || hash < bestHash {
+					bestHash = hash
+					bestGroup = group
+				}
 			}
 		}
 	}
@@ -703,201 +763,309 @@ func (e *executor[R]) isResultEmptyish(r *execResult[R], ctx context.Context) bo
 	return emptyish
 }
 
-// checkShortCircuit determines if we can exit early based on current responses
-func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
-	// Quick analysis for short-circuit decision
-	analysis := e.analyzeResponses(lg, responses, exec)
+// Helper functions for decision matrix
 
-	// Check if consensus is reached with proper logic
-	hasConsensus := false
-	if analysis.winnerGroup != nil {
-		if !analysis.winnerGroup.isError && !analysis.winnerGroup.isEmpty {
-			// Non-empty results: check if there's a CLEAR winner
-			// If winner meets threshold, it's a clear winner regardless of threshold bypass
-			// If winner doesn't meet threshold, check if it's truly dominant over other non-empty results
-			if analysis.winnerCount >= e.agreementThreshold {
-				hasConsensus = true
-			} else {
-				// Check if this non-empty result is clearly dominant
-				// (i.e., more votes than any other single result type)
-				maxOtherCount := 0
-				for hash, group := range analysis.responsesByHash {
-					if hash != analysis.winnerHash && !group.isError && !group.isEmpty {
-						if group.count > maxOtherCount {
-							maxOtherCount = group.count
-						}
-					}
-				}
-				// Only consensus if winner is clearly dominant over other non-empty results
-				hasConsensus = analysis.winnerCount > maxOtherCount
-			}
-		} else {
-			// Empty results or errors must meet threshold
-			hasConsensus = analysis.winnerCount >= e.agreementThreshold
+// getResponseType classifies a response group
+func getResponseType[R any](group *responseGroup[R]) ResponseType {
+	if group == nil {
+		return ResponseTypeEmpty
+	}
+	if group.isError {
+		return ResponseTypeError
+	}
+	if group.isEmpty {
+		return ResponseTypeEmpty
+	}
+	return ResponseTypeNonEmpty
+}
+
+// getConsensusState determines the current consensus state
+func (e *executor[R]) getConsensusState(analysis *consensusAnalysis[R]) ConsensusState {
+	if analysis.winnerGroup == nil {
+		return ConsensusStateNone
+	}
+
+	// Check for tie
+	hasTie := false
+	for hash, group := range analysis.responsesByHash {
+		if hash != analysis.winnerHash && group.count == analysis.winnerCount {
+			hasTie = true
+			break
 		}
 	}
 
-	if hasConsensus {
-		// Check if the winner is empty - if so, avoid short-circuiting
-		// to allow more responses that might contain meaningful data
-		if analysis.winnerGroup != nil && analysis.winnerGroup.isEmpty {
-			lg.Debug().
-				Int("responseCount", len(responses)).
-				Int("winnerCount", analysis.winnerCount).
-				Int("threshold", e.agreementThreshold).
-				Str("winnerHash", analysis.winnerHash).
-				Bool("winnerIsEmpty", true).
-				Msg("consensus reached on empty result, avoiding short-circuit to collect more data")
-			return false
-		}
+	// Check for tie first
+	if hasTie {
+		return ConsensusStateTie
+	}
 
-		// For all dispute behaviors, use mathematical guarantee logic to avoid premature short-circuit
-		remainingResponses := e.maxParticipants - len(responses)
+	// Check if threshold is met
+	if analysis.winnerCount >= e.agreementThreshold {
+		return ConsensusStateThresholdMet
+	}
 
-		// Find the maximum count among non-winner results
-		maxOtherResultCount := 0
+	// Check if winner is dominant (for non-empty results)
+	if !analysis.winnerGroup.isError && !analysis.winnerGroup.isEmpty {
+		// Check dominance over other non-empty results
+		maxOtherCount := 0
 		for hash, group := range analysis.responsesByHash {
-			if hash != analysis.winnerHash && group.count > maxOtherResultCount {
-				maxOtherResultCount = group.count
-			}
-		}
-
-		// Can short-circuit if current winner cannot be beaten mathematically
-		cannotBeBeaten := analysis.winnerCount > maxOtherResultCount+remainingResponses
-		hasSufficientParticipants := !analysis.isLowParticipants
-
-		// Check if larger response preference should prevent short-circuiting
-		// When preferLargerResponses is enabled, we should be more conservative about short-circuiting
-		// because we might receive larger responses from remaining upstreams
-		preventShortCircuitForLargerResponses := false
-		if e.preferLargerResponses && remainingResponses > 0 && analysis.winnerGroup != nil {
-			// Different logic based on winner type:
-			// 1. Empty/Error winner: MUST wait for potential non-empty responses
-			if analysis.winnerGroup.isEmpty || analysis.winnerGroup.isError {
-				// Any non-empty response would beat current winner due to preference order
-				preventShortCircuitForLargerResponses = true
-			} else if !analysis.winnerGroup.isEmpty && !analysis.winnerGroup.isError {
-				// 2. Non-empty winner: only wait if there are competing non-empty groups
-				// that could potentially return larger responses
-
-				// Check if any other non-empty group could still reach threshold with remaining responses
-				hasCompetingNonEmptyGroups := false
-				for hash, group := range analysis.nonEmptyGroups {
-					if hash != analysis.winnerHash &&
-						(group.count+remainingResponses >= e.agreementThreshold) {
-						hasCompetingNonEmptyGroups = true
-						break
-					}
-				}
-
-				// Only prevent short-circuit if there's actual competition
-				preventShortCircuitForLargerResponses = hasCompetingNonEmptyGroups
-			}
-		}
-
-		// Short-circuit conditions:
-		// 1. Mathematical guarantee (winner cannot be beaten) - works regardless of participant count
-		//    BUT: Don't short-circuit on error/empty winners if remaining responses could be non-empty
-		//    (non-empty preference means any success beats any number of errors)
-		//    AND: Don't short-circuit if larger response preference is enabled and we might miss larger responses
-		// 2. Consensus on non-empty results with sufficient participants and threshold met
-		//    AND: No risk of missing larger responses
-		canShortCircuitOnMathGuarantee := cannotBeBeaten && !preventShortCircuitForLargerResponses
-		if cannotBeBeaten && remainingResponses > 0 && analysis.winnerGroup != nil &&
-			(analysis.winnerGroup.isError || analysis.winnerGroup.isEmpty) {
-			// Don't short-circuit on error/empty winners if remaining responses could contain non-empty results
-			// that would win due to non-empty preference
-			canShortCircuitOnMathGuarantee = false
-		}
-		// Check if there's a tie (other groups have the same count as winner)
-		hasTie := false
-		if analysis.winnerGroup != nil {
-			for hash, group := range analysis.responsesByHash {
-				if hash != analysis.winnerHash && group.count == analysis.winnerCount {
-					hasTie = true
-					break
+			if hash != analysis.winnerHash && !group.isError && !group.isEmpty {
+				if group.count > maxOtherCount {
+					maxOtherCount = group.count
 				}
 			}
 		}
-
-		// Don't short-circuit on consensus if there's a tie and remaining responses could break it
-		canShortCircuitOnConsensus := hasSufficientParticipants &&
-			analysis.winnerGroup != nil &&
-			!analysis.winnerGroup.isError &&
-			!analysis.winnerGroup.isEmpty &&
-			analysis.winnerCount >= e.agreementThreshold &&
-			!preventShortCircuitForLargerResponses &&
-			(!hasTie || remainingResponses == 0) // Don't short-circuit on ties unless no responses left
-
-		if canShortCircuitOnMathGuarantee || canShortCircuitOnConsensus {
-			lg.Debug().
-				Int("responseCount", len(responses)).
-				Int("winnerCount", analysis.winnerCount).
-				Int("maxOtherResultCount", maxOtherResultCount).
-				Int("remainingResponses", remainingResponses).
-				Bool("canShortCircuitOnMathGuarantee", canShortCircuitOnMathGuarantee).
-				Bool("canShortCircuitOnConsensus", canShortCircuitOnConsensus).
-				Bool("hasSufficientParticipants", hasSufficientParticipants).
-				Bool("winnerIsEmpty", analysis.winnerGroup != nil && analysis.winnerGroup.isEmpty).
-				Bool("preventShortCircuitForLargerResponses", preventShortCircuitForLargerResponses).
-				Bool("preferLargerResponses", e.preferLargerResponses).
-				Bool("hasTie", hasTie).
-				Int("agreementThreshold", e.agreementThreshold).
-				Msg("short-circuiting: mathematical guarantee or consensus (both require sufficient participants)")
-			return true
-		} else {
-			lg.Debug().
-				Int("responseCount", len(responses)).
-				Int("winnerCount", analysis.winnerCount).
-				Int("maxOtherResultCount", maxOtherResultCount).
-				Int("remainingResponses", remainingResponses).
-				Bool("canShortCircuitOnMathGuarantee", canShortCircuitOnMathGuarantee).
-				Bool("canShortCircuitOnConsensus", canShortCircuitOnConsensus).
-				Bool("hasSufficientParticipants", hasSufficientParticipants).
-				Bool("winnerIsEmpty", analysis.winnerGroup != nil && analysis.winnerGroup.isEmpty).
-				Bool("preventShortCircuitForLargerResponses", preventShortCircuitForLargerResponses).
-				Bool("preferLargerResponses", e.preferLargerResponses).
-				Bool("hasTie", hasTie).
-				Int("agreementThreshold", e.agreementThreshold).
-				Msg("waiting for more responses: insufficient participants or no clear consensus/mathematical guarantee")
-			return false
+		if analysis.winnerCount > maxOtherCount {
+			return ConsensusStateDominant
 		}
+	}
+
+	return ConsensusStateNone
+}
+
+// analyzeCompetitionState determines if the winner can be beaten
+func (e *executor[R]) analyzeCompetitionState(analysis *consensusAnalysis[R], remaining int) CompetitionState {
+	if analysis.winnerGroup == nil {
+		return CompetitionStateBeatable
+	}
+
+	// Check for quality risks first
+	if e.preferLargerResponses || e.preferNonEmpty {
+		// Check if winner is error/empty and non-empty responses could arrive
+		if e.preferNonEmpty && remaining > 0 && (analysis.winnerGroup.isError || analysis.winnerGroup.isEmpty) {
+			// Any non-empty response would beat current winner
+			return CompetitionStateQualityRisk
+		}
+
+		// Check if there are competing groups that could provide better quality
+		if e.preferLargerResponses && remaining > 0 {
+			relevantGroups := analysis.responsesByHash
+			if e.preferNonEmpty {
+				relevantGroups = analysis.nonEmptyGroups
+			}
+
+			for hash, group := range relevantGroups {
+				if hash != analysis.winnerHash && (group.count+remaining >= e.agreementThreshold) {
+					// There's a competitor that could reach threshold
+					return CompetitionStateQualityRisk
+				}
+			}
+		}
+	}
+
+	// Check mathematical guarantee
+	maxOtherCount := 0
+	for hash, group := range analysis.responsesByHash {
+		if hash != analysis.winnerHash && group.count > maxOtherCount {
+			maxOtherCount = group.count
+		}
+	}
+
+	if analysis.winnerCount > maxOtherCount+remaining {
+		return CompetitionStateUnbeatable
+	}
+
+	return CompetitionStateBeatable
+}
+
+func buildDecisionRules() []DecisionRule {
+	return []DecisionRule{
+		// Priority 1: Empty winner with preferNonEmpty - always wait
+		{
+			Priority: 100,
+			Name:     "empty-winner-wait",
+			Condition: func(dims DecisionDimensions) bool {
+				// Always wait on empty winner to collect more meaningful data
+				return dims.WinnerType == ResponseTypeEmpty && dims.HasRemaining
+			},
+			Decision: ShortCircuitDecision{
+				ShouldShortCircuit: false,
+				Reason:             "empty winner, waiting for more meaningful data",
+			},
+		},
+
+		// Priority 2: Quality risk - wait for potentially better responses
+		{
+			Priority: 90,
+			Name:     "quality-risk-wait",
+			Condition: func(dims DecisionDimensions) bool {
+				return dims.CompetitionState == CompetitionStateQualityRisk && dims.HasRemaining
+			},
+			Decision: ShortCircuitDecision{
+				ShouldShortCircuit: false,
+				Reason:             "waiting for potentially better quality responses",
+			},
+		},
+
+		// Priority 3: Tie with remaining - wait for tiebreaker
+		{
+			Priority: 85,
+			Name:     "tie-wait",
+			Condition: func(dims DecisionDimensions) bool {
+				return dims.ConsensusState == ConsensusStateTie && dims.HasRemaining
+			},
+			Decision: ShortCircuitDecision{
+				ShouldShortCircuit: false,
+				Reason:             "tie detected, waiting for tiebreaker",
+			},
+		},
+
+		// Priority 4: Mathematical guarantee
+		{
+			Priority: 80,
+			Name:     "math-guarantee",
+			Condition: func(dims DecisionDimensions) bool {
+				return dims.CompetitionState == CompetitionStateUnbeatable &&
+					!dims.IsLowParticipants &&
+					dims.ConsensusState != ConsensusStateNone
+			},
+			Decision: ShortCircuitDecision{
+				ShouldShortCircuit: true,
+				Reason:             "mathematical guarantee - winner cannot be beaten",
+			},
+		},
+
+		// Priority 5: Consensus reached on non-empty with threshold
+		{
+			Priority: 70,
+			Name:     "consensus-non-empty",
+			Condition: func(dims DecisionDimensions) bool {
+				// Only short-circuit if we have mathematical guarantee or no remaining responses
+				// This prevents premature short-circuit when preferences are disabled
+				return dims.WinnerType == ResponseTypeNonEmpty &&
+					dims.ConsensusState == ConsensusStateThresholdMet &&
+					!dims.IsLowParticipants &&
+					dims.CompetitionState == CompetitionStateUnbeatable
+			},
+			Decision: ShortCircuitDecision{
+				ShouldShortCircuit: true,
+				Reason:             "consensus reached on non-empty result",
+			},
+		},
+
+		// Priority 6: Consensus impossible
+		{
+			Priority: 60,
+			Name:     "consensus-impossible",
+			Condition: func(dims DecisionDimensions) bool {
+				// This needs to be determined by the caller
+				// We'll handle this in the main function
+				return false
+			},
+			Decision: ShortCircuitDecision{
+				ShouldShortCircuit: true,
+				Reason:             "consensus impossible to reach",
+			},
+		},
+
+		// Default: Continue waiting
+		{
+			Priority: 0,
+			Name:     "default-wait",
+			Condition: func(dims DecisionDimensions) bool {
+				return true // Always matches as fallback
+			},
+			Decision: ShortCircuitDecision{
+				ShouldShortCircuit: false,
+				Reason:             "waiting for more responses",
+			},
+		},
+	}
+}
+
+// evaluateDecisionMatrix applies the decision rules to find the appropriate decision
+func (e *executor[R]) evaluateDecisionMatrix(dims DecisionDimensions, consensusImpossible bool) ShortCircuitDecision {
+	// Special handling for consensus impossible
+	if consensusImpossible {
+		// Check if we should still wait despite consensus being impossible
+		if dims.WinnerType == ResponseTypeNonEmpty && e.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult {
+			return ShortCircuitDecision{
+				ShouldShortCircuit: false,
+				Reason:             "consensus impossible but have non-empty results with AcceptMostCommonValidResult",
+			}
+		}
+		// For PreferBlockHeadLeader and OnlyBlockHeadLeader behaviors, we need to continue
+		// to evaluate potential block head leaders even when consensus is impossible
+		if e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader ||
+			e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader {
+			// Continue to collect more responses to potentially find a block head leader
+			if dims.HasRemaining {
+				return ShortCircuitDecision{
+					ShouldShortCircuit: false,
+					Reason:             "consensus impossible but waiting for block head leader",
+				}
+			}
+		}
+		return ShortCircuitDecision{
+			ShouldShortCircuit: true,
+			Reason:             "consensus impossible to reach",
+		}
+	}
+
+	// Apply rules in priority order
+	for _, rule := range decisionRules {
+		if rule.Condition(dims) {
+			return rule.Decision
+		}
+	}
+
+	// Should never reach here due to default rule, but just in case
+	return ShortCircuitDecision{
+		ShouldShortCircuit: false,
+		Reason:             "no matching rule, defaulting to wait",
+	}
+}
+
+// checkShortCircuit determines if we can exit early based on current responses
+func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execResult[R], exec policy.ExecutionInternal[R]) bool {
+	// Analyze current responses
+	analysis := e.analyzeResponses(lg, responses, exec)
+	remaining := e.maxParticipants - len(responses)
+
+	// Build decision dimensions
+	dims := DecisionDimensions{
+		WinnerType:            getResponseType(analysis.winnerGroup),
+		ConsensusState:        e.getConsensusState(analysis),
+		CompetitionState:      e.analyzeCompetitionState(analysis, remaining),
+		HasRemaining:          remaining > 0,
+		IsLowParticipants:     analysis.isLowParticipants,
+		PreferNonEmpty:        e.preferNonEmpty,
+		PreferLargerResponses: e.preferLargerResponses,
 	}
 
 	// Check if consensus is impossible
-	remainingResponses := e.maxParticipants - len(responses)
-
-	// Can any result reach consensus?
 	canReachConsensus := false
 	for _, group := range analysis.responsesByHash {
-		if group.count+remainingResponses >= e.agreementThreshold {
+		if group.count+remaining >= e.agreementThreshold {
 			canReachConsensus = true
 			break
 		}
 	}
 
-	// Only short-circuit if we have enough unique participants
-	expectedUniqueParticipants := analysis.totalValidParticipants + remainingResponses
-	if !canReachConsensus && expectedUniqueParticipants >= e.maxParticipants {
-		// Don't short-circuit if we have non-empty results with AcceptMostCommonValidResult
-		if analysis.nonEmptySuccessCount > 0 && e.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult {
-			lg.Debug().
-				Int("responseCount", len(responses)).
-				Int("nonEmptyCount", analysis.nonEmptySuccessCount).
-				Msg("consensus impossible but have non-empty results with AcceptMostCommonValidResult, continuing")
-			return false
-		}
+	expectedUniqueParticipants := analysis.totalValidParticipants + remaining
+	consensusImpossible := !canReachConsensus && expectedUniqueParticipants >= e.maxParticipants
 
-		lg.Debug().
-			Int("responseCount", len(responses)).
-			Int("uniqueParticipants", analysis.totalValidParticipants).
-			Int("winnerCount", analysis.winnerCount).
-			Int("remainingResponses", remainingResponses).
-			Msg("consensus impossible to reach, short-circuiting")
-		return true
-	}
+	// Evaluate decision matrix
+	decision := e.evaluateDecisionMatrix(dims, consensusImpossible)
 
-	return false
+	// Log decision with full context
+	lg.Debug().
+		Int("responseCount", len(responses)).
+		Int("winnerCount", analysis.winnerCount).
+		Int("remainingResponses", remaining).
+		Str("winnerType", fmt.Sprintf("%v", dims.WinnerType)).
+		Str("consensusState", fmt.Sprintf("%v", dims.ConsensusState)).
+		Str("competitionState", fmt.Sprintf("%v", dims.CompetitionState)).
+		Bool("isLowParticipants", dims.IsLowParticipants).
+		Bool("consensusImpossible", consensusImpossible).
+		Bool("preferNonEmpty", e.preferNonEmpty).
+		Bool("preferLargerResponses", e.preferLargerResponses).
+		Int("agreementThreshold", e.agreementThreshold).
+		Bool("decision", decision.ShouldShortCircuit).
+		Str("reason", decision.Reason).
+		Msg("decision matrix short-circuit evaluation")
+
+	return decision.ShouldShortCircuit
 }
 
 // drainResponses drains remaining responses to prevent goroutine leaks
