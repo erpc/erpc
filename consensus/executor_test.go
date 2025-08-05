@@ -1360,6 +1360,276 @@ func TestHandleMisbehavingUpstreamRaceCondition(t *testing.T) {
 	}
 }
 
+func TestConsensusTieWithRemainingParticipants(t *testing.T) {
+	t.Run("should_not_short_circuit_on_tie_with_remaining_participants", func(t *testing.T) {
+		// This test demonstrates that consensus should NOT short-circuit when there's a tie
+		// and remaining participants could break the tie.
+		//
+		// Timeline:
+		// - 50ms: 1 resultA, 1 resultB (neither meets threshold)
+		// - 100ms: 2 resultA, 2 resultB (both meet threshold - TIE!)
+		// - 150ms: 2 resultA, 3 resultB (tie broken, resultB wins)
+
+		logger := log.Logger
+
+		// Create 5 fake upstreams
+		upstreams := make([]common.Upstream, 5)
+		for i := 0; i < 5; i++ {
+			upstreams[i] = common.NewFakeUpstream(
+				fmt.Sprintf("upstream-%d", i),
+				common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100)),
+			)
+		}
+
+		// Track which upstreams were called and when
+		var upstreamsCalled sync.Map
+		var responseTimes []time.Time
+		var timesMutex sync.Mutex
+
+		// Create responses:
+		// upstream-0: "resultA" (50ms)
+		// upstream-1: "resultA" (100ms)
+		// upstream-2: "resultB" (50ms)
+		// upstream-3: "resultB" (100ms)
+		// upstream-4: "resultB" (150ms - tie breaker)
+		// This creates a 2-2 tie at 100ms that requires waiting for the 5th response
+		responses := []*common.NormalizedResponse{
+			createResponse("resultA", upstreams[0]),
+			createResponse("resultA", upstreams[1]),
+			createResponse("resultB", upstreams[2]),
+			createResponse("resultB", upstreams[3]),
+			createResponse("resultB", upstreams[4]),
+		}
+
+		// Create consensus policy
+		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			WithMaxParticipants(5).
+			WithAgreementThreshold(2). // Threshold of 2 to enable potential early short-circuit
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
+			WithPreferLargerResponses(true).
+			WithLogger(&logger).
+			Build()
+
+		// Create the executor
+		executor := &executor[*common.NormalizedResponse]{
+			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		}
+
+		// Create upstream selector
+		selector := newTestUpstreamSelector(upstreams)
+
+		// Create the inner function that simulates upstream calls
+		innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			ctx := exec.Context()
+
+			// Get the next upstream
+			upstream, upstreamIndex := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
+			}
+			upstreamId := upstream.Id()
+
+			upstreamsCalled.Store(upstreamId, true)
+
+			// Record response time
+			timesMutex.Lock()
+			responseTimes = append(responseTimes, time.Now())
+			timesMutex.Unlock()
+
+			// Simulate response delays to create a tie scenario
+			// upstream-0,2: fast (50ms) - one from each group
+			// upstream-1,3: medium (100ms) - one from each group
+			// upstream-4: slow (150ms) - tie breaker
+			switch upstreamIndex {
+			case 0, 2:
+				time.Sleep(50 * time.Millisecond)
+			case 1, 3:
+				time.Sleep(100 * time.Millisecond)
+			case 4:
+				time.Sleep(150 * time.Millisecond)
+			}
+
+			// Check for cancellation
+			select {
+			case <-ctx.Done():
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: ctx.Err(),
+				}
+			default:
+			}
+
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Result: responses[upstreamIndex],
+			}
+		}
+
+		// Set up the execution context
+		ctx := context.WithValue(context.Background(), common.UpstreamsContextKey, upstreams)
+		req := common.NewNormalizedRequest([]byte(`{"method":"eth_test","params":[]}`))
+		ctx = context.WithValue(ctx, common.RequestContextKey, req)
+
+		// Create the execution
+		exec := &mockExecution{
+			ctx: ctx,
+		}
+
+		// Apply the consensus policy
+		applyFn := executor.Apply(innerFn)
+
+		// Execute with timing
+		startTime := time.Now()
+		result := applyFn(exec)
+		duration := time.Since(startTime)
+
+		// Verify results
+		assert.NotNil(t, result)
+		assert.NoError(t, result.Error)
+		assert.NotNil(t, result.Result)
+
+		// The result should be "resultB" (3 votes vs 2 votes)
+		jrr, err := result.Result.JsonRpcResponse()
+		assert.NoError(t, err)
+		assert.Contains(t, string(jrr.Result), "resultB",
+			"Expected resultB to win with 3 votes vs 2 votes")
+
+		// Verify all 5 upstreams were called (no early short-circuit on tie)
+		calledCount := 0
+		upstreamsCalled.Range(func(key, value interface{}) bool {
+			calledCount++
+			return true
+		})
+		assert.Equal(t, 5, calledCount,
+			"All 5 upstreams should be called - no short-circuit on tie")
+
+		// Verify timing - should wait for all responses
+		assert.GreaterOrEqual(t, duration, 150*time.Millisecond,
+			"Should wait for the slowest upstream (150ms)")
+
+		if !t.Failed() {
+			t.Logf("Test completed successfully:")
+			t.Logf("- All %d upstreams were called (no early short-circuit on tie)", calledCount)
+			t.Logf("- Correct result won: resultB (3 votes) vs resultA (2 votes)")
+			t.Logf("- Total duration: %v", duration)
+			t.Logf("- Key insight: When there's a true tie (2-2), consensus waits for remaining responses")
+		}
+	})
+
+	t.Run("should_short_circuit_when_no_tie_exists", func(t *testing.T) {
+		// Control test: verify short-circuit still works when there's no tie
+
+		logger := log.Logger
+
+		// Create 5 fake upstreams
+		upstreams := make([]common.Upstream, 5)
+		for i := 0; i < 5; i++ {
+			upstreams[i] = common.NewFakeUpstream(
+				fmt.Sprintf("upstream-%d", i),
+				common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100)),
+			)
+		}
+
+		// Track which upstreams were called
+		var upstreamsCalled sync.Map
+
+		// Create responses - first 3 return same result
+		responses := []*common.NormalizedResponse{
+			createResponse("resultA", upstreams[0]),
+			createResponse("resultA", upstreams[1]),
+			createResponse("resultA", upstreams[2]),
+			createResponse("resultB", upstreams[3]),
+			createResponse("resultB", upstreams[4]),
+		}
+
+		// Create consensus policy
+		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			WithMaxParticipants(5).
+			WithAgreementThreshold(2).
+			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
+			WithLogger(&logger).
+			Build()
+
+		// Create the executor
+		executor := &executor[*common.NormalizedResponse]{
+			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		}
+
+		// Create upstream selector
+		selector := newTestUpstreamSelector(upstreams)
+
+		// Create the inner function
+		innerFn := func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			ctx := exec.Context()
+
+			upstream, upstreamIndex := selector.getNextUpstream()
+			if upstream == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: fmt.Errorf("no upstream available"),
+				}
+			}
+
+			upstreamsCalled.Store(upstream.Id(), true)
+
+			// Fast responses for first 3, slow for last 2
+			if upstreamIndex < 3 {
+				time.Sleep(50 * time.Millisecond)
+			} else {
+				// These should be cancelled by short-circuit
+				select {
+				case <-time.After(500 * time.Millisecond):
+				case <-ctx.Done():
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: ctx.Err(),
+					}
+				}
+			}
+
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Result: responses[upstreamIndex],
+			}
+		}
+
+		// Set up the execution context
+		ctx := context.WithValue(context.Background(), common.UpstreamsContextKey, upstreams)
+		req := common.NewNormalizedRequest([]byte(`{"method":"eth_test","params":[]}`))
+		ctx = context.WithValue(ctx, common.RequestContextKey, req)
+
+		// Create and apply
+		exec := &mockExecution{ctx: ctx}
+		applyFn := executor.Apply(innerFn)
+
+		// Execute
+		startTime := time.Now()
+		result := applyFn(exec)
+		duration := time.Since(startTime)
+
+		// Verify results
+		assert.NotNil(t, result)
+		assert.NoError(t, result.Error)
+		jrr, err := result.Result.JsonRpcResponse()
+		assert.NoError(t, err)
+		assert.Contains(t, string(jrr.Result), "resultA")
+
+		// All upstreams are called (goroutines start immediately), but slow ones should be cancelled
+		calledCount := 0
+		upstreamsCalled.Range(func(key, value interface{}) bool {
+			calledCount++
+			return true
+		})
+		assert.Equal(t, 5, calledCount,
+			"All upstreams should be called (goroutines start immediately)")
+
+		// Should complete quickly
+		assert.Less(t, duration, 200*time.Millisecond,
+			"Should short-circuit without waiting for slow upstreams")
+
+		t.Logf("Control test passed: short-circuit still works when no tie exists")
+		t.Logf("- Started %d upstream goroutines (as expected)", calledCount)
+		t.Logf("- Duration: %v (short-circuited before slow responses)", duration)
+	})
+}
+
 func TestConsensusGoroutineLeakWithShortCircuit(t *testing.T) {
 	// This test demonstrates the goroutine leak issue when short-circuiting
 	// The bug: drainResponses was called with incorrect count, causing it to block forever

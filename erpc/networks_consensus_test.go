@@ -5699,3 +5699,882 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestNetwork_ConsensusPolicy_LargerResponsePreference(t *testing.T) {
+	// Real-world inspired test data based on HyperEVM discrepancy example
+	// Good response (larger, more complete)
+	largerResponse := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": []interface{}{
+			map[string]interface{}{
+				"blockHash":         "0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7",
+				"blockNumber":       "0x9c0400",
+				"contractAddress":   nil,
+				"cumulativeGasUsed": "0x0",
+				"effectiveGasPrice": "0x0",
+				"from":              "0x0000000000000000000000000000000000000000",
+				"gasUsed":           "0x0",
+				"logs": []interface{}{
+					map[string]interface{}{
+						"address": "0x222222222264d28317734c14d2b8e7c1803ca8f6", // Transfer event
+						"topics": []interface{}{
+							"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+							"0x0000000000000000000000000000000000000000000000000000000000000000",
+							"0x0000000000000000000000007be8f48894d9ec0528ca70d9151cf2831c377be0",
+						},
+						"data":             "0x00000000000000000000000000000000000000000000021e19e0c9bab2400000",
+						"blockNumber":      "0x9c0400",
+						"transactionHash":  "0x3485d0657cc683514d4b8d2ef82881e5a77af11d1562ff3200614afe5a73efea",
+						"transactionIndex": "0x0",
+						"blockHash":        "0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7",
+						"logIndex":         "0x0",
+						"removed":          false,
+					},
+					map[string]interface{}{
+						"address": "0x7be8f48894d9ec0528ca70d9151cf2831c377be0",
+						"topics": []interface{}{
+							"0x2f8788117e7eff1d82e926ec794901d17c78024a50270940304540a733656f0d",
+						},
+						"data":             "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+						"blockNumber":      "0x9c0400",
+						"transactionHash":  "0x3485d0657cc683514d4b8d2ef82881e5a77af11d1562ff3200614afe5a73efea",
+						"transactionIndex": "0x0",
+						"blockHash":        "0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7",
+						"logIndex":         "0x1",
+						"removed":          false,
+					},
+				},
+				"logsBloom":        "0x00000000000000000000010000000000000000000000000020000000000100000000000000000000000000000000000000000000000000000000000000000000000002000000000000000008000000000000000000000000000000000000000010000000000000000000000000040000000000000000000000000010000000000000000000000000000000000000000000000000000000080000000000000001000000000000000000000000000000000100000000000000000000000000000000000002000000000080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040000000000000800",
+				"status":           "0x1",
+				"to":               "0x7be8f48894d9ec0528ca70d9151cf2831c377be0",
+				"transactionHash":  "0x3485d0657cc683514d4b8d2ef82881e5a77af11d1562ff3200614afe5a73efea",
+				"transactionIndex": "0x0",
+				"type":             "0x2",
+			},
+		},
+	}
+
+	// Bad response (smaller, incomplete - missing logs and important fields)
+	smallerResponse := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": []interface{}{
+			map[string]interface{}{
+				"blockHash":         "0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7",
+				"blockNumber":       "0x9c0400",
+				"contractAddress":   nil,
+				"cumulativeGasUsed": "0x0",
+				"status":            "0x1",
+				"transactionHash":   "0x3485d0657cc683514d4b8d2ef82881e5a77af11d1562ff3200614afe5a73efea",
+				"transactionIndex":  "0x0",
+			},
+		},
+	}
+
+	tests := []struct {
+		name                     string
+		upstreams                []*common.UpstreamConfig
+		request                  map[string]interface{}
+		mockResponses            []map[string]interface{}
+		maxParticipants          int
+		agreementThreshold       int
+		preferNonEmpty           *bool
+		preferLargerResponses    *bool
+		expectedResponseSize     string // "larger" or "smaller"
+		expectedResponseContains string // Check for specific content
+	}{
+		{
+			name:            "larger_response_wins_with_equal_votes_when_both_meet_threshold",
+			maxParticipants: 4,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "good-vendor1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "good-vendor2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "bad-vendor1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "bad-vendor2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockReceipts",
+				"params": []interface{}{"0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7"},
+			},
+			mockResponses: []map[string]interface{}{
+				largerResponse, // 2 votes for larger, complete response
+				largerResponse,
+				smallerResponse, // 2 votes for smaller, incomplete response
+				smallerResponse,
+			},
+			agreementThreshold:       2,
+			preferLargerResponses:    pointer(true),
+			expectedResponseSize:     "larger",
+			expectedResponseContains: "0x222222222264d28317734c14d2b8e7c1803ca8f6", // Transfer event address
+		},
+		{
+			name:            "larger_response_wins_with_fewer_votes_when_both_meet_threshold",
+			maxParticipants: 5,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "good-vendor1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "good-vendor2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "bad-vendor1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "bad-vendor2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "bad-vendor3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor3.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockReceipts",
+				"params": []interface{}{"0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7"},
+			},
+			mockResponses: []map[string]interface{}{
+				largerResponse, // 2 votes for larger, complete response (meets threshold)
+				largerResponse,
+				smallerResponse, // 3 votes for smaller, incomplete response (meets threshold)
+				smallerResponse,
+				smallerResponse,
+			},
+			agreementThreshold:       2,
+			preferLargerResponses:    pointer(true),
+			expectedResponseSize:     "larger",                                     // Should win despite fewer votes because it's larger
+			expectedResponseContains: "0x222222222264d28317734c14d2b8e7c1803ca8f6", // Transfer event address
+		},
+		{
+			name:            "smaller_response_wins_with_more_votes_when_prefer_larger_disabled",
+			maxParticipants: 5,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "nirvana-hyperevm",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "hyperliquid-hyperlend",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "quicknode-hyperevm",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "hyperliquid-blockpi",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "hyperliquid-imperator",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor3.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockReceipts",
+				"params": []interface{}{"0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7"},
+			},
+			mockResponses: []map[string]interface{}{
+				largerResponse,
+				largerResponse,
+				smallerResponse,
+				smallerResponse,
+				smallerResponse,
+			},
+			agreementThreshold:    2,
+			preferLargerResponses: pointer(false), // Disable larger response preference
+			expectedResponseSize:  "smaller",
+		},
+		{
+			name:            "larger_response_only_wins_if_meets_threshold",
+			maxParticipants: 4,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "nirvana-hyperevm",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "quicknode-hyperevm",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "hyperliquid-blockpi",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "hyperliquid-imperator",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://bad-vendor3.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockReceipts",
+				"params": []interface{}{"0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7"},
+			},
+			mockResponses: []map[string]interface{}{
+				largerResponse,  // 1 vote for larger response (doesn't meet threshold of 2)
+				smallerResponse, // 3 votes for smaller response (meets threshold)
+				smallerResponse,
+				smallerResponse,
+			},
+			agreementThreshold:    2,
+			preferLargerResponses: pointer(true),
+			expectedResponseSize:  "smaller", // Smaller wins because larger doesn't meet threshold
+		},
+		{
+			name:            "equal_size_responses_fallback_to_count",
+			maxParticipants: 4,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "vendor1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "vendor2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "vendor3",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://vendor3.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "vendor4",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://vendor4.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockReceipts",
+				"params": []interface{}{"0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7"},
+			},
+			mockResponses: []map[string]interface{}{
+				largerResponse, // 3 votes for larger, complete response
+				largerResponse,
+				largerResponse,
+				smallerResponse, // 1 vote for smaller response
+			},
+			agreementThreshold:       2,
+			preferLargerResponses:    pointer(true),
+			expectedResponseSize:     "larger", // Should pick the larger response (more votes + larger)
+			expectedResponseContains: "0x222222222264d28317734c14d2b8e7c1803ca8f6",
+		},
+		{
+			name:            "larger_response_preferred_with_non_empty_preference_disabled",
+			maxParticipants: 4,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "good-vendor1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "good-vendor2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://good-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "error-vendor1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://error-vendor1.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+				{
+					Id:       "error-vendor2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://error-vendor2.localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 998},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockReceipts",
+				"params": []interface{}{"0x2033dc0b73dc048827289e5e9b33dc70d9b67c6ca8141400f2e917b14f1fa4e7"},
+			},
+			mockResponses: []map[string]interface{}{
+				largerResponse, // 2 votes for good response
+				largerResponse,
+				{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{"code": -32603, "message": "execution reverted"}}, // 2 votes for error
+				{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{"code": -32603, "message": "execution reverted"}},
+			},
+			agreementThreshold:       2,
+			preferNonEmpty:           pointer(false), // All response types compete equally
+			preferLargerResponses:    pointer(true),
+			expectedResponseSize:     "larger", // Should pick the larger successful response
+			expectedResponseContains: "0x222222222264d28317734c14d2b8e7c1803ca8f6",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset HTTP mocks
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer func() {
+				cancel()
+				time.Sleep(100 * time.Millisecond)
+			}()
+
+			// Setup network infrastructure
+			mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+			vr := thirdparty.NewVendorsRegistry()
+			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+			require.NoError(t, err)
+
+			ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+				Connector: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems:     100_000,
+						MaxTotalSize: "1MB",
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			upsReg := upstream.NewUpstreamsRegistry(
+				ctx, &log.Logger, "prjA", tt.upstreams,
+				ssr, nil, vr, pr, nil, mt, 1*time.Second,
+			)
+
+			// Create consensus config with new preference flags
+			consensusConfig := &common.ConsensusPolicyConfig{
+				MaxParticipants:         tt.maxParticipants,
+				AgreementThreshold:      tt.agreementThreshold,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			}
+
+			// Set preference flags if specified
+			if tt.preferNonEmpty != nil {
+				consensusConfig.PreferNonEmpty = tt.preferNonEmpty
+			}
+			if tt.preferLargerResponses != nil {
+				consensusConfig.PreferLargerResponses = tt.preferLargerResponses
+			}
+
+			// Create network with consensus policy
+			ntw, err := NewNetwork(
+				ctx, &log.Logger, "prjA",
+				&common.NetworkConfig{
+					Architecture: common.ArchitectureEvm,
+					Evm: &common.EvmNetworkConfig{
+						ChainId: 998,
+					},
+					Failsafe: []*common.FailsafeConfig{
+						{
+							MatchMethod: "*",
+							Consensus:   consensusConfig,
+						},
+					},
+				},
+				nil, upsReg, mt,
+			)
+			require.NoError(t, err)
+
+			err = upsReg.Bootstrap(ctx)
+			require.NoError(t, err)
+			err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(998))
+			require.NoError(t, err)
+
+			// Setup mock responses
+			for i, upstream := range tt.upstreams {
+				gock.New(upstream.Endpoint).
+					Post("/").
+					Persist().
+					Reply(200).
+					SetHeader("Content-Type", "application/json").
+					JSON(tt.mockResponses[i])
+			}
+
+			// Make request
+			reqBytes, err := json.Marshal(tt.request)
+			require.NoError(t, err)
+
+			fakeReq := common.NewNormalizedRequest(reqBytes)
+			resp, err := ntw.Forward(ctx, fakeReq)
+
+			// Verify results
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			// Get the JSON-RPC response to analyze
+			jr, err := resp.JsonRpcResponse(ctx)
+			require.NoError(t, err)
+
+			// Convert response to JSON for analysis
+			respBytes := jr.Result
+			respStr := string(respBytes)
+
+			// Verify response size/content based on expectations
+			if tt.expectedResponseSize == "larger" {
+				// Should contain the complete response with logs and transfer event
+				assert.Contains(t, respStr, "logs", "Expected larger response to contain logs")
+				assert.Contains(t, respStr, "logsBloom", "Expected larger response to contain logsBloom")
+				if tt.expectedResponseContains != "" {
+					assert.Contains(t, respStr, tt.expectedResponseContains,
+						"Expected larger response to contain %s", tt.expectedResponseContains)
+				}
+			} else if tt.expectedResponseSize == "smaller" {
+				// Should be the incomplete response without logs
+				assert.NotContains(t, respStr, "logs", "Expected smaller response to not contain logs")
+				assert.NotContains(t, respStr, "logsBloom", "Expected smaller response to not contain logsBloom")
+			}
+
+			// Log the actual response size for debugging
+			responseSize, _ := jr.Size(ctx)
+			t.Logf("Response size: %d bytes, Expected: %s", responseSize, tt.expectedResponseSize)
+			t.Logf("Response preview: %.200s...", respStr)
+		})
+	}
+}
+
+func TestNetwork_ConsensusPolicy_ErrorsShouldNotWinWithSizePreference(t *testing.T) {
+	// This test reproduces the exact issue from production logs where:
+	// - 2 upstreams returned empty results ([] with resultSize: 2)
+	// - 1 upstream returned an error (ErrUpstreamsExhausted)
+	// - The ERROR was incorrectly winning due to size preference logic
+	// - Empty responses should win by COUNT (2 > 1), not errors winning by size
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup network infrastructure (following the same pattern as existing tests)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1MB",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Create upstreams
+	upstreams := []*common.UpstreamConfig{
+		{
+			Id:       "upstream1-empty",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://upstream1.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 42161},
+		},
+		{
+			Id:       "upstream2-empty",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://upstream2.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 42161},
+		},
+		{
+			Id:       "upstream3-error",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://upstream3.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 42161},
+		},
+	}
+
+	upsReg := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "prjA", upstreams,
+		ssr, nil, vr, pr, nil, mt, 1*time.Second,
+	)
+
+	// Create consensus config matching EXACT production settings from the user
+	consensusConfig := &common.ConsensusPolicyConfig{
+		MaxParticipants:         3,
+		AgreementThreshold:      2,
+		DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError, // Production uses returnError, not acceptMostCommon!
+		PreferLargerResponses:   pointer(true),                                      // Explicitly enable this to trigger the bug
+		PreferNonEmpty:          pointer(true),                                      // Explicitly enable this too
+	}
+
+	// Mock responses: 2 upstreams return empty array, 1 fails
+	emptyResponse := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result":  []interface{}{}, // Empty array - exactly like the production log
+	}
+
+	// Mock upstream1 and upstream2 to return empty results
+	gock.New("http://upstream1.localhost").
+		Post("/").
+		Times(1).
+		Reply(200).
+		JSON(emptyResponse)
+
+	gock.New("http://upstream2.localhost").
+		Post("/").
+		Times(1).
+		Reply(200).
+		JSON(emptyResponse)
+
+	// Mock upstream3 to return an error (simulating ErrUpstreamsExhausted scenario)
+	// This time, let's make it return a larger "size" error by making it a longer message
+	gock.New("http://upstream3.localhost").
+		Post("/").
+		Times(1).
+		Reply(500).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error": map[string]interface{}{
+				"code":    -32000,
+				"message": "upstream exhausted: all upstream attempts failed with very long error message that should make this response larger than the empty array responses if size preference is incorrectly applied to errors which would be a bug that needs to be fixed",
+			},
+		})
+
+	// Create network with consensus policy
+	ntw, err := NewNetwork(
+		ctx, &log.Logger, "prjA",
+		&common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 42161, // Arbitrum
+			},
+			Failsafe: []*common.FailsafeConfig{
+				{
+					MatchMethod: "*",
+					Consensus:   consensusConfig,
+				},
+			},
+		},
+		nil, upsReg, mt,
+	)
+	require.NoError(t, err)
+
+	err = upsReg.Bootstrap(ctx)
+	require.NoError(t, err)
+	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(42161))
+	require.NoError(t, err)
+
+	// Make the request (using eth_getLogs like in the production issue)
+	request := map[string]interface{}{
+		"method": "eth_getLogs",
+		"params": []interface{}{
+			map[string]interface{}{
+				"address": []interface{}{
+					"0x3bf6d2790779bd1d9526c425be9f92a0900ea64c",
+				},
+				"fromBlock": "0x15c4bf51",
+				"toBlock":   "0x15c4bf52",
+				"topics": []interface{}{
+					"0x2f8788117e7eff1d82e926ec794901d17c78024a50270940304540a733656f0d",
+				},
+			},
+		},
+	}
+
+	reqBytes, err := json.Marshal(request)
+	require.NoError(t, err)
+
+	fakeReq := common.NewNormalizedRequest(reqBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	// If the bug exists, this should fail because the error would win due to larger size
+	// causing a consensus dispute, since we have disputeBehavior: returnError
+
+	if err != nil {
+		// If we get an error, it might be because the error response incorrectly won
+		// due to size preference, causing a dispute
+		t.Logf("❌ Got error (this might indicate the size preference bug): %v", err)
+
+		// Check if it's a consensus dispute error
+		if strings.Contains(err.Error(), "consensus") || strings.Contains(err.Error(), "dispute") {
+			t.Logf("🐛 CONFIRMED: Size preference bug exists - error won over empty responses, causing dispute")
+			t.Logf("This proves that size preference is incorrectly being applied to error responses")
+			// This is the bug we want to fix
+		}
+
+		// For now, let's expect this to fail to demonstrate the bug
+		require.NoError(t, err, "BUG REPRODUCTION: Error won due to size preference - this is the bug we need to fix")
+	}
+
+	require.NotNil(t, resp)
+
+	// Get the JSON-RPC response to analyze
+	jr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+
+	// Verify we got the empty array result (not an error)
+	respBytes := jr.Result
+	respStr := string(respBytes)
+
+	// The key assertion: we should get empty array [], NOT an error
+	// This proves that empty responses won by count (2 > 1), not error winning by size
+	assert.Equal(t, "[]", respStr, "Should get empty array result, proving empty responses won by count over error")
+
+	// Additional verification: ensure it's actually an empty array
+	var resultArray []interface{}
+	err = json.Unmarshal(respBytes, &resultArray)
+	require.NoError(t, err, "Result should be a valid empty array")
+	assert.Empty(t, resultArray, "Result array should be empty")
+
+	// Log for debugging
+	responseSize, _ := jr.Size(ctx)
+	t.Logf("Final response size: %d bytes", responseSize)
+	t.Logf("Final response: %s", respStr)
+	t.Logf("✅ Empty responses correctly won by count (2 > 1) over error, size preference did not apply to errors")
+}
+
+func TestConsensusErrorGroupsOverrideEmptyResponsesBug(t *testing.T) {
+	// This test demonstrates the bug where error groups always win over empty responses
+	// when preferNonEmpty is true, due to an early return in determineWinner() method.
+	// Empty responses with more votes should beat error responses with fewer votes.
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	// Setup network infrastructure
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1MB",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Create upstreams
+	upstreams := []*common.UpstreamConfig{
+		{
+			Id:       "empty1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://empty1.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		},
+		{
+			Id:       "empty2",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://empty2.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		},
+		{
+			Id:       "error1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://error1.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		},
+	}
+
+	upsReg := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "prjA", upstreams,
+		ssr, nil, vr, pr, nil, mt, 1*time.Second,
+	)
+
+	// Create consensus config with preferNonEmpty = true
+	// This triggers the bug where error groups override empty responses
+	consensusConfig := &common.ConsensusPolicyConfig{
+		MaxParticipants:         3,
+		AgreementThreshold:      2,
+		DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+		PreferNonEmpty:          pointer(true),  // This is key to trigger the bug
+		PreferLargerResponses:   pointer(false), // Disable size preference to focus on the bug
+	}
+
+	// Setup mock responses: 2 empty responses (should win) vs 1 error response (should lose)
+	emptyResponse := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result":  []interface{}{}, // Empty result
+	}
+
+	// Mock 2 upstreams to return empty results (should win by count)
+	gock.New("http://empty1.localhost").
+		Post("/").
+		Times(1).
+		Reply(200).
+		JSON(emptyResponse)
+
+	gock.New("http://empty2.localhost").
+		Post("/").
+		Times(1).
+		Reply(200).
+		JSON(emptyResponse)
+
+	// Mock 1 upstream to return an error (should lose by count)
+	gock.New("http://error1.localhost").
+		Post("/").
+		Times(1).
+		Reply(500).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error": map[string]interface{}{
+				"code":    -32000,
+				"message": "execution reverted",
+			},
+		})
+
+	// Create network
+	ntw, err := NewNetwork(
+		ctx, &log.Logger, "prjA",
+		&common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 1,
+			},
+			Failsafe: []*common.FailsafeConfig{
+				{
+					MatchMethod: "*",
+					Consensus:   consensusConfig,
+				},
+			},
+		},
+		nil, upsReg, mt,
+	)
+	require.NoError(t, err)
+
+	err = upsReg.Bootstrap(ctx)
+	require.NoError(t, err)
+	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(1))
+	require.NoError(t, err)
+
+	// Make request
+	request := map[string]interface{}{
+		"method": "eth_getLogs",
+		"params": []interface{}{
+			map[string]interface{}{
+				"fromBlock": "0x1",
+				"toBlock":   "0x2",
+			},
+		},
+	}
+
+	reqBytes, err := json.Marshal(request)
+	require.NoError(t, err)
+
+	fakeReq := common.NewNormalizedRequest(reqBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	// BUG EXPECTATION: Due to the early return bug in determineWinner(),
+	// error responses will win over empty responses regardless of vote count
+	// when preferNonEmpty is true.
+
+	if err != nil {
+		// If we get an error, the bug might be present
+		t.Logf("BUG DETECTED: Got error instead of empty response: %v", err)
+
+		// Check if it's related to consensus
+		if strings.Contains(err.Error(), "consensus") || strings.Contains(err.Error(), "dispute") {
+			t.Logf("🐛 BUG CONFIRMED: Error response incorrectly won over empty responses with more votes")
+			t.Logf("This happens because determineWinner() has early return after error groups, skipping empty groups")
+
+			// This test should fail to demonstrate the bug exists
+			t.Fatalf("BUG REPRODUCTION: Error responses (1 vote) incorrectly beat empty responses (2 votes) due to early return bug")
+		}
+
+		require.NoError(t, err, "Unexpected error during consensus")
+	}
+
+	require.NotNil(t, resp)
+
+	// Get the JSON-RPC response
+	jr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+
+	// Verify we got the empty array result (correct behavior)
+	respBytes := jr.Result
+	respStr := string(respBytes)
+
+	// CORRECT BEHAVIOR: Empty responses should win by count (2 > 1)
+	assert.Equal(t, "[]", respStr, "Empty responses should win by count over error responses")
+
+	// Additional verification
+	var resultArray []interface{}
+	err = json.Unmarshal(respBytes, &resultArray)
+	require.NoError(t, err, "Result should be a valid empty array")
+	assert.Empty(t, resultArray, "Result array should be empty")
+
+	// Log for debugging
+	responseSize, _ := jr.Size(ctx)
+	t.Logf("Final response size: %d bytes", responseSize)
+	t.Logf("Final response: %s", respStr)
+	t.Logf("✅ Empty responses correctly won by count (2 > 1) over error response (1)")
+}

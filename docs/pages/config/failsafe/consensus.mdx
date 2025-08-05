@@ -141,6 +141,8 @@ projects:
               agreementThreshold: 2
               disputeBehavior: returnError
               lowParticipantsBehavior: acceptAnyValidResult
+              preferNonEmpty: true
+              preferLargerResponses: true
               punishMisbehavior:
                 disputeThreshold: 10
                 disputeWindow: 10m
@@ -166,6 +168,8 @@ export default createConfig({
               agreementThreshold: 2,
               disputeBehavior: "acceptAnyValidResult",
               lowParticipantsBehavior: "acceptMostCommonValidResult",
+              preferNonEmpty: true,
+              preferLargerResponses: true,
               punishMisbehavior: {
                 disputeThreshold: 3,
                 disputeWindow: "10s",
@@ -191,16 +195,22 @@ Number of upstreams to query in each consensus round. The policy selects the fir
 Minimum number of identical responses needed to reach consensus. For example, with `maxParticipants: 3` and `agreementThreshold: 2`, at least 2 upstreams must return the same result.
 
 <Callout type="info">
-  Response comparison uses canonical JSON-RPC hashing. **Non-empty responses are always preferred over empty ones**, regardless of count (e.g., 1 non-empty beats 3 empty responses).
+  Response comparison uses canonical JSON-RPC hashing. When `preferNonEmpty` is enabled (default), **non-empty responses are preferred over empty ones**, regardless of count (e.g., 1 non-empty beats 3 empty responses).
 </Callout>
 
 ## Behavior options
 
+### `preferNonEmpty`
+When enabled (default: `true`), non-empty responses are preferred over empty ones, regardless of count. For example, 1 non-empty response beats 3 empty responses. When disabled, all response types are treated equally and only count/size matter.
+
+### `preferLargerResponses` 
+When enabled (default: `true`), larger responses (more data) are preferred among those meeting the `agreementThreshold`. If multiple responses meet the threshold, the one with more content wins. This helps ensure you get the most complete data available.
+
 ### `disputeBehavior`
 When upstreams disagree (no consensus reached), sorted from most loose to strictest:
 
-- **`acceptAnyValidResult`**: Returns any valid response, preferring non-empty.
-- **`acceptMostCommonValidResult`**: Returns most common response if it meets `agreementThreshold`. Prefers non-empty over empty responses. Errors if no clear winner.
+- **`acceptAnyValidResult`**: Returns any valid response. Respects `preferNonEmpty` setting.
+- **`acceptMostCommonValidResult`**: Returns most common response if it meets `agreementThreshold`. Respects preference settings. Errors if no clear winner.
 - **`preferBlockHeadLeader`**: Uses highest block number upstream, falls back to most common.
 - **`onlyBlockHeadLeader`**: Only uses highest block upstream, errors otherwise.
 - **`returnError`**: Returns dispute error. Strict agreement required among upstreams.
@@ -208,8 +218,8 @@ When upstreams disagree (no consensus reached), sorted from most loose to strict
 ### `lowParticipantsBehavior`
 When fewer than `agreementThreshold` responses are available, sorted from most loose to strictest:
 
-- **`acceptAnyValidResult`**: Uses any available upstream, prefers non-empty. Maximum availability.
-- **`acceptMostCommonValidResult`**: Uses available upstreams, returns most common if meets threshold. Same non-empty preference and clear winner rules as dispute behavior.
+- **`acceptAnyValidResult`**: Uses any available upstream. Respects preference settings. Maximum availability.
+- **`acceptMostCommonValidResult`**: Uses available upstreams, returns most common if meets threshold. Respects preference settings and clear winner rules.
 - **`preferBlockHeadLeader`**: Uses response from block head leader if available, otherwise use most common response.
 - **`onlyBlockHeadLeader`**: Only proceeds if block head leader is agrees with the response.
 - **`returnError`**: Fails request. Strict participation requirement.

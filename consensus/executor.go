@@ -25,6 +25,11 @@ var (
 	errNoJsonRpcResponse = errors.New("no json-rpc response available on result")
 	errNotConsensusValid = errors.New("error is not consensus-valid")
 	errPanicInConsensus  = errors.New("panic in consensus execution")
+
+	labelRespTypeUnknown  = "unknown"
+	labelRespTypeEmpty    = "empty"
+	labelRespTypeNonEmpty = "non-empty"
+	labelRespTypeError    = "error"
 )
 
 // executor is a policy.Executor that handles failures according to a ConsensusPolicy.
@@ -49,13 +54,14 @@ type execResult[R any] struct {
 
 // responseGroup holds all responses with the same hash
 type responseGroup[R any] struct {
-	count       int
-	isEmpty     bool
-	isError     bool
-	responses   []*execResult[R]
-	firstResult R     // Cached first successful result
-	firstError  error // Cached first error (for error consensus)
-	hasResult   bool  // Whether firstResult has been set
+	count        int
+	isEmpty      bool
+	isError      bool
+	responses    []*execResult[R]
+	firstResult  R     // Cached first successful result
+	firstError   error // Cached first error (for error consensus)
+	hasResult    bool  // Whether firstResult has been set
+	responseSize int   // Cached response size in bytes (for larger response preference)
 }
 
 // consensusAnalysis contains all analyzed consensus data computed once
@@ -81,6 +87,96 @@ type consensusAnalysis[R any] struct {
 	nonEmptyGroups map[string]*responseGroup[R]
 	emptyGroups    map[string]*responseGroup[R]
 	errorGroups    map[string]*responseGroup[R]
+}
+
+// findBestGroup finds the best group in a category based on preference settings
+// NEVER applies size preference to error or empty responses
+func (a *consensusAnalysis[R]) findBestGroup(groups map[string]*responseGroup[R], preferLargerResponses bool, agreementThreshold int) (string, *responseGroup[R]) {
+	var bestHash string
+	var bestGroup *responseGroup[R]
+
+	if preferLargerResponses {
+		// Prefer larger responses among those that meet agreement threshold
+		// BUT ONLY for non-empty, non-error responses
+		var thresholdCandidates []*responseGroup[R]
+		var thresholdHashes []string
+		maxSizeAmongThreshold := 0
+		maxCountOverall := 0
+
+		// First pass: find all candidates that meet threshold and track max count
+		for hash, group := range groups {
+			if group.count > maxCountOverall {
+				maxCountOverall = group.count
+			}
+			if group.count >= agreementThreshold {
+				thresholdCandidates = append(thresholdCandidates, group)
+				thresholdHashes = append(thresholdHashes, hash)
+				// ONLY consider size for non-empty, non-error responses
+				if !group.isError && !group.isEmpty && group.responseSize > maxSizeAmongThreshold {
+					maxSizeAmongThreshold = group.responseSize
+				}
+			}
+		}
+
+		// If we have candidates that meet threshold, pick the largest one (but only consider size for non-empty success)
+		if len(thresholdCandidates) > 0 {
+			for i, group := range thresholdCandidates {
+				// For non-empty success responses, use size preference
+				if !group.isError && !group.isEmpty && group.responseSize == maxSizeAmongThreshold {
+					bestGroup = group
+					bestHash = thresholdHashes[i]
+					break
+				}
+				// For errors/empty, if no size winner found yet, pick the first one that meets threshold
+				if bestGroup == nil {
+					bestGroup = group
+					bestHash = thresholdHashes[i]
+				}
+			}
+		} else {
+			// No candidate meets threshold, fall back to highest count
+			for hash, group := range groups {
+				if group.count == maxCountOverall {
+					// For non-empty success responses, consider size as tiebreaker
+					if !group.isError && !group.isEmpty {
+						if bestGroup == nil || group.responseSize > bestGroup.responseSize {
+							bestGroup = group
+							bestHash = hash
+						}
+					} else {
+						// For errors/empty, just pick first one with max count
+						if bestGroup == nil {
+							bestGroup = group
+							bestHash = hash
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Highest count wins, no size preference at all
+		maxCount := 0
+
+		for hash, group := range groups {
+			isBetter := false
+
+			if group.count > maxCount {
+				// Clear winner by count
+				isBetter = true
+			} else if group.count == maxCount && bestGroup == nil {
+				// Tie by count, just pick the first one encountered
+				isBetter = true
+			}
+
+			if isBetter {
+				maxCount = group.count
+				bestHash = hash
+				bestGroup = group
+			}
+		}
+	}
+
+	return bestHash, bestGroup
 }
 
 // metricsLabels contains pre-extracted labels for metrics to avoid repeated extraction
@@ -670,23 +766,68 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 		cannotBeBeaten := analysis.winnerCount > maxOtherResultCount+remainingResponses
 		hasSufficientParticipants := !analysis.isLowParticipants
 
+		// Check if larger response preference should prevent short-circuiting
+		// When preferLargerResponses is enabled, we should be more conservative about short-circuiting
+		// because we might receive larger responses from remaining upstreams
+		preventShortCircuitForLargerResponses := false
+		if e.preferLargerResponses && remainingResponses > 0 && analysis.winnerGroup != nil {
+			// Different logic based on winner type:
+			// 1. Empty/Error winner: MUST wait for potential non-empty responses
+			if analysis.winnerGroup.isEmpty || analysis.winnerGroup.isError {
+				// Any non-empty response would beat current winner due to preference order
+				preventShortCircuitForLargerResponses = true
+			} else if !analysis.winnerGroup.isEmpty && !analysis.winnerGroup.isError {
+				// 2. Non-empty winner: only wait if there are competing non-empty groups
+				// that could potentially return larger responses
+
+				// Check if any other non-empty group could still reach threshold with remaining responses
+				hasCompetingNonEmptyGroups := false
+				for hash, group := range analysis.nonEmptyGroups {
+					if hash != analysis.winnerHash &&
+						(group.count+remainingResponses >= e.agreementThreshold) {
+						hasCompetingNonEmptyGroups = true
+						break
+					}
+				}
+
+				// Only prevent short-circuit if there's actual competition
+				preventShortCircuitForLargerResponses = hasCompetingNonEmptyGroups
+			}
+		}
+
 		// Short-circuit conditions:
 		// 1. Mathematical guarantee (winner cannot be beaten) - works regardless of participant count
 		//    BUT: Don't short-circuit on error/empty winners if remaining responses could be non-empty
 		//    (non-empty preference means any success beats any number of errors)
+		//    AND: Don't short-circuit if larger response preference is enabled and we might miss larger responses
 		// 2. Consensus on non-empty results with sufficient participants and threshold met
-		canShortCircuitOnMathGuarantee := cannotBeBeaten
+		//    AND: No risk of missing larger responses
+		canShortCircuitOnMathGuarantee := cannotBeBeaten && !preventShortCircuitForLargerResponses
 		if cannotBeBeaten && remainingResponses > 0 && analysis.winnerGroup != nil &&
 			(analysis.winnerGroup.isError || analysis.winnerGroup.isEmpty) {
 			// Don't short-circuit on error/empty winners if remaining responses could contain non-empty results
 			// that would win due to non-empty preference
 			canShortCircuitOnMathGuarantee = false
 		}
+		// Check if there's a tie (other groups have the same count as winner)
+		hasTie := false
+		if analysis.winnerGroup != nil {
+			for hash, group := range analysis.responsesByHash {
+				if hash != analysis.winnerHash && group.count == analysis.winnerCount {
+					hasTie = true
+					break
+				}
+			}
+		}
+
+		// Don't short-circuit on consensus if there's a tie and remaining responses could break it
 		canShortCircuitOnConsensus := hasSufficientParticipants &&
 			analysis.winnerGroup != nil &&
 			!analysis.winnerGroup.isError &&
 			!analysis.winnerGroup.isEmpty &&
-			analysis.winnerCount >= e.agreementThreshold
+			analysis.winnerCount >= e.agreementThreshold &&
+			!preventShortCircuitForLargerResponses &&
+			(!hasTie || remainingResponses == 0) // Don't short-circuit on ties unless no responses left
 
 		if canShortCircuitOnMathGuarantee || canShortCircuitOnConsensus {
 			lg.Debug().
@@ -698,6 +839,9 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 				Bool("canShortCircuitOnConsensus", canShortCircuitOnConsensus).
 				Bool("hasSufficientParticipants", hasSufficientParticipants).
 				Bool("winnerIsEmpty", analysis.winnerGroup != nil && analysis.winnerGroup.isEmpty).
+				Bool("preventShortCircuitForLargerResponses", preventShortCircuitForLargerResponses).
+				Bool("preferLargerResponses", e.preferLargerResponses).
+				Bool("hasTie", hasTie).
 				Int("agreementThreshold", e.agreementThreshold).
 				Msg("short-circuiting: mathematical guarantee or consensus (both require sufficient participants)")
 			return true
@@ -711,6 +855,9 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 				Bool("canShortCircuitOnConsensus", canShortCircuitOnConsensus).
 				Bool("hasSufficientParticipants", hasSufficientParticipants).
 				Bool("winnerIsEmpty", analysis.winnerGroup != nil && analysis.winnerGroup.isEmpty).
+				Bool("preventShortCircuitForLargerResponses", preventShortCircuitForLargerResponses).
+				Bool("preferLargerResponses", e.preferLargerResponses).
+				Bool("hasTie", hasTie).
 				Int("agreementThreshold", e.agreementThreshold).
 				Msg("waiting for more responses: insufficient participants or no clear consensus/mathematical guarantee")
 			return false
@@ -1061,6 +1208,13 @@ func (e *executor[R]) analyzeResponses(lg *zerolog.Logger, responses []*execResu
 			if !group.hasResult {
 				group.firstResult = r.result
 				group.hasResult = true
+
+				// Calculate and cache response size once per group
+				if jr := e.resultToJsonRpcResponse(r.result, exec); jr != nil {
+					if size, err := jr.Size(exec.Context()); err == nil {
+						group.responseSize = size
+					}
+				}
 			}
 
 			// Check if empty
@@ -1081,8 +1235,8 @@ func (e *executor[R]) analyzeResponses(lg *zerolog.Logger, responses []*execResu
 	participantCount := len(uniqueParticipants)
 	analysis.totalValidParticipants = participantCount
 
-	// Determine winner with non-empty preference first
-	analysis.determineWinner(lg)
+	// Determine winner with configurable preferences
+	analysis.determineWinner(lg, e)
 
 	// Determine if we have low participants - check if we have enough participants
 	// to potentially reach the agreement threshold (dispute vs low participants)
@@ -1091,94 +1245,108 @@ func (e *executor[R]) analyzeResponses(lg *zerolog.Logger, responses []*execResu
 	return analysis
 }
 
-// determineWinner applies non-empty preference logic to find the consensus winner
-func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger) {
-	// Prefer non-empty successful results over everything else
-	if len(a.nonEmptyGroups) > 0 {
-		// Find winner among non-empty results - ensure we get the group with highest count
-		maxCount := 0
-		var bestHash string
-		var bestGroup *responseGroup[R]
+// determineWinner applies configurable preference logic to find the consensus winner
+func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger, e *executor[R]) {
+	preferNonEmpty := e.preferNonEmpty
+	preferLargerResponses := e.preferLargerResponses
 
+	if preferNonEmpty {
+		// Prefer non-empty results over empty responses
+		if len(a.nonEmptyGroups) > 0 {
+			bestHash, bestGroup := a.findBestGroup(a.nonEmptyGroups, preferLargerResponses, e.agreementThreshold)
+			if bestGroup != nil {
+				previousWinnerCount := a.winnerCount
+				a.winnerHash = bestHash
+				a.winnerCount = bestGroup.count
+				a.winnerGroup = bestGroup
+
+				lg.Debug().
+					Str("winnerHash", a.winnerHash).
+					Int("winnerCount", a.winnerCount).
+					Int("winnerSize", bestGroup.responseSize).
+					Int("totalNonEmpty", len(a.nonEmptyGroups)).
+					Int("previousWinnerCount", previousWinnerCount).
+					Int("agreementThreshold", e.agreementThreshold).
+					Bool("preferLargerResponses", preferLargerResponses).
+					Bool("metThreshold", bestGroup.count >= e.agreementThreshold).
+					Msg("winner selected from non-empty results (non-empty preference)")
+			}
+			return
+		}
+
+		// No non-empty results, check consensus errors
+		if len(a.errorGroups) > 0 {
+			bestHash, bestGroup := a.findBestGroup(a.errorGroups, preferLargerResponses, e.agreementThreshold)
+			if bestGroup != nil && bestGroup.count > a.winnerCount {
+				a.winnerHash = bestHash
+				a.winnerCount = bestGroup.count
+				a.winnerGroup = bestGroup
+
+				lg.Debug().
+					Str("winnerHash", a.winnerHash).
+					Int("winnerCount", a.winnerCount).
+					Msg("winner selected from consensus errors")
+			}
+		}
+
+		// Also check empty results - they should compete with error results by count
+		if len(a.emptyGroups) > 0 {
+			bestHash, bestGroup := a.findBestGroup(a.emptyGroups, preferLargerResponses, e.agreementThreshold)
+			if bestGroup != nil && bestGroup.count > a.winnerCount {
+				a.winnerHash = bestHash
+				a.winnerCount = bestGroup.count
+				a.winnerGroup = bestGroup
+
+				lg.Debug().
+					Str("winnerHash", a.winnerHash).
+					Int("winnerCount", a.winnerCount).
+					Msg("winner selected from empty results")
+			}
+		}
+	} else {
+		// Treat all response types equally, choose by count + size
+		allGroups := make(map[string]*responseGroup[R])
+
+		// Collect all groups regardless of type
 		for hash, group := range a.nonEmptyGroups {
-			if group.count > maxCount {
-				maxCount = group.count
-				bestHash = hash
-				bestGroup = group
-			}
+			allGroups[hash] = group
 		}
-
-		// Non-empty results always win over errors, regardless of count
-		if bestGroup != nil {
-			previousWinnerCount := a.winnerCount
-			a.winnerHash = bestHash
-			a.winnerCount = maxCount
-			a.winnerGroup = bestGroup
-
-			lg.Debug().
-				Str("winnerHash", a.winnerHash).
-				Int("winnerCount", a.winnerCount).
-				Int("totalNonEmpty", len(a.nonEmptyGroups)).
-				Int("previousWinnerCount", previousWinnerCount).
-				Bool("overrodeHigherErrorCount", previousWinnerCount > maxCount).
-				Msg("winner selected from non-empty results (non-empty preference)")
-		}
-		return
-	}
-
-	// No non-empty results, check consensus errors
-	if len(a.errorGroups) > 0 {
-		maxCount := a.winnerCount
-		var bestHash string
-		var bestGroup *responseGroup[R]
-
 		for hash, group := range a.errorGroups {
-			if group.count > maxCount {
-				maxCount = group.count
-				bestHash = hash
-				bestGroup = group
-			}
+			allGroups[hash] = group
 		}
-
-		// Only update if we found a better winner
-		if bestGroup != nil && maxCount > a.winnerCount {
-			a.winnerHash = bestHash
-			a.winnerCount = maxCount
-			a.winnerGroup = bestGroup
-		}
-
-		lg.Debug().
-			Str("winnerHash", a.winnerHash).
-			Int("winnerCount", a.winnerCount).
-			Msg("winner selected from consensus errors")
-		return
-	}
-
-	// Finally, check empty results
-	if len(a.emptyGroups) > 0 {
-		maxCount := a.winnerCount
-		var bestHash string
-		var bestGroup *responseGroup[R]
-
 		for hash, group := range a.emptyGroups {
-			if group.count > maxCount {
-				maxCount = group.count
-				bestHash = hash
-				bestGroup = group
+			allGroups[hash] = group
+		}
+
+		if len(allGroups) > 0 {
+			bestHash, bestGroup := a.findBestGroup(allGroups, preferLargerResponses, e.agreementThreshold)
+			if bestGroup != nil {
+				a.winnerHash = bestHash
+				a.winnerCount = bestGroup.count
+				a.winnerGroup = bestGroup
+
+				responseType := labelRespTypeUnknown
+				if !bestGroup.isError {
+					if bestGroup.isEmpty {
+						responseType = labelRespTypeEmpty
+					} else {
+						responseType = labelRespTypeNonEmpty
+					}
+				} else {
+					responseType = labelRespTypeError
+				}
+
+				lg.Debug().
+					Str("winnerHash", a.winnerHash).
+					Int("winnerCount", a.winnerCount).
+					Int("winnerSize", bestGroup.responseSize).
+					Str("winnerType", responseType).
+					Int("agreementThreshold", e.agreementThreshold).
+					Bool("preferLargerResponses", preferLargerResponses).
+					Bool("metThreshold", bestGroup.count >= e.agreementThreshold).
+					Msg("winner selected from all results (no special preference)")
 			}
 		}
-
-		// Only update if we found a better winner
-		if bestGroup != nil && maxCount > a.winnerCount {
-			a.winnerHash = bestHash
-			a.winnerCount = maxCount
-			a.winnerGroup = bestGroup
-		}
-
-		lg.Debug().
-			Str("winnerHash", a.winnerHash).
-			Int("winnerCount", a.winnerCount).
-			Msg("winner selected from empty results")
 	}
 }
 

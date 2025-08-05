@@ -31,6 +31,8 @@ type ConsensusPolicyBuilder[R any] interface {
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R]
 	WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R]
+	WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder[R]
+	WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder[R]
 
 	// Build returns a new ConsensusPolicy using the builder's configuration.
 	Build() ConsensusPolicy[R]
@@ -48,6 +50,8 @@ type config[R any] struct {
 	logger                  *zerolog.Logger
 	disputeLogLevel         zerolog.Level
 	ignoreFields            map[string][]string
+	preferNonEmpty          bool
+	preferLargerResponses   bool
 
 	onAgreement       func(event failsafe.ExecutionEvent[R])
 	onDispute         func(event failsafe.ExecutionEvent[R])
@@ -124,6 +128,16 @@ func (c *config[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuil
 
 func (c *config[R]) WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R] {
 	c.ignoreFields = ignoreFields
+	return c
+}
+
+func (c *config[R]) WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder[R] {
+	c.preferNonEmpty = preferNonEmpty
+	return c
+}
+
+func (c *config[R]) WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder[R] {
+	c.preferLargerResponses = preferLargerResponses
 	return c
 }
 

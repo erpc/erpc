@@ -618,6 +618,14 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 		builder = builder.WithIgnoreFields(cfg.IgnoreFields)
 	}
 
+	// Set preference flags (defaults are handled in config.SetDefaults())
+	if cfg.PreferNonEmpty != nil {
+		builder = builder.WithPreferNonEmpty(*cfg.PreferNonEmpty)
+	}
+	if cfg.PreferLargerResponses != nil {
+		builder = builder.WithPreferLargerResponses(*cfg.PreferLargerResponses)
+	}
+
 	// Parse dispute log level if specified
 	if cfg.DisputeLogLevel != "" {
 		level, err := zerolog.ParseLevel(cfg.DisputeLogLevel)
