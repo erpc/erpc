@@ -6218,7 +6218,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		upsCfg := upstreams[0].Config()
 
 		assert.Equalf(t, upsCfg.Failsafe[0].Retry.MaxAttempts, 123, "Retry policy should be set")
-		assert.Nilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should not be set")
+		assert.NotNilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should be inherited from upstream defaults")
+		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.MaxCount, 267, "Hedge policy maxCount should be inherited from upstream defaults")
+		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be inherited from upstream defaults")
 	})
 }
 
