@@ -101,8 +101,14 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		}
 		network.SetDefaults(nil, nil)
 
-		assert.EqualValues(t, &FailsafeConfig{
-			MatchMethod: "*",
+		expected := &FailsafeConfig{
+			MatchMethod: "",
+			Matchers: []*MatcherConfig{
+				{
+					Method: "*",
+					Action: MatcherInclude,
+				},
+			},
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     12345,
 				Delay:           Duration(0 * time.Millisecond),
@@ -110,7 +116,8 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 				BackoffFactor:   1.2,
 				Jitter:          Duration(0 * time.Millisecond),
 			},
-		}, network.Failsafe[0])
+		}
+		assert.EqualValues(t, expected, network.Failsafe[0])
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
@@ -268,7 +275,14 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 			BackoffFactor:   1.2,
 		}, retry, "Retry policy should match expected values")
 
-		assert.Nil(t, cfg.Projects[0].Upstreams[0].Failsafe[0].CircuitBreaker, "Circuit breaker should be nil because this upstream has failsafe defined")
+		assert.NotNil(t, cfg.Projects[0].Upstreams[0].Failsafe[0].CircuitBreaker, "Circuit breaker should be inherited from upstream defaults")
+		assert.EqualValues(t, &CircuitBreakerPolicyConfig{
+			FailureThresholdCapacity: 200,
+			FailureThresholdCount:    1,
+			HalfOpenAfter:            Duration(5 * time.Minute),
+			SuccessThresholdCapacity: 3,
+			SuccessThresholdCount:    3,
+		}, cfg.Projects[0].Upstreams[0].Failsafe[0].CircuitBreaker, "Circuit breaker should match upstream defaults")
 
 		// Validate the project configuration
 		err = cfg.Validate()

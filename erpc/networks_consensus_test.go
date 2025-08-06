@@ -1007,9 +1007,14 @@ func TestNetwork_ConsensusPolicy(t *testing.T) {
 					},
 					Failsafe: []*common.FailsafeConfig{
 						{
-							MatchMethod: "*", // Match all methods to ensure consensus executor is selected
-							Retry:       retryPolicy,
-							Consensus:   consensusConfig,
+							Matchers: []*common.MatcherConfig{
+								{
+									Method: "*",
+									Action: common.MatcherInclude,
+								},
+							},
+							Retry:     retryPolicy,
+							Consensus: consensusConfig, // Use the config that already has defaults applied
 						},
 					},
 				},
@@ -1212,7 +1217,12 @@ func TestNetwork_Consensus_RetryIntermittentErrors(t *testing.T) {
 			},
 			Failsafe: []*common.FailsafeConfig{
 				{
-					MatchMethod: "*", // Match all methods to ensure consensus executor is selected
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 2,
 						Delay:       common.Duration(0),
@@ -1349,8 +1359,13 @@ func setupTestNetworkWithConsensusPolicy(t *testing.T, ctx context.Context, upst
 			},
 			Failsafe: []*common.FailsafeConfig{
 				{
-					MatchMethod: "*",
-					Consensus:   consensusConfig,
+					Matchers: []*common.MatcherConfig{
+						{
+							Method: "*",
+							Action: common.MatcherInclude,
+						},
+					},
+					Consensus: consensusConfig,
 				},
 			},
 		},
@@ -3227,7 +3242,12 @@ func TestNetwork_ConsensusWithIgnoreFields(t *testing.T) {
 					},
 					Failsafe: []*common.FailsafeConfig{
 						{
-							MatchMethod: "*",
+							Matchers: []*common.MatcherConfig{
+								{
+									Method: "*",
+									Action: common.MatcherInclude,
+								},
+							},
 							Consensus: &common.ConsensusPolicyConfig{
 								MaxParticipants:         tt.maxParticipants,
 								AgreementThreshold:      tt.agreementThreshold,
@@ -5637,7 +5657,12 @@ func TestNetwork_ConsensusOnAgreedErrors(t *testing.T) {
 					},
 					Failsafe: []*common.FailsafeConfig{
 						{
-							MatchMethod: "*",
+							Matchers: []*common.MatcherConfig{
+								{
+									Method: "*",
+									Action: common.MatcherInclude,
+								},
+							},
 							Consensus: &common.ConsensusPolicyConfig{
 								MaxParticipants:         tt.maxParticipants,
 								AgreementThreshold:      2, // Majority agreement

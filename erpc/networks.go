@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -24,8 +24,9 @@ import (
 )
 
 type FailsafeExecutor struct {
-	method     string
-	finalities []common.DataFinalityState
+	config     *common.FailsafeConfig     // Store the original config for matching
+	method     string                     // Legacy field for backward compatibility
+	finalities []common.DataFinalityState // Legacy field for backward compatibility
 	executor   failsafe.Executor[*common.NormalizedResponse]
 	timeout    *time.Duration
 }
@@ -224,44 +225,16 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return leader
 }
 
-func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
-	method, _ := req.Method()
-	finality := req.Finality(context.Background())
-
-	// First, try to find a specific match for both method and finality
+func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
 	for _, fe := range n.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) > 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && slices.Contains(fe.finalities, finality) {
-				return fe
-			}
-		}
-	}
-
-	// Then, try to find a match for method only (empty finalities means any finality)
-	for _, fe := range n.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) == 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched {
-				return fe
-			}
-		}
-	}
-
-	// Then, try to find a match for finality only
-	for _, fe := range n.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) > 0 {
-			if slices.Contains(fe.finalities, finality) {
-				return fe
-			}
-		}
-	}
-
-	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
-	for _, fe := range n.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) == 0 {
+		if fe.config != nil && matchers.Match(ctx, fe.config.Matchers, req, nil) {
 			return fe
 		}
+	}
+
+	// If no specific match found, return the default executor (should be the last one)
+	if len(n.failsafeExecutors) > 0 {
+		return n.failsafeExecutors[len(n.failsafeExecutors)-1]
 	}
 
 	return nil
@@ -417,7 +390,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// This is the only way to pass additional values to failsafe policy executors context
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	failsafeExecutor := n.getFailsafeExecutor(req)
+	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
 	if failsafeExecutor == nil {
 		return nil, errors.New("no failsafe executor found for this request")
 	}

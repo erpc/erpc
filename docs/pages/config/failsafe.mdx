@@ -19,16 +19,20 @@ Failsafe policies help with intermittent issues and increase resiliency. They ca
 
 ## Per-method configuration
 
-Failsafe policies can optionally be configured per-method using `matchMethod` and `matchFinality` fields. This allows fine-tuned behavior for different RPC methods and different block finality states.
+Failsafe policies can be configured per-method using matcher objects for fine-grained control. All of the matchers support [matcher syntax](/config/matcher).
 
-- `matchMethod`: Pattern to match RPC methods (a [matcher](/config/matchers) supports wildcards `*` and OR operator `|`)
-- `matchFinality`: Array of finality states to match
+- `matchers`: Array of matcher objects with the following fields:
+  - `method`: Pattern to match RPC methods (optional), defaults to `*` (all methods)
+  - `network`: Pattern to match network identifiers (optional), defaults to `*` (all networks)
+  - `params`: Array of parameter values to match (optional), defaults to `*` (all parameters)
+  - `finality`: Array of finality states to match (optional), defaults to `*` (all finality states)
+  - `action`: `include` or `exclude` (optional, default: `include`)
 
 When multiple failsafe configs are defined, they are evaluated in order and the first matching config is used.
 
 ### Finality States
 
-The `matchFinality` field can match against these data finality states:
+The `finality` field in matcher objects can match against these data finality states:
 
 - **`finalized`**: Data from blocks that are confirmed as finalized and safe from reorgs. This is determined by comparing the block number with the upstream's finalized block.
   - Example methods: `eth_getBlockByNumber` (for old blocks), `eth_getLogs` (for finalized ranges)
@@ -55,14 +59,18 @@ projects:
       - id: my-upstream
         failsafe:
           # Default policy for all methods
-          - matchMethod: "*"        # matches any method (default if omitted)
+          - matchers:
+              - method: "*"
+                action: include
             timeout:
               duration: 30s
             retry:
               maxAttempts: 3
           
           # Fast timeout for simple queries
-          - matchMethod: "eth_getBlock*|eth_getTransaction*"
+          - matchers:
+              - method: "eth_getBlock*|eth_getTransaction*"
+                action: include
             timeout:
               duration: 5s
             retry:
@@ -70,19 +78,46 @@ projects:
               delay: 100ms
           
           # Longer timeout for heavy trace methods
-          - matchMethod: "trace_*|debug_*"
+          - matchers:
+              - method: "trace_*|debug_*"
+                action: include
             timeout:
               duration: 60s
             retry:
               maxAttempts: 1    # expensive operations, minimize retries
           
           # Different policy for finalized vs unfinalized data
-          - matchMethod: "eth_call|eth_estimateGas"
-            matchFinality: ["unfinalized", "realtime"]
+          - matchers:
+              - method: "eth_call|eth_estimateGas"
+                finality: ["unfinalized", "realtime"]
+                action: include
             timeout:
               duration: 10s
             retry:
               maxAttempts: 5    # unfinalized data changes frequently, retry more
+          
+          # Apply aggressive policies only to specific networks and methods
+          - matchers:
+              - network: "evm:1"          # Ethereum mainnet
+                method: "eth_getLogs"
+                finality: ["finalized"]
+                action: include
+              - network: "evm:137"        # Polygon
+                method: "trace_*"
+                action: include
+            timeout:
+              duration: 45s
+            retry:
+              maxAttempts: 2
+          
+          # Exclude certain methods from retry policies
+          - matchers:
+              - method: "*"
+                action: include
+              - method: "debug_traceTransaction"  # expensive, don't retry
+                action: exclude
+            retry:
+              maxAttempts: 3
 ```
   </Tabs.Tab>
   <Tabs.Tab>
@@ -97,28 +132,80 @@ export default createConfig({
       failsafe: [
         // Default policy for all methods
         {
-          matchMethod: "*",        // matches any method (default if omitted)
+          matchers: [
+            {
+              method: "*",
+              action: "include"
+            }
+          ],
           timeout: { duration: "30s" },
           retry: { maxAttempts: 3 }
         },
         // Fast timeout for simple queries
         {
-          matchMethod: "eth_getBlock*|eth_getTransaction*",
+          matchers: [
+            {
+              method: "eth_getBlock*|eth_getTransaction*",
+              action: "include"
+            }
+          ],
           timeout: { duration: "5s" },
           retry: { maxAttempts: 2, delay: "100ms" }
         },
         // Longer timeout for heavy trace methods
         {
-          matchMethod: "trace_*|debug_*",
+          matchers: [
+            {
+              method: "trace_*|debug_*",
+              action: "include"
+            }
+          ],
           timeout: { duration: "60s" },
           retry: { maxAttempts: 1 }    // expensive operations, minimize retries
         },
         // Different policy for finalized vs unfinalized data
         {
-          matchMethod: "eth_call|eth_estimateGas",
-          matchFinality: ["unfinalized", "realtime"],
+          matchers: [
+            {
+              method: "eth_call|eth_estimateGas",
+              finality: ["unfinalized", "realtime"],
+              action: "include"
+            }
+          ],
           timeout: { duration: "10s" },
           retry: { maxAttempts: 5 }    // unfinalized data changes frequently, retry more
+        },
+        // Apply aggressive policies only to specific networks and methods
+        {
+          matchers: [
+            {
+              network: "evm:1",          // Ethereum mainnet
+              method: "eth_getLogs",
+              finality: ["finalized"],
+              action: "include"
+            },
+            {
+              network: "evm:137",        // Polygon
+              method: "trace_*",
+              action: "include"
+            }
+          ],
+          timeout: { duration: "45s" },
+          retry: { maxAttempts: 2 }
+        },
+        // Exclude certain methods from retry policies
+        {
+          matchers: [
+            {
+              method: "*",
+              action: "include"
+            },
+            {
+              method: "debug_traceTransaction",  // expensive, don't retry
+              action: "exclude"
+            }
+          ],
+          retry: { maxAttempts: 3 }
         }
       ]
     }]
@@ -142,14 +229,18 @@ projects:
         evm:
           chainId: 42161
         failsafe:
-          - matchMethod: "*"
+          - matchers:
+              - method: "*"
+                action: include
             timeout:
               duration: 30s        # Total time including all retries
     
     upstreams:
       - id: blastapi-chain-42161
         failsafe:
-          - matchMethod: "*"
+          - matchers:
+              - method: "*"
+                action: include
             timeout:
               duration: 15s        # Per-attempt timeout
 ```
@@ -165,14 +256,20 @@ export default createConfig({
       architecture: "evm",
       evm: { chainId: 42161 },
       failsafe: [{
-        matchMethod: "*",
+        matchers: [{
+          method: "*",
+          action: "include"
+        }],
         timeout: { duration: "30s" }    // Total time including all retries
       }]
     }],
     upstreams: [{
       id: "blastapi-chain-42161",
       failsafe: [{
-        matchMethod: "*",
+        matchers: [{
+          method: "*",
+          action: "include"
+        }],
         timeout: { duration: "15s" }    // Per-attempt timeout
       }]
     }]
@@ -204,7 +301,9 @@ projects:
     upstreams:
       - id: my-upstream
         failsafe:
-          - matchMethod: "*"
+          - matchers:
+              - method: "*"
+                action: include
             retry:
               maxAttempts: 3        # Total attempts (initial + 2 retries)
               delay: 1000ms         # Initial delay between retries
@@ -223,7 +322,9 @@ export default createConfig({
     upstreams: [{
       id: "my-upstream",
       failsafe: [{
-        matchMethod: "*",
+        matchers:
+              - method: "*"
+                action: include,
         retry: {
           maxAttempts: 3,        // Total attempts (initial + 2 retries)
           delay: "1000ms",       // Initial delay between retries
@@ -257,7 +358,9 @@ projects:
         evm:
           chainId: 1
         failsafe:
-          - matchMethod: "*"
+          - matchers:
+              - method: "*"
+                action: include
             hedge:
               # Quantile-based (recommended): hedge after p99 response time
               quantile: 0.99
@@ -281,7 +384,9 @@ export default createConfig({
       architecture: "evm",
       evm: { chainId: 1 },
       failsafe: [{
-        matchMethod: "*",
+        matchers:
+              - method: "*"
+                action: include,
         hedge: {
           // Quantile-based (recommended): hedge after p99 response time
           quantile: 0.99,
@@ -324,7 +429,9 @@ projects:
     upstreams:
       - id: my-upstream
         failsafe:
-          - matchMethod: "*"
+          - matchers:
+              - method: "*"
+                action: include
             circuitBreaker:
               # Open circuit when 80% (160/200) of recent requests fail
               failureThresholdCount: 160
@@ -345,7 +452,9 @@ export default createConfig({
     upstreams: [{
       id: "my-upstream",
       failsafe: [{
-        matchMethod: "*",
+        matchers:
+              - method: "*"
+                action: include,
         circuitBreaker: {
           // Open circuit when 80% (160/200) of recent requests fail
           failureThresholdCount: 160,
@@ -378,7 +487,9 @@ projects:
           chainId: 1
         failsafe:
           # Aggressive hedging for all methods
-          - matchMethod: "*"
+          - matchers:
+              - method: "*"
+                action: include
             hedge:
               quantile: 0.9      # p90 latency
               minDelay: 50ms
@@ -390,7 +501,9 @@ projects:
       - id: primary-node
         failsafe:
           # Price feeds need fast response
-          - matchMethod: "eth_call"
+          - matchers:
+              - method: "eth_call"
+                action: include
             matchFinality: ["latest"]
             timeout:
               duration: 1s
@@ -417,7 +530,9 @@ export default createConfig({
       architecture: "evm",
       evm: { chainId: 1 },
       failsafe: [{
-        matchMethod: "*",
+        matchers:
+              - method: "*"
+                action: include,
         hedge: {
           quantile: 0.9,      // p90 latency
           minDelay: "50ms",
@@ -458,7 +573,9 @@ export default createConfig({
 ```yaml filename="erpc.yaml"
 failsafe:
   # Finalized data: relaxed policies
-  - matchMethod: "*"
+  - matchers:
+              - method: "*"
+                action: include
     matchFinality: ["finalized"]
     timeout:
       duration: 30s
@@ -467,7 +584,9 @@ failsafe:
       backoffFactor: 2
   
   # Unfinalized data: aggressive timeouts
-  - matchMethod: "*"
+  - matchers:
+              - method: "*"
+                action: include
     matchFinality: ["unfinalized"]
     timeout:
       duration: 5s
@@ -476,7 +595,9 @@ failsafe:
       delay: 100ms
   
   # Realtime data: fast with hedging
-  - matchMethod: "*"
+  - matchers:
+              - method: "*"
+                action: include
     matchFinality: ["realtime"]
     timeout:
       duration: 2s
@@ -485,7 +606,9 @@ failsafe:
       maxCount: 1
   
   # Unknown finality: moderate settings
-  - matchMethod: "*"
+  - matchers:
+              - method: "*"
+                action: include
     matchFinality: ["unknown"]
     timeout:
       duration: 15s
@@ -498,7 +621,9 @@ failsafe:
 failsafe: [
   // Finalized data: relaxed policies
   {
-    matchMethod: "*",
+    matchers:
+              - method: "*"
+                action: include,
     matchFinality: ["finalized"],
     timeout: { duration: "30s" },
     retry: {
@@ -508,7 +633,9 @@ failsafe: [
   },
   // Unfinalized data: aggressive timeouts
   {
-    matchMethod: "*",
+    matchers:
+              - method: "*"
+                action: include,
     matchFinality: ["unfinalized"],
     timeout: { duration: "5s" },
     retry: {
@@ -518,7 +645,9 @@ failsafe: [
   },
   // Realtime data: fast with hedging
   {
-    matchMethod: "*",
+    matchers:
+              - method: "*"
+                action: include,
     matchFinality: ["realtime"],
     timeout: { duration: "2s" },
     hedge: {
@@ -528,7 +657,9 @@ failsafe: [
   },
   // Unknown finality: moderate settings
   {
-    matchMethod: "*",
+    matchers:
+              - method: "*"
+                action: include,
     matchFinality: ["unknown"],
     timeout: { duration: "15s" },
     retry: { maxAttempts: 3 }
@@ -612,7 +743,9 @@ To disable any policy, set it to `null` or `~` (YAML):
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 failsafe:
-  - matchMethod: "*"
+  - matchers:
+              - method: "*"
+                action: include
     hedge: ~              # Disable hedging
     circuitBreaker: ~     # Disable circuit breaker
 ```
@@ -620,7 +753,9 @@ failsafe:
   <Tabs.Tab>
 ```ts filename="erpc.ts"
 failsafe: [{
-  matchMethod: "*",
+  matchers:
+              - method: "*"
+                action: include,
   hedge: null,           // Disable hedging
   circuitBreaker: null   // Disable circuit breaker
 }]
