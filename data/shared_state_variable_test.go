@@ -534,7 +534,7 @@ func TestCounterInt64_SetValueUpdatesLastUpdated(t *testing.T) {
 	}
 
 	// Simulate a write originating from the remote sync by calling setValue directly.
-	counter.processNewValue(123)
+	counter.processNewValue(UpdateSourceTest, 123)
 
 	// Immediately after the write the counter must not be considered stale for any reasonable staleness window.
 	assert.False(t, counter.IsStale(time.Second), "counter should not be stale right after setValue call")
