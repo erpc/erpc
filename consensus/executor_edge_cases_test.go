@@ -40,15 +40,15 @@ func TestHashCalculationError(t *testing.T) {
 	}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Create upstream selector for this test
@@ -97,15 +97,15 @@ func TestContextCancellation(t *testing.T) {
 	}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Start execution in a goroutine
@@ -205,7 +205,7 @@ func TestLargeScaleConsensus(t *testing.T) {
 			}
 
 			logger := zerolog.Nop()
-			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			policy := NewConsensusPolicyBuilder().
 				WithMaxParticipants(tt.maxParticipants).
 				WithAgreementThreshold(tt.agreementThreshold).
 				WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -213,8 +213,8 @@ func TestLargeScaleConsensus(t *testing.T) {
 				WithLogger(&logger).
 				Build()
 
-			executor := &executor[*common.NormalizedResponse]{
-				consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+			executor := &executor{
+				consensusPolicy: policy.(*consensusPolicy),
 			}
 
 			// Track execution time
@@ -332,15 +332,15 @@ func TestMixedErrorScenarios(t *testing.T) {
 			}
 
 			logger := log.Logger
-			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			policy := NewConsensusPolicyBuilder().
 				WithMaxParticipants(3).
 				WithAgreementThreshold(2).
 				WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 				WithLogger(&logger).
 				Build()
 
-			executor := &executor[*common.NormalizedResponse]{
-				consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+			executor := &executor{
+				consensusPolicy: policy.(*consensusPolicy),
 			}
 
 			// Create upstream selector for this test
@@ -400,15 +400,15 @@ func TestGoroutineLeakDetection(t *testing.T) {
 	}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(5).
 		WithAgreementThreshold(5).
 		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Create upstream selector for this test
@@ -466,14 +466,14 @@ func TestPanicRecovery(t *testing.T) {
 	}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Track which upstreams were called
@@ -539,15 +539,15 @@ func TestEmptyUpstreamsList(t *testing.T) {
 	mockExec := &mockExecutionWithEmptyUpstreams{}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
@@ -578,15 +578,15 @@ func TestResponseChannelSaturation(t *testing.T) {
 	}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(50).
 		WithAgreementThreshold(50).
 		WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Create upstream selector for this test
@@ -614,77 +614,6 @@ func TestResponseChannelSaturation(t *testing.T) {
 	// Should handle channel saturation gracefully
 	assert.NoError(t, result.Error)
 	assert.NotNil(t, result.Result)
-}
-
-// TestNonBlockingSelectBug tests the non-blocking select bug
-func TestNonBlockingSelectBug(t *testing.T) {
-	// This test directly demonstrates the non-blocking select bug
-	// that causes goroutines to exit without sending messages
-
-	// Create a buffered channel like in the actual code
-	responseChan := make(chan *execResult[*common.NormalizedResponse], 3)
-
-	// Fill the channel to capacity
-	for i := 0; i < 3; i++ {
-		responseChan <- &execResult[*common.NormalizedResponse]{
-			result: nil,
-			err:    nil,
-			index:  i,
-		}
-	}
-
-	// Track if message was sent
-	var messageSent bool
-
-	// Simulate what happens in the goroutine when context is cancelled
-	// This mimics the exact code pattern from collectResponses
-	func() {
-		// Try to send nil when context is cancelled
-		// This is the exact pattern used in the actual code
-		select {
-		case responseChan <- nil:
-			messageSent = true
-		default:
-			// BUG: This path is taken when channel is full
-			// The goroutine exits without sending anything
-			messageSent = false
-		}
-	}()
-
-	// The bug: message was not sent because channel was full
-	assert.False(t, messageSent, "Bug reproduced: non-blocking select with default case causes message to be dropped when channel is full")
-
-	// Now demonstrate the impact on drainResponses
-	// Clear the channel first
-	for len(responseChan) > 0 {
-		<-responseChan
-	}
-
-	// drainResponses expects to receive messages from goroutines that may have exited without sending
-	expectedMessages := 2 // Expecting 2 messages
-	receivedMessages := 0
-
-	timeout := time.NewTimer(100 * time.Millisecond)
-	defer timeout.Stop()
-
-	// Try to receive the expected messages
-	for i := 0; i < expectedMessages; i++ {
-		select {
-		case <-responseChan:
-			receivedMessages++
-		case <-timeout.C:
-			// Timeout waiting for messages that were never sent
-			t.Logf("Timed out waiting for message %d", i+1)
-			goto done
-		}
-	}
-done:
-
-	// Bug impact: We expected 2 messages but received 0 because goroutines exited without sending
-	assert.Less(t, receivedMessages, expectedMessages,
-		"drainResponses times out because goroutines exited without sending their messages")
-
-	t.Log("Bug confirmed: Non-blocking select with default case in goroutines causes messages to be dropped, leading to drainResponses timeout or hang")
 }
 
 func TestGoroutineCancellationFixed(t *testing.T) {
@@ -720,15 +649,15 @@ func TestGoroutineCancellationFixed(t *testing.T) {
 
 	// Create consensus policy that will reach consensus with 3 out of 5
 	log := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(5).
 		WithAgreementThreshold(3).
 		WithLogger(&log).
 		Build()
 
 	// Create executor
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Track response count
@@ -844,15 +773,15 @@ func TestCloneFailureGoroutineLeak(t *testing.T) {
 	}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Track completion time
@@ -940,15 +869,15 @@ func TestCancellationRaceCondition(t *testing.T) {
 	}
 
 	logger := log.Logger
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithMaxParticipants(3).
 		WithAgreementThreshold(2).
 		WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
 		WithLogger(&logger).
 		Build()
 
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Create a context that will be cancelled quickly

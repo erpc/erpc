@@ -605,7 +605,7 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 		return nil, nil
 	}
 
-	builder := consensus.NewConsensusPolicyBuilder[*common.NormalizedResponse]()
+	builder := consensus.NewConsensusPolicyBuilder()
 	builder = builder.WithMaxParticipants(cfg.MaxParticipants)
 	builder = builder.WithAgreementThreshold(cfg.AgreementThreshold)
 	builder = builder.WithDisputeBehavior(cfg.DisputeBehavior)

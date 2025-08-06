@@ -668,10 +668,12 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
+const ErrCodeUpstreamRequest ErrorCode = "ErrUpstreamRequest"
+
 var NewErrUpstreamRequest = func(cause error, upsId, networkId, method string, duration time.Duration, attempts, retries, hedges int) error {
 	return &ErrUpstreamRequest{
 		BaseError{
-			Code:    "ErrUpstreamRequest",
+			Code:    ErrCodeUpstreamRequest,
 			Message: "failed to make request to upstream",
 			Cause:   cause,
 			Details: map[string]interface{}{

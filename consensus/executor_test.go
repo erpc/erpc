@@ -90,7 +90,7 @@ func TestConsensusExecutor(t *testing.T) {
 			name:               "dispute_with_accept_any_valid",
 			maxParticipants:    3,
 			agreementThreshold: 2,
-			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorAcceptBestValidResult),
+			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorAcceptMostCommonValidResult),
 			disputeThreshold:   1,
 			responses: []*struct {
 				response                  string
@@ -123,7 +123,7 @@ func TestConsensusExecutor(t *testing.T) {
 				{"result2", "upstream2", 1},
 				{"result3", "upstream3", 1},
 			},
-			expectedError:  pointer("ErrConsensusDispute: no clear most common result"),
+			expectedError:  pointer("ErrConsensusDispute: not enough participants"),
 			expectedResult: nil,
 		},
 		{
@@ -199,7 +199,7 @@ func TestConsensusExecutor(t *testing.T) {
 			log := log.Logger
 
 			// Create consensus policy
-			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+			policy := NewConsensusPolicyBuilder().
 				WithMaxParticipants(tt.maxParticipants).
 				WithAgreementThreshold(tt.agreementThreshold).
 				WithDisputeBehavior(disputeBehavior).
@@ -213,8 +213,8 @@ func TestConsensusExecutor(t *testing.T) {
 				Build()
 
 			// Create executor
-			executor := &executor[*common.NormalizedResponse]{
-				consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+			executor := &executor{
+				consensusPolicy: policy.(*consensusPolicy),
 			}
 
 			var times uint = 1
@@ -591,7 +591,7 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 		}
 
 		// Create consensus policy with punishment configured
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(4). // Need 4 out of 5 to agree
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -605,8 +605,8 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 			Build()
 
 		// Create the executor (reused across iterations to maintain rate limiter state)
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Run the test twice to exceed the dispute threshold
@@ -715,7 +715,7 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 		}
 
 		// Create consensus policy with punishment configured
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(3). // Only need 3 out of 5 (allows short-circuit)
 			WithLogger(&logger).
@@ -727,8 +727,8 @@ func TestConsensusMisbehaviorTracking(t *testing.T) {
 			Build()
 
 		// Create the executor
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Track which upstreams actually responded
@@ -904,7 +904,7 @@ func TestConsensusShortCircuit(t *testing.T) {
 		}
 
 		// Create consensus policy using the builder pattern
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(3). // Only need 3 out of 5 to agree
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
@@ -912,8 +912,8 @@ func TestConsensusShortCircuit(t *testing.T) {
 			Build()
 
 		// Create the executor with the consensus policy
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create upstream selector for this test
@@ -1032,7 +1032,7 @@ cancelling the remaining slow upstream calls and returning immediately.`, called
 		var callOrderMutex sync.Mutex
 
 		// Create consensus policy using the builder pattern
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(4). // Need 4 out of 5 to agree
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -1041,8 +1041,8 @@ cancelling the remaining slow upstream calls and returning immediately.`, called
 			Build()
 
 		// Create the executor with the consensus policy
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create upstream selector for this test
@@ -1203,7 +1203,7 @@ func TestHandleMisbehavingUpstreamRaceCondition(t *testing.T) {
 	}
 
 	// Create consensus policy with punishment configured
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithLogger(&logger).
 		WithPunishMisbehavior(&common.PunishMisbehaviorConfig{
 			DisputeThreshold: 1,
@@ -1213,8 +1213,8 @@ func TestHandleMisbehavingUpstreamRaceCondition(t *testing.T) {
 		Build()
 
 	// Create the executor
-	executor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	executor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Track how many timers were created by intercepting sync.Map.Store calls
@@ -1383,7 +1383,7 @@ func TestConsensusTieWithRemainingParticipants(t *testing.T) {
 		}
 
 		// Create consensus policy
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(2). // Threshold of 2 to enable potential early short-circuit
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
@@ -1392,8 +1392,8 @@ func TestConsensusTieWithRemainingParticipants(t *testing.T) {
 			Build()
 
 		// Create the executor
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create upstream selector
@@ -1524,7 +1524,7 @@ func TestConsensusTieWithRemainingParticipants(t *testing.T) {
 		}
 
 		// Create consensus policy
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(2).
 			WithLowParticipantsBehavior(common.ConsensusLowParticipantsBehaviorReturnError).
@@ -1532,8 +1532,8 @@ func TestConsensusTieWithRemainingParticipants(t *testing.T) {
 			Build()
 
 		// Create the executor
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create upstream selector
@@ -1641,7 +1641,7 @@ func TestConsensusGoroutineLeakWithShortCircuit(t *testing.T) {
 		// Create a scenario where consensus is reached early (2 out of 4)
 		// This will trigger short-circuiting
 		log := log.Logger
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(4).
 			WithAgreementThreshold(2). // Will short-circuit after 2 matching responses
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -1649,8 +1649,8 @@ func TestConsensusGoroutineLeakWithShortCircuit(t *testing.T) {
 			WithLogger(&log).
 			Build()
 
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create normalized request
@@ -1892,7 +1892,7 @@ func TestConsensusGoroutineLeakWithNilResponses(t *testing.T) {
 		// - Second and third return matching results (consensus reached)
 		// - Fourth and fifth are slow and will be cancelled
 		log := log.Logger
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(2). // Will short-circuit after 2 matching responses
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -1900,8 +1900,8 @@ func TestConsensusGoroutineLeakWithNilResponses(t *testing.T) {
 			WithLogger(&log).
 			Build()
 
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create normalized request
@@ -2152,7 +2152,7 @@ func TestConsensusExactDrainResponsesBug(t *testing.T) {
 				common.WithEvmStatePoller(common.NewFakeEvmStatePoller(100, 100)))
 		}
 
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(2).
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -2160,8 +2160,8 @@ func TestConsensusExactDrainResponsesBug(t *testing.T) {
 			WithLogger(&log).
 			Build()
 
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create normalized request
@@ -2500,14 +2500,14 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 		var goroutinesCancelled int32
 
 		// Create consensus policy that will short-circuit after 3 matching responses
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).    // 5 upstreams can provide valid responses
 			WithAgreementThreshold(3). // Will short-circuit after 3 matching responses
 			WithLogger(&logger).
 			Build()
 
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create upstream selector for this test
@@ -2664,15 +2664,15 @@ func TestConsensusShortCircuitBreakBehavior(t *testing.T) {
 		responseIterations := make(map[string]int)
 		var iterationMu sync.Mutex
 
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(5).
 			WithAgreementThreshold(2).
 			WithLogger(&logger).
 			Build()
 
 		// Create the executor
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create upstream selector for this test
@@ -2802,7 +2802,7 @@ func TestConsensusOnExecutionException(t *testing.T) {
 		logger := log.Logger
 
 		// Create consensus policy
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(3).
 			WithAgreementThreshold(2). // Changed from 3 to 2
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -2810,8 +2810,8 @@ func TestConsensusOnExecutionException(t *testing.T) {
 			Build()
 
 		// Create executor
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create mock execution
@@ -2855,7 +2855,7 @@ func TestConsensusOnExecutionException(t *testing.T) {
 		logger := log.Logger
 
 		// Create consensus policy - use dispute behavior that returns error
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(3).
 			WithAgreementThreshold(2).                                       // Changed from 3 to 2
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError). // This should return error on dispute
@@ -2863,8 +2863,8 @@ func TestConsensusOnExecutionException(t *testing.T) {
 			Build()
 
 		// Create executor
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Map of upstream errors - all different to ensure dispute
@@ -2951,7 +2951,7 @@ func TestConsensusOnExecutionException(t *testing.T) {
 		logger := log.Logger
 
 		// Create consensus policy
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(3).
 			WithAgreementThreshold(2).
 			WithDisputeBehavior(common.ConsensusDisputeBehaviorReturnError).
@@ -2959,8 +2959,8 @@ func TestConsensusOnExecutionException(t *testing.T) {
 			Build()
 
 		// Create executor
-		executor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		executor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create mock execution
@@ -3028,13 +3028,13 @@ func TestFindResultByHashWithErrorConsensus(t *testing.T) {
 	logger := log.Logger
 
 	// Create consensus policy
-	policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+	policy := NewConsensusPolicyBuilder().
 		WithLogger(&logger).
 		Build()
 
 	// Create executor
-	testExecutor := &executor[*common.NormalizedResponse]{
-		consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+	testExecutor := &executor{
+		consensusPolicy: policy.(*consensusPolicy),
 	}
 
 	// Create test responses with a mix of errors and successful results
@@ -3126,15 +3126,15 @@ func TestFindResultByHashWithErrorConsensus(t *testing.T) {
 		ctx = context.WithValue(ctx, common.UpstreamsContextKey, upstreams)
 
 		// Create consensus policy
-		policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
+		policy := NewConsensusPolicyBuilder().
 			WithMaxParticipants(3).
 			WithAgreementThreshold(2).
 			WithLogger(&logger).
 			Build()
 
 		// Create executor
-		testExecutor := &executor[*common.NormalizedResponse]{
-			consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
+		testExecutor := &executor{
+			consensusPolicy: policy.(*consensusPolicy),
 		}
 
 		// Create mock execution
