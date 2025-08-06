@@ -257,44 +257,61 @@ cannotBeBeaten = winnerCount > maxOtherResultCount + remainingResponses
 
 Each response is analyzed and categorized into:
 
-#### **1. Non-Empty Results** (Highest Priority)
-- Successful responses with meaningful data
-- **Always win over errors**, regardless of count (**non-empty preference**)
-- Use actual result hash for grouping
+### Strict Priority Ordering
 
-#### **2. Consensus-Valid Errors** (Medium Priority) 
-- **Execution exceptions only**: `ErrCodeEndpointExecutionException`
+The consensus system follows a strict priority ordering for selecting responses:
+
+#### **1. Largest Non-Empty Result** (when `preferLargerResponses: true`)
+- Among non-empty successful responses, prefer the largest by byte size
+- Tiebreaker: highest count
+
+#### **2. Non-Empty Results** (by count)
+- Successful responses with meaningful data
+- **Always preferred over empty results and errors**
+- With `preferNonEmpty: true`, 1 non-empty beats any number of errors
+
+#### **3. Empty Results** (by count)
+- Successful responses with no meaningful data (e.g., empty arrays)
+- **Preferred over errors** as they represent successful execution
+
+#### **4. Consensus-Valid Errors** (by count)
+- Execution exceptions: `ErrCodeEndpointExecutionException`
 - Include smart contract reverts, out-of-gas errors
-- Hash includes error code + normalized JSON-RPC code for specificity
 - Can participate in consensus and trigger short-circuits
 
-#### **3. Agreed-Upon Errors** (Medium Priority)
-- Client-side errors: invalid params, unsupported methods, missing data
-- `ErrCodeEndpointClientSideException`, `ErrCodeEndpointUnsupported`, `ErrCodeEndpointMissingData` 
-- Only considered after all responses collected (no short-circuit)
+#### **5. Generic/Network Errors** (lowest priority)
+- Network timeouts, connection failures, transport errors
+- Only selected if no other response types are available
 
-#### **4. Empty Results** (Low Priority)
-- Successful responses with no meaningful data (e.g., empty arrays)
-- Lowest priority in consensus determination
+### Behavior-Specific Logic
 
-#### **5. Non-Consensus Errors**
-- Network timeouts, connection failures, etc.
-- **Excluded** from consensus calculations entirely
+#### **AcceptBestValidResult** (renamed from AcceptAnyValidResult)
+- **Ignores agreement threshold completely**
+- Follows strict priority ordering to select the best result
+- Within each priority level, selects by count (most common)
+- Always returns a result if any response is available
+- Example: 1 non-empty result beats 10 errors regardless of threshold
 
-### Non-Empty Preference Logic
+#### **AcceptMostCommonValidResult**
+- **MUST meet agreement threshold** - only considers results with count ≥ threshold
+- Follows priority ordering but ONLY among threshold-meeting results
+- Process:
+  1. Check non-empty results that meet threshold → select if found
+  2. Check empty results that meet threshold → select if found  
+  3. Check errors that meet threshold → select if found
+  4. If nothing meets threshold → return error
+- Tie-breaker: size (if preferLargerResponses enabled), otherwise error on ties
+- Example: With threshold=3, 2 non-empty results lose to 3 errors
 
-**Critical Feature**: Non-empty results always win over errors, regardless of count:
+#### **OnlyBlockHeadLeader**
+- Uses response from the block head leader upstream
+- Returns error if leader didn't participate
+- Ignores all other responses
 
-```go
-// 1 non-empty result beats 10 identical errors
-if nonEmptyResults.exists() {
-    winner = highestCountNonEmpty
-} else if consensusErrors.exists() {
-    winner = highestCountError  
-} else {
-    winner = highestCountEmpty
-}
-```
+#### **PreferBlockHeadLeader**
+- First checks for block head leader response
+- If leader participated, uses leader's response (success or error)
+- If leader didn't participate, falls back to AcceptMostCommonValidResult logic (with threshold)
 
 ### Hash Generation Strategy
 
@@ -323,8 +340,8 @@ if nonEmptyResults.exists() {
 When `participantCount < agreementThreshold`:
 
 - **`ReturnError`**: Return `ErrConsensusLowParticipants`
-- **`AcceptMostCommonValidResult`**: Return highest count valid result
-- **`AcceptAnyValidResult`**: Return any valid result  
+- **`AcceptMostCommonValidResult`**: Return highest count valid result following priority ordering
+- **`AcceptBestValidResult`**: Return best valid result following priority ordering (ignoring threshold)  
 - **`PreferBlockHeadLeader`**: Prefer block head leader result
 - **`OnlyBlockHeadLeader`**: Only accept block head leader result
 
@@ -333,8 +350,8 @@ When `participantCount < agreementThreshold`:
 When no clear consensus (multiple results with similar counts):
 
 - **`ReturnError`**: Return `ErrConsensusDispute` with detailed participant info
-- **`AcceptMostCommonValidResult`**: Return highest count valid result
-- **`AcceptAnyValidResult`**: Return any valid result
+- **`AcceptMostCommonValidResult`**: Return highest count valid result following priority ordering
+- **`AcceptBestValidResult`**: Return best valid result following priority ordering (ignoring threshold)
 - **`PreferBlockHeadLeader`**: Prefer block head leader result  
 - **`OnlyBlockHeadLeader`**: Only accept block head leader result
 

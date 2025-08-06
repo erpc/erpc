@@ -825,7 +825,7 @@ type ConsensusLowParticipantsBehavior string
 const (
 	ConsensusLowParticipantsBehaviorReturnError                 ConsensusLowParticipantsBehavior = "returnError"
 	ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult ConsensusLowParticipantsBehavior = "acceptMostCommonValidResult"
-	ConsensusLowParticipantsBehaviorAcceptAnyValidResult        ConsensusLowParticipantsBehavior = "acceptAnyValidResult"
+	ConsensusLowParticipantsBehaviorAcceptBestValidResult       ConsensusLowParticipantsBehavior = "acceptBestValidResult"
 	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader       ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
 	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader         ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
 )
@@ -835,7 +835,7 @@ type ConsensusDisputeBehavior string
 const (
 	ConsensusDisputeBehaviorReturnError                 ConsensusDisputeBehavior = "returnError"
 	ConsensusDisputeBehaviorAcceptMostCommonValidResult ConsensusDisputeBehavior = "acceptMostCommonValidResult"
-	ConsensusDisputeBehaviorAcceptAnyValidResult        ConsensusDisputeBehavior = "acceptAnyValidResult"
+	ConsensusDisputeBehaviorAcceptBestValidResult       ConsensusDisputeBehavior = "acceptBestValidResult"
 	ConsensusDisputeBehaviorPreferBlockHeadLeader       ConsensusDisputeBehavior = "preferBlockHeadLeader"
 	ConsensusDisputeBehaviorOnlyBlockHeadLeader         ConsensusDisputeBehavior = "onlyBlockHeadLeader"
 )

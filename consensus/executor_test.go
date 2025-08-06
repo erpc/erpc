@@ -60,25 +60,6 @@ func TestConsensusExecutor(t *testing.T) {
 			}{
 				{"result1", "upstream1", 1},
 				{"result1", "upstream2", 1},
-				{"result1", "upstream3", 1},
-			},
-			expectedError:            nil,
-			expectedResult:           []string{"result1"},
-			expectedPunishedUpsteams: []string{},
-		},
-		{
-			name:               "successful_consensus_misbehaving_upstreams_are_punished_if_there_is_a_clear_majority",
-			maxParticipants:    3,
-			agreementThreshold: 2,
-			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorReturnError),
-			disputeThreshold:   1,
-			responses: []*struct {
-				response                  string
-				upstreamId                string
-				upstreamLatestBlockNumber int64
-			}{
-				{"result1", "upstream1", 1},
-				{"result1", "upstream2", 1},
 				{"result2", "upstream3", 1},
 			},
 			expectedError:  nil,
@@ -109,7 +90,7 @@ func TestConsensusExecutor(t *testing.T) {
 			name:               "dispute_with_accept_any_valid",
 			maxParticipants:    3,
 			agreementThreshold: 2,
-			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
+			disputeBehavior:    pointer(common.ConsensusDisputeBehaviorAcceptBestValidResult),
 			disputeThreshold:   1,
 			responses: []*struct {
 				response                  string

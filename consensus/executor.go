@@ -61,7 +61,6 @@ type responseGroup[R any] struct {
 
 // consensusAnalysis contains all analyzed consensus data computed once
 type consensusAnalysis[R any] struct {
-	// Winner info (after applying non-empty preference)
 	winnerHash  string
 	winnerCount int
 	winnerGroup *responseGroup[R]
@@ -123,6 +122,7 @@ type DecisionDimensions struct {
 	IsLowParticipants     bool
 	PreferNonEmpty        bool
 	PreferLargerResponses bool
+	DisputeBehavior       common.ConsensusDisputeBehavior
 }
 
 // ShortCircuitDecision represents the outcome of the decision matrix
@@ -315,9 +315,9 @@ func (e *executor[R]) isConsensusValidError(err error) bool {
 }
 
 // isAgreedUponError checks if an error should be considered for agreement after all upstreams respond
-// This includes a broader set of errors like invalid params, missing data, unsupported methods
 func (e *executor[R]) isAgreedUponError(err error) bool {
-	// Include common errors that indicate agreement on request issues
+	// Include all endpoint errors that indicate the upstream processed the request
+	// These errors show the upstream is functioning and gave a definitive response
 	return common.HasErrorCode(err,
 		common.ErrCodeEndpointClientSideException, // Invalid params, bad requests
 		common.ErrCodeEndpointUnsupported,         // Method not supported
@@ -915,6 +915,11 @@ func buildDecisionRules() []DecisionRule {
 			Priority: 80,
 			Name:     "math-guarantee",
 			Condition: func(dims DecisionDimensions) bool {
+				// With AcceptBestValidResult, we should wait for all responses
+				// to find the best one, even with a mathematical guarantee
+				if dims.DisputeBehavior == common.ConsensusDisputeBehaviorAcceptBestValidResult && dims.HasRemaining {
+					return false
+				}
 				return dims.CompetitionState == CompetitionStateUnbeatable &&
 					!dims.IsLowParticipants &&
 					dims.ConsensusState != ConsensusStateNone
@@ -930,6 +935,10 @@ func buildDecisionRules() []DecisionRule {
 			Priority: 70,
 			Name:     "consensus-non-empty",
 			Condition: func(dims DecisionDimensions) bool {
+				// With AcceptBestValidResult, wait for all responses
+				if dims.DisputeBehavior == common.ConsensusDisputeBehaviorAcceptBestValidResult && dims.HasRemaining {
+					return false
+				}
 				// Only short-circuit if we have mathematical guarantee or no remaining responses
 				// This prevents premature short-circuit when preferences are disabled
 				return dims.WinnerType == ResponseTypeNonEmpty &&
@@ -984,6 +993,16 @@ func (e *executor[R]) evaluateDecisionMatrix(dims DecisionDimensions, consensusI
 				Reason:             "consensus impossible but have non-empty results with AcceptMostCommonValidResult",
 			}
 		}
+		// AcceptBestValidResult should wait for all responses to find the best one
+		// But only if we have remaining responses to collect
+		if dims.HasRemaining && e.disputeBehavior == common.ConsensusDisputeBehaviorAcceptBestValidResult {
+			// With AcceptBestValidResult, we want to collect all responses to find the best one
+			// according to priority ordering (non-empty > empty > errors)
+			return ShortCircuitDecision{
+				ShouldShortCircuit: false,
+				Reason:             "consensus impossible but waiting for all responses with AcceptBestValidResult",
+			}
+		}
 		// For PreferBlockHeadLeader and OnlyBlockHeadLeader behaviors, we need to continue
 		// to evaluate potential block head leaders even when consensus is impossible
 		if e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader ||
@@ -994,6 +1013,13 @@ func (e *executor[R]) evaluateDecisionMatrix(dims DecisionDimensions, consensusI
 					ShouldShortCircuit: false,
 					Reason:             "consensus impossible but waiting for block head leader",
 				}
+			}
+		}
+		// Also check lowParticipantsBehavior for AcceptBestValidResult
+		if dims.HasRemaining && e.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptBestValidResult {
+			return ShortCircuitDecision{
+				ShouldShortCircuit: false,
+				Reason:             "consensus impossible but waiting for all responses with AcceptBestValidResult (low participants)",
 			}
 		}
 		return ShortCircuitDecision{
@@ -1031,6 +1057,7 @@ func (e *executor[R]) checkShortCircuit(lg *zerolog.Logger, responses []*execRes
 		IsLowParticipants:     analysis.isLowParticipants,
 		PreferNonEmpty:        e.preferNonEmpty,
 		PreferLargerResponses: e.preferLargerResponses,
+		DisputeBehavior:       e.disputeBehavior,
 	}
 
 	// Check if consensus is impossible
@@ -1221,7 +1248,9 @@ func (e *executor[R]) evaluateConsensus(
 		}
 	}
 
-	if hasConsensus {
+	// With AcceptBestValidResult, always use the best selection logic
+	// regardless of whether consensus was achieved
+	if hasConsensus && e.disputeBehavior != common.ConsensusDisputeBehaviorAcceptBestValidResult {
 		// We have consensus
 		lg.Debug().Msg("completed consensus execution")
 		evalSpan.SetAttributes(
@@ -1311,41 +1340,30 @@ func (e *executor[R]) analyzeResponses(lg *zerolog.Logger, responses []*execResu
 
 	// Single pass through all responses
 	for _, r := range responses {
-		// Count this response as a participant if it can contribute to consensus
-		canContribute := false
-		if r.err == nil {
-			// Successful responses always contribute
-			canContribute = true
-		} else if e.isConsensusValidError(r.err) || e.isAgreedUponError(r.err) {
-			// Consensus-valid or agreed-upon errors contribute
-			canContribute = true
-		}
-
-		if canContribute {
-			// Count unique upstream participants
-			if r.upstream != nil && r.upstream.Config() != nil {
-				uniqueParticipants[r.upstream.Config().Id] = true
-			}
+		// ALL responses count as participants, even generic errors
+		// This ensures we have accurate participant counting
+		// The priority ordering will handle which responses are selected
+		if r.upstream != nil && r.upstream.Config() != nil {
+			uniqueParticipants[r.upstream.Config().Id] = true
 		}
 
 		// Calculate hash for this response
 		resultHash, err := e.resultOrErrorToHash(r.result, r.err, exec)
 
-		// Handle unhashable responses (non-consensus errors)
+		// Handle unhashable responses (including generic/non-consensus errors)
 		if err != nil || resultHash == "" {
-			// Try agreed-upon errors
-			if r.err != nil && e.isAgreedUponError(r.err) {
-				if hash := e.errorToConsensusHash(r.err); hash != "" {
-					resultHash = hash
-				} else {
-					analysis.nonConsensusErrorCount++
-					continue
+			if r.err != nil {
+				// ALL errors should be included, even generic ones
+				// They have lowest priority but still participate
+				resultHash = e.errorToConsensusHash(r.err)
+				if resultHash == "" {
+					// If we still can't get a hash, use a generic hash for this error type
+					// This ensures the error is still counted
+					resultHash = "generic-error"
 				}
+				lg.Debug().Err(r.err).Str("hash", resultHash).Msg("including generic/server-side error in consensus")
 			} else {
-				analysis.nonConsensusErrorCount++
-				if r.err != nil && !e.isConsensusValidError(r.err) && !e.isAgreedUponError(r.err) {
-					lg.Debug().Err(r.err).Msg("response has non-consensus/agreed-upon error")
-				}
+				// Skip responses without error or result
 				continue
 			}
 		}
@@ -1413,17 +1431,22 @@ func (e *executor[R]) analyzeResponses(lg *zerolog.Logger, responses []*execResu
 	return analysis
 }
 
-// determineWinner applies configurable preference logic to find the consensus winner
+// determineWinner applies strict priority ordering to find the consensus winner
+// Priority order (highest to lowest):
+// 1. Largest non-empty result (if preferLargerResponses enabled)
+// 2. Non-empty results (by count)
+// 3. Empty results (by count)
+// 4. Consensus-valid errors (by count)
+// 5. Generic errors (by count)
 func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger, e *executor[R]) {
 	preferNonEmpty := e.preferNonEmpty
 	preferLargerResponses := e.preferLargerResponses
 
 	if preferNonEmpty {
-		// Prefer non-empty results over empty responses
+		// Priority 1: Non-empty results (prefer larger if enabled)
 		if len(a.nonEmptyGroups) > 0 {
 			bestHash, bestGroup := a.findBestGroup(a.nonEmptyGroups, preferLargerResponses, e.agreementThreshold)
 			if bestGroup != nil {
-				previousWinnerCount := a.winnerCount
 				a.winnerHash = bestHash
 				a.winnerCount = bestGroup.count
 				a.winnerGroup = bestGroup
@@ -1433,19 +1456,18 @@ func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger, e *executor[R
 					Int("winnerCount", a.winnerCount).
 					Int("winnerSize", bestGroup.responseSize).
 					Int("totalNonEmpty", len(a.nonEmptyGroups)).
-					Int("previousWinnerCount", previousWinnerCount).
 					Int("agreementThreshold", e.agreementThreshold).
 					Bool("preferLargerResponses", preferLargerResponses).
 					Bool("metThreshold", bestGroup.count >= e.agreementThreshold).
-					Msg("winner selected from non-empty results (non-empty preference)")
+					Msg("winner selected from non-empty results (highest priority)")
 			}
 			return
 		}
 
-		// No non-empty results, check consensus errors
-		if len(a.errorGroups) > 0 {
-			bestHash, bestGroup := a.findBestGroup(a.errorGroups, preferLargerResponses, e.agreementThreshold)
-			if bestGroup != nil && bestGroup.count > a.winnerCount {
+		// Priority 2: Empty results (successful but empty)
+		if len(a.emptyGroups) > 0 {
+			bestHash, bestGroup := a.findBestGroup(a.emptyGroups, false, e.agreementThreshold) // Never use size preference for empty
+			if bestGroup != nil {
 				a.winnerHash = bestHash
 				a.winnerCount = bestGroup.count
 				a.winnerGroup = bestGroup
@@ -1453,14 +1475,16 @@ func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger, e *executor[R
 				lg.Debug().
 					Str("winnerHash", a.winnerHash).
 					Int("winnerCount", a.winnerCount).
-					Msg("winner selected from consensus errors")
+					Int("totalEmpty", len(a.emptyGroups)).
+					Msg("winner selected from empty results (priority over errors)")
 			}
+			return
 		}
 
-		// Also check empty results - they should compete with error results by count
-		if len(a.emptyGroups) > 0 {
-			bestHash, bestGroup := a.findBestGroup(a.emptyGroups, preferLargerResponses, e.agreementThreshold)
-			if bestGroup != nil && bestGroup.count > a.winnerCount {
+		// Priority 3: Errors (lowest priority)
+		if len(a.errorGroups) > 0 {
+			bestHash, bestGroup := a.findBestGroup(a.errorGroups, false, e.agreementThreshold) // Never use size preference for errors
+			if bestGroup != nil {
 				a.winnerHash = bestHash
 				a.winnerCount = bestGroup.count
 				a.winnerGroup = bestGroup
@@ -1468,11 +1492,13 @@ func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger, e *executor[R
 				lg.Debug().
 					Str("winnerHash", a.winnerHash).
 					Int("winnerCount", a.winnerCount).
-					Msg("winner selected from empty results")
+					Int("totalErrors", len(a.errorGroups)).
+					Msg("winner selected from errors (lowest priority)")
 			}
 		}
 	} else {
-		// Treat all response types equally, choose by count + size
+		// When preferNonEmpty is false, treat all response types equally by count
+		// But still never apply size preference to errors or empty responses
 		allGroups := make(map[string]*responseGroup[R])
 
 		// Collect all groups regardless of type
@@ -1487,6 +1513,7 @@ func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger, e *executor[R
 		}
 
 		if len(allGroups) > 0 {
+			// Only apply size preference to non-empty, non-error responses
 			bestHash, bestGroup := a.findBestGroup(allGroups, preferLargerResponses, e.agreementThreshold)
 			if bestGroup != nil {
 				a.winnerHash = bestHash
@@ -1512,7 +1539,7 @@ func (a *consensusAnalysis[R]) determineWinner(lg *zerolog.Logger, e *executor[R
 					Int("agreementThreshold", e.agreementThreshold).
 					Bool("preferLargerResponses", preferLargerResponses).
 					Bool("metThreshold", bestGroup.count >= e.agreementThreshold).
-					Msg("winner selected from all results (no special preference)")
+					Msg("winner selected from all results (no priority preference)")
 			}
 		}
 	}
@@ -1605,8 +1632,8 @@ func (e *executor[R]) handleLowParticipants(
 				e.extractCauses(allResponses),
 			)
 		})
-	case common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult:
-		return e.handleAcceptAnyValid(lg, analysis, func() error {
+	case common.ConsensusLowParticipantsBehaviorAcceptBestValidResult:
+		return e.handleAcceptBestValid(lg, analysis, func() error {
 			return common.NewErrConsensusLowParticipants(
 				"no valid results found",
 				e.extractParticipants(allResponses, exec),
@@ -1671,8 +1698,8 @@ func (e *executor[R]) handleDispute(
 				e.extractCauses(allResponses),
 			)
 		})
-	case common.ConsensusDisputeBehaviorAcceptAnyValidResult:
-		return e.handleAcceptAnyValid(lg, analysis, func() error {
+	case common.ConsensusDisputeBehaviorAcceptBestValidResult:
+		return e.handleAcceptBestValid(lg, analysis, func() error {
 			return common.NewErrConsensusDispute(
 				"no valid results found",
 				e.extractParticipants(allResponses, exec),
@@ -1930,139 +1957,304 @@ func (e *executor[R]) handleReturnError(logger *zerolog.Logger, errFn func() err
 }
 
 func (e *executor[R]) handleAcceptMostCommon(logger *zerolog.Logger, analysis *consensusAnalysis[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
-	logger.Debug().Msg("finding most common valid result preferring non-empty")
+	logger.Debug().Msg("finding most common valid result following priority ordering WITH threshold requirement")
 
-	// Check if we have a winner
-	if analysis.winnerGroup == nil {
-		logger.Debug().Msg("no winner found, sending error")
-		return &failsafeCommon.PolicyResult[R]{
-			Error: errFn(),
-		}
-	}
+	// Priority ordering (MUST meet threshold):
+	// 1. Non-empty results meeting threshold (prefer larger if enabled)
+	// 2. Empty results meeting threshold
+	// 3. Consensus-valid errors meeting threshold
+	// If nothing meets threshold, return error
 
-	// Check for ties (multiple groups with same count as winner)
-	tieCount := 0
-	for _, group := range analysis.responsesByHash {
-		if group.count == analysis.winnerCount {
-			tieCount++
-		}
-	}
+	// Priority 1: Non-empty results that MEET THRESHOLD
+	if len(analysis.nonEmptyGroups) > 0 {
+		var bestGroup *responseGroup[R]
+		var bestHash string
 
-	if tieCount > 1 {
-		logger.Debug().
-			Int("tieCount", tieCount).
-			Int("winnerCount", analysis.winnerCount).
-			Msg("multiple results have the same count, cannot determine most common")
-		return &failsafeCommon.PolicyResult[R]{
-			Error: errFn(),
-		}
-	}
-
-	// Handle winner based on type
-	if analysis.winnerGroup.isError {
-		logger.Debug().Err(analysis.winnerGroup.firstError).Msg("returning consensus-valid error as result")
-		return &failsafeCommon.PolicyResult[R]{
-			Error: analysis.winnerGroup.firstError,
-		}
-	}
-
-	// Handle winner based on type - follow AcceptMostCommonValidResult behavior
-	if !analysis.winnerGroup.isEmpty {
-		// Non-empty result - accept regardless of threshold or participant count
-		logger.Debug().
-			Str("hash", analysis.winnerHash).
-			Int("count", analysis.winnerCount).
-			Bool("isLowParticipants", analysis.isLowParticipants).
-			Msg("accepting non-empty most common result (ignore threshold and participants)")
-		return &failsafeCommon.PolicyResult[R]{
-			Result: analysis.winnerGroup.firstResult,
-		}
-	} else {
-		// Empty result - must meet threshold AND have sufficient participants
-		if !analysis.isLowParticipants && analysis.winnerCount >= e.agreementThreshold {
-			logger.Debug().
-				Str("hash", analysis.winnerHash).
-				Int("count", analysis.winnerCount).
-				Int("threshold", e.agreementThreshold).
-				Bool("isLowParticipants", analysis.isLowParticipants).
-				Msg("accepting empty most common result meeting threshold with sufficient participants")
-			return &failsafeCommon.PolicyResult[R]{
-				Result: analysis.winnerGroup.firstResult,
+		// Only consider non-empty results that meet threshold
+		if e.preferLargerResponses {
+			// Find the largest non-empty response that meets threshold
+			maxSize := 0
+			for hash, group := range analysis.nonEmptyGroups {
+				if group.count >= e.agreementThreshold {
+					if group.responseSize > maxSize || (group.responseSize == maxSize && (bestGroup == nil || group.count > bestGroup.count)) {
+						maxSize = group.responseSize
+						bestGroup = group
+						bestHash = hash
+					}
+				}
 			}
 		} else {
-			logger.Debug().
-				Str("hash", analysis.winnerHash).
-				Int("count", analysis.winnerCount).
-				Int("threshold", e.agreementThreshold).
-				Bool("isLowParticipants", analysis.isLowParticipants).
-				Msg("rejecting empty result: insufficient count for threshold or insufficient participants")
-			return &failsafeCommon.PolicyResult[R]{
-				Error: errFn(),
+			// Find the non-empty response with highest count that meets threshold
+			maxCount := 0
+			for hash, group := range analysis.nonEmptyGroups {
+				if group.count >= e.agreementThreshold && group.count > maxCount {
+					maxCount = group.count
+					bestGroup = group
+					bestHash = hash
+				}
 			}
 		}
+
+		if bestGroup != nil {
+			// Check for ties at this count level among threshold-meeting groups
+			tieCount := 0
+			var tiedGroups []*responseGroup[R]
+			for _, group := range analysis.nonEmptyGroups {
+				if group.count == bestGroup.count && group.count >= e.agreementThreshold {
+					tieCount++
+					tiedGroups = append(tiedGroups, group)
+				}
+			}
+
+			// If there's a tie and we can't break it with size preference, return error
+			if tieCount > 1 {
+				// With preferLargerResponses, we can break ties by size
+				if e.preferLargerResponses {
+					// Check if all tied groups have the same size
+					allSameSize := true
+					if len(tiedGroups) > 1 {
+						firstSize := tiedGroups[0].responseSize
+						for _, group := range tiedGroups[1:] {
+							if group.responseSize != firstSize {
+								allSameSize = false
+								break
+							}
+						}
+					}
+					// If all have same size, it's still a tie
+					if allSameSize {
+						logger.Debug().
+							Int("tieCount", tieCount).
+							Int("count", bestGroup.count).
+							Msg("multiple non-empty results have same count and size, cannot determine most common")
+						return &failsafeCommon.PolicyResult[R]{
+							Error: errFn(),
+						}
+					}
+				} else {
+					// Without size preference, any tie is unresolvable
+					logger.Debug().
+						Int("tieCount", tieCount).
+						Int("count", bestGroup.count).
+						Msg("multiple non-empty results have same count, cannot determine most common")
+					return &failsafeCommon.PolicyResult[R]{
+						Error: errFn(),
+					}
+				}
+			}
+
+			logger.Debug().
+				Str("hash", bestHash).
+				Int("count", bestGroup.count).
+				Int("size", bestGroup.responseSize).
+				Int("threshold", e.agreementThreshold).
+				Msg("accepting most common non-empty result meeting threshold")
+			return &failsafeCommon.PolicyResult[R]{
+				Result: bestGroup.firstResult,
+			}
+		}
+	}
+
+	// Priority 2: Empty results that MEET THRESHOLD
+	if len(analysis.emptyGroups) > 0 {
+		var bestGroup *responseGroup[R]
+		maxCount := 0
+
+		// Find empty result with highest count that meets threshold
+		for _, group := range analysis.emptyGroups {
+			if group.count >= e.agreementThreshold && group.count > maxCount {
+				maxCount = group.count
+				bestGroup = group
+			}
+		}
+
+		if bestGroup != nil {
+			// Check for ties among threshold-meeting groups
+			tieCount := 0
+			for _, group := range analysis.emptyGroups {
+				if group.count == bestGroup.count && group.count >= e.agreementThreshold {
+					tieCount++
+				}
+			}
+
+			if tieCount > 1 {
+				logger.Debug().
+					Int("tieCount", tieCount).
+					Int("count", bestGroup.count).
+					Msg("multiple empty results have same count, cannot determine most common")
+				return &failsafeCommon.PolicyResult[R]{
+					Error: errFn(),
+				}
+			}
+
+			logger.Debug().
+				Int("count", bestGroup.count).
+				Int("threshold", e.agreementThreshold).
+				Msg("accepting most common empty result meeting threshold")
+			return &failsafeCommon.PolicyResult[R]{
+				Result: bestGroup.firstResult,
+			}
+		}
+	}
+
+	// Priority 3: Errors that MEET THRESHOLD (lowest priority)
+	if len(analysis.errorGroups) > 0 {
+		var bestGroup *responseGroup[R]
+		maxCount := 0
+
+		// Find error with highest count that meets threshold
+		for _, group := range analysis.errorGroups {
+			if group.count >= e.agreementThreshold && group.count > maxCount {
+				maxCount = group.count
+				bestGroup = group
+			}
+		}
+
+		if bestGroup != nil && bestGroup.firstError != nil {
+			// Check for ties among threshold-meeting groups
+			tieCount := 0
+			for _, group := range analysis.errorGroups {
+				if group.count == bestGroup.count && group.count >= e.agreementThreshold {
+					tieCount++
+				}
+			}
+
+			if tieCount > 1 {
+				logger.Debug().
+					Int("tieCount", tieCount).
+					Int("count", bestGroup.count).
+					Msg("multiple errors have same count, cannot determine most common")
+				return &failsafeCommon.PolicyResult[R]{
+					Error: errFn(),
+				}
+			}
+
+			logger.Debug().
+				Err(bestGroup.firstError).
+				Int("count", bestGroup.count).
+				Int("threshold", e.agreementThreshold).
+				Msg("returning most common error meeting threshold (lowest priority)")
+			return &failsafeCommon.PolicyResult[R]{
+				Error: bestGroup.firstError,
+			}
+		}
+	}
+
+	// No result found
+	logger.Debug().Msg("no most common result found")
+	return &failsafeCommon.PolicyResult[R]{
+		Error: errFn(),
 	}
 }
 
-func (e *executor[R]) handleAcceptAnyValid(logger *zerolog.Logger, analysis *consensusAnalysis[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
-	logger.Debug().Msg("accepting any valid result (prefer non-empty)")
+func (e *executor[R]) handleAcceptBestValid(logger *zerolog.Logger, analysis *consensusAnalysis[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
+	logger.Debug().Msg("accepting best valid result following priority ordering")
 
-	// Look for non-empty successful results first - accept regardless of participants
-	for _, group := range analysis.nonEmptyGroups {
-		if len(group.responses) > 0 {
-			// Found non-empty result, use it immediately
+	// Priority ordering (ignoring threshold):
+	// 1. Largest non-empty (if preferLargerResponses enabled)
+	// 2. Non-empty results (by count)
+	// 3. Empty results (by count)
+	// 4. Consensus-valid errors (by count)
+	// 5. Generic errors (by count)
+
+	// Priority 1 & 2: Non-empty results
+	if len(analysis.nonEmptyGroups) > 0 {
+		// Find the best non-empty result (largest if preferLargerResponses, otherwise highest count)
+		var bestGroup *responseGroup[R]
+		var bestHash string
+
+		if e.preferLargerResponses {
+			// Find the largest non-empty response
+			maxSize := 0
+			for hash, group := range analysis.nonEmptyGroups {
+				if group.responseSize > maxSize || (group.responseSize == maxSize && (bestGroup == nil || group.count > bestGroup.count)) {
+					maxSize = group.responseSize
+					bestGroup = group
+					bestHash = hash
+				}
+			}
+		} else {
+			// Find the non-empty response with highest count
+			maxCount := 0
+			for hash, group := range analysis.nonEmptyGroups {
+				if group.count > maxCount {
+					maxCount = group.count
+					bestGroup = group
+					bestHash = hash
+				}
+			}
+		}
+
+		if bestGroup != nil {
 			upstreamId := ""
-			if group.responses[0].upstream != nil && group.responses[0].upstream.Config() != nil {
-				upstreamId = group.responses[0].upstream.Config().Id
+			if bestGroup.responses[0].upstream != nil && bestGroup.responses[0].upstream.Config() != nil {
+				upstreamId = bestGroup.responses[0].upstream.Config().Id
 			}
 			logger.Debug().
 				Str("upstream", upstreamId).
-				Bool("isLowParticipants", analysis.isLowParticipants).
-				Msg("found non-empty result (accept regardless of participants)")
+				Str("hash", bestHash).
+				Int("count", bestGroup.count).
+				Int("size", bestGroup.responseSize).
+				Bool("preferLargerResponses", e.preferLargerResponses).
+				Msg("selected best non-empty result (highest priority)")
 			return &failsafeCommon.PolicyResult[R]{
-				Result: group.firstResult,
+				Result: bestGroup.firstResult,
 			}
 		}
 	}
 
-	// No non-empty results, check participant sufficiency for empty results
-	if analysis.isLowParticipants {
-		logger.Debug().
-			Bool("isLowParticipants", analysis.isLowParticipants).
-			Msg("rejecting empty results: insufficient participants")
-		return &failsafeCommon.PolicyResult[R]{
-			Error: errFn(),
+	// Priority 3: Empty results (by count)
+	if len(analysis.emptyGroups) > 0 {
+		// Find the empty response with highest count
+		var bestGroup *responseGroup[R]
+		maxCount := 0
+		for _, group := range analysis.emptyGroups {
+			if group.count > maxCount {
+				maxCount = group.count
+				bestGroup = group
+			}
 		}
-	}
 
-	// Look for empty results with sufficient participants
-	for _, group := range analysis.emptyGroups {
-		if len(group.responses) > 0 {
+		if bestGroup != nil {
 			upstreamId := ""
-			if group.responses[0].upstream != nil && group.responses[0].upstream.Config() != nil {
-				upstreamId = group.responses[0].upstream.Config().Id
+			if bestGroup.responses[0].upstream != nil && bestGroup.responses[0].upstream.Config() != nil {
+				upstreamId = bestGroup.responses[0].upstream.Config().Id
 			}
 			logger.Debug().
 				Str("upstream", upstreamId).
-				Msg("found empty result with sufficient participants")
+				Int("count", bestGroup.count).
+				Msg("selected best empty result (priority over errors)")
 			return &failsafeCommon.PolicyResult[R]{
-				Result: group.firstResult,
+				Result: bestGroup.firstResult,
 			}
 		}
 	}
 
-	logger.Debug().Msg("no valid results found with sufficient participants")
+	// Priority 4: Consensus-valid errors (by count)
+	if len(analysis.errorGroups) > 0 {
+		// Find the error with highest count
+		var bestGroup *responseGroup[R]
+		maxCount := 0
+		for _, group := range analysis.errorGroups {
+			if group.count > maxCount {
+				maxCount = group.count
+				bestGroup = group
+			}
+		}
 
-	// If no successful result, check for consensus-valid errors
-	for _, group := range analysis.errorGroups {
-		if group.firstError != nil {
-			logger.Debug().Err(group.firstError).Msg("returning consensus-valid error")
+		if bestGroup != nil && bestGroup.firstError != nil {
+			logger.Debug().
+				Err(bestGroup.firstError).
+				Int("count", bestGroup.count).
+				Msg("selected best error result (lowest priority)")
 			return &failsafeCommon.PolicyResult[R]{
-				Error: group.firstError,
+				Error: bestGroup.firstError,
 			}
 		}
 	}
 
-	// No valid result found
+	// No valid result found at all
+	logger.Debug().Msg("no valid results found")
 	return &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}
@@ -2105,58 +2297,45 @@ func (e *executor[R]) findBlockHeadLeaderResult(ctx context.Context, analysis *c
 }
 
 func (e *executor[R]) handlePreferBlockHeadLeader(ctx context.Context, logger *zerolog.Logger, analysis *consensusAnalysis[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
-	// Try to find block head leader first (regardless of participant count)
+	// PreferBlockHeadLeader: Use leader if exists, otherwise fallback to priority ordering
 	blockLeaderResult := e.findBlockHeadLeaderResult(ctx, analysis)
 	if blockLeaderResult != nil {
-		logger.Debug().Msg("sending block head leader result")
+		logger.Debug().Msg("found block head leader result")
 		if blockLeaderResult.err != nil {
+			logger.Debug().Err(blockLeaderResult.err).Msg("returning block head leader error")
 			return &failsafeCommon.PolicyResult[R]{
 				Error: blockLeaderResult.err,
 			}
 		}
+		logger.Debug().Msg("returning block head leader successful result")
 		return &failsafeCommon.PolicyResult[R]{
 			Result: blockLeaderResult.result,
 		}
 	}
 
-	// No block head leader found - check participant sufficiency for fallback
-	if analysis.isLowParticipants {
-		logger.Debug().
-			Bool("isLowParticipants", analysis.isLowParticipants).
-			Msg("no block head leader found and insufficient participants")
-		return &failsafeCommon.PolicyResult[R]{
-			Error: errFn(),
-		}
-	}
-
-	// Fall back to most common result
+	// No block head leader found - fallback to priority ordering with threshold
+	logger.Debug().Msg("no block head leader found, falling back to priority ordering")
 	return e.handleAcceptMostCommon(logger, analysis, errFn)
 }
 
 func (e *executor[R]) handleOnlyBlockHeadLeader(ctx context.Context, logger *zerolog.Logger, analysis *consensusAnalysis[R], errFn func() error) *failsafeCommon.PolicyResult[R] {
-	// Check participant sufficiency first
-	if analysis.isLowParticipants {
-		logger.Debug().
-			Bool("isLowParticipants", analysis.isLowParticipants).
-			Msg("rejecting only block head leader: insufficient participants")
-		return &failsafeCommon.PolicyResult[R]{
-			Error: errFn(),
-		}
-	}
-
+	// OnlyBlockHeadLeader: Use leader response or error if leader didn't participate
 	blockLeaderResult := e.findBlockHeadLeaderResult(ctx, analysis)
 	if blockLeaderResult != nil {
-		logger.Debug().Msg("sending block head leader result")
+		logger.Debug().Msg("found block head leader result")
 		if blockLeaderResult.err != nil {
+			logger.Debug().Err(blockLeaderResult.err).Msg("returning block head leader error")
 			return &failsafeCommon.PolicyResult[R]{
 				Error: blockLeaderResult.err,
 			}
 		}
+		logger.Debug().Msg("returning block head leader successful result")
 		return &failsafeCommon.PolicyResult[R]{
 			Result: blockLeaderResult.result,
 		}
 	}
-	logger.Debug().Msg("no block head leader found, returning error")
+
+	logger.Debug().Msg("block head leader did not participate, returning error")
 	return &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}

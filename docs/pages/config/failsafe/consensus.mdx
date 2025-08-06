@@ -12,116 +12,6 @@ The `consensus` policy sends the same request to multiple upstreams and returns 
   Consensus can only be configured at **network level** since it requires multiple upstreams to compare results.
 </Callout>
 
-```mermaid
-flowchart TD
-    Start([Request Starts]) --> Launch[Launch Consensus Participants]
-    Launch --> Collect[Collect Responses from Upstreams]
-    
-    Collect --> CheckShortCircuit{Short Circuit Check<br/>Non-empty consensus reached?}
-    CheckShortCircuit -->|Yes, Non-empty consensus| ShortCircuit[Cancel remaining requests<br/>Return consensus result]
-    CheckShortCircuit -->|No, or Empty consensus| WaitAll[Wait for all responses]
-    
-    WaitAll --> CountParticipants[Count Valid Participants<br/>Exclude network errors]
-    CountParticipants --> CheckMinParticipants{Participants >= MaxParticipants?}
-    
-    CheckMinParticipants -->|No| LowParticipants[Handle Low Participants]
-    CheckMinParticipants -->|Yes| CountByHash[Count Responses by Hash<br/>Separate Empty vs Non-empty]
-    
-    CountByHash --> NonEmptyPreference{Any Non-empty Results?}
-    NonEmptyPreference -->|Yes| UseNonEmpty[Use Non-empty Results<br/>Ignore empty responses]
-    NonEmptyPreference -->|No| UseEmpty[Use Empty Results]
-    
-    UseNonEmpty --> CheckConsensus{Most Common Count >= AgreementThreshold?}
-    UseEmpty --> CheckConsensus
-    
-    CheckConsensus -->|Yes| ConsensusReached[Consensus Reached<br/>Return most common result]
-    CheckConsensus -->|No| HandleDispute[Handle Dispute]
-    
-    %% Low Participants Handling
-    LowParticipants --> LowParticipantsBehavior{LowParticipantsBehavior}
-    LowParticipantsBehavior -->|returnError| LowParticipantsError[Return Low Participants Error]
-    LowParticipantsBehavior -->|acceptMostCommonValidResult| LowAcceptMostCommon[Accept Most Common<br/>Check if meets threshold]
-    LowParticipantsBehavior -->|acceptAnyValidResult| LowAcceptAny[Accept Any Valid<br/>Prefer non-empty]
-    LowParticipantsBehavior -->|preferBlockHeadLeader| LowPreferLeader[Use Block Head Leader<br/>Fallback to most common]
-    LowParticipantsBehavior -->|onlyBlockHeadLeader| LowOnlyLeader[Only Block Head Leader<br/>Error if unavailable]
-    
-    %% Dispute Handling
-    HandleDispute --> DisputeBehavior{DisputeBehavior}
-    DisputeBehavior -->|returnError| DisputeError[Return Dispute Error]
-    DisputeBehavior -->|acceptMostCommonValidResult| AcceptMostCommon[Accept Most Common Valid<br/>Must meet threshold<br/>Error if tie]
-    DisputeBehavior -->|acceptAnyValidResult| AcceptAny[Accept Any Valid<br/>Prefer non-empty<br/>Reject empty in dispute]
-    DisputeBehavior -->|preferBlockHeadLeader| PreferLeader[Use Block Head Leader<br/>Fallback to most common]
-    DisputeBehavior -->|onlyBlockHeadLeader| OnlyLeader[Only Block Head Leader<br/>Error if unavailable]
-    
-    %% Detailed AcceptMostCommon Logic
-    AcceptMostCommon --> MostCommonLogic{Non-empty results exist?}
-    MostCommonLogic -->|Yes| CheckNonEmptyThreshold{Most common non-empty<br/>meets threshold?}
-    MostCommonLogic -->|No| CheckEmptyThreshold{Most common empty<br/>meets threshold?}
-    
-    CheckNonEmptyThreshold -->|Yes| ReturnNonEmpty[Return most common non-empty]
-    CheckNonEmptyThreshold -->|No| MostCommonError[Return Error<br/>Insufficient agreement]
-    
-    CheckEmptyThreshold -->|Yes| CheckEmptyTie{Multiple empty results<br/>with same count?}
-    CheckEmptyThreshold -->|No| MostCommonError
-    
-    CheckEmptyTie -->|No| ReturnEmpty[Return most common empty]
-    CheckEmptyTie -->|Yes| MostCommonError
-    
-    %% Detailed AcceptAny Logic
-    AcceptAny --> AnyLogic{Any non-empty success?}
-    AnyLogic -->|Yes| ReturnFirstNonEmpty[Return first non-empty result]
-    AnyLogic -->|No| CheckConsensusErrors{Any consensus-valid errors?}
-    
-    CheckConsensusErrors -->|Yes| ReturnConsensusError[Return consensus-valid error]
-    CheckConsensusErrors -->|No| AcceptAnyError[Return Error<br/>No valid results]
-    
-    %% Block Head Leader Logic
-    PreferLeader --> FindLeader{Block Head Leader available?}
-    OnlyLeader --> FindLeader
-    LowPreferLeader --> FindLeader
-    LowOnlyLeader --> FindLeader
-    
-    FindLeader -->|Yes| UseLeader[Use Block Head Leader result]
-    FindLeader -->|No, prefer*| FallbackMostCommon[Fallback to most common]
-    FindLeader -->|No, only*| LeaderError[Return Error<br/>Leader unavailable]
-    
-    %% Error Consensus Handling
-    CountByHash --> CheckErrorConsensus{Agreed-upon errors<br/>reach consensus?}
-    CheckErrorConsensus -->|Yes| ReturnErrorConsensus[Return consensus error]
-    CheckErrorConsensus -->|No| ContinueNormalFlow[Continue normal flow]
-    
-    %% Final Results
-    ShortCircuit --> End([Return Result])
-    ConsensusReached --> End
-    ReturnNonEmpty --> End
-    ReturnEmpty --> End
-    ReturnFirstNonEmpty --> End
-    UseLeader --> End
-    ReturnErrorConsensus --> End
-    ReturnConsensusError --> End
-    
-    %% Error Endings
-    LowParticipantsError --> ErrorEnd([Return Error])
-    DisputeError --> ErrorEnd
-    MostCommonError --> ErrorEnd
-    AcceptAnyError --> ErrorEnd
-    LeaderError --> ErrorEnd
-    
-    %% Styling
-    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef decision fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
-    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
-    
-    class Start,End startEnd
-    class ErrorEnd error
-    class CheckShortCircuit,CheckMinParticipants,NonEmptyPreference,CheckConsensus,LowParticipantsBehavior,DisputeBehavior,MostCommonLogic,AnyLogic,FindLeader,CheckErrorConsensus decision
-    class Launch,Collect,WaitAll,CountParticipants,CountByHash,UseNonEmpty,UseEmpty,HandleDispute,LowParticipants process
-    class ConsensusReached,ReturnNonEmpty,ReturnEmpty,ReturnFirstNonEmpty,UseLeader,ReturnErrorConsensus,ReturnConsensusError,ShortCircuit success
-    class LowParticipantsError,DisputeError,MostCommonError,AcceptAnyError,LeaderError error
-```
-
 ## Configuration
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
@@ -136,13 +26,13 @@ projects:
         failsafe:
           - matchMethod: "*" # Define different consensus thresholds for different methods
             matchFinality: ["finalized", "unknown"] # Read more in Failsafe docs -> Finality states
-            consensus:
-              maxParticipants: 4
-              agreementThreshold: 2
-              disputeBehavior: returnError
-              lowParticipantsBehavior: acceptAnyValidResult
-              preferNonEmpty: true
-              preferLargerResponses: true
+                          consensus:
+                maxParticipants: 4
+                agreementThreshold: 2
+                disputeBehavior: returnError
+                lowParticipantsBehavior: acceptBestValidResult
+                preferNonEmpty: true
+                preferLargerResponses: true
               punishMisbehavior:
                 disputeThreshold: 10
                 disputeWindow: 10m
@@ -166,7 +56,7 @@ export default createConfig({
             consensus: {
               maxParticipants: 3,
               agreementThreshold: 2,
-              disputeBehavior: "acceptAnyValidResult",
+              disputeBehavior: "acceptBestValidResult",
               lowParticipantsBehavior: "acceptMostCommonValidResult",
               preferNonEmpty: true,
               preferLargerResponses: true,
@@ -195,38 +85,75 @@ Number of upstreams to query in each consensus round. The policy selects the fir
 Minimum number of identical responses needed to reach consensus. For example, with `maxParticipants: 3` and `agreementThreshold: 2`, at least 2 upstreams must return the same result.
 
 <Callout type="info">
-  Response comparison uses canonical JSON-RPC hashing. When `preferNonEmpty` is enabled (default), **non-empty responses are preferred over empty ones**, regardless of count (e.g., 1 non-empty beats 3 empty responses).
+  **Priority Ordering**: Responses follow a strict priority hierarchy:
+  1. **Largest non-empty** (when `preferLargerResponses: true`)
+  2. **Non-empty** results
+  3. **Empty** results
+  4. **Consensus-valid errors** (execution exceptions)
+  5. **Generic errors** (network failures, lowest priority)
+  
+  The behavior (`acceptBestValidResult` vs `acceptMostCommonValidResult`) determines whether the threshold is enforced.
 </Callout>
 
 ## Behavior options
 
 ### `preferNonEmpty`
-When enabled (default: `true`), non-empty responses are preferred over empty ones, regardless of count. For example, 1 non-empty response beats 3 empty responses. When disabled, all response types are treated equally and only count/size matter.
+When enabled (default: `true`), activates the priority ordering system where non-empty responses are prioritized over empty ones, and empty over errors. When disabled, all response types are treated equally based only on count.
 
 ### `preferLargerResponses` 
-When enabled (default: `true`), larger responses (more data) are preferred among those meeting the `agreementThreshold`. If multiple responses meet the threshold, the one with more content wins. This helps ensure you get the most complete data available.
+When enabled (default: `true`), among non-empty responses at the same priority level, larger responses (more data) are preferred. This helps ensure you get the most complete data available.
 
 ### `disputeBehavior`
 When upstreams disagree (no consensus reached), sorted from most loose to strictest:
 
-- **`acceptAnyValidResult`**: Returns any valid response. Respects `preferNonEmpty` setting.
-- **`acceptMostCommonValidResult`**: Returns most common response if it meets `agreementThreshold`. Respects preference settings. Errors if no clear winner.
-- **`preferBlockHeadLeader`**: Uses highest block number upstream, falls back to most common.
-- **`onlyBlockHeadLeader`**: Only uses highest block upstream, errors otherwise.
+- **`acceptBestValidResult`**: Returns the best response following priority ordering. **Ignores threshold completely**. Always returns a result if any response is available.
+- **`acceptMostCommonValidResult`**: **MUST meet threshold**. Only returns responses that have count ≥ `agreementThreshold`. Follows priority ordering among qualifying results. Returns error if nothing meets threshold.
+- **`preferBlockHeadLeader`**: Uses highest block number upstream if available, falls back to `acceptMostCommonValidResult` logic (with threshold).
+- **`onlyBlockHeadLeader`**: Only uses highest block upstream, errors if unavailable.
 - **`returnError`**: Returns dispute error. Strict agreement required among upstreams.
 
 ### `lowParticipantsBehavior`
-When fewer than `agreementThreshold` responses are available, sorted from most loose to strictest:
+When fewer than `maxParticipants` respond, sorted from most loose to strictest:
 
-- **`acceptAnyValidResult`**: Uses any available upstream. Respects preference settings. Maximum availability.
-- **`acceptMostCommonValidResult`**: Uses available upstreams, returns most common if meets threshold. Respects preference settings and clear winner rules.
-- **`preferBlockHeadLeader`**: Uses response from block head leader if available, otherwise use most common response.
-- **`onlyBlockHeadLeader`**: Only proceeds if block head leader is agrees with the response.
+- **`acceptBestValidResult`**: Returns the best available response following priority ordering. **Ignores threshold**. Maximum availability.
+- **`acceptMostCommonValidResult`**: **MUST meet threshold**. Only returns responses with count ≥ `agreementThreshold`. Returns error if nothing qualifies.
+- **`preferBlockHeadLeader`**: Uses response from block head leader if available, otherwise falls back to `acceptMostCommonValidResult` (with threshold).
+- **`onlyBlockHeadLeader`**: Only proceeds if block head leader participated. Errors if leader unavailable.
 - **`returnError`**: Fails request. Strict participation requirement.
 
 <Callout type="info">
   **Block Head Leader**: The upstream reporting the highest block number. This is determined by each upstream's state poller and ensures you're getting data from the most synchronized node.
 </Callout>
+
+## Priority Ordering System
+
+When `preferNonEmpty` is enabled, responses are evaluated using a strict priority hierarchy:
+
+1. **Largest Non-Empty** (highest priority)
+   - When `preferLargerResponses: true`, the non-empty response with the most data wins
+   - Example: A response with 100 logs beats one with 10 logs
+
+2. **Non-Empty Results**
+   - Any non-empty successful response
+   - Selected by count when multiple exist
+
+3. **Empty Results**
+   - Valid but empty responses (e.g., `[]` for getLogs)
+   - Often indicates no matching data exists
+
+4. **Consensus-Valid Errors**
+   - Execution errors that represent valid blockchain state
+   - Example: Smart contract reverts, insufficient funds
+   - All nodes agree this transaction would fail
+
+5. **Generic/Network Errors** (lowest priority)
+   - Transport failures, timeouts, connection errors
+   - Only selected if nothing else is available
+
+### How Behaviors Use Priority
+
+- **`acceptBestValidResult`**: Follows priority strictly, ignores threshold. Will return 1 non-empty over 10 errors.
+- **`acceptMostCommonValidResult`**: Follows priority but **only among results meeting threshold**. With threshold=3, prefers 3 empty responses over 2 non-empty ones.
 
 ## Misbehavior tracking
 
@@ -242,3 +169,118 @@ During reorgs, nodes may temporarily disagree on recent blocks. Using `preferBlo
 
 ## Performance
 Consensus increases costs and latency since it waits for multiple responses. Use it selectively for critical workloads and specific methods rather than all requests.
+
+
+## Full Flow Diagram
+
+```mermaid
+flowchart TD
+    Start([Request Starts]) --> Launch[Launch Consensus Participants]
+    Launch --> Collect[Collect Responses from Upstreams]
+    
+    Collect --> CheckShortCircuit{Short Circuit Check<br/>Non-empty consensus reached?}
+    CheckShortCircuit -->|Yes, Non-empty consensus| ShortCircuit[Cancel remaining requests<br/>Return consensus result]
+    CheckShortCircuit -->|No, or Empty consensus| WaitAll[Wait for all responses]
+    
+    WaitAll --> CountParticipants[Count All Participants<br/>Including errors]
+    CountParticipants --> CheckMinParticipants{Participants >= MaxParticipants?}
+    
+    CheckMinParticipants -->|No| LowParticipants[Handle Low Participants]
+    CheckMinParticipants -->|Yes| ApplyPriority[Apply Priority Ordering<br/>1. Largest non-empty<br/>2. Non-empty<br/>3. Empty<br/>4. Consensus errors<br/>5. Generic errors]
+    
+    ApplyPriority --> CheckBehavior{Which Behavior?}
+    
+    CheckBehavior -->|acceptBestValidResult| SelectBest[Select Best by Priority<br/>Ignore threshold]
+    CheckBehavior -->|acceptMostCommonValidResult| CheckThreshold{Result meets<br/>AgreementThreshold?}
+    
+    CheckThreshold -->|Yes| ConsensusReached[Consensus Reached<br/>Return result]
+    CheckThreshold -->|No| TryNextPriority[Try Next Priority Level]
+    
+    TryNextPriority --> CheckThreshold
+    SelectBest --> ConsensusReached
+    
+    CheckBehavior -->|No consensus| HandleDispute[Handle Dispute]
+    
+    %% Low Participants Handling
+    LowParticipants --> LowParticipantsBehavior{LowParticipantsBehavior}
+    LowParticipantsBehavior -->|returnError| LowParticipantsError[Return Low Participants Error]
+    LowParticipantsBehavior -->|acceptMostCommonValidResult| LowAcceptMostCommon[Accept Most Common<br/>MUST meet threshold]
+    LowParticipantsBehavior -->|acceptBestValidResult| LowAcceptBest[Accept Best Valid<br/>Ignore threshold]
+    LowParticipantsBehavior -->|preferBlockHeadLeader| LowPreferLeader[Use Block Head Leader<br/>Fallback to most common]
+    LowParticipantsBehavior -->|onlyBlockHeadLeader| LowOnlyLeader[Only Block Head Leader<br/>Error if unavailable]
+    
+    %% Dispute Handling
+    HandleDispute --> DisputeBehavior{DisputeBehavior}
+    DisputeBehavior -->|returnError| DisputeError[Return Dispute Error]
+    DisputeBehavior -->|acceptMostCommonValidResult| AcceptMostCommon[Accept Most Common Valid<br/>MUST meet threshold<br/>Error if none qualify]
+    DisputeBehavior -->|acceptBestValidResult| AcceptBest[Accept Best Valid<br/>By priority ordering<br/>Ignore threshold]
+    DisputeBehavior -->|preferBlockHeadLeader| PreferLeader[Use Block Head Leader<br/>Fallback to most common]
+    DisputeBehavior -->|onlyBlockHeadLeader| OnlyLeader[Only Block Head Leader<br/>Error if unavailable]
+    
+    %% Detailed AcceptMostCommon Logic (Priority with Threshold)
+    AcceptMostCommon --> PriorityCheck1{Non-empty meets<br/>threshold?}
+    PriorityCheck1 -->|Yes| ReturnNonEmpty[Return non-empty]
+    PriorityCheck1 -->|No| PriorityCheck2{Empty meets<br/>threshold?}
+    
+    PriorityCheck2 -->|Yes| ReturnEmpty[Return empty]
+    PriorityCheck2 -->|No| PriorityCheck3{Error meets<br/>threshold?}
+    
+    PriorityCheck3 -->|Yes| ReturnConsensusError[Return error]
+    PriorityCheck3 -->|No| MostCommonError[Return Error<br/>Nothing meets threshold]
+    
+    %% Detailed AcceptBest Logic (Priority without Threshold)
+    AcceptBest --> BestLogic{Apply priority ordering}
+    BestLogic --> CheckNonEmpty{Non-empty exists?}
+    CheckNonEmpty -->|Yes, preferLarger| ReturnLargestNonEmpty[Return largest non-empty]
+    CheckNonEmpty -->|Yes, byCount| ReturnMostCommonNonEmpty[Return most common non-empty]
+    CheckNonEmpty -->|No| CheckEmpty{Empty exists?}
+    
+    CheckEmpty -->|Yes| ReturnMostCommonEmpty[Return most common empty]
+    CheckEmpty -->|No| CheckErrors{Errors exist?}
+    
+    CheckErrors -->|Yes| ReturnMostCommonError[Return most common error]
+    CheckErrors -->|No| AcceptBestError[Return Error<br/>No results]
+    
+    %% Block Head Leader Logic
+    PreferLeader --> FindLeader{Block Head Leader available?}
+    OnlyLeader --> FindLeader
+    LowPreferLeader --> FindLeader
+    LowOnlyLeader --> FindLeader
+    
+    FindLeader -->|Yes| UseLeader[Use Block Head Leader result]
+    FindLeader -->|No, prefer*| FallbackMostCommon[Fallback to most common]
+    FindLeader -->|No, only*| LeaderError[Return Error<br/>Leader unavailable]
+    
+    %% Final Results
+    ShortCircuit --> End([Return Result])
+    ConsensusReached --> End
+    ReturnNonEmpty --> End
+    ReturnEmpty --> End
+    ReturnLargestNonEmpty --> End
+    ReturnMostCommonNonEmpty --> End
+    ReturnMostCommonEmpty --> End
+    ReturnMostCommonError --> End
+    UseLeader --> End
+    ReturnConsensusError --> End
+    
+    %% Error Endings
+    LowParticipantsError --> ErrorEnd([Return Error])
+    DisputeError --> ErrorEnd
+    MostCommonError --> ErrorEnd
+    AcceptBestError --> ErrorEnd
+    LeaderError --> ErrorEnd
+    
+    %% Styling
+    classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef decision fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    
+    class Start,End startEnd
+    class ErrorEnd error
+    class CheckShortCircuit,CheckMinParticipants,CheckBehavior,CheckThreshold,LowParticipantsBehavior,DisputeBehavior,PriorityCheck1,PriorityCheck2,PriorityCheck3,BestLogic,CheckNonEmpty,CheckEmpty,CheckErrors,FindLeader decision
+    class Launch,Collect,WaitAll,CountParticipants,ApplyPriority,TryNextPriority,HandleDispute,LowParticipants,SelectBest process
+    class ConsensusReached,ReturnNonEmpty,ReturnEmpty,ReturnLargestNonEmpty,ReturnMostCommonNonEmpty,ReturnMostCommonEmpty,ReturnMostCommonError,UseLeader,ReturnConsensusError,ShortCircuit success
+    class LowParticipantsError,DisputeError,MostCommonError,AcceptBestError,LeaderError error
+```
