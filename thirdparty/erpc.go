@@ -194,7 +194,8 @@ func (v *ErpcVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logg
 		return client.(clients.HttpJsonRpcClient), nil
 	}
 
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", nil, parsedURL, nil, nil)
+	u := &phonyUpstream{id: fmt.Sprintf("temp-erpc-%d", chainId)}
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", u, parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}

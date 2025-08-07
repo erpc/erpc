@@ -212,6 +212,18 @@ func (e *executor) executeParticipant(
 	if resp, ok := any(result.Result).(*common.NormalizedResponse); ok {
 		upstream = resp.Upstream()
 	}
+	if upstream == nil && result.Error != nil {
+		var uae interface{ Upstream() common.Upstream }
+		if errors.As(result.Error, &uae) {
+			upstream = uae.Upstream()
+		}
+		var uxe *common.ErrUpstreamsExhausted
+		if errors.As(result.Error, &uxe) {
+			if ups := uxe.Upstreams(); len(ups) > 0 {
+				upstream = ups[0]
+			}
+		}
+	}
 
 	responseChan <- &execResult{
 		Result:   any(result.Result).(*common.NormalizedResponse),

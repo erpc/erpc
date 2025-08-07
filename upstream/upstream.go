@@ -304,7 +304,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			cfg.Id,
+			u,
 			u.networkId,
 			method,
 			time.Since(startTime),
@@ -440,7 +440,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						cfg.Id,
+						u,
 						u.networkId,
 						method,
 						time.Since(startTime),
@@ -451,7 +451,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				} else {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						cfg.Id,
+						u,
 						u.networkId,
 						method,
 						time.Since(startTime),
@@ -550,7 +550,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	default:
 		err := common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type during forward: %s", clientType),
-			cfg.Id,
+			u,
 		)
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -930,7 +930,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 						Code:  "ErrUpstreamChainIdDetectionFailed",
 						Cause: err,
 					},
-					cfg.Id,
+					u,
 				)
 			}
 			cfg.Evm.ChainId, err = strconv.ParseInt(nid, 10, 64)
@@ -940,7 +940,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 						Code:  "ErrUpstreamChainIdDetectionFailed",
 						Cause: err,
 					},
-					cfg.Id,
+					u,
 				)
 			}
 		}

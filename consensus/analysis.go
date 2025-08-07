@@ -27,11 +27,15 @@ type responseGroup struct {
 	HasResult   bool
 }
 
-func (g *responseGroup) Participants() []common.ParticipantInfo {
+func (g *responseGroup) participants() []common.ParticipantInfo {
 	participants := make([]common.ParticipantInfo, 0, len(g.Results))
 	for _, r := range g.Results {
+		upsId := "n/a"
+		if r.Upstream != nil {
+			upsId = r.Upstream.Id()
+		}
 		participants = append(participants, common.ParticipantInfo{
-			Upstream:   r.Upstream.Id(),
+			Upstream:   upsId,
 			ResultHash: r.CachedHash,
 			ErrSummary: common.ErrorSummary(r.Err),
 		})
@@ -52,6 +56,7 @@ type consensusAnalysis struct {
 	cachedBestError    *responseGroup
 	cachedBestByCount  *responseGroup
 	cachedBestBySize   *responseGroup
+	cachedValidGroups  []*responseGroup
 }
 
 func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.NormalizedResponse], config *config, responses []*execResult) *consensusAnalysis {
@@ -67,10 +72,6 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 
 		if r.CachedResponseType != ResponseTypeInfrastructureError {
 			analysis.validParticipants++
-		}
-
-		if r.CachedHash == "" {
-			continue // Skip unhashable infrastructure errors
 		}
 
 		group, exists := analysis.groups[r.CachedHash]
@@ -104,9 +105,22 @@ func (a *consensusAnalysis) hasRemaining() bool {
 func (a *consensusAnalysis) participants() []common.ParticipantInfo {
 	participants := make([]common.ParticipantInfo, 0, len(a.groups))
 	for _, group := range a.groups {
-		participants = append(participants, group.Participants()...)
+		participants = append(participants, group.participants()...)
 	}
 	return participants
+}
+
+// getValidGroups returns all groups of non-empty, empty, or valid consensus errors, skipping infrastructure errors
+func (a *consensusAnalysis) getValidGroups() []*responseGroup {
+	if a.cachedValidGroups == nil {
+		a.cachedValidGroups = make([]*responseGroup, 0, len(a.groups))
+		for _, group := range a.groups {
+			if group.ResponseType != ResponseTypeInfrastructureError {
+				a.cachedValidGroups = append(a.cachedValidGroups, group)
+			}
+		}
+	}
+	return a.cachedValidGroups
 }
 
 // getBestNonEmpty returns the best non-empty group (cached)
@@ -114,11 +128,10 @@ func (a *consensusAnalysis) getBestNonEmpty() *responseGroup {
 	if a.cachedBestNonEmpty == nil {
 		var best *responseGroup
 		for _, group := range a.groups {
-			if group.ResponseType == ResponseTypeNonEmpty {
-				best = group
-				break
+			if group.ResponseType != ResponseTypeNonEmpty {
+				continue
 			}
-			if best == nil || group.Count > best.Count {
+			if best == nil || group.Count > best.Count || (group.Count == best.Count && group.ResponseSize > best.ResponseSize) {
 				best = group
 			}
 		}
@@ -142,6 +155,7 @@ func (a *consensusAnalysis) getBestEmpty() *responseGroup {
 				}
 			}
 		}
+		a.cachedBestEmpty = best
 	}
 	return a.cachedBestEmpty
 }
@@ -250,7 +264,10 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 			r.CachedResponseType = ResponseTypeInfrastructureError
 		}
 		r.CachedHash, _ = resultOrErrorToHash(r, exec, config)
-		r.CachedResponseSize = len(r.Err.Error())
+		if r.CachedHash == "" {
+			r.CachedHash = "error:generic"
+		}
+		r.CachedResponseSize = 0
 		return
 	}
 
@@ -258,7 +275,7 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 	jr := resultToJsonRpcResponse(r.Result, exec)
 	if jr == nil {
 		r.CachedResponseType = ResponseTypeInfrastructureError
-		r.CachedHash = "error:no-jsonrpc-response"
+		r.CachedHash = "error:generic"
 		return
 	}
 
@@ -273,6 +290,10 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 	}
 
 	r.CachedHash, _ = resultOrErrorToHash(r, exec, config)
+	if r.CachedHash == "" {
+		r.CachedResponseType = ResponseTypeInfrastructureError
+		r.CachedHash = "error:generic"
+	}
 }
 
 // resultOrErrorToHash computes a hash for a result, considering both success and error cases.
