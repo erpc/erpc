@@ -49,6 +49,8 @@ type consensusAnalysis struct {
 	groups            map[string]*responseGroup
 	totalParticipants int
 	validParticipants int
+	originalRequest   *common.NormalizedRequest
+	leaderUpstream    common.Upstream
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -64,6 +66,15 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 		config:            config,
 		groups:            make(map[string]*responseGroup),
 		totalParticipants: len(responses),
+	}
+
+	// Try to extract original request and compute leader upstream once
+	if req, ok := exec.Context().Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req != nil {
+		analysis.originalRequest = req
+		if net := req.Network(); net != nil && net.Architecture() == common.ArchitectureEvm {
+			// Use the executor context; leader selection is read-only and fast
+			analysis.leaderUpstream = net.EvmLeaderUpstream(exec.Context())
+		}
 	}
 
 	// Classify, hash, and group all responses
@@ -213,6 +224,42 @@ func (a *consensusAnalysis) isLowParticipants(threshold int) bool {
 	return a.validParticipants < threshold
 }
 
+// getLeaderGroupNonError returns the response group that contains the leader upstream with a non-error response (non-empty or empty).
+func (a *consensusAnalysis) getLeaderGroupNonError() *responseGroup {
+	if a.leaderUpstream == nil {
+		return nil
+	}
+	for _, group := range a.groups {
+		if group.ResponseType == ResponseTypeConsensusError || group.ResponseType == ResponseTypeInfrastructureError {
+			continue
+		}
+		for _, r := range group.Results {
+			if r != nil && r.Upstream != nil && r.Upstream == a.leaderUpstream && r.Err == nil {
+				return group
+			}
+		}
+	}
+	return nil
+}
+
+// getLeaderGroupAny returns the response group that contains the leader upstream for any valid response
+// (non-empty, empty, or consensus-valid error). Infrastructure errors are ignored since they are not
+// meaningful consensus responses.
+func (a *consensusAnalysis) getLeaderGroupAny() *responseGroup {
+	if a.leaderUpstream == nil {
+		return nil
+	}
+	// search valid groups only (exclude infrastructure errors)
+	for _, group := range a.getValidGroups() {
+		for _, r := range group.Results {
+			if r != nil && r.Upstream != nil && r.Upstream == a.leaderUpstream {
+				return group
+			}
+		}
+	}
+	return nil
+}
+
 // --- Helper and Utility Functions ---
 
 // isConsensusValidError checks if an error can be part of consensus (e.g., EVM revert).
@@ -258,7 +305,9 @@ func resultToJsonRpcResponse(result *common.NormalizedResponse, exec failsafe.Ex
 // classifyAndHashResponse computes and caches the response type, hash, and size for a result.
 func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.NormalizedResponse], config *config) {
 	if r.Err != nil {
-		if isConsensusValidError(r.Err) {
+		// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
+		// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
+		if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {
 			r.CachedResponseType = ResponseTypeConsensusError
 		} else {
 			r.CachedResponseType = ResponseTypeInfrastructureError
@@ -279,8 +328,8 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 		return
 	}
 
-    // Use NormalizedResponse-aware emptyish check to capture method-specific semantics (e.g., EVM logs)
-    if r.Result != nil && r.Result.IsResultEmptyish(exec.Context()) {
+	// Use NormalizedResponse-aware emptyish check to capture method-specific semantics (e.g., EVM logs)
+	if r.Result != nil && r.Result.IsResultEmptyish(exec.Context()) {
 		r.CachedResponseType = ResponseTypeEmpty
 	} else {
 		r.CachedResponseType = ResponseTypeNonEmpty
