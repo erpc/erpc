@@ -37,6 +37,7 @@ type consensusTestCase struct {
 	expectedPendingMocks int
 	setupFn              func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry)
 	requestMethod        string
+    requestParams        []interface{}
 }
 
 type mockResponse struct {
@@ -62,6 +63,50 @@ func init() {
 
 func TestConsensusPolicy(t *testing.T) {
 	tests := []consensusTestCase{
+			{
+				name:        "ignore_fields_enable_consensus_on_block_timestamp",
+				description: "Ignore block timestamp differences to achieve consensus",
+				upstreams:   createTestUpstreams(3),
+				consensusConfig: &common.ConsensusPolicyConfig{
+					MaxParticipants:    3,
+					AgreementThreshold: 2,
+					DisputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+					IgnoreFields: map[string][]string{
+						"eth_getBlockByNumber": {"timestamp"},
+					},
+				},
+				requestMethod: "eth_getBlockByNumber",
+				requestParams: []interface{}{"0x1", false},
+				mockResponses: []mockResponse{
+					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x1", "hash": "0xabc123", "timestamp": "0xaaa", "gasLimit": "0x1", "gasUsed": "0x1"})},
+					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x1", "hash": "0xabc123", "timestamp": "0xbbb", "gasLimit": "0x1", "gasUsed": "0x1"})},
+					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x1", "hash": "0xdef456", "timestamp": "0xccc", "gasLimit": "0x1", "gasUsed": "0x1"})},
+				},
+				expectedCalls:  []int{1, 1, 1},
+				expectedResult: &expectedResult{contains: "\"hash\":\"0xabc123\""},
+			},
+			{
+				name:        "ignore_fields_dispute_when_core_fields_differ",
+				description: "Even with timestamp ignored, different core fields should cause dispute",
+				upstreams:   createTestUpstreams(3),
+				consensusConfig: &common.ConsensusPolicyConfig{
+					MaxParticipants:    3,
+					AgreementThreshold: 2,
+					DisputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+					IgnoreFields: map[string][]string{
+						"eth_getBlockByNumber": {"timestamp"},
+					},
+				},
+				requestMethod: "eth_getBlockByNumber",
+				requestParams: []interface{}{"0x1", false},
+				mockResponses: []mockResponse{
+					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x1", "hash": "0xaaa111", "timestamp": "0x1", "gasLimit": "0x1", "gasUsed": "0x1"})},
+					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x2", "hash": "0xbbb222", "timestamp": "0x2", "gasLimit": "0x1", "gasUsed": "0x1"})},
+					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x3", "hash": "0xccc333", "timestamp": "0x3", "gasLimit": "0x1", "gasUsed": "0x1"})},
+				},
+				expectedCalls: []int{1, 1, 1},
+				expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "not enough agreement"},
+			},
         {
             name:        "accept_most_common_below_threshold_tie_no_clear_winner_dispute",
             description: "Below threshold with AcceptMostCommon and tie between different non-empty results -> dispute",
@@ -1313,7 +1358,11 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 	if method == "" {
 		method = "eth_randomMethod"
 	}
-	reqBytes, err := json.Marshal(map[string]interface{}{"method": method, "params": []interface{}{}})
+    params := tc.requestParams
+    if params == nil {
+        params = []interface{}{}
+    }
+    reqBytes, err := json.Marshal(map[string]interface{}{"method": method, "params": params})
 	require.NoError(t, err)
 	fakeReq := common.NewNormalizedRequest(reqBytes)
 	fakeReq.SetNetwork(ntw)
