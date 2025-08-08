@@ -143,17 +143,22 @@ var consensusRules = []consensusRule{
 			if !(isDisputeAcceptMost || isLowParticipantsAcceptMost) {
 				return false
 			}
-			// Apply only when below threshold and there exists at least one non-empty group
+			// Apply only when below threshold, the leading group is empty, and there exists at least one non-empty group
 			best := a.getBestByCount()
 			if best == nil || best.Count >= a.config.agreementThreshold {
 				return false
 			}
+			if best.ResponseType != ResponseTypeEmpty {
+				return false
+			}
+			// Do not apply if there are multiple distinct non-empty groups (tie among non-empty)
+			nonEmptyGroups := 0
 			for _, g := range a.groups {
 				if g.ResponseType == ResponseTypeNonEmpty {
-					return true
+					nonEmptyGroups++
 				}
 			}
-			return false
+			return nonEmptyGroups == 1
 		},
 		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			var bestNonEmpty *responseGroup

@@ -62,6 +62,111 @@ func init() {
 
 func TestConsensusPolicy(t *testing.T) {
 	tests := []consensusTestCase{
+        {
+            name:        "accept_most_common_below_threshold_tie_no_clear_winner_dispute",
+            description: "Below threshold with AcceptMostCommon and tie between different non-empty results -> dispute",
+            upstreams:   createTestUpstreams(3),
+            consensusConfig: &common.ConsensusPolicyConfig{
+                MaxParticipants:         3,
+                AgreementThreshold:      2,
+                DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+                LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+                PreferNonEmpty:          &common.TRUE,
+                PreferLargerResponses:   &common.FALSE,
+            },
+            mockResponses: []mockResponse{
+                {status: 200, body: jsonRpcSuccess(nil)},
+                {status: 200, body: jsonRpcSuccess("0x1")},
+                {status: 200, body: jsonRpcSuccess("0x2")},
+            },
+            expectedCalls: []int{1, 1, 1},
+            expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "not enough agreement"},
+        },
+        {
+            name:        "low_participants_accept_most_common_empty_only",
+            description: "Low participants with AcceptMostCommon and only empty valid responses present -> return best empty",
+            upstreams:   createTestUpstreams(5),
+            consensusConfig: &common.ConsensusPolicyConfig{
+                MaxParticipants:         5,
+                AgreementThreshold:      3,
+                DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+                LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+                PreferNonEmpty:          &common.TRUE,
+                PreferLargerResponses:   &common.FALSE,
+            },
+            mockResponses: []mockResponse{
+                {status: 200, body: jsonRpcSuccess([]interface{}{})},
+                {status: 200, body: jsonRpcSuccess([]interface{}{})},
+                {status: 200, body: jsonRpcError(-32603, "server error")},
+                {status: 200, body: jsonRpcError(-32603, "server error")},
+                {status: 200, body: jsonRpcError(-32603, "server error")},
+            },
+            expectedCalls:  []int{1, 1, 1, 1, 1},
+            expectedResult: &expectedResult{contains: "[]"},
+        },
+		{
+			name:        "prefer_transaction_receipt_with_logs_over_empty_logs",
+			description: "Prefer receipt with non-empty logs over receipts with empty logs under AcceptMostCommon",
+			upstreams:   createTestUpstreams(4),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         4,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				PreferNonEmpty:          &common.TRUE,
+				PreferLargerResponses:   &common.FALSE,
+			},
+			requestMethod: "eth_getTransactionReceipt",
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{}})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{}})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{}})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{map[string]interface{}{"address": "0x1"}}})},
+			},
+			expectedCalls:  []int{1, 1, 1, 1},
+			expectedResult: &expectedResult{contains: "\"address\""},
+		},
+		{
+			name:        "dispute_with_empty_preference_return_error",
+			description: "Mixed empty and two different non-empty below threshold with ReturnError should dispute",
+			upstreams:   createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+				PreferNonEmpty:          &common.TRUE,
+				PreferLargerResponses:   &common.FALSE,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(nil)},
+				{status: 200, body: jsonRpcSuccess("0x123")},
+				{status: 200, body: jsonRpcSuccess("0x456")},
+			},
+			expectedCalls: []int{1, 1, 1},
+			expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "not enough agreement"},
+		},
+		{
+			name:        "prefer_non_empty_3v1_with_accept_behavior",
+			description: "3 empty vs 1 non-empty; with AcceptMostCommon + preferNonEmpty, choose the non-empty",
+			upstreams:   createTestUpstreams(4),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         4,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				PreferNonEmpty:          &common.TRUE,
+				PreferLargerResponses:   &common.FALSE,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(nil)},
+				{status: 200, body: jsonRpcSuccess(nil)},
+				{status: 200, body: jsonRpcSuccess(nil)},
+				{status: 200, body: jsonRpcSuccess("0x789")},
+			},
+			expectedCalls:  []int{1, 1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: "\"0x789\""},
+		},
 		{
 			name:        "emptyish_consensus_overridden_by_meaningful_data",
 			description: "Two emptyish (null) vs one non-empty; AcceptMostCommon + preferNonEmpty should pick the non-empty",
@@ -73,69 +178,6 @@ func TestConsensusPolicy(t *testing.T) {
 				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 				PreferNonEmpty:          &common.TRUE,
 				PreferLargerResponses:   &common.FALSE,
-			},
-			{
-				name:        "prefer_transaction_receipt_with_logs_over_empty_logs",
-				description: "Prefer receipt with non-empty logs over receipts with empty logs under AcceptMostCommon",
-				upstreams:   createTestUpstreams(4),
-				consensusConfig: &common.ConsensusPolicyConfig{
-					MaxParticipants:         4,
-					AgreementThreshold:      2,
-					DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-					LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
-					PreferNonEmpty:          &common.TRUE,
-					PreferLargerResponses:   &common.FALSE,
-				},
-				requestMethod: "eth_getTransactionReceipt",
-				mockResponses: []mockResponse{
-					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{}})},
-					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{}})},
-					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{}})},
-					{status: 200, body: jsonRpcSuccess(map[string]interface{}{"logs": []interface{}{map[string]interface{}{"address": "0x1"}}})},
-				},
-				expectedCalls:  []int{1, 1, 1, 1},
-				expectedResult: &expectedResult{contains: "\"address\""},
-			},
-			{
-				name:        "dispute_with_empty_preference_return_error",
-				description: "Mixed empty and two different non-empty below threshold with ReturnError should dispute",
-				upstreams:   createTestUpstreams(3),
-				consensusConfig: &common.ConsensusPolicyConfig{
-					MaxParticipants:         3,
-					AgreementThreshold:      2,
-					DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-					LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
-					PreferNonEmpty:          &common.TRUE,
-					PreferLargerResponses:   &common.FALSE,
-				},
-				mockResponses: []mockResponse{
-					{status: 200, body: jsonRpcSuccess(nil)},
-					{status: 200, body: jsonRpcSuccess("0x123")},
-					{status: 200, body: jsonRpcSuccess("0x456")},
-				},
-				expectedCalls: []int{1, 1, 1},
-				expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "not enough agreement"},
-			},
-			{
-				name:        "prefer_non_empty_3v1_with_accept_behavior",
-				description: "3 empty vs 1 non-empty; with AcceptMostCommon + preferNonEmpty, choose the non-empty",
-				upstreams:   createTestUpstreams(4),
-				consensusConfig: &common.ConsensusPolicyConfig{
-					MaxParticipants:         4,
-					AgreementThreshold:      2,
-					DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
-					LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
-					PreferNonEmpty:          &common.TRUE,
-					PreferLargerResponses:   &common.FALSE,
-				},
-				mockResponses: []mockResponse{
-					{status: 200, body: jsonRpcSuccess(nil)},
-					{status: 200, body: jsonRpcSuccess(nil)},
-					{status: 200, body: jsonRpcSuccess(nil)},
-					{status: 200, body: jsonRpcSuccess("0x789")},
-				},
-				expectedCalls:  []int{1, 1, 1, 1},
-				expectedResult: &expectedResult{jsonRpcResult: "\"0x789\""},
 			},
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcSuccess(nil)},
@@ -1020,11 +1062,11 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			retryPolicy: &common.RetryPolicyConfig{MaxAttempts: 1},
 			mockResponses: []mockResponse{
-				{status: 200, body: jsonRpcSuccess("0xaaa")},                           // up1
-				{status: 200, body: jsonRpcSuccess("0xaaa")},                           // up2 -> best group size 2
-				{status: 200, body: jsonRpcSuccess("0xbbb")},                           // up3
+				{status: 200, body: jsonRpcSuccess("0xaaa")},                          // up1
+				{status: 200, body: jsonRpcSuccess("0xaaa")},                          // up2 -> best group size 2
+				{status: 200, body: jsonRpcSuccess("0xbbb")},                          // up3
 				{status: 200, body: jsonRpcError(-32000, "cannot query unfinalized")}, // up4
-				{status: 200, body: jsonRpcError(-32003, "tx rejected")},               // up5
+				{status: 200, body: jsonRpcError(-32003, "tx rejected")},              // up5
 			},
 			expectedCalls: []int{1, 1, 1, 1, 1},
 			expectedError: &expectedError{

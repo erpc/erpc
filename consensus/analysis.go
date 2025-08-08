@@ -279,7 +279,8 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 		return
 	}
 
-	if jr.IsResultEmptyish(exec.Context()) {
+    // Use NormalizedResponse-aware emptyish check to capture method-specific semantics (e.g., EVM logs)
+    if r.Result != nil && r.Result.IsResultEmptyish(exec.Context()) {
 		r.CachedResponseType = ResponseTypeEmpty
 	} else {
 		r.CachedResponseType = ResponseTypeNonEmpty
