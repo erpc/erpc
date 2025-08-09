@@ -63,7 +63,8 @@ var consensusRules = []consensusRule{
 			if !a.isLowParticipants(a.config.agreementThreshold) {
 				return false
 			}
-			return a.getLeaderGroupNonError() != nil
+			// Trigger for any low participants case under OnlyBlockHeadLeader; action will decide outcome
+			return true
 		},
 		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			if g := a.getLeaderGroupNonError(); g != nil {
