@@ -295,7 +295,7 @@ func TestIsBytesEmptyishHexLeadingZeros(t *testing.T) {
 		{"quoted hex zeros then 10", "\"0x00000000000000000000000000000010\"", false},
 
 		// Edge case: very long string of zeros
-		{"very long zeros raw", "0x" + string(make([]byte, 1000, 1000)), true}, // This creates 1000 null bytes which will appear as zeros
+		{"very long zeros raw", "0x" + string(make([]byte, 1000)), true}, // This creates 1000 null bytes which will appear as zeros
 
 		// Edge case: zeros with different hex digits
 		{"zeros then abc", "0x000000abc", false},

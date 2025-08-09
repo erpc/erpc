@@ -533,6 +533,65 @@ var consensusRules = []consensusRule{
 		},
 	},
 	{
+		Description: "low participants + accept-most-common: return best valid by priority and consider non-empty ties as dispute",
+		Condition: func(a *consensusAnalysis) bool {
+			if a.config.lowParticipantsBehavior != common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult {
+				return false
+			}
+			return a.validParticipants < a.config.agreementThreshold && len(a.getValidGroups()) > 0
+		},
+		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			if bestNonEmpty := a.getBestNonEmpty(); bestNonEmpty != nil {
+				if bestNonEmpty.IsTie {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
+					}
+				}
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestNonEmpty.FirstResult}
+			}
+			if bestEmpty := a.getBestEmpty(); bestEmpty != nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestEmpty.FirstResult}
+			}
+			if bestError := a.getBestError(); bestError != nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: bestError.FirstError}
+			}
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
+			}
+		},
+	},
+	{
+		Description: "consensus on result or error achieved if there is a valid group that meets the agreement threshold",
+		Condition: func(a *consensusAnalysis) bool {
+			// Consider only valid groups (non-empty, empty, and consensus-valid errors)
+			var bestValid *responseGroup
+			for _, g := range a.getValidGroups() {
+				if bestValid == nil || g.Count > bestValid.Count {
+					bestValid = g
+				}
+			}
+			return bestValid != nil && bestValid.Count >= a.config.agreementThreshold
+		},
+		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			// Pick winner among valid groups only
+			var bestValid *responseGroup
+			for _, g := range a.getValidGroups() {
+				if bestValid == nil || g.Count > bestValid.Count {
+					bestValid = g
+				}
+			}
+			if bestValid == nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
+				}
+			}
+			if bestValid.ResponseType == ResponseTypeConsensusError {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: bestValid.FirstError}
+			}
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestValid.FirstResult}
+		},
+	},
+	{
 		Description: "dispute when multiple valid groups exist and none meet the agreement threshold",
 		Condition: func(a *consensusAnalysis) bool {
 			best := a.getBestByCount()
@@ -587,80 +646,6 @@ var consensusRules = []consensusRule{
 			}
 		},
 	},
-	// Low participants with AcceptMostCommon: choose a valid result by priority
-	{
-		Description: "low participants + accept-most-common: return best valid by priority",
-		Condition: func(a *consensusAnalysis) bool {
-			if a.config.lowParticipantsBehavior != common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult {
-				return false
-			}
-			return a.validParticipants < a.config.agreementThreshold && len(a.getValidGroups()) > 0
-		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			var bestNonEmpty *responseGroup
-			var bestEmpty *responseGroup
-			var bestError *responseGroup
-			for _, g := range a.getValidGroups() {
-				switch g.ResponseType {
-				case ResponseTypeNonEmpty:
-					if bestNonEmpty == nil || g.Count > bestNonEmpty.Count || (g.Count == bestNonEmpty.Count && g.ResponseSize > bestNonEmpty.ResponseSize) {
-						bestNonEmpty = g
-					}
-				case ResponseTypeEmpty:
-					if bestEmpty == nil || g.Count > bestEmpty.Count {
-						bestEmpty = g
-					}
-				case ResponseTypeConsensusError:
-					if bestError == nil || g.Count > bestError.Count {
-						bestError = g
-					}
-				}
-			}
-			if bestNonEmpty != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestNonEmpty.FirstResult}
-			}
-			if bestEmpty != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestEmpty.FirstResult}
-			}
-			if bestError != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: bestError.FirstError}
-			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-				Error: common.NewErrConsensusLowParticipants("not enough participants", a.participants(), nil),
-			}
-		},
-	},
-	{
-		Description: "consensus on result or error achieved if there is a valid group that meets the agreement threshold",
-		Condition: func(a *consensusAnalysis) bool {
-			// Consider only valid groups (non-empty, empty, and consensus-valid errors)
-			var bestValid *responseGroup
-			for _, g := range a.getValidGroups() {
-				if bestValid == nil || g.Count > bestValid.Count {
-					bestValid = g
-				}
-			}
-			return bestValid != nil && bestValid.Count >= a.config.agreementThreshold
-		},
-		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			// Pick winner among valid groups only
-			var bestValid *responseGroup
-			for _, g := range a.getValidGroups() {
-				if bestValid == nil || g.Count > bestValid.Count {
-					bestValid = g
-				}
-			}
-			if bestValid == nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-					Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
-				}
-			}
-			if bestValid.ResponseType == ResponseTypeConsensusError {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: bestValid.FirstError}
-			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: bestValid.FirstResult}
-		},
-	},
 	{
 		Description: "consider low participants when no responses are available",
 		Condition: func(a *consensusAnalysis) bool {
@@ -699,15 +684,14 @@ var shortCircuitRules = []shortCircuitRule{
 			if best.Count < a.config.agreementThreshold {
 				return false
 			}
-			// Don't short-circuit to an error under PreferNonEmpty + AcceptMostCommon.
-			// We intentionally avoid early termination even if no non-empty has arrived yet,
-			// to give a chance for a valid non-empty to participate and be preferred.
-			if a.config.preferNonEmpty {
-				acceptMostCommon := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult ||
-					a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult
-				if acceptMostCommon {
-					return false
-				}
+			// Don't short-circuit to an error under AcceptMostCommon when a preference
+			// could change the winner (PreferNonEmpty or PreferLargerResponses).
+			// We intentionally avoid early termination even if a non-empty/larger has
+			// not yet arrived, to allow preferred valid results to participate.
+			acceptMostCommon := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult ||
+				a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult
+			if acceptMostCommon && (a.config.preferNonEmpty || a.config.preferLargerResponses) {
+				return false
 			}
 			return true
 		},
@@ -719,7 +703,8 @@ var shortCircuitRules = []shortCircuitRule{
 			// or when PreferNonEmpty is enabled and the current leader is empty (preference could change winner).
 			best := a.getBestByCount()
 			if a.hasRemaining() {
-				if a.config.preferLargerResponses {
+				// Only block short-circuiting for PreferLarger when AcceptMostCommon could change the winner
+				if a.config.preferLargerResponses && a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult {
 					return false
 				}
 				if a.config.preferNonEmpty && best != nil && best.ResponseType == ResponseTypeEmpty {
@@ -740,8 +725,9 @@ var shortCircuitRules = []shortCircuitRule{
 				}
 			}
 			remaining := a.config.maxParticipants - a.totalParticipants
-			// Short-circuit only if the lead is strictly greater than what remaining responses could close
-			return (best.Count - secondCount) > remaining
+			// Short-circuit if the lead cannot be overtaken by remaining responses.
+			// Allow potential ties (ties shouldn't block early success once threshold is met).
+			return (best.Count - secondCount) >= remaining
 		},
 	},
 }

@@ -139,7 +139,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", nil, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, &common.JsonRpcUpstreamConfig{
+		ups := common.NewFakeUpstream("rpc1")
+		ups.Config().Type = common.UpstreamTypeEvm
+		ups.Config().Endpoint = "http://rpc1.localhost:8545"
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, &common.JsonRpcUpstreamConfig{
 			SupportsBatch: &[]bool{true}[0],
 			BatchMaxSize:  5,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
@@ -215,7 +218,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", nil, &url.URL{Scheme: "http", Host: "rpc1.localhost"}, &common.JsonRpcUpstreamConfig{
+		ups := common.NewFakeUpstream("rpc1")
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, &common.JsonRpcUpstreamConfig{
 			SupportsBatch: &common.TRUE,
 			BatchMaxSize:  5,
 			BatchMaxWait:  common.Duration(500 * time.Millisecond),

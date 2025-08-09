@@ -11,12 +11,10 @@ import (
 
 // responseGroup holds all responses that share the same hash.
 type responseGroup struct {
-	Hash       string
-	Results    []*execResult
-	Count      int
-	IsTie      bool // Flag to indicate a tie with another group
-	IsWinner   bool // Flag to indicate this is the winning group
-	IsDominant bool // Flag to indicate if this non-empty group is dominant, even if not meeting threshold
+	Hash    string
+	Results []*execResult
+	Count   int
+	IsTie   bool // Flag to indicate a tie with another group
 
 	ResponseType ResponseType
 	ResponseSize int // Cached from the first result in the group
@@ -103,6 +101,27 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 			group.HasResult = true
 		} else if group.FirstError == nil && r.Err != nil {
 			group.FirstError = r.Err
+		}
+	}
+
+	// After grouping, compute tie flags among valid groups by response type (exclude infrastructure errors)
+	if len(analysis.groups) > 1 {
+		countsByType := make(map[ResponseType]map[int]int)
+		for _, g := range analysis.groups {
+			if g.ResponseType == ResponseTypeInfrastructureError {
+				continue
+			}
+			if _, ok := countsByType[g.ResponseType]; !ok {
+				countsByType[g.ResponseType] = make(map[int]int)
+			}
+			countsByType[g.ResponseType][g.Count]++
+		}
+		for _, g := range analysis.groups {
+			if g.ResponseType == ResponseTypeInfrastructureError {
+				g.IsTie = false
+				continue
+			}
+			g.IsTie = countsByType[g.ResponseType][g.Count] > 1
 		}
 	}
 

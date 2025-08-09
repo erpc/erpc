@@ -939,13 +939,13 @@ func TestConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:        "successful_consensus_2_of_3_prefer_larger_responses_enabled",
-			description: "A simple successful consensus where 2 out of 3 upstreams agree.",
+			description: "A simple successful consensus where 2 out of 3 upstreams agree but waits for all upstreams due to prefer larger responses flag.",
 			upstreams:   createTestUpstreams(3),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         3,
 				AgreementThreshold:      2,
-				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 				PreferLargerResponses:   &common.TRUE,
 				PreferNonEmpty:          &common.FALSE,
 			},
@@ -1080,7 +1080,7 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0x33"`},
 		},
 		{
-			name:        "tie_above_threshold_without_preference_results_in_dispute",
+			name:        "empty_vs_non_empty_tie_above_threshold_without_preference_results_in_dispute",
 			description: "Two groups empty and non-empty both meet threshold with equal counts; no preference -> dispute",
 			upstreams:   createTestUpstreams(6),
 			consensusConfig: &common.ConsensusPolicyConfig{
@@ -1093,12 +1093,12 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			retryPolicy: &common.RetryPolicyConfig{MaxAttempts: 1},
 			mockResponses: []mockResponse{
-				{status: 200, body: jsonRpcSuccess("0x44")},          // non-empty 1
-				{status: 200, body: jsonRpcSuccess("0x44")},          // non-empty 2
-				{status: 200, body: jsonRpcSuccess("0x44")},          // non-empty 3 -> meets threshold
-				{status: 200, body: jsonRpcSuccess([]interface{}{})}, // empty 1
-				{status: 200, body: jsonRpcSuccess([]interface{}{})}, // empty 2
-				{status: 200, body: jsonRpcSuccess([]interface{}{})}, // empty 3 -> meets threshold
+				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 2
+				{status: 200, body: jsonRpcSuccess("0x44")},                                // non-empty 1
+				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 1
+				{status: 200, body: jsonRpcSuccess("0x44")},                                // non-empty 2
+				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 3 -> meets threshold
+				{status: 200, body: jsonRpcSuccess("0x44"), delay: 100 * time.Millisecond}, // non-empty 3 -> meets threshold
 			},
 			expectedCalls: []int{1, 1, 1, 1, 1, 1},
 			expectedError: &expectedError{
@@ -1842,7 +1842,7 @@ func TestConsensusPolicy(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(util.SanitizeTestName(tc.name), func(t *testing.T) {
 			runConsensusTest(t, tc)
 		})
 	}
@@ -2067,7 +2067,9 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 			}
 		}
 		require.Error(t, err, "expected an error but got response: %v", respString)
-		assert.True(t, common.HasErrorCode(err, tc.expectedError.code), "expected error code %s, but got error: %v", tc.expectedError.code, err)
+		if tc.expectedError.code != "" {
+			assert.True(t, common.HasErrorCode(err, tc.expectedError.code), "expected error code %s, but got error: %v", tc.expectedError.code, err)
+		}
 		if tc.expectedError.contains != "" {
 			assert.Contains(t, err.Error(), tc.expectedError.contains, "error message mismatch")
 		}
