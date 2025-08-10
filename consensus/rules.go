@@ -699,14 +699,19 @@ var shortCircuitRules = []shortCircuitRule{
 	{
 		Description: "winner meets agreement threshold, is non-empty, and lead is unassailable (no possible tie with remaining)",
 		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
-			// With remaining participants, avoid short-circuiting when PreferLargerResponses is enabled,
-			// or when PreferNonEmpty is enabled and the current leader is empty (preference could change winner).
+			// With remaining participants, avoid short-circuiting when a preference could still
+			// change the winner. In particular, when PreferLargerResponses is enabled, a later
+			// larger response can override a smaller above-threshold winner regardless of counts.
 			best := a.getBestByCount()
 			if a.hasRemaining() {
-				// Only block short-circuiting for PreferLarger when AcceptMostCommon could change the winner
-				if a.config.preferLargerResponses && a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult {
+				// Do not short-circuit while PreferLargerResponses is enabled; a larger result
+				// arriving later may change the final decision even if the current leader is
+				// above threshold.
+				if a.config.preferLargerResponses {
 					return false
 				}
+				// If PreferNonEmpty is enabled and the current leader is empty, allow more
+				// responses to arrive, since the preference could change the winner.
 				if a.config.preferNonEmpty && best != nil && best.ResponseType == ResponseTypeEmpty {
 					return false
 				}
@@ -725,9 +730,10 @@ var shortCircuitRules = []shortCircuitRule{
 				}
 			}
 			remaining := a.config.maxParticipants - a.totalParticipants
-			// Short-circuit if the lead cannot be overtaken by remaining responses.
-			// Allow potential ties (ties shouldn't block early success once threshold is met).
-			return (best.Count - secondCount) >= remaining
+			// Without size preference, allow potential ties to short-circuit once threshold is met
+			// and the lead is unassailable by the number of remaining responses.
+			leadOverSecond := best.Count - secondCount
+			return leadOverSecond >= remaining
 		},
 	},
 }

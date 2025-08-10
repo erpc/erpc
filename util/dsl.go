@@ -89,7 +89,7 @@ func GenerateDslFromScenariosViaLLM(t *testing.T, namespace string, spec string,
 
 func readDslCache(t *testing.T, path string) *dslCache {
 	t.Helper()
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304
 	if err != nil {
 		return nil
 	}
@@ -103,23 +103,23 @@ func readDslCache(t *testing.T, path string) *dslCache {
 }
 
 func writeDslCache(path string, c *dslCache) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { // #nosec G301
 		return err
 	}
 	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := os.Create(tmp) // #nosec G304
 	if err != nil {
 		return err
 	}
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(c); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -421,7 +421,7 @@ func doOpenAIRequestWithRetries(t *testing.T, apiKey string, jsonBody []byte) ([
 		}
 
 		// Exponential backoff with light jitter, capped
-		backoff := time.Second * time.Duration(1<<uint(attempt-1))
+		backoff := time.Second * time.Duration(1<<uint(attempt-1)) // #nosec G115
 		if backoff > 30*time.Second {
 			backoff = 30 * time.Second
 		}
