@@ -94,20 +94,22 @@ func NewNetwork(
 				method = "*"
 			}
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-				method:     method,
-				finalities: fsCfg.MatchFinality,
-				executor:   failsafe.NewExecutor(policyArray...),
-				timeout:    timeoutDuration,
+				method:                 method,
+				finalities:             fsCfg.MatchFinality,
+				executor:               failsafe.NewExecutor(policyArray...),
+				timeout:                timeoutDuration,
+				consensusPolicyEnabled: fsCfg.Consensus != nil,
 			})
 		}
 	}
 
 	// Create a default executor if no failsafe config is provided or matched
 	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-		method:     "*", // "*" means match any method
-		finalities: nil, // nil means match any finality
-		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
-		timeout:    nil,
+		method:                 "*", // "*" means match any method
+		finalities:             nil, // nil means match any finality
+		executor:               failsafe.NewExecutor[*common.NormalizedResponse](),
+		timeout:                nil,
+		consensusPolicyEnabled: false,
 	})
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))

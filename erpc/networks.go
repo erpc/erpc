@@ -24,10 +24,11 @@ import (
 )
 
 type FailsafeExecutor struct {
-	method     string
-	finalities []common.DataFinalityState
-	executor   failsafe.Executor[*common.NormalizedResponse]
-	timeout    *time.Duration
+	method                 string
+	finalities             []common.DataFinalityState
+	executor               failsafe.Executor[*common.NormalizedResponse]
+	timeout                *time.Duration
+	consensusPolicyEnabled bool
 }
 
 type Network struct {
@@ -595,8 +596,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if execErr != nil {
 		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
-		// Don't override consensus errors with last valid response
-		if common.HasErrorCode(translatedErr, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants) {
+		// Don't override consensus results with last valid response from individual upstreams
+		// For example if 1 upstream gives empty response another 3 give "reverted" error,
+		// we should still return reverted error, even though there was an empty response before.
+		if failsafeExecutor.consensusPolicyEnabled {
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}

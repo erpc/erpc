@@ -17,6 +17,7 @@
                 "CGO_ENABLED": "1",
                 "LOG_LEVEL": "trace"
             },
+            "envFile": "${workspaceFolder}/.env",
             "cwd": "${workspaceFolder}",
             "showLog": true,
             "dlvFlags": [
@@ -26,6 +27,21 @@
                 "--log-output",
                 "debugger,debuglineerr,gdbwire,lldbout,rpc",
             ]
+        },
+        {
+            "name": "Debug Tests (erpc/erpc)",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/erpc",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "CC": "/usr/bin/cc",
+                "CXX": "/usr/bin/c++",
+                "CGO_ENABLED": "1",
+                "LOG_LEVEL": "trace"
+            }
         }
     ]
 }

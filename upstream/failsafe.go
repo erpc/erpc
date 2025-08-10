@@ -605,7 +605,7 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 		return nil, nil
 	}
 
-	builder := consensus.NewConsensusPolicyBuilder[*common.NormalizedResponse]()
+	builder := consensus.NewConsensusPolicyBuilder()
 	builder = builder.WithMaxParticipants(cfg.MaxParticipants)
 	builder = builder.WithAgreementThreshold(cfg.AgreementThreshold)
 	builder = builder.WithDisputeBehavior(cfg.DisputeBehavior)
@@ -616,6 +616,14 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	// Set ignore fields if configured
 	if cfg.IgnoreFields != nil {
 		builder = builder.WithIgnoreFields(cfg.IgnoreFields)
+	}
+
+	// Set preference flags (defaults are handled in config.SetDefaults())
+	if cfg.PreferNonEmpty != nil {
+		builder = builder.WithPreferNonEmpty(*cfg.PreferNonEmpty)
+	}
+	if cfg.PreferLargerResponses != nil {
+		builder = builder.WithPreferLargerResponses(*cfg.PreferLargerResponses)
 	}
 
 	// Parse dispute log level if specified

@@ -1778,6 +1778,11 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 			return fmt.Errorf("failed to set defaults for circuit breaker: %w", err)
 		}
 	}
+	if f.Consensus != nil {
+		if err := f.Consensus.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for consensus: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -1958,6 +1963,12 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 				"*.logs.*.blockTimestamp",
 			},
 		}
+	}
+	if c.PreferNonEmpty == nil {
+		c.PreferNonEmpty = util.BoolPtr(true)
+	}
+	if c.PreferLargerResponses == nil {
+		c.PreferLargerResponses = util.BoolPtr(true)
 	}
 
 	return nil

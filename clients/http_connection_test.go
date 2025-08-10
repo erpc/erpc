@@ -103,6 +103,16 @@ func (cts *ConnectionTrackingServer) ResetStats() {
 	cts.mu.Unlock()
 }
 
+type phonyUpstream struct {
+	common.Upstream
+}
+
+var _ common.Upstream = (*phonyUpstream)(nil)
+
+func (u *phonyUpstream) Id() string {
+	return "phony-upstream"
+}
+
 // TestHTTPConnectionReuseUnderLoad tests connection behavior under high load with latency
 func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 	// Test parameters simulating the user's scenario
@@ -148,6 +158,7 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			projectId:       "test-project",
 			httpClient:      oldHttpClient,
 			isLogLevelTrace: false,
+			upstream:        &phonyUpstream{},
 		}
 
 		// Send requests concurrently to simulate load
@@ -237,6 +248,7 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			projectId:       "test-project",
 			httpClient:      fixedHttpClient,
 			isLogLevelTrace: false,
+			upstream:        &phonyUpstream{},
 		}
 
 		// Send the same load pattern as before
@@ -319,6 +331,7 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			projectId:       "test-project",
 			httpClient:      httpClient,
 			isLogLevelTrace: false,
+			upstream:        &phonyUpstream{},
 		}
 
 		// Send the same load pattern
@@ -388,7 +401,8 @@ func TestConnectionLimitsWithRealWorldScenario(t *testing.T) {
 	t.Run("Simulate_User_Reported_Issue", func(t *testing.T) {
 		// Create client with current problematic configuration
 		ctx := context.Background()
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", nil, parsedURL, nil, nil)
+		ups := common.NewFakeUpstream("rpc1")
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", ups, parsedURL, nil, nil)
 		assert.NoError(t, err)
 
 		// Simulate 100 RPS for 5 seconds (500 requests total)

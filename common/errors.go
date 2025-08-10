@@ -651,38 +651,63 @@ var NewErrFinalizedBlockUnavailable = func(blockNumber int64) error {
 // Upstreams
 //
 
-type ErrUpstreamClientInitialization struct{ BaseError }
+type UpstreamAwareError struct {
+	upstream Upstream `json:"-"`
+}
 
-var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) error {
-	return &ErrUpstreamRequest{
-		BaseError{
+func (e *UpstreamAwareError) Upstream() Upstream {
+	return e.upstream
+}
+
+type ErrUpstreamClientInitialization struct {
+	UpstreamAwareError
+	BaseError
+}
+
+var NewErrUpstreamClientInitialization = func(cause error, upstream Upstream) error {
+	return &ErrUpstreamClientInitialization{
+		UpstreamAwareError: UpstreamAwareError{
+			upstream: upstream,
+		},
+		BaseError: BaseError{
 			Code:    "ErrUpstreamClientInitialization",
 			Message: "could not initialize upstream client",
 			Cause:   cause,
 			Details: map[string]interface{}{
-				"upstreamId": upstreamId,
+				"upstreamId": upstream.Id(),
 			},
 		},
 	}
 }
 
-type ErrUpstreamRequest struct{ BaseError }
+type ErrUpstreamRequest struct {
+	UpstreamAwareError
+	BaseError
+}
 
-var NewErrUpstreamRequest = func(cause error, upsId, networkId, method string, duration time.Duration, attempts, retries, hedges int) error {
+const ErrCodeUpstreamRequest ErrorCode = "ErrUpstreamRequest"
+
+var NewErrUpstreamRequest = func(cause error, upstream Upstream, networkId, method string, duration time.Duration, attempts, retries, hedges int) error {
+	details := map[string]interface{}{
+		"durationMs": duration.Milliseconds(),
+		"networkId":  networkId,
+		"method":     method,
+		"attempts":   attempts,
+		"retries":    retries,
+		"hedges":     hedges,
+	}
+	if upstream != nil && upstream.Id() != "" {
+		details["upstreamId"] = upstream.Id()
+	}
 	return &ErrUpstreamRequest{
-		BaseError{
-			Code:    "ErrUpstreamRequest",
+		UpstreamAwareError: UpstreamAwareError{
+			upstream: upstream,
+		},
+		BaseError: BaseError{
+			Code:    ErrCodeUpstreamRequest,
 			Message: "failed to make request to upstream",
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"durationMs": duration.Milliseconds(),
-				"networkId":  networkId,
-				"method":     method,
-				"upstreamId": upsId,
-				"attempts":   attempts,
-				"retries":    retries,
-				"hedges":     hedges,
-			},
+			Details: details,
 		},
 	}
 }
@@ -735,16 +760,22 @@ func (e *ErrUpstreamRequest) Hedges() int {
 	return 0
 }
 
-type ErrUpstreamMalformedResponse struct{ BaseError }
+type ErrUpstreamMalformedResponse struct {
+	UpstreamAwareError
+	BaseError
+}
 
-var NewErrUpstreamMalformedResponse = func(cause error, upstreamId string) error {
+var NewErrUpstreamMalformedResponse = func(cause error, upstream Upstream) error {
 	return &ErrUpstreamMalformedResponse{
-		BaseError{
+		UpstreamAwareError: UpstreamAwareError{
+			upstream: upstream,
+		},
+		BaseError: BaseError{
 			Code:    "ErrUpstreamMalformedResponse",
 			Message: "malformed response from upstream",
 			Cause:   cause,
 			Details: map[string]interface{}{
-				"upstreamId": upstreamId,
+				"upstreamId": upstream.Id(),
 			},
 		},
 	}
@@ -804,6 +835,22 @@ func NewErrUpstreamsExhaustedWithCause(cause error) error {
 			Cause:   cause,
 		},
 	}
+}
+
+func (e *ErrUpstreamsExhausted) Upstreams() []Upstream {
+	if e == nil {
+		return nil
+	}
+	ups := []Upstream{}
+	for _, child := range e.Errors() {
+		var ue interface{ Upstream() Upstream }
+		if errors.As(child, &ue) {
+			if up := ue.Upstream(); up != nil {
+				ups = append(ups, up)
+			}
+		}
+	}
+	return ups
 }
 
 func (e *ErrUpstreamsExhausted) IsObjectNull() bool {
@@ -1002,7 +1049,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 }
 
 func (e *ErrUpstreamsExhausted) Errors() []error {
-	if e.Cause == nil {
+	if e == nil || e.Cause == nil {
 		return nil
 	}
 
@@ -1115,16 +1162,22 @@ var NewErrNoUpstreamsFound = func(project string, network string) error {
 
 func (e *ErrNoUpstreamsFound) ErrorStatusCode() int { return http.StatusNotFound }
 
-type ErrUpstreamNetworkNotDetected struct{ BaseError }
+type ErrUpstreamNetworkNotDetected struct {
+	UpstreamAwareError
+	BaseError
+}
 
-var NewErrUpstreamNetworkNotDetected = func(projectId string, upstreamId string) error {
+var NewErrUpstreamNetworkNotDetected = func(projectId string, upstream Upstream) error {
 	return &ErrUpstreamNetworkNotDetected{
-		BaseError{
+		UpstreamAwareError: UpstreamAwareError{
+			upstream: upstream,
+		},
+		BaseError: BaseError{
 			Code:    "ErrUpstreamNetworkNotDetected",
 			Message: "network not detected for upstream either from config nor by calling the endpoint",
 			Details: map[string]interface{}{
 				"projectId":  projectId,
-				"upstreamId": upstreamId,
+				"upstreamId": upstream.Id(),
 			},
 		},
 	}

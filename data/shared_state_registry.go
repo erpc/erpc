@@ -103,7 +103,7 @@ func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *util
 			}
 			r.logger.Debug().Str("key", counter.key).Int64("value", v).Msg("fetched initial value for counter")
 			if v > 0 {
-				counter.processNewValue(v)
+				counter.processNewValue(UpdateSourceInitialFetch, v)
 			}
 			return nil
 		},
@@ -156,7 +156,7 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 					Str("key", counter.key).
 					Int64("newValue", newValue).
 					Msg("received new value from shared state sync")
-				counter.processNewValue(newValue)
+				counter.processNewValue(UpdateSourceRemoteSync, newValue)
 			}
 		}
 	}()

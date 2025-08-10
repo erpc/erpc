@@ -154,7 +154,7 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstreamId,
+			c.upstream,
 			req.NetworkId(),
 			"",
 			0, 0, 0, 0,

@@ -237,7 +237,8 @@ func (v *PimlicoVendor) getOrCreateClient(ctx context.Context, logger *zerolog.L
 	}
 
 	// Create new client if none exists
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", nil, parsedURL, nil, nil)
+	u := &phonyUpstream{id: fmt.Sprintf("temp-pimlico-%d", chainId)}
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", u, parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}

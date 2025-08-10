@@ -953,7 +953,6 @@ func isEmptyishValue(v interface{}) bool {
 		// Empty objects are considered empty
 		return len(val) == 0
 	case float64:
-		// Don't treat 0 as emptyish - it's a valid value for many fields
 		return val == 0
 	case bool:
 		// Booleans are never emptyish

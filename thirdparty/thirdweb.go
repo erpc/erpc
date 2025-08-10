@@ -134,7 +134,8 @@ func (v *ThirdwebVendor) getOrCreateClient(ctx context.Context, logger *zerolog.
 	}
 
 	// Create a new client for this chain ID
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", nil, parsedURL, nil, nil)
+	u := &phonyUpstream{id: fmt.Sprintf("temp-thirdweb-%d", chainId)}
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", u, parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}
