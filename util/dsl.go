@@ -103,7 +103,7 @@ func readDslCache(t *testing.T, path string) *dslCache {
 }
 
 func writeDslCache(path string, c *dslCache) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { // #nosec G301
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil { // #nosec G301
 		return err
 	}
 	tmp := path + ".tmp"
@@ -382,7 +382,7 @@ func doOpenAIRequestWithRetries(t *testing.T, apiKey string, jsonBody []byte) ([
 		} else {
 			// Ensure body is closed on all paths
 			bodyBytes, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			// Success
 			if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {

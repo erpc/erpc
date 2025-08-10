@@ -842,9 +842,12 @@ func (e *ErrUpstreamsExhausted) Upstreams() []Upstream {
 		return nil
 	}
 	ups := []Upstream{}
-	for _, e := range e.Errors() {
-		if be, ok := any(e).(UpstreamAwareError); ok {
-			ups = append(ups, be.Upstream())
+	for _, child := range e.Errors() {
+		var ue interface{ Upstream() Upstream }
+		if errors.As(child, &ue) {
+			if up := ue.Upstream(); up != nil {
+				ups = append(ups, up)
+			}
 		}
 	}
 	return ups

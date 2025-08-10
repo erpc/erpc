@@ -343,9 +343,9 @@ func TestConsensusPolicy(t *testing.T) {
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcError(-32601, "Method not found")},
 				{status: 200, body: jsonRpcError(-32601, "Method not found")},
-				{status: 200, body: jsonRpcError(-32601, "Method not found")},
+				{status: 200, body: jsonRpcError(-32601, "Method not found"), delay: 100 * time.Millisecond},
 			},
-			expectedCalls: []int{1, 1, 1},
+			expectedCalls: []int{1, 1, 0},
 			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "Method not found"},
 		},
 		{

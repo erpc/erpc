@@ -277,9 +277,23 @@ func (e *executor) checkAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels
 	if e.punishMisbehavior == nil || e.punishMisbehavior.DisputeThreshold == 0 {
 		return
 	}
+	// Guard against invalid DisputeWindow to avoid creating invalid rate limiters
+	if e.punishMisbehavior.DisputeWindow.Duration() <= 0 {
+		lg.Debug().Msg("punishment disabled: DisputeWindow is zero or negative")
+		return
+	}
+	// Do not punish when there are no valid participants (all infra errors)
+	if analysis.validParticipants == 0 {
+		return
+	}
 
-	// Find the group with highest count (potential winner)
-	winner := analysis.getBestByCount()
+	// Determine the winner among VALID groups only (exclude infrastructure errors)
+	var winner *responseGroup
+	for _, g := range analysis.getValidGroups() {
+		if winner == nil || g.Count > winner.Count {
+			winner = g
+		}
+	}
 	if winner == nil {
 		return
 	}
@@ -289,7 +303,8 @@ func (e *executor) checkAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels
 		return
 	}
 
-	for _, group := range analysis.groups {
+	// Punish only upstreams from VALID groups that disagreed with the majority
+	for _, group := range analysis.getValidGroups() {
 		if group.Hash == winner.Hash {
 			continue
 		}
@@ -300,7 +315,6 @@ func (e *executor) checkAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels
 			upstreamId := result.Upstream.Id()
 			limiter := e.createRateLimiter(lg, upstreamId)
 			if !limiter.TryAcquirePermit() {
-				// Handle punishment
 				e.handleMisbehavingUpstream(lg, result.Upstream, upstreamId, labels.projectId, labels.networkId)
 			}
 		}
