@@ -58,11 +58,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 100,
+      rate: 2000,
       timeUnit: '1s',
       duration: '30m',
-      preAllocatedVUs: 200,
-      maxVUs: 200,
+      preAllocatedVUs: 1000,
+      maxVUs: 2000,
     },
   },
   ext: {
@@ -81,6 +81,12 @@ const responseSizes = new Trend('response_sizes');
 
 // Common ERC20 Transfer event topic
 const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+function getFullUrl(chain) {
+  const parsedUrl = new URL(ERPC_BASE_URL); // Preserve params
+  parsedUrl.pathname += chain.id;
+  parsedUrl.toString()
+}
 
 function getRandomChain() {
   const chains = Object.values(CHAINS);
@@ -108,7 +114,7 @@ async function latestBlockWithLogs(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  return http.post(ERPC_BASE_URL + chain.id, payload, params);
+  return http.post(getFullUrl(chain), payload, params);
 }
 
 function randomAccountBalances(http, params, chain) {

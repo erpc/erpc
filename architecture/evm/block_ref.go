@@ -271,7 +271,7 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 		common.SetTraceSpanError(span, errors.New("method config not found for "+rpcReq.Method+" when extracting block reference from json-rpc response"))
 		return "", 0, nil
 	}
-	if len(rpcResp.Result) == 0 {
+	if rpcResp.IsResultEmptyish(ctx) {
 		common.SetTraceSpanError(span, errors.New("no result found for method "+rpcReq.Method+" in json-rpc response when extracting block reference"))
 		return "", 0, nil
 	}

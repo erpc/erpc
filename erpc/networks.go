@@ -541,6 +541,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					finality := effectiveReq.Finality(loopCtx)
 					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
+					// Release any response associated with the discarded hedge to avoid retaining gzip/flate buffers
+					if r != nil {
+						r.Release()
+						r = nil
+					}
 					err := common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 					common.SetTraceSpanError(loopSpan, err)
 					return nil, err
@@ -563,10 +568,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						common.SetTraceSpanError(loopSpan, err)
 					}
 					if r != nil {
-						// Store execution metadata inside the response for later use.
-						r.SetAttempts(exec.Attempts())
-						r.SetRetries(exec.Retries())
-						r.SetHedges(exec.Hedges())
+						if err == nil {
+							// Store execution metadata inside the response for later use only for winning attempts
+							r.SetAttempts(exec.Attempts())
+							r.SetRetries(exec.Retries())
+							r.SetHedges(exec.Hedges())
+						} else {
+							// On error, release non-winning responses to avoid retaining upstream buffers
+							r.Release()
+							r = nil
+						}
 					}
 					loopSpan.End()
 					return r, err

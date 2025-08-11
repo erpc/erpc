@@ -436,6 +436,11 @@ func (r *NormalizedResponse) Release() {
 		r.body = nil
 	}
 
+	// Aggressively free heavy fields of JsonRpcResponse before dropping the pointer
+	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+		jrr.Free()
+	}
+
 	r.jsonRpcResponse.Store(nil)
 }
 

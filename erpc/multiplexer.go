@@ -44,20 +44,34 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 				}
 				resp = nil // Don't store a response that can't be parsed
 			} else {
-				// Create a copy of the response for the multiplexer to avoid race conditions
-				// with the HTTP server's Release() call. We create a new response with the
-				// already-parsed JsonRpcResponse so we don't need to re-parse the stream.
-				multiplexerResp := common.NewNormalizedResponse()
-				multiplexerResp.SetUpstream(resp.Upstream())
-				multiplexerResp.SetFromCache(resp.FromCache())
-				multiplexerResp.SetAttempts(resp.Attempts())
-				multiplexerResp.SetRetries(resp.Retries())
-				multiplexerResp.SetHedges(resp.Hedges())
-				multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
-				multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
-				multiplexerResp.WithJsonRpcResponse(jrr)
-
-				resp = multiplexerResp
+				// Create a deep clone of the JsonRpcResponse so that upstream buffers can be released
+				// on the original without affecting the multiplexer copy.
+				cloned, cerr := jrr.Clone()
+				if cerr != nil {
+					log.Warn().Err(cerr).Str("multiplexer_hash", m.hash).Msg("failed to clone jsonrpc response for multiplexer; storing original")
+					// Fallback to original
+					multiplexerResp := common.NewNormalizedResponse()
+					multiplexerResp.SetUpstream(resp.Upstream())
+					multiplexerResp.SetFromCache(resp.FromCache())
+					multiplexerResp.SetAttempts(resp.Attempts())
+					multiplexerResp.SetRetries(resp.Retries())
+					multiplexerResp.SetHedges(resp.Hedges())
+					multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
+					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
+					multiplexerResp.WithJsonRpcResponse(jrr)
+					resp = multiplexerResp
+				} else {
+					multiplexerResp := common.NewNormalizedResponse()
+					multiplexerResp.SetUpstream(resp.Upstream())
+					multiplexerResp.SetFromCache(resp.FromCache())
+					multiplexerResp.SetAttempts(resp.Attempts())
+					multiplexerResp.SetRetries(resp.Retries())
+					multiplexerResp.SetHedges(resp.Hedges())
+					multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
+					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
+					multiplexerResp.WithJsonRpcResponse(cloned)
+					resp = multiplexerResp
+				}
 			}
 		}
 
