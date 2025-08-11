@@ -147,6 +147,20 @@ func (v *BlockPiVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReques
 		details["data"] = err.Data
 	}
 
+	if msg := strings.ToLower(err.Message); msg != "" {
+		if strings.Contains(msg, "apikey is on another chain") || strings.Contains(msg, "api key is on another chain") {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorUnauthorized),
+					common.JsonRpcErrorUnauthorized,
+					bodyMap.Error.Message,
+					nil,
+					details,
+				),
+			)
+		}
+	}
+
 	return nil
 }
 
