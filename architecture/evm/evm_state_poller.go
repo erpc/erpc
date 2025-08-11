@@ -577,6 +577,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	if err != nil {
 		return 0, err
 	}
+	defer resp.Release()
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return 0, err
@@ -625,6 +626,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		}
 		return false, err
 	}
+	defer resp.Release()
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {

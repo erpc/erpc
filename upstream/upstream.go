@@ -437,6 +437,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				}
 
 				timer.ObserveDuration(false)
+				// We're converting a response+error into a pure error. Release the response to avoid retention.
+				if nrs != nil {
+					nrs.Release()
+					nrs = nil
+				}
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
@@ -585,6 +590,8 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Ensure response is always released after we parse it
+	defer resp.Release()
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
