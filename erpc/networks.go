@@ -541,7 +541,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					finality := effectiveReq.Finality(loopCtx)
 					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
-					// Release any response associated with the discarded hedge to avoid retaining gzip/flate buffers
+					// Release any response associated with the discarded hedge to avoid retaining buffers
 					if r != nil {
 						r.Release()
 						r = nil
@@ -569,18 +569,24 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					if r != nil {
 						if err == nil {
-							// Store execution metadata inside the response for later use only for winning attempts
+							// Store execution metadata only for winning attempts
 							r.SetAttempts(exec.Attempts())
 							r.SetRetries(exec.Retries())
 							r.SetHedges(exec.Hedges())
 						} else {
-							// On error, release non-winning responses to avoid retaining upstream buffers
+							// On error, release non-winning responses
 							r.Release()
 							r = nil
 						}
 					}
 					loopSpan.End()
 					return r, err
+				}
+
+				// For skipped requests, ensure any response is not retained before continuing
+				if r != nil {
+					r.Release()
+					r = nil
 				}
 
 				loopSpan.End()
@@ -886,6 +892,10 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
+	if true {
+		// TODO Skip multiplexing for now
+		return nil, nil, nil
+	}
 	mlxHash, err := req.CacheHash()
 	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {

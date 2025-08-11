@@ -65,7 +65,9 @@ func LookupResponseMetadata(err error) ResponseMetadata {
 }
 
 func NewNormalizedResponse() *NormalizedResponse {
-	return &NormalizedResponse{}
+	nr := &NormalizedResponse{}
+	TrackNR(nr)
+	return nr
 }
 
 func (r *NormalizedResponse) LockWithTrace(ctx context.Context) {
@@ -442,6 +444,7 @@ func (r *NormalizedResponse) Release() {
 	}
 
 	r.jsonRpcResponse.Store(nil)
+	MarkNRReleased(r)
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {

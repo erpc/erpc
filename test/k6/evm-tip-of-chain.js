@@ -83,9 +83,20 @@ const responseSizes = new Trend('response_sizes');
 const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 function getFullUrl(chain) {
-  const parsedUrl = new URL(ERPC_BASE_URL); // Preserve params
-  parsedUrl.pathname += chain.id;
-  parsedUrl.toString()
+  // K6 does not have the global URL class, so we must parse manually.
+  // We want to insert the chain.id after the path, before any query string.
+  // Example: "https://foo.com/api?x=1" + "42161" => "https://foo.com/api/42161?x=1"
+  let base = ERPC_BASE_URL;
+  let query = '';
+  let path = base;
+  const qIdx = base.indexOf('?');
+  if (qIdx !== -1) {
+    path = base.substring(0, qIdx);
+    query = base.substring(qIdx); // includes '?'
+  }
+  // Ensure path ends with a single slash before appending chain.id
+  if (!path.endsWith('/')) path += '/';
+  return path + chain.id + query;
 }
 
 function getRandomChain() {

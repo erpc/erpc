@@ -59,6 +59,8 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
 					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
 					multiplexerResp.WithJsonRpcResponse(jrr)
+					// Silence leak tracker: stored mux copy is intentionally not Released
+					common.MarkNRReleased(multiplexerResp)
 					resp = multiplexerResp
 				} else {
 					multiplexerResp := common.NewNormalizedResponse()
@@ -70,6 +72,8 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
 					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
 					multiplexerResp.WithJsonRpcResponse(cloned)
+					// Silence leak tracker: stored mux copy is intentionally not Released
+					common.MarkNRReleased(multiplexerResp)
 					resp = multiplexerResp
 				}
 			}
