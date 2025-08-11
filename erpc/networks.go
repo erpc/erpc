@@ -443,12 +443,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			)
 			defer execSpan.End()
 
-			overridenReq := execSpanCtx.Value(common.RequestContextKey)
 			// Use a local variable to avoid overwriting the captured req variable
 			// which can cause issues when multiple executions run concurrently (e.g., consensus)
+			// Be defensive about the type assertion to avoid panics if the context value was not set properly.
 			var effectiveReq *common.NormalizedRequest
-			if overridenReq != nil {
-				effectiveReq = overridenReq.(*common.NormalizedRequest)
+			if or := execSpanCtx.Value(common.RequestContextKey); or != nil {
+				if r, ok := or.(*common.NormalizedRequest); ok && r != nil {
+					effectiveReq = r
+				} else {
+					effectiveReq = req
+				}
 			} else {
 				effectiveReq = req
 			}
@@ -620,6 +624,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
+			// Ensure any lastValidResponse kept on the request is released and cleared
+			if lvr := req.LastValidResponse(); lvr != nil {
+				lvr.Release()
+				req.ClearLastValidResponse()
+			}
 			return nil, translatedErr
 		}
 
@@ -723,6 +732,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if mlx != nil {
 		mlx.Close(ctx, resp, nil)
+	}
+
+	// After consensus success, ensure we don't keep a loser in req.LastValidResponse
+	if failsafeExecutor.consensusPolicyEnabled {
+		if lvr := req.LastValidResponse(); lvr != nil && lvr != resp {
+			lvr.Release()
+			req.ClearLastValidResponse()
+		}
 	}
 
 	return resp, nil
@@ -892,10 +909,6 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
-	if true {
-		// TODO Skip multiplexing for now
-		return nil, nil, nil
-	}
 	mlxHash, err := req.CacheHash()
 	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {
@@ -1048,13 +1061,12 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 		if resp != nil {
 			// This ensures that even if upstream gives us wrong/missing ID we'll
 			// use correct one from original incoming request.
-			if jrr, err := resp.JsonRpcResponse(ctx); err == nil {
+			if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
 				jrq, err := req.JsonRpcRequest(ctx)
 				if err != nil {
 					return err
 				}
-				err = jrr.SetID(jrq.ID)
-				if err != nil {
+				if err := jrr.SetID(jrq.ID); err != nil {
 					return err
 				}
 			}

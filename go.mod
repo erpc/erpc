@@ -42,9 +42,9 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250703184545-72df61cc1e94
+replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250811170821-afd8e02a3136
 
-replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250713183423-296250137828
+replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250811111520-9af9700f4b44
 
 require (
 	dario.cat/mergo v1.0.0 // indirect

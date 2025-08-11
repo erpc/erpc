@@ -260,40 +260,77 @@ func pickHighestBlock(ctx context.Context, x *common.NormalizedResponse, y *comm
 	xnull := x == nil || x.IsObjectNull() || x.IsResultEmptyish()
 	ynull := y == nil || y.IsObjectNull() || y.IsResultEmptyish()
 	if xnull && ynull && err != nil {
+		// both emptyish; nothing to keep
+		if x != nil {
+			x.Release()
+		}
+		if y != nil {
+			y.Release()
+		}
 		return nil, err
 	} else if xnull && !ynull {
+		if x != nil {
+			x.Release()
+		}
 		return y, nil
 	} else if !xnull && ynull {
+		if y != nil {
+			y.Release()
+		}
 		return x, nil
 	}
 	xjrr, err := x.JsonRpcResponse(ctx)
 	if err != nil || xjrr == nil {
+		if x != nil && x != y {
+			x.Release()
+		}
 		return y, nil
 	}
 	yjrr, err := y.JsonRpcResponse(ctx)
 	if err != nil || yjrr == nil {
+		if y != nil && y != x {
+			y.Release()
+		}
 		return x, nil
 	}
 	xbn, err := xjrr.PeekStringByPath(ctx, "number")
 	if err != nil {
+		if x != nil && x != y {
+			x.Release()
+		}
 		return y, nil
 	}
 	span.SetAttributes(attribute.String("block_number_1", xbn))
 	ybn, err := yjrr.PeekStringByPath(ctx, "number")
 	if err != nil {
+		if y != nil && y != x {
+			y.Release()
+		}
 		return x, nil
 	}
 	span.SetAttributes(attribute.String("block_number_2", ybn))
 	xbnInt, err := strconv.ParseInt(xbn, 0, 64)
 	if err != nil {
+		if x != nil && x != y {
+			x.Release()
+		}
 		return y, nil
 	}
 	ybnInt, err := strconv.ParseInt(ybn, 0, 64)
 	if err != nil {
+		if y != nil && y != x {
+			y.Release()
+		}
 		return x, nil
 	}
 	if xbnInt > ybnInt {
+		if y != nil && y != x {
+			y.Release()
+		}
 		return x, nil
+	}
+	if x != nil && x != y {
+		x.Release()
 	}
 	return y, nil
 }

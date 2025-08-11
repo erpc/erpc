@@ -9275,7 +9275,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				fmt.Println("body 1111", body)
 				return strings.Contains(body, "eth_getLogs") &&
 					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
 					strings.Contains(body, `"toBlock":"0x111181ff"`)

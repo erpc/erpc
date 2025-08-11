@@ -451,7 +451,9 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 				nr := common.NewNormalizedResponse().
 					WithRequest(req.request).
 					WithJsonRpcResponse(jrr)
+				// We only need nr to normalize the error; ensure it does not leak.
 				err = c.normalizeJsonRpcError(resp, nr)
+				nr.Release()
 				req.err <- err
 			}
 		}
@@ -477,10 +479,13 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 			} else if req, ok := requests[id]; ok {
 				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
 				if err != nil {
+					// Defensive: although err is from getJsonRpcResponseFromNode, release nr just in case
+					nr.Release()
 					req.err <- err
 				} else {
 					err := c.normalizeJsonRpcError(resp, nr)
 					if err != nil {
+						nr.Release()
 						req.err <- err
 					} else {
 						req.response <- nr
@@ -513,6 +518,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 			nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
 			err := c.normalizeJsonRpcError(resp, nr)
 			if err != nil {
+				nr.Release()
 				req.err <- err
 			} else {
 				req.response <- nr

@@ -48,20 +48,8 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 				// on the original without affecting the multiplexer copy.
 				cloned, cerr := jrr.Clone()
 				if cerr != nil {
-					log.Warn().Err(cerr).Str("multiplexer_hash", m.hash).Msg("failed to clone jsonrpc response for multiplexer; storing original")
-					// Fallback to original
-					multiplexerResp := common.NewNormalizedResponse()
-					multiplexerResp.SetUpstream(resp.Upstream())
-					multiplexerResp.SetFromCache(resp.FromCache())
-					multiplexerResp.SetAttempts(resp.Attempts())
-					multiplexerResp.SetRetries(resp.Retries())
-					multiplexerResp.SetHedges(resp.Hedges())
-					multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
-					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
-					multiplexerResp.WithJsonRpcResponse(jrr)
-					// Silence leak tracker: stored mux copy is intentionally not Released
-					common.MarkNRReleased(multiplexerResp)
-					resp = multiplexerResp
+					resp = nil
+					err = cerr
 				} else {
 					multiplexerResp := common.NewNormalizedResponse()
 					multiplexerResp.SetUpstream(resp.Upstream())
@@ -73,7 +61,6 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
 					multiplexerResp.WithJsonRpcResponse(cloned)
 					// Silence leak tracker: stored mux copy is intentionally not Released
-					common.MarkNRReleased(multiplexerResp)
 					resp = multiplexerResp
 				}
 			}

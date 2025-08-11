@@ -646,8 +646,15 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				r.AgentName(),
 				r.AgentVersion(),
 			).Inc()
-			responses = append(responses, jrr)
+			jrrc, err := jrr.Clone()
+			if err != nil {
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+			responses = append(responses, jrrc)
 			mu.Unlock()
+			rs.Release()
 		}(sr)
 	}
 	wg.Wait()

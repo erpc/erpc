@@ -387,13 +387,14 @@ func (r *JsonRpcResponse) Size(ctx ...context.Context) (int, error) {
 	r.resultMu.RLock()
 	rl := len(r.Result)
 	hasResult := rl > 0
+	rw := r.resultWriter
 	r.resultMu.RUnlock()
 	if hasResult {
 		return rl, nil
 	}
 
-	if r.resultWriter != nil {
-		return r.resultWriter.Size(ctx...)
+	if rw != nil {
+		return rw.Size(ctx...)
 	}
 	return 0, nil
 }

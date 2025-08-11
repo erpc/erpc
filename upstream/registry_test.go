@@ -264,8 +264,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		expectedOrderMethod1Phase1 := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase1)
 
-		// Wait so that latency averages are cycled out
-		time.Sleep(windowSize)
+		// Wait so that latency averages are cycled out (add small buffer to avoid ticking exactly at window boundary)
+		time.Sleep(windowSize + 10*time.Millisecond)
 
 		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 5, 0.01)
 		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 5, 0.03)
@@ -274,8 +274,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		expectedOrderMethod2Phase1 := []string{"upstream-c", "upstream-b", "upstream-a"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase1)
 
-		// Sleep for the duration of windowSize to ensure metrics from phase 1 have cycled out
-		time.Sleep(windowSize)
+		// Sleep slightly longer than windowSize to ensure metrics from phase 1 have cycled out
+		time.Sleep(windowSize + 10*time.Millisecond)
 
 		// Phase 2: Performance changes
 		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 5, 0.01)
@@ -285,7 +285,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		expectedOrderMethod1Phase2 := []string{"upstream-b", "upstream-c", "upstream-a"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase2)
 
-		time.Sleep(windowSize)
+		// Sleep slightly longer than windowSize to ensure metrics from phase 2 for method1 have cycled out
+		time.Sleep(windowSize + 10*time.Millisecond)
 
 		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 5, 0.01)
 		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 5, 0.03)
