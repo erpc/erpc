@@ -80,6 +80,23 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
 		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re, skipCacheRead)
+	case // Block lookups
+		"eth_getblockbynumber",
+		"eth_getblockbyhash",
+		// Transaction lookups
+		"eth_gettransactionbyhash",
+		"eth_gettransactionreceipt",
+		"eth_gettransactionbyblockhashandindex",
+		"eth_gettransactionbyblocknumberandindex",
+		// Uncle/ommers (legacy API)
+		"eth_getunclebyblockhashandindex",
+		"eth_getunclebyblocknumberandindex",
+		// Traces (debug/trace/parity modules)
+		"debug_tracetransaction",
+		"trace_transaction",
+		"trace_block",
+		"trace_get":
+		return upstreamPostForward_markUnexpectedEmpty(ctx, n, u, rq, rs, re)
 	}
 
 	return rs, re
