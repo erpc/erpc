@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"context"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -20,7 +21,7 @@ func TestUpstreamPostForward_PointLookupMissingData_BlockByNumber(t *testing.T) 
 
 	// Call upstream post-forward hook; network and upstream can be nil for this classification
 	outResp, err := HandleUpstreamPostForward(
-		t.Context(),
+		context.Background(),
 		nil, // network not used by this hook
 		nil, // upstream is optional for classification
 		req,
@@ -44,7 +45,7 @@ func TestUpstreamPostForward_PointLookupMissingData_BlockByHash(t *testing.T) {
 		WithJsonRpcResponse(&common.JsonRpcResponse{Result: []byte("null")})
 
 	outResp, err := HandleUpstreamPostForward(
-		t.Context(),
+		context.Background(),
 		nil,
 		nil,
 		req,
