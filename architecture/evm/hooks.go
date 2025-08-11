@@ -80,52 +80,24 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
 		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re, skipCacheRead)
-	case "eth_getblockbynumber":
-		return upstreamPostForward_pointLookupMissingData(ctx, n, u, rq, rs, re, "block", "number")
-	case "eth_getblockbyhash":
-		return upstreamPostForward_pointLookupMissingData(ctx, n, u, rq, rs, re, "block", "hash")
+	case // Block lookups
+		"eth_getblockbynumber",
+		"eth_getblockbyhash",
+		// Transaction lookups
+		"eth_gettransactionbyhash",
+		"eth_gettransactionreceipt",
+		"eth_gettransactionbyblockhashandindex",
+		"eth_gettransactionbyblocknumberandindex",
+		// Uncle/ommers (legacy API)
+		"eth_getunclebyblockhashandindex",
+		"eth_getunclebyblocknumberandindex",
+		// Traces (debug/trace/parity modules)
+		"debug_tracetransaction",
+		"trace_transaction",
+		"trace_block",
+		"trace_get":
+		return upstreamPostForward_markUnexpectedEmpty(ctx, n, u, rq, rs, re)
 	}
 
 	return rs, re
-}
-
-// upstreamPostForward_pointLookupMissingData classifies empty point-lookups (like getBlockByNumber/hash)
-// as missing-data so that network-level retry can rotate to other upstreams.
-func upstreamPostForward_pointLookupMissingData(
-	ctx context.Context,
-	n common.Network,
-	u common.Upstream,
-	rq *common.NormalizedRequest,
-	rs *common.NormalizedResponse,
-	re error,
-	entity string, // e.g. "block"
-	refKind string, // e.g. "number" or "hash"
-) (*common.NormalizedResponse, error) {
-	if re != nil || rs == nil || rs.IsObjectNull() || !rs.IsResultEmptyish() {
-		return rs, re
-	}
-
-	// Build a method-specific message
-	rqj, _ := rq.JsonRpcRequest(ctx)
-	var ref string
-	if rqj != nil && len(rqj.Params) > 0 {
-		if s, ok := rqj.Params[0].(string); ok {
-			ref = s
-		}
-	}
-	msg := entity + " not found"
-	if ref != "" {
-		msg = entity + " not found with " + refKind + " " + ref
-	}
-
-	return rs, common.NewErrEndpointMissingData(
-		common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorMissingData,
-			msg,
-			nil,
-			map[string]interface{}{entity + refKind: ref},
-		),
-		u,
-	)
 }

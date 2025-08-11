@@ -225,30 +225,6 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 						return true
 					}
 				}
-
-				// Empty response for finalized point lookup (eth_getBlockByNumber) -> open circuit
-				if isEmpty {
-					req := result.Request()
-					if req != nil {
-						if method, _ := req.Method(); method == "eth_getBlockByNumber" {
-							// Extract requested block number; if finalized, consider it a CB failure
-							_, bn, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req)
-							span.SetAttributes(
-								attribute.String("method", method),
-								attribute.Int64("extracted_block_number", bn),
-							)
-							if ebn == nil && bn > 0 && syncState != common.EvmSyncingStateSyncing {
-								if isFinalized, ferr := ups.EvmIsBlockFinalized(ctx, bn, false); ferr == nil && isFinalized {
-									span.SetAttributes(
-										attribute.Bool("should_open", true),
-										attribute.String("reason", "finalized_point_lookup_empty"),
-									)
-									return true
-								}
-							}
-						}
-					}
-				}
 			}
 		}
 
