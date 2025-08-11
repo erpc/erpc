@@ -1047,6 +1047,41 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 					u,
 				)
 			}
+		} else {
+			// If chainId is explicitly configured, strictly validate upstream reports the same chainId.
+			// This avoids misconfigured endpoints corrupting network metrics and routing decisions.
+			vctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+
+			nid, err := u.EvmGetChainId(vctx)
+			if err != nil {
+				return common.NewErrUpstreamClientInitialization(
+					&common.BaseError{
+						Code:  "ErrUpstreamChainIdValidationFailed",
+						Cause: err,
+					},
+					u,
+				)
+			}
+			actualChainId, err := strconv.ParseInt(nid, 10, 64)
+			if err != nil {
+				return common.NewErrUpstreamClientInitialization(
+					&common.BaseError{
+						Code:  "ErrUpstreamChainIdValidationFailed",
+						Cause: err,
+					},
+					u,
+				)
+			}
+			if actualChainId != cfg.Evm.ChainId {
+				return common.NewErrUpstreamClientInitialization(
+					&common.BaseError{
+						Code:  "ErrUpstreamChainIdMismatch",
+						Cause: fmt.Errorf("chain id mismatch: expected %d, got %d", cfg.Evm.ChainId, actualChainId),
+					},
+					u,
+				)
+			}
 		}
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
 
