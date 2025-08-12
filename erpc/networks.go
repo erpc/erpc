@@ -357,7 +357,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	req.SetUpstreams(upsList)
 
 	// 3) Check if we should handle this method on this network
-	if err := n.shouldHandleMethod(method, upsList); err != nil {
+	if err := n.shouldHandleMethod(req, method, upsList); err != nil {
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)
 		}
@@ -949,15 +949,38 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	n.inFlightRequests.Delete(mlx.hash)
 }
 
-func (n *Network) shouldHandleMethod(method string, upsList []common.Upstream) error {
-	// TODO Move the logic to evm package?
-	if method == "eth_newFilter" ||
-		method == "eth_newBlockFilter" ||
-		method == "eth_newPendingTransactionFilter" {
-		if len(upsList) > 1 {
-			return common.NewErrNotImplemented("eth_newFilter, eth_newBlockFilter and eth_newPendingTransactionFilter are not supported yet when there are more than 1 upstream defined")
+func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method string, upsList []common.Upstream) error {
+	// Check stateful methods policy
+	var stateful []string
+	if n.cfg != nil && len(n.cfg.StatefulMethods) > 0 {
+		stateful = n.cfg.StatefulMethods
+	} else {
+		stateful = common.DefaultStatefulMethods
+	}
+	isStateful := false
+	for _, m := range stateful {
+		if m == method {
+			isStateful = true
+			break
 		}
 	}
+	if isStateful {
+		// Determine targeted upstream count
+		targeted := 0
+		if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
+			for _, u := range upsList {
+				if match, _ := common.WildcardMatch(dr.UseUpstream, u.Id()); match {
+					targeted++
+				}
+			}
+		} else {
+			targeted = len(upsList)
+		}
+		if targeted > 1 {
+			return common.NewErrNotImplemented("stateful method requires a single targeted upstream; either configure only 1 upstream or set Use-Upstream to a single upstream id")
+		}
+	}
+
 	if method == "eth_accounts" || method == "eth_sign" {
 		return common.NewErrNotImplemented("eth_accounts and eth_sign are not supported")
 	}

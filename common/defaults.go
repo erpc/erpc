@@ -172,6 +172,15 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 	return nil
 }
 
+var DefaultStatefulMethods = []string{
+	"eth_newFilter",
+	"eth_newBlockFilter",
+	"eth_newPendingTransactionFilter",
+	"eth_getFilterChanges",
+	"eth_getFilterLogs",
+	"eth_uninstallFilter",
+}
+
 // These methods return a fixed value that does not change over time
 var DefaultStaticCacheMethods = map[string]*CacheMethodConfig{
 	"eth_chainId": {
@@ -990,10 +999,16 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			}
 		}
 	}
+	if p.StatefulMethods == nil || len(p.StatefulMethods) == 0 {
+		p.StatefulMethods = DefaultStatefulMethods
+	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
 			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for network: %w", err)
+			}
+			if network.StatefulMethods == nil || len(network.StatefulMethods) == 0 {
+				network.StatefulMethods = p.StatefulMethods
 			}
 		}
 	}

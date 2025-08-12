@@ -344,6 +344,7 @@ type ProjectConfig struct {
 	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
 	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	StatefulMethods        []string                            `yaml:"statefulMethods,omitempty" json:"statefulMethods"`
 }
 
 type NetworkDefaults struct {
@@ -940,6 +941,7 @@ type NetworkConfig struct {
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
+	StatefulMethods   []string                 `yaml:"statefulMethods,omitempty" json:"statefulMethods"`
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
