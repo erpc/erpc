@@ -352,7 +352,9 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	)
 	defer span.End()
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
-		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
+		if e.logger.GetLevel() <= zerolog.TraceLevel {
+			e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
+		}
 		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
@@ -577,6 +579,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	if err != nil {
 		return 0, err
 	}
+	defer resp.Release()
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return 0, err
@@ -625,6 +628,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		}
 		return false, err
 	}
+	defer resp.Release()
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {

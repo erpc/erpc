@@ -183,6 +183,14 @@ func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
 	return r.lastValidResponse.Load()
 }
 
+// ClearLastValidResponse clears the stored last valid response pointer.
+func (r *NormalizedRequest) ClearLastValidResponse() {
+	if r == nil {
+		return
+	}
+	r.lastValidResponse.Store(nil)
+}
+
 func (r *NormalizedRequest) Network() Network {
 	if r == nil {
 		return nil

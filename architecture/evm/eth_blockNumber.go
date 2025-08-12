@@ -101,6 +101,10 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 			common.SetTraceSpanError(span, err)
 			return true, nil, err
 		}
+		// We are replacing the original response, so release it to avoid retaining buffers
+		if resp != nil {
+			resp.Release()
+		}
 		resp := common.NewNormalizedResponse().
 			WithRequest(nq).
 			WithJsonRpcResponse(jrr)

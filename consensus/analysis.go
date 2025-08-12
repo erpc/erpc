@@ -253,8 +253,10 @@ func (a *consensusAnalysis) getLeaderGroupNonError() *responseGroup {
 			continue
 		}
 		for _, r := range group.Results {
-			if r != nil && r.Upstream != nil && r.Upstream == a.leaderUpstream && r.Err == nil {
-				return group
+			if r != nil && r.Upstream != nil && r.Err == nil {
+				if r.Upstream == a.leaderUpstream {
+					return group
+				}
 			}
 		}
 	}

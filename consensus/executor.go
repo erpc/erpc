@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"runtime/debug"
+
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/failsafe-go/failsafe-go"
@@ -59,6 +61,8 @@ type execResult struct {
 	CachedHash         string
 	CachedResponseType ResponseType
 	CachedResponseSize int
+	// Index of the attempt that produced this result
+	Index int
 }
 
 // Apply is the main entry point for the consensus policy. It orchestrates the collection,
@@ -117,18 +121,26 @@ func (e *executor) executeConsensus(
 	cancellableCtx, cancelRemaining := context.WithCancel(ctx)
 	defer cancelRemaining()
 
-	responseChan := make(chan *execResult, e.maxParticipants)
-	for i := 0; i < e.maxParticipants; i++ {
-		go e.executeParticipant(cancellableCtx, lg, originalReq, labels, parentExecution, innerFn, i, responseChan)
+	// Spawn only as many participants as configured by policy
+	maxToSpawn := e.maxParticipants
+	if maxToSpawn <= 0 {
+		maxToSpawn = 1
+	}
+	responseChan := make(chan *execResult, maxToSpawn)
+	// Prepare and retain per-attempt executions so we can cancel losers explicitly
+	attempts := make([]policy.ExecutionInternal[*common.NormalizedResponse], maxToSpawn)
+	for i := 0; i < maxToSpawn; i++ {
+		attempts[i] = parentExecution.CopyForCancellableWithValue(common.RequestContextKey, originalReq).(policy.ExecutionInternal[*common.NormalizedResponse])
+		go e.executeParticipant(cancellableCtx, lg, attempts[i], labels, innerFn, i, responseChan)
 	}
 
-	responses := make([]*execResult, 0, e.maxParticipants)
+	responses := make([]*execResult, 0, maxToSpawn)
 	var shortCircuited bool
 	var analysis *consensusAnalysis
 	var winner *failsafeCommon.PolicyResult[*common.NormalizedResponse]
 
 collectLoop:
-	for i := 0; i < e.maxParticipants; i++ {
+	for i := 0; i < maxToSpawn; i++ {
 		select {
 		case resp := <-responseChan:
 			if resp != nil {
@@ -139,9 +151,20 @@ collectLoop:
 					if e.shouldShortCircuit(parentExecution, winner, analysis) {
 						shortCircuited = true
 						cancelRemaining()
+						// Explicitly cancel all outstanding attempt executions to abort in-flight work
+						for ai := range attempts {
+							if attempts[ai] != nil {
+								attempts[ai].Cancel(nil)
+							}
+						}
 						go func() {
-							for j := i + 1; j < e.maxParticipants; j++ {
-								<-responseChan // Drain remaining
+							for j := i + 1; j < maxToSpawn; j++ {
+								er := <-responseChan // Drain remaining
+								if er != nil && er.Result != nil {
+									if releasable, ok := any(er.Result).(interface{ Release() }); ok && releasable != nil {
+										releasable.Release()
+									}
+								}
 							}
 						}()
 						break collectLoop
@@ -151,6 +174,23 @@ collectLoop:
 		case <-ctx.Done():
 			lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
 			cancelRemaining()
+			// Best-effort cancel all attempts when parent context is done
+			for ai := range attempts {
+				if attempts[ai] != nil {
+					attempts[ai].Cancel(nil)
+				}
+			}
+			// Drain remaining responses and release any results to avoid retention
+			go func(startIdx int) {
+				for j := startIdx; j < maxToSpawn; j++ {
+					er := <-responseChan
+					if er != nil && er.Result != nil {
+						if releasable, ok := any(er.Result).(interface{ Release() }); ok && releasable != nil {
+							releasable.Release()
+						}
+					}
+				}
+			}(i + 1)
 			break collectLoop
 		}
 	}
@@ -164,6 +204,34 @@ collectLoop:
 		attribute.Bool("short_circuited", shortCircuited),
 		attribute.Int("responses.collected", len(responses)),
 	)
+	// After winner selection, release results appropriately to avoid leaks and double-releases
+	if analysis != nil {
+		var winnerResp *common.NormalizedResponse
+		if winner != nil {
+			if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
+				winnerResp = wr
+			}
+		}
+		if winnerResp != nil {
+			// We have a concrete response winner: release only non-winning results
+			for _, r := range responses {
+				if r == nil || r.Result == nil {
+					continue
+				}
+				if r.Result != winnerResp {
+					r.Result.Release()
+				}
+			}
+		} else {
+			// No response winner (nil winner or error-only winner): release all collected results once
+			for _, r := range responses {
+				if r != nil && r.Result != nil {
+					r.Result.Release()
+				}
+			}
+		}
+	}
+
 	return winner, analysis
 }
 
@@ -171,9 +239,8 @@ collectLoop:
 func (e *executor) executeParticipant(
 	ctx context.Context,
 	lg *zerolog.Logger,
-	originalReq *common.NormalizedRequest,
+	attemptExecution policy.ExecutionInternal[*common.NormalizedResponse],
 	labels metricsLabels,
-	parentExecution policy.ExecutionInternal[*common.NormalizedResponse],
 	innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse],
 	index int,
 	responseChan chan<- *execResult,
@@ -181,7 +248,11 @@ func (e *executor) executeParticipant(
 	// Panic recovery
 	defer func() {
 		if r := recover(); r != nil {
-			lg.Error().Interface("panic", r).Int("index", index).Msg("Panic in consensus participant")
+			lg.Error().
+				Interface("panic", r).
+				Int("index", index).
+				Str("stack", string(debug.Stack())).
+				Msg("Panic in consensus participant")
 			telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).Inc()
 			responseChan <- &execResult{Err: errPanicInConsensus}
 		}
@@ -193,12 +264,16 @@ func (e *executor) executeParticipant(
 		return
 	}
 
-	// Each goroutine needs its own copy of the execution context
-	execution := parentExecution.CopyForCancellableWithValue(common.RequestContextKey, originalReq).(policy.ExecutionInternal[*common.NormalizedResponse])
-	result := innerFn(execution)
+	// Execute using the pre-created cancellable attempt execution
+	result := innerFn(attemptExecution)
 
-	// Check for cancellation after execution
+	// Check for cancellation after execution; release any produced result before dropping it
 	if ctx.Err() != nil {
+		if result != nil {
+			if releasable, ok := any(result.Result).(interface{ Release() }); ok && releasable != nil {
+				releasable.Release()
+			}
+		}
 		responseChan <- nil
 		return
 	}
@@ -225,10 +300,16 @@ func (e *executor) executeParticipant(
 		}
 	}
 
+	// It is possible that result.Result is nil (pure error); in that case, we still propagate the error
+	var nr *common.NormalizedResponse
+	if rr, ok := any(result.Result).(*common.NormalizedResponse); ok {
+		nr = rr
+	}
 	responseChan <- &execResult{
-		Result:   any(result.Result).(*common.NormalizedResponse),
+		Result:   nr,
 		Err:      result.Error,
 		Upstream: upstream,
+		Index:    index,
 	}
 }
 

@@ -469,7 +469,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			}
 		}
 
-		fmt.Printf("Timeouts: %d, Successes: %d\n", timeouts, successes)
+		t.Logf("Timeouts: %d, Successes: %d\n", timeouts, successes)
 		assert.True(t, timeouts > 0, "Expected some timeouts")
 		assert.True(t, successes > 0, "Expected some successes")
 	})

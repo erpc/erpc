@@ -285,9 +285,11 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).
 					Return(
-						common.NewNormalizedResponse().WithJsonRpcResponse(
-							&common.JsonRpcResponse{Result: []byte(`["log2"]`)},
-						),
+						func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+							return common.NewNormalizedResponse().WithJsonRpcResponse(
+								&common.JsonRpcResponse{Result: []byte(`["log2"]`)},
+							), nil
+						},
 						nil,
 					).Times(1).
 					Return(nil, errors.New("failed")).Times(3)
@@ -388,9 +390,11 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				})
 				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
-					common.NewNormalizedResponse().WithJsonRpcResponse(
-						&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
-					),
+					func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+						return common.NewNormalizedResponse().WithJsonRpcResponse(
+							&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
+						), nil
+					},
 					nil,
 				).Times(3)
 				u.On("Config").Return(&common.UpstreamConfig{
@@ -573,6 +577,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			if tt.expectError {
 				assert.Error(t, err)
 				return
+			} else if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
 			}
 
 			assert.Equal(t, tt.expectSplit, handled)

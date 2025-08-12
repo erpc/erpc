@@ -598,6 +598,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				).Inc()
 				errs = append(errs, err)
 				mu.Unlock()
+				rs.Release()
 				return
 			}
 
@@ -614,6 +615,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				).Inc()
 				errs = append(errs, fmt.Errorf("unexpected empty json-rpc response %v", rs))
 				mu.Unlock()
+				rs.Release()
 				return
 			}
 
@@ -630,6 +632,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				).Inc()
 				errs = append(errs, jrr.Error)
 				mu.Unlock()
+				rs.Release()
 				return
 			}
 
@@ -643,8 +646,15 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				r.AgentName(),
 				r.AgentVersion(),
 			).Inc()
-			responses = append(responses, jrr)
+			jrrc, err := jrr.Clone()
+			if err != nil {
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+			responses = append(responses, jrrc)
 			mu.Unlock()
+			rs.Release()
 		}(sr)
 	}
 	wg.Wait()
