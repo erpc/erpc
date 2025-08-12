@@ -344,7 +344,6 @@ type ProjectConfig struct {
 	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
 	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
-	StatefulMethods        []string                            `yaml:"statefulMethods,omitempty" json:"statefulMethods"`
 }
 
 type NetworkDefaults struct {

@@ -951,12 +951,7 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 
 func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method string, upsList []common.Upstream) error {
 	// Check stateful methods policy
-	var stateful []string
-	if n.cfg != nil && len(n.cfg.StatefulMethods) > 0 {
-		stateful = n.cfg.StatefulMethods
-	} else {
-		stateful = common.DefaultStatefulMethods
-	}
+	stateful := n.cfg.StatefulMethods
 	isStateful := false
 	for _, m := range stateful {
 		if m == method {

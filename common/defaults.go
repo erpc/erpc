@@ -999,16 +999,10 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			}
 		}
 	}
-	if p.StatefulMethods == nil || len(p.StatefulMethods) == 0 {
-		p.StatefulMethods = DefaultStatefulMethods
-	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
 			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for network: %w", err)
-			}
-			if network.StatefulMethods == nil || len(network.StatefulMethods) == 0 {
-				network.StatefulMethods = p.StatefulMethods
 			}
 		}
 	}
@@ -1684,6 +1678,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
 			return err
 		}
+	}
+
+	if n.StatefulMethods == nil || len(n.StatefulMethods) == 0 {
+		n.StatefulMethods = DefaultStatefulMethods
 	}
 
 	return nil
