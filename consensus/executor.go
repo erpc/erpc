@@ -61,6 +61,8 @@ type execResult struct {
 	CachedHash         string
 	CachedResponseType ResponseType
 	CachedResponseSize int
+	// Index of the attempt that produced this result
+	Index int
 }
 
 // Apply is the main entry point for the consensus policy. It orchestrates the collection,
@@ -125,8 +127,11 @@ func (e *executor) executeConsensus(
 		maxToSpawn = 1
 	}
 	responseChan := make(chan *execResult, maxToSpawn)
+	// Prepare and retain per-attempt executions so we can cancel losers explicitly
+	attempts := make([]policy.ExecutionInternal[*common.NormalizedResponse], maxToSpawn)
 	for i := 0; i < maxToSpawn; i++ {
-		go e.executeParticipant(cancellableCtx, lg, originalReq, labels, parentExecution, innerFn, i, responseChan)
+		attempts[i] = parentExecution.CopyForCancellableWithValue(common.RequestContextKey, originalReq).(policy.ExecutionInternal[*common.NormalizedResponse])
+		go e.executeParticipant(cancellableCtx, lg, attempts[i], labels, innerFn, i, responseChan)
 	}
 
 	responses := make([]*execResult, 0, maxToSpawn)
@@ -146,6 +151,12 @@ collectLoop:
 					if e.shouldShortCircuit(parentExecution, winner, analysis) {
 						shortCircuited = true
 						cancelRemaining()
+						// Explicitly cancel all outstanding attempt executions to abort in-flight work
+						for ai := range attempts {
+							if attempts[ai] != nil {
+								attempts[ai].Cancel(nil)
+							}
+						}
 						go func() {
 							for j := i + 1; j < maxToSpawn; j++ {
 								er := <-responseChan // Drain remaining
@@ -163,6 +174,12 @@ collectLoop:
 		case <-ctx.Done():
 			lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
 			cancelRemaining()
+			// Best-effort cancel all attempts when parent context is done
+			for ai := range attempts {
+				if attempts[ai] != nil {
+					attempts[ai].Cancel(nil)
+				}
+			}
 			// Drain remaining responses and release any results to avoid retention
 			go func(startIdx int) {
 				for j := startIdx; j < maxToSpawn; j++ {
@@ -222,9 +239,8 @@ collectLoop:
 func (e *executor) executeParticipant(
 	ctx context.Context,
 	lg *zerolog.Logger,
-	originalReq *common.NormalizedRequest,
+	attemptExecution policy.ExecutionInternal[*common.NormalizedResponse],
 	labels metricsLabels,
-	parentExecution policy.ExecutionInternal[*common.NormalizedResponse],
 	innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse],
 	index int,
 	responseChan chan<- *execResult,
@@ -248,9 +264,8 @@ func (e *executor) executeParticipant(
 		return
 	}
 
-	// Each goroutine needs its own copy of the execution context
-	execution := parentExecution.CopyForCancellableWithValue(common.RequestContextKey, originalReq).(policy.ExecutionInternal[*common.NormalizedResponse])
-	result := innerFn(execution)
+	// Execute using the pre-created cancellable attempt execution
+	result := innerFn(attemptExecution)
 
 	// Check for cancellation after execution; release any produced result before dropping it
 	if ctx.Err() != nil {
@@ -294,6 +309,7 @@ func (e *executor) executeParticipant(
 		Result:   nr,
 		Err:      result.Error,
 		Upstream: upstream,
+		Index:    index,
 	}
 }
 

@@ -330,10 +330,10 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-        // Verify hedge delay was at least MinDelay (allow tiny scheduling tolerance)
-        hedgeDelay := hedgeTime.Sub(primaryTime)
-        tolerance := 2 * time.Millisecond
-        assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond-tolerance, "Hedge delay should respect MinDelay boundary")
+		// Verify hedge delay was at least MinDelay (allow tiny scheduling tolerance)
+		hedgeDelay := hedgeTime.Sub(primaryTime)
+		tolerance := 2 * time.Millisecond
+		assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond-tolerance, "Hedge delay should respect MinDelay boundary")
 	})
 
 	t.Run("QuantileBasedHedge_MaxDelayBoundary", func(t *testing.T) {
