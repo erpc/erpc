@@ -23,7 +23,7 @@ type shortCircuitRule struct {
 var consensusRules = []consensusRule{
 	// BlockHeadLeader: OnlyBlockHeadLeader behavior for disputes
 	{
-		Description: "only-block-head-leader on dispute: select leader's non-error result if available",
+		Description: "only-block-head-leader on dispute: prefer leader; non-error if available else leader error",
 		Condition: func(a *consensusAnalysis) bool {
 			if a.config.disputeBehavior != common.ConsensusDisputeBehaviorOnlyBlockHeadLeader {
 				return false
@@ -38,15 +38,17 @@ var consensusRules = []consensusRule{
 			if bestValid != nil && bestValid.Count >= a.config.agreementThreshold {
 				return false
 			}
-			return a.getLeaderGroupNonError() != nil
+			// Always handle in dispute mode; action decides whether to return leader result or leader error
+			return true
 		},
 		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 			if g := a.getLeaderGroupNonError(); g != nil {
 				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: g.FirstResult}
 			}
-			// If leader exists but only has an error, return that error (prefer leader strictly)
-			if gAny := a.getLeaderGroupAny(); gAny != nil && gAny.FirstError != nil {
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: gAny.FirstError}
+			// If leader exists but only has an error, return that error (prefer leader strictly),
+			// including infrastructure errors.
+			if err := a.getLeaderFirstErrorIncludingInfra(); err != nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: err}
 			}
 			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
 				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
@@ -117,9 +119,10 @@ var consensusRules = []consensusRule{
 			if !a.config.preferLargerResponses {
 				return false
 			}
-			// Apply only when dispute behavior is AcceptMostCommon (not low participants behavior)
-			acceptMostCommon := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult
-			if !acceptMostCommon {
+			// Apply only when AcceptMostCommon is active in the current context
+			isDisputeAcceptMost := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult
+			isLowParticipantsAcceptMost := a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult && a.isLowParticipants(a.config.agreementThreshold)
+			if !(isDisputeAcceptMost || isLowParticipantsAcceptMost) {
 				return false
 			}
 			best := a.getBestByCount()
@@ -142,9 +145,10 @@ var consensusRules = []consensusRule{
 			if !a.config.preferNonEmpty {
 				return false
 			}
-			acceptMostCommon := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult ||
-				a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult
-			if !acceptMostCommon {
+			// Active only when AcceptMostCommon is in effect for the current context
+			isDisputeAcceptMost := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult
+			isLowParticipantsAcceptMost := a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult && a.isLowParticipants(a.config.agreementThreshold)
+			if !(isDisputeAcceptMost || isLowParticipantsAcceptMost) {
 				return false
 			}
 			best := a.getBestByCount()
@@ -312,6 +316,11 @@ var consensusRules = []consensusRule{
 			if a.config.disputeBehavior != common.ConsensusDisputeBehaviorReturnError {
 				return false
 			}
+			// Trigger this rule only when prefer-non-empty is enabled; otherwise, allow the generic
+			// threshold-winner rule to select the empty result.
+			if !a.config.preferNonEmpty {
+				return false
+			}
 			best := a.getBestByCount()
 			if best == nil || best.ResponseType != ResponseTypeEmpty || best.Count < a.config.agreementThreshold {
 				return false
@@ -325,9 +334,8 @@ var consensusRules = []consensusRule{
 			return false
 		},
 		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
-			}
+			// With ReturnError + preferNonEmpty, do not override the threshold winner; dispute instead
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
 		},
 	},
 	// AcceptMostCommon + PreferNonEmpty: when above threshold and both non-empty and consensus-error meet,
@@ -443,9 +451,15 @@ var consensusRules = []consensusRule{
 	},
 	// PreferLargerResponses: if a smaller result meets threshold but a larger non-empty exists, respect preference
 	{
-		Description: "prefer-larger: dispute or choose largest when smaller meets threshold and larger exists",
+		Description: "prefer-larger + accept-most-common: choose largest when smaller meets threshold and larger exists",
 		Condition: func(a *consensusAnalysis) bool {
 			if !a.config.preferLargerResponses {
+				return false
+			}
+			// Apply only for AcceptMostCommon in the current context
+			isDisputeAcceptMost := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult
+			isLowParticipantsAcceptMost := a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult && a.isLowParticipants(a.config.agreementThreshold)
+			if !(isDisputeAcceptMost || isLowParticipantsAcceptMost) {
 				return false
 			}
 			best := a.getBestByCount()
@@ -464,24 +478,46 @@ var consensusRules = []consensusRule{
 			return false
 		},
 		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-			// AcceptMostCommon -> choose largest; ReturnError -> dispute
-			if a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult {
-				largest := a.getBestBySize()
-				if largest != nil {
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: largest.FirstResult}
+			largest := a.getBestBySize()
+			if largest != nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: largest.FirstResult}
+			}
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
+		},
+	},
+	// ReturnError behavior: if a smaller non-empty meets threshold but a larger non-empty exists (below threshold), dispute.
+	{
+		Description: "return-error: smaller winner at threshold but larger non-empty exists with preference -> dispute",
+		Condition: func(a *consensusAnalysis) bool {
+			if a.config.disputeBehavior != common.ConsensusDisputeBehaviorReturnError {
+				return false
+			}
+			if !a.config.preferLargerResponses {
+				return false
+			}
+			best := a.getBestByCount()
+			if best == nil || best.Count < a.config.agreementThreshold || best.ResponseType != ResponseTypeNonEmpty {
+				return false
+			}
+			// Trigger only when the larger non-empty exists but is below threshold (single or minority)
+			for _, g := range a.getValidGroups() {
+				if g.ResponseType == ResponseTypeNonEmpty && g.ResponseSize > best.ResponseSize && g.Count < a.config.agreementThreshold {
+					return true
 				}
 			}
-			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-				Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil),
-			}
+			return false
+		},
+		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: common.NewErrConsensusDispute("not enough agreement among responses", a.participants(), nil)}
 		},
 	},
 	{
 		Description: "accept-most-common valid group below threshold with a unique leader",
 		Condition: func(a *consensusAnalysis) bool {
-			acceptMostCommon := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult ||
-				a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult
-			if !acceptMostCommon {
+			// Only active when AcceptMostCommon is applicable for the present context
+			isDisputeAcceptMost := a.config.disputeBehavior == common.ConsensusDisputeBehaviorAcceptMostCommonValidResult
+			isLowParticipantsAcceptMost := a.config.lowParticipantsBehavior == common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult && a.isLowParticipants(a.config.agreementThreshold)
+			if !(isDisputeAcceptMost || isLowParticipantsAcceptMost) {
 				return false
 			}
 			// Determine best and second best among valid groups by count
