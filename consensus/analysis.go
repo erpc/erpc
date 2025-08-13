@@ -281,6 +281,27 @@ func (a *consensusAnalysis) getLeaderGroupAny() *responseGroup {
 	return nil
 }
 
+// getLeaderFirstErrorIncludingInfra returns the leader's first error from any group,
+// including infrastructure errors. Used by leader-preferring behaviors that must
+// return the leader's error even when it isn't a consensus-valid error.
+func (a *consensusAnalysis) getLeaderFirstErrorIncludingInfra() error {
+	if a.leaderUpstream == nil {
+		return nil
+	}
+	for _, group := range a.groups {
+		if group == nil || group.FirstError == nil {
+			// Fast path: skip groups without cached error
+			// Still scan results in case FirstError isn't populated
+		}
+		for _, r := range group.Results {
+			if r != nil && r.Upstream != nil && r.Upstream == a.leaderUpstream && r.Err != nil {
+				return r.Err
+			}
+		}
+	}
+	return nil
+}
+
 // --- Helper and Utility Functions ---
 
 // isConsensusValidError checks if an error can be part of consensus (e.g., EVM revert).
