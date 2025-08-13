@@ -951,31 +951,11 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 
 func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method string, upsList []common.Upstream) error {
 	// Check stateful methods policy
+	// Methods.Definitions is guaranteed to be populated by SetDefaults() with all necessary stateful methods
 	isStateful := false
 	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
 		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil {
 			isStateful = mc.Stateful
-		}
-	}
-	if !isStateful {
-		// fallback to defaults if method not defined in config
-		if mc := common.DefaultWithBlockCacheMethods[method]; mc != nil {
-			isStateful = mc.Stateful
-		}
-		if !isStateful {
-			if mc := common.DefaultSpecialCacheMethods[method]; mc != nil {
-				isStateful = mc.Stateful
-			}
-		}
-		if !isStateful {
-			if mc := common.DefaultRealtimeCacheMethods[method]; mc != nil {
-				isStateful = mc.Stateful
-			}
-		}
-		if !isStateful {
-			if mc := common.DefaultStaticCacheMethods[method]; mc != nil {
-				isStateful = mc.Stateful
-			}
 		}
 	}
 	if isStateful {

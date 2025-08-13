@@ -518,8 +518,19 @@ func (m *MethodsConfig) SetDefaults() error {
 		}
 
 		m.Definitions = mergedMethods
+	} else {
+		// User provided definitions and doesn't want defaults
+		// Still need to ensure stateful methods are marked correctly
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := m.Definitions[mn]; ok {
+				// Method exists in user definitions, ensure it's marked as stateful
+				cm.Stateful = true
+			} else {
+				// Method not in user definitions, add it as stateful
+				m.Definitions[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
 	}
-	// else: User provided definitions and doesn't want defaults, keep as is
 
 	return nil
 }
