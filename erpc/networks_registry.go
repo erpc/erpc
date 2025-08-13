@@ -114,11 +114,20 @@ func NewNetwork(
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))
 
+	// Pre-compute a stable label for network: prefer alias if set, else use networkId
+	netId := nwCfg.NetworkId()
+	// Keep label as alias if present, else empty. Empty will render as "n/a" via Network.Label().
+	var netLabel string
+	if a := nwCfg.Alias; a != "" {
+		netLabel = a
+	}
+
 	network := &Network{
-		cfg:       nwCfg,
-		logger:    &lg,
-		projectId: projectId,
-		networkId: nwCfg.NetworkId(),
+		cfg:          nwCfg,
+		logger:       &lg,
+		projectId:    projectId,
+		networkId:    netId,
+		networkLabel: netLabel,
 
 		appCtx:               appCtx,
 		upstreamsRegistry:    upstreamsRegistry,

@@ -147,6 +147,7 @@ func SafeReadBody(request *http.Request) string {
 func AssertNoPendingMocks(t *testing.T, expected int) {
 	totalPending := len(gock.Pending())
 	totalExpected := expected + EvmBlockTrackerMocks
+	totalExpectedUserMocks := totalExpected - EvmBlockTrackerMocks
 	if totalPending != totalExpected {
 		totalPendingUserMocks := 0
 		for _, pending := range gock.Pending() {
@@ -161,7 +162,11 @@ func AssertNoPendingMocks(t *testing.T, expected int) {
 				t.Errorf("Pending mock: %v -> %v", pending.Request().URLStruct.String(), string(pending.Response().BodyBuffer))
 			}
 		}
-		totalExpectedUserMocks := totalExpected - EvmBlockTrackerMocks
-		t.Errorf("Expected %v mocks to be pending, got %v left", totalExpectedUserMocks, totalPendingUserMocks)
+
+		if totalPending < EvmBlockTrackerMocks {
+			t.Errorf("Expected %v evm block tracker mocks to be pending, did you forget util.SetupMocksForEvmStatePoller()?", EvmBlockTrackerMocks)
+		}
+
+		t.Errorf("Expected %v user mocks to be pending (out of %v total), got %v pending user mocks (out of %v total)", totalExpectedUserMocks, totalExpected, totalPendingUserMocks, totalPending)
 	}
 }

@@ -31,12 +31,13 @@ var _ common.EvmStatePoller = &EvmStatePoller{}
 type EvmStatePoller struct {
 	Enabled bool
 
-	projectId string
-	appCtx    context.Context
-	logger    *zerolog.Logger
-	upstream  common.Upstream
-	cfg       *common.EvmNetworkConfig
-	tracker   *health.Tracker
+	projectId    string
+	appCtx       context.Context
+	logger       *zerolog.Logger
+	upstream     common.Upstream
+	cfg          *common.EvmNetworkConfig
+	tracker      *health.Tracker
+	networkLabel string
 
 	// When node is fully synced we don't need to query syncing state anymore.
 	// A number is used so that at least X times the upstream tells us it's synced.
@@ -107,6 +108,7 @@ func NewEvmStatePoller(
 		latestBlockShared:    lbs,
 		finalizedBlockShared: fbs,
 		sharedStateRegistry:  sharedState,
+		networkLabel:         "n/a",
 	}
 
 	lbs.OnValue(func(value int64) {
@@ -196,19 +198,29 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	return err
 }
 
-func (e *EvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {
+func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
-	e.cfg = cfg
+	if cfg == nil || cfg.Evm == nil {
+		e.logger.Warn().Msg("skipping evm state poller network config as it is nil")
+		return
+	}
+
+	e.cfg = cfg.Evm
+	if cfg != nil && cfg.Alias != "" {
+		e.networkLabel = cfg.Alias
+	} else {
+		e.networkLabel = cfg.NetworkId()
+	}
 
 	if e.debounceInterval == 0 {
-		if cfg.FallbackStatePollerDebounce != 0 {
-			e.debounceInterval = cfg.FallbackStatePollerDebounce.Duration()
+		if cfg.Evm.FallbackStatePollerDebounce != 0 {
+			e.debounceInterval = cfg.Evm.FallbackStatePollerDebounce.Duration()
 		}
 	}
 	if e.debounceInterval == 0 {
-		if cfg.ChainId > 0 {
-			e.inferDebounceIntervalFromBlockTime(cfg.ChainId)
+		if cfg.Evm.ChainId > 0 {
+			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
 		}
 	}
 }
@@ -358,7 +370,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.upstream.NetworkId(),
+			e.networkLabel,
 			e.upstream.Id(),
 		).Inc()
 		blockNum, err := e.fetchBlock(ctx, "latest")
@@ -433,7 +445,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.upstream.NetworkId(),
+			e.networkLabel,
 			e.upstream.Id(),
 		).Inc()
 

@@ -338,7 +338,7 @@ func BenchmarkConcurrentCordonOperations(b *testing.B) {
 			if rand.Float32() < 0.5 {
 				tracker.Cordon(ups, method, "test reason")
 			} else {
-				tracker.Uncordon(ups, method)
+				tracker.Uncordon(ups, method, "test reason")
 			}
 
 			_ = tracker.IsCordoned(ups, method)

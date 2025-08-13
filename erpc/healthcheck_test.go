@@ -75,6 +75,7 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 		nil,
 		metricsTracker,
 		1*time.Second,
+		nil,
 	)
 
 	// Create network

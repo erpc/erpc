@@ -98,6 +98,6 @@ type EvmStatePoller interface {
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
 	SuggestLatestBlock(blockNumber int64)
-	SetNetworkConfig(cfg *EvmNetworkConfig)
+	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 }

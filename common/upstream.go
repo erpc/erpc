@@ -26,12 +26,13 @@ type Upstream interface {
 	Id() string
 	VendorName() string
 	NetworkId() string
+	NetworkLabel() string
 	Config() *UpstreamConfig
 	Logger() *zerolog.Logger
 	Vendor() Vendor
 	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion bool) (*NormalizedResponse, error)
 	Cordon(method string, reason string)
-	Uncordon(method string)
+	Uncordon(method string, reason string)
 	IgnoreMethod(method string)
 }
 

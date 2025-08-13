@@ -23,6 +23,26 @@ type mockNetwork struct {
 	common.Network
 }
 
+// Provide a default Label implementation to avoid nil deref in tests when metric labels are used.
+func (m *mockNetwork) Label() string {
+	// If explicitly mocked, return mocked value
+	for _, c := range m.ExpectedCalls {
+		if c.Method == "Label" {
+			args := m.Called()
+			if s, ok := args.Get(0).(string); ok {
+				return s
+			}
+		}
+	}
+	// Fallbacks: use Id if available, else a static test label
+	for _, c := range m.ExpectedCalls {
+		if c.Method == "Id" {
+			return m.Id()
+		}
+	}
+	return "test"
+}
+
 func (m *mockNetwork) Id() string {
 	args := m.Called()
 	return args.Get(0).(string)
@@ -79,6 +99,20 @@ func (m *mockEvmUpstream) Config() *common.UpstreamConfig {
 func (m *mockEvmUpstream) NetworkId() string {
 	args := m.Called()
 	return args.Get(0).(string)
+}
+
+func (m *mockEvmUpstream) NetworkLabel() string {
+	// If explicitly mocked, use the mock value
+	for _, c := range m.ExpectedCalls {
+		if c.Method == "NetworkLabel" {
+			args := m.Called()
+			if s, ok := args.Get(0).(string); ok {
+				return s
+			}
+		}
+	}
+	// Fallback to NetworkId
+	return m.NetworkId()
 }
 
 func (m *mockEvmUpstream) Id() string {
@@ -270,7 +304,8 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 					nil,
 				).Once()
 				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123")
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test")
 			},
 		},
@@ -294,7 +329,8 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 					).Times(1).
 					Return(nil, errors.New("failed")).Times(3)
 				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123")
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test")
 			},
 			expectError: true,
@@ -403,7 +439,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					},
 				})
 				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123")
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
@@ -444,7 +481,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					},
 				})
 				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123")
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
@@ -487,7 +525,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					},
 				})
 				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123")
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
@@ -528,7 +567,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					},
 				})
 				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123")
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
@@ -639,7 +679,8 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					nil,
 				).Times(1)
 				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123")
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test")
 				u.On("Config").Return(&common.UpstreamConfig{
 					Evm: &common.EvmUpstreamConfig{
@@ -847,7 +888,8 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 		},
 	})
 	mockUpstream.On("Id").Return("rpc1")
-	mockUpstream.On("NetworkId").Return("evm:1")
+	mockUpstream.On("NetworkId").Return("evm:1").Maybe()
+	mockUpstream.On("NetworkLabel").Return("evm:1").Maybe()
 	mockUpstream.On("VendorName").Return("test")
 	mockUpstream.On("EvmStatePoller").Return(mockStatePoller)
 	mockStatePoller.On("LatestBlock").Return(int64(1000))

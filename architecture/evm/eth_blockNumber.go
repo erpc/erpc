@@ -71,7 +71,7 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 			telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 				network.ProjectId(),
 				ups.VendorName(),
-				network.Id(),
+				network.Label(),
 				ups.Id(),
 				"eth_blockNumber",
 			).Inc()

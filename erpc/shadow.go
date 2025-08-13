@@ -16,7 +16,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			p.Logger.Error().Msgf("panic while executing shadow requests: %v", r)
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
 				"shadow-upstreams",
-				fmt.Sprintf("network:%s", network.networkId),
+				fmt.Sprintf("network:%s", network.Label()),
 				common.ErrorFingerprint(r),
 			).Inc()
 		}
@@ -104,14 +104,14 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				telemetry.MetricShadowResponseErrorTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
-					network.networkId,
+					network.Label(),
 					ups.Id(),
 					method,
 					common.ErrorFingerprint(errForward),
 				).Inc()
 				p.Logger.Debug().Err(errForward).
 					Str("component", "shadowTraffic").
-					Str("networkId", network.networkId).
+					Str("networkId", network.Id()).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
 					Object("request", shadowReq).
@@ -124,14 +124,14 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				telemetry.MetricShadowResponseErrorTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
-					network.networkId,
+					network.Label(),
 					ups.Id(),
 					method,
 					"nil_response",
 				).Inc()
 				p.Logger.Debug().
 					Str("component", "shadowTraffic").
-					Str("networkId", network.networkId).
+					Str("networkId", network.Id()).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
 					Object("request", shadowReq).
@@ -178,14 +178,14 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				telemetry.MetricShadowResponseErrorTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
-					network.networkId,
+					network.Label(),
 					ups.Id(),
 					method,
 					"hash_error",
 				).Inc()
 				p.Logger.Debug().Err(errHash).
 					Str("component", "shadowTraffic").
-					Str("networkId", network.networkId).
+					Str("networkId", network.Id()).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
 					Object("request", shadowReq).
@@ -201,13 +201,13 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				telemetry.MetricShadowResponseIdenticalTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
-					network.networkId,
+					network.Label(),
 					ups.Id(),
 					method,
 				).Inc()
 				p.Logger.Trace().
 					Str("component", "shadowTraffic").
-					Str("networkId", network.networkId).
+					Str("networkId", network.Id()).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
 					Object("request", shadowReq).
@@ -217,7 +217,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				telemetry.MetricShadowResponseMismatchTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
-					network.networkId,
+					network.Label(),
 					ups.Id(),
 					method,
 					strconv.FormatBool(isShadowEmpty),
@@ -226,7 +226,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				p.Logger.Error().
 					Str("component", "shadowTraffic").
 					Str("projectId", p.Config.Id).
-					Str("networkId", network.networkId).
+					Str("networkId", network.Id()).
 					Str("upstreamId", ups.Id()).
 					Str("method", method).
 					Str("expectedHash", expectedHash).

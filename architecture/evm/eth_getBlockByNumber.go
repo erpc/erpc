@@ -123,7 +123,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 				telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 					network.ProjectId(),
 					ups.VendorName(),
-					network.Id(),
+					network.Label(),
 					ups.Id(),
 					"eth_getBlockByNumber",
 				).Inc()
@@ -182,7 +182,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 				telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
 					network.ProjectId(),
 					ups.VendorName(),
-					network.Id(),
+					network.Label(),
 					ups.Id(),
 				).Inc()
 			}

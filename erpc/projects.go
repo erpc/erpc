@@ -129,11 +129,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	// Get initial finality from request
 	reqFinality := nq.Finality(ctx)
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String(), nq.UserId(), nq.AgentName(), nq.AgentVersion()).Inc()
+	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(), nq.AgentVersion()).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
-		Str("networkId", network.networkId).
+		Str("networkId", network.Id()).
 		Str("method", method).
 		Interface("id", nq.ID()).
 		Str("ptr", fmt.Sprintf("%p", nq)).
@@ -174,7 +174,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		}
 		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
 			p.Config.Id,
-			network.networkId,
+			network.Label(),
 			vendor,
 			upstreamId,
 			method,
@@ -192,7 +192,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		}
 		telemetry.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,
-			network.networkId,
+			network.Label(),
 			vendor,
 			upstreamId,
 			method,
@@ -211,7 +211,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		}
 		telemetry.MetricNetworkFailedRequests.WithLabelValues(
 			network.projectId,
-			network.networkId,
+			network.Label(),
 			method,
 			strconv.FormatInt(int64(resp.Attempts()), 10),
 			common.ErrorFingerprint(err),
@@ -223,7 +223,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		).Inc()
 		telemetry.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,
-			network.networkId,
+			network.Label(),
 			"<error>",
 			"<error>",
 			method,

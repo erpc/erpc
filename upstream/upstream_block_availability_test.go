@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )
@@ -54,10 +55,10 @@ func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, 
 	}
 	return blockNumber <= m.finalizedBlock, nil
 }
-func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)       {}
-func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)          {}
-func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.EvmNetworkConfig) {}
-func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                            { return m.isNull }
+func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)    {}
+func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
+func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
 
 func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 	t.Run("NegativeBlockNumber", func(t *testing.T) {
@@ -308,7 +309,7 @@ func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// Simulate eth_getLogs checking fromBlock and toBlock
@@ -338,7 +339,7 @@ func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// eth_getLogs with toBlock beyond latest
@@ -363,7 +364,7 @@ func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// eth_getLogs with fromBlock too old
@@ -393,7 +394,7 @@ func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// Simulate retry policy checking if block is available
@@ -416,7 +417,7 @@ func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// Check old block that's not available
@@ -438,7 +439,7 @@ func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// This would normally be called by retry policy, but for ignored methods it shouldn't
@@ -600,10 +601,10 @@ func (m *mockEvmStatePollerWithCustomBehavior) FinalizedBlock() int64 { return m
 func (m *mockEvmStatePollerWithCustomBehavior) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.finalizedBlock, nil
 }
-func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber int64)       {}
-func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)          {}
-func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.EvmNetworkConfig) {}
-func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                            { return false }
+func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber int64)    {}
+func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
+func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
 
 func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 	t.Run("ProjectIdHandling", func(t *testing.T) {
@@ -617,7 +618,7 @@ func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// Should handle empty ProjectId gracefully
@@ -645,7 +646,7 @@ func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 				},
 				logger:         &zerolog.Logger{},
 				evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-				networkId:      networkId,
+				networkId:      util.AtomicValue(networkId),
 			}
 
 			canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1001)
@@ -865,7 +866,7 @@ func BenchmarkEvmAssertBlockAvailability(b *testing.B) {
 		},
 		logger:         &zerolog.Logger{},
 		evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-		networkId:      "evm:1",
+		networkId:      util.AtomicValue("evm:1"),
 	}
 
 	ctx := context.Background()

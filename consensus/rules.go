@@ -15,6 +15,7 @@ type consensusRule struct {
 
 type shortCircuitRule struct {
 	Description string
+	Reason      string
 	Condition   func(winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool
 }
 
@@ -709,6 +710,7 @@ var consensusRules = []consensusRule{
 var shortCircuitRules = []shortCircuitRule{
 	{
 		Description: "consensus-valid error meets agreement threshold -> short-circuit to error",
+		Reason:      "consensus_error_threshold",
 		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
 			best := a.getBestByCount()
 			if best == nil {
@@ -734,6 +736,7 @@ var shortCircuitRules = []shortCircuitRule{
 	},
 	{
 		Description: "winner meets agreement threshold, is non-empty, and lead is unassailable (no possible tie with remaining)",
+		Reason:      "unassailable_lead",
 		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
 			// With remaining participants, avoid short-circuiting when a preference could still
 			// change the winner. In particular, when PreferLargerResponses is enabled, a later

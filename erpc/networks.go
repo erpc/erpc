@@ -33,6 +33,7 @@ type FailsafeExecutor struct {
 
 type Network struct {
 	networkId                string
+	networkLabel             string
 	projectId                string
 	logger                   *zerolog.Logger
 	bootstrapOnce            sync.Once
@@ -65,6 +66,16 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 }
 
 func (n *Network) Id() string {
+	return n.networkId
+}
+
+func (n *Network) Label() string {
+	if n == nil {
+		return ""
+	}
+	if n.networkLabel != "" {
+		return n.networkLabel
+	}
 	return n.networkId
 }
 
@@ -527,7 +538,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				attempts := exec.Attempts()
 				if hedges > 0 {
 					finality := effectiveReq.Finality(loopCtx)
-					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
+					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
 				}
 
 				var r *common.NormalizedResponse
@@ -544,7 +555,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					finality := effectiveReq.Finality(loopCtx)
-					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
+					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
 					// Release any response associated with the discarded hedge to avoid retaining buffers
 					if r != nil {
 						r.Release()
@@ -707,7 +718,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			telemetry.MetricUpstreamWrongEmptyResponseTotal.WithLabelValues(
 				n.projectId,
 				upstream.VendorName(),
-				n.networkId,
+				n.Label(),
 				upstream.Id(),
 				method,
 				finality.String(),
@@ -921,7 +932,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		inf := vinf.(*Multiplexer)
 		method, _ := req.Method()
 		finality := req.Finality(ctx)
-		telemetry.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method, finality.String(), req.UserId(), req.AgentName(), req.AgentVersion()).Inc()
+		telemetry.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.Label(), method, finality.String(), req.UserId(), req.AgentName(), req.AgentVersion()).Inc()
 
 		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
 
@@ -1108,7 +1119,7 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 				finality := req.Finality(context.Background())
 				telemetry.MetricNetworkRequestSelfRateLimited.WithLabelValues(
 					n.projectId,
-					n.networkId,
+					n.Label(),
 					method,
 					finality.String(),
 					req.UserId(),

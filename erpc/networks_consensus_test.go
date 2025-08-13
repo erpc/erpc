@@ -2406,7 +2406,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx, &log.Logger, "prjA", tc.upstreams,
-		ssr, nil, vr, pr, nil, mt, 1*time.Second,
+		ssr, nil, vr, pr, nil, mt, 1*time.Second, nil,
 	)
 
 	if err := tc.consensusConfig.SetDefaults(); err != nil {

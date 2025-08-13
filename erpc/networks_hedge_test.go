@@ -998,6 +998,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		nil,
 		metricsTracker,
 		1*time.Second,
+		nil,
 	)
 
 	network, err := NewNetwork(
