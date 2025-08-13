@@ -269,7 +269,8 @@ func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, chainsURL string) (m
 	}
 	best := make(map[int64]candidate)
 	for _, protocol := range chainsData.ChainSettings.Protocols {
-		if strings.ToLower(strings.TrimSpace(protocol.Type)) != "eth" {
+		ptype := strings.ToLower(strings.TrimSpace(protocol.Type))
+		if ptype != "" && ptype != "eth" {
 			continue
 		}
 		for _, chain := range protocol.Chains {
