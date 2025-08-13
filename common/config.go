@@ -191,6 +191,7 @@ type CacheMethodConfig struct {
 	RespRefs  [][]interface{} `yaml:"respRefs" json:"respRefs"`
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
+	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
 }
 
 type CachePolicyConfig struct {
@@ -940,7 +941,6 @@ type NetworkConfig struct {
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
-	StatefulMethods   []string                 `yaml:"statefulMethods,omitempty" json:"statefulMethods"`
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format

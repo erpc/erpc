@@ -172,7 +172,8 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 	return nil
 }
 
-var DefaultStatefulMethods = []string{
+
+var DefaultStatefulMethodNames = []string{
 	"eth_newFilter",
 	"eth_newBlockFilter",
 	"eth_newPendingTransactionFilter",
@@ -468,6 +469,15 @@ func (m *MethodsConfig) SetDefaults() error {
 			mergedMethods[name] = method
 		}
 
+		// Mark default stateful methods
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := mergedMethods[mn]; ok {
+				cm.Stateful = true
+			} else {
+				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
+
 		if m.PreserveDefaultMethods && m.Definitions != nil {
 			// Merge user definitions on top of defaults
 			for name, method := range m.Definitions {
@@ -491,6 +501,15 @@ func (m *MethodsConfig) SetDefaults() error {
 		}
 		for name, method := range DefaultSpecialCacheMethods {
 			mergedMethods[name] = method
+		}
+
+		// Mark default stateful methods
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := mergedMethods[mn]; ok {
+				cm.Stateful = true
+			} else {
+				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
+			}
 		}
 
 		// Then override with user definitions
@@ -1680,9 +1699,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		}
 	}
 
-	if n.StatefulMethods == nil || len(n.StatefulMethods) == 0 {
-		n.StatefulMethods = DefaultStatefulMethods
-	}
 
 	return nil
 }
