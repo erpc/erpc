@@ -172,6 +172,16 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 	return nil
 }
 
+
+var DefaultStatefulMethodNames = []string{
+	"eth_newFilter",
+	"eth_newBlockFilter",
+	"eth_newPendingTransactionFilter",
+	"eth_getFilterChanges",
+	"eth_getFilterLogs",
+	"eth_uninstallFilter",
+}
+
 // These methods return a fixed value that does not change over time
 var DefaultStaticCacheMethods = map[string]*CacheMethodConfig{
 	"eth_chainId": {
@@ -459,6 +469,15 @@ func (m *MethodsConfig) SetDefaults() error {
 			mergedMethods[name] = method
 		}
 
+		// Mark default stateful methods
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := mergedMethods[mn]; ok {
+				cm.Stateful = true
+			} else {
+				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
+
 		if m.PreserveDefaultMethods && m.Definitions != nil {
 			// Merge user definitions on top of defaults
 			for name, method := range m.Definitions {
@@ -484,14 +503,34 @@ func (m *MethodsConfig) SetDefaults() error {
 			mergedMethods[name] = method
 		}
 
+		// Mark default stateful methods
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := mergedMethods[mn]; ok {
+				cm.Stateful = true
+			} else {
+				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
+
 		// Then override with user definitions
 		for name, method := range m.Definitions {
 			mergedMethods[name] = method
 		}
 
 		m.Definitions = mergedMethods
+	} else {
+		// User provided definitions and doesn't want defaults
+		// Still need to ensure stateful methods are marked correctly
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := m.Definitions[mn]; ok {
+				// Method exists in user definitions, ensure it's marked as stateful
+				cm.Stateful = true
+			} else {
+				// Method not in user definitions, add it as stateful
+				m.Definitions[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
 	}
-	// else: User provided definitions and doesn't want defaults, keep as is
 
 	return nil
 }
@@ -1670,6 +1709,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			return err
 		}
 	}
+
 
 	return nil
 }
