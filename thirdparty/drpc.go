@@ -23,9 +23,12 @@ const DefaultDrpcRecheckInterval = 24 * time.Hour
 type ChainConfig struct {
 	ChainID    string   `yaml:"chain-id"`
 	ShortNames []string `yaml:"short-names"`
+	Priority   int      `yaml:"priority"`
 }
 
 type ProtocolConfig struct {
+	ID     string        `yaml:"id"`
+	Type   string        `yaml:"type"`
 	Chains []ChainConfig `yaml:"chains"`
 }
 
@@ -259,15 +262,23 @@ func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, chainsURL string) (m
 		return nil, fmt.Errorf("failed to parse DRPC chains YAML: %w", err)
 	}
 
-	networkNames := make(map[int64]string)
+	// Prefer highest-priority chain per chainId, and only consider EVM networks (type == "eth").
+	type candidate struct {
+		name     string
+		priority int
+	}
+	best := make(map[int64]candidate)
 	for _, protocol := range chainsData.ChainSettings.Protocols {
+		ptype := strings.ToLower(strings.TrimSpace(protocol.Type))
+		if ptype != "" && ptype != "eth" {
+			continue
+		}
 		for _, chain := range protocol.Chains {
-			// Parse chain-id from hex to int64
+			// Parse chain-id from hex to int64 (some entries may not have 0x prefix)
 			chainIDStr := strings.TrimPrefix(chain.ChainID, "0x")
 			if chainIDStr == "" {
 				continue
 			}
-
 			chainID, err := strconv.ParseInt(chainIDStr, 16, 64)
 			if err != nil {
 				log.Debug().
@@ -276,16 +287,25 @@ func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, chainsURL string) (m
 					Msg("Failed to parse chain ID")
 				continue
 			}
-
-			// Use the first short name if available
-			if len(chain.ShortNames) > 0 {
-				networkNames[chainID] = chain.ShortNames[0]
-				log.Debug().
-					Int64("chain_id", chainID).
-					Str("name", chain.ShortNames[0]).
-					Msg("Added DRPC network name")
+			if len(chain.ShortNames) == 0 {
+				continue
+			}
+			name := chain.ShortNames[0]
+			prio := chain.Priority
+			if cur, ok := best[chainID]; !ok || prio > cur.priority {
+				best[chainID] = candidate{name: name, priority: prio}
 			}
 		}
+	}
+
+	networkNames := make(map[int64]string, len(best))
+	for cid, c := range best {
+		networkNames[cid] = c.name
+		log.Debug().
+			Int64("chain_id", cid).
+			Str("name", c.name).
+			Int("priority", c.priority).
+			Msg("Selected DRPC network name")
 	}
 
 	log.Info().
