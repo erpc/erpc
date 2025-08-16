@@ -161,6 +161,446 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Last Resp: %+v", lastResp)
 	})
 
+	t.Run("EmptyResultMaxAttempts_CapsEmptyRetries", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Two upstreams, each returns empty once
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts:            4,
+				EmptyResultMaxAttempts: 2, // cap empties at 2 total attempts
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		if err := upr.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ntw.Bootstrap(ctx)
+		time.Sleep(50 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+		if resp.Attempts() != 2 {
+			t.Errorf("expected attempts=2, got %d", resp.Attempts())
+		}
+	})
+
+	t.Run("EmptyResultMaxAttempts_UnsetEqualsMaxAttempts", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+		gock.New("http://rpc3.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{MaxAttempts: 3}, // no EmptyResultMaxAttempts set
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		up2 := &common.UpstreamConfig{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		up3 := &common.UpstreamConfig{Id: "rpc3", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc3.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2, up3}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		if err := upr.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+		pup3, err := upr.NewUpstream(up3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl3, err := clr.GetOrCreateClient(ctx, pup3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup3.Client = cl3
+
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ntw.Bootstrap(ctx)
+		time.Sleep(50 * time.Millisecond)
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+		if resp.Attempts() != 3 {
+			t.Errorf("expected attempts=3, got %d", resp.Attempts())
+		}
+	})
+
+	t.Run("EmptyResultMaxAttempts_DoesNotAffectErrorRetries", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// First attempt -> 500 error, then empties
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(500).
+			JSON([]byte(`{"error":{"message":"boom"}}`))
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultMaxAttempts: 2}}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		if err := upr.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ntw.Bootstrap(ctx)
+		time.Sleep(50 * time.Millisecond)
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+		if err == nil {
+			// Should return empty response after attempts are capped
+			if resp.Attempts() != 2 {
+				t.Errorf("expected attempts=2, got %d", resp.Attempts())
+			}
+			jrr, e := resp.JsonRpcResponse()
+			if e != nil {
+				t.Fatalf("jsonrpc error: %v", e)
+			}
+			if jrr == nil || !jrr.IsResultEmptyish(context.TODO()) {
+				t.Fatalf("expected emptyish result")
+			}
+		} else {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("EmptyResultMaxAttempts_IgnoredWhenRetryEmptyDisabled", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 2}}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		if err := upr.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		// RetryEmpty disabled
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.FALSE}}, rlr, upr, mt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ntw.Bootstrap(ctx)
+		time.Sleep(50 * time.Millisecond)
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1 when RetryEmpty disabled, got %d", resp.Attempts())
+		}
+	})
+
+	t.Run("EmptyResultMaxAttempts_IgnoredWhenMethodInIgnoreList", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultIgnore: []string{"eth_getBalance"}}}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		up1 := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		if err := upr.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ntw.Bootstrap(ctx)
+		time.Sleep(50 * time.Millisecond)
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1 when method in EmptyResultIgnore, got %d", resp.Attempts())
+		}
+	})
+
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

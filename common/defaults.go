@@ -1840,6 +1840,13 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		r.EmptyResultIgnore = defaults.EmptyResultIgnore
 	}
 
+	// Default EmptyResultMaxAttempts to MaxAttempts if not set
+	if r.EmptyResultMaxAttempts == 0 {
+		if defaults != nil && defaults.EmptyResultMaxAttempts != 0 {
+			r.EmptyResultMaxAttempts = defaults.EmptyResultMaxAttempts
+		}
+	}
+
 	return nil
 }
 
