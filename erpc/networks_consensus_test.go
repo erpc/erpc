@@ -1090,7 +1090,7 @@ func TestConsensusPolicy(t *testing.T) {
 				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
 				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 				PreferNonEmpty:          &common.TRUE,
-				PreferLargerResponses:   &common.FALSE,
+				PreferLargerResponses:   &common.TRUE,
 			},
 			requestMethod: "eth_getTransactionReceipt",
 			mockResponses: []mockResponse{

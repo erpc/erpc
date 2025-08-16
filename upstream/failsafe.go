@@ -480,7 +480,22 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 					attribute.Bool("directive.retry_empty", true),
 					attribute.Bool("response.is_empty", isEmpty),
 				)
+				// Respect empty-result max attempts
 				if isEmpty {
+					if cfg.EmptyResultMaxAttempts > 0 {
+						span.SetAttributes(
+							attribute.Int("empty_result.max_attempts", cfg.EmptyResultMaxAttempts),
+							attribute.Int("execution.attempts", exec.Attempts()),
+						)
+						if exec.Attempts() >= cfg.EmptyResultMaxAttempts {
+							span.SetAttributes(
+								attribute.Bool("retry", false),
+								attribute.String("reason", "empty_result_max_attempts_reached"),
+							)
+							return false
+						}
+					}
+
 					method, _ := req.Method()
 					span.SetAttributes(
 						attribute.String("method", method),
