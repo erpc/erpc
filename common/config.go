@@ -762,6 +762,8 @@ type RetryPolicyConfig struct {
 	Jitter                Duration              `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence"`
 	EmptyResultIgnore     []string              `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
+	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
+	EmptyResultMaxAttempts int `yaml:"emptyResultMaxAttempts,omitempty" json:"emptyResultMaxAttempts"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
