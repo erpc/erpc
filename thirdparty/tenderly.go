@@ -139,7 +139,6 @@ func (v *TenderlyVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReque
 		details["data"] = err.Data
 	}
 
-	// Other errors can be properly handled by generic error handling
 	return nil
 }
 
@@ -231,8 +230,6 @@ func (v *TenderlyVendor) fetchTenderlyNetworks(ctx context.Context) (map[int64]s
 			newData[cid] = slug
 		}
 	}
-
-	// No hard-coded defaults; rely solely on the API response.
 
 	return newData, nil
 }
