@@ -114,6 +114,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		ntw, err := NewNetwork(
 			ctx,
@@ -235,6 +236,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		ntw, err := NewNetwork(
 			ctx,
@@ -354,6 +356,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -475,6 +478,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -625,6 +629,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -781,6 +786,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -946,6 +952,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1144,6 +1151,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1355,6 +1363,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1548,6 +1557,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1740,7 +1750,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		})
 
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
 		_ = upr.Bootstrap(ctx)
 		_ = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 
@@ -1903,6 +1913,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2112,6 +2123,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2303,6 +2315,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2488,6 +2501,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			0,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2700,6 +2714,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			0,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2922,6 +2937,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			0,
+			nil,
 		)
 		if err := upr.Bootstrap(ctx); err != nil {
 			t.Fatal(err)
@@ -3114,6 +3130,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			0,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3304,6 +3321,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			0,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3474,6 +3492,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3607,6 +3626,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3767,6 +3787,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3920,6 +3941,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4053,6 +4075,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4179,6 +4202,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 
 		err = upsReg.Bootstrap(ctx)
@@ -4299,6 +4323,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4431,6 +4456,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4560,6 +4586,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4694,6 +4721,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4835,6 +4863,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4989,6 +5018,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -5142,6 +5172,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -5294,6 +5325,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -5429,6 +5461,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Hour,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -5572,6 +5605,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -5719,6 +5753,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -5866,6 +5901,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6000,6 +6036,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6135,6 +6172,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6289,6 +6327,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6445,6 +6484,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6579,6 +6619,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6702,6 +6743,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6825,6 +6867,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -6935,6 +6978,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			nil,
 		)
 
 		err = upstreamsRegistry.Bootstrap(ctx)
@@ -7139,6 +7183,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 		)
 		err = upr.Bootstrap(ctx)
 		if err == nil {
@@ -9537,7 +9582,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		})
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
 		)
 		require.NoError(t, upr.Bootstrap(ctx))
 
@@ -9590,7 +9635,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// Metric counts successful cache refreshes (bootstrap + final success).
 		// It should *not* increase for each failed attempt, so we expect exactly 2.
 		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
-			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
+			GetMetricWithLabelValues("prjA", "vendorA", "n/a", "rpc1")
 		require.NoError(t, err)
 		metricValue := promUtil.ToFloat64(polledMetric)
 		//
@@ -9703,7 +9748,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		})
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
 		)
 		require.NoError(t, upr.Bootstrap(ctx))
 
@@ -9754,7 +9799,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 5) Inspect metrics: single poll, zero multiplexer hits
 		//----------------------------------------------------------------------
 		polled, err := telemetry.MetricUpstreamLatestBlockPolled.
-			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
+			GetMetricWithLabelValues("prjA", "vendorA", "n/a", "rpc1")
 		require.NoError(t, err)
 
 		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", promUtil.ToFloat64(polled))
@@ -9852,7 +9897,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		})
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
 		)
 
 		ntwCfg := &common.NetworkConfig{
@@ -9945,6 +9990,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		nil,
 		metricsTracker,
 		1*time.Second,
+		nil,
 	)
 	if networkConfig == nil {
 		networkConfig = &common.NetworkConfig{
@@ -10057,6 +10103,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		nil,
 		metricsTracker,
 		120*time.Second,
+		nil,
 	)
 
 	if failsafeConfig == nil {
@@ -10179,6 +10226,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -10316,6 +10364,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{

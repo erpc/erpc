@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )
@@ -293,10 +294,10 @@ func (m *mockEvmStatePoller) FinalizedBlock() int64                        { ret
 func (m *mockEvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.finalizedBlock, nil
 }
-func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64)       {}
-func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64)          {}
-func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {}
-func (m *mockEvmStatePoller) IsObjectNull() bool                            { return m.isNull }
+func (m *mockEvmStatePoller) SuggestFinalizedBlock(blockNumber int64)    {}
+func (m *mockEvmStatePoller) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
+func (m *mockEvmStatePoller) IsObjectNull() bool                         { return m.isNull }
 
 func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 	t.Run("NilUpstream", func(t *testing.T) {
@@ -595,10 +596,10 @@ func (m *mockEvmStatePollerWithUpdate) FinalizedBlock() int64 { return m.LatestB
 func (m *mockEvmStatePollerWithUpdate) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.FinalizedBlock(), nil
 }
-func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64)       {}
-func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64)          {}
-func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.EvmNetworkConfig) {}
-func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                            { return false }
+func (m *mockEvmStatePollerWithUpdate) SuggestFinalizedBlock(blockNumber int64)    {}
+func (m *mockEvmStatePollerWithUpdate) SuggestLatestBlock(blockNumber int64)       {}
+func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
+func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                         { return false }
 
 func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 	t.Run("MetricsIncrementedForUpperBound", func(t *testing.T) {
@@ -613,7 +614,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// Request block beyond latest - should increment upper bound metric
@@ -638,7 +639,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// Request block before available range - should increment lower bound metric
@@ -663,7 +664,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
-			networkId:      "evm:1",
+			networkId:      util.AtomicValue("evm:1"),
 		}
 
 		// Request block beyond latest with empty method - should not increment metrics

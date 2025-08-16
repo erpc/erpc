@@ -2,6 +2,8 @@
 vendor/
 *.log
 *.out
+*.pb
+*.txt
 *.test
 *.prof
 *.pprof

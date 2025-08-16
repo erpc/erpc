@@ -65,6 +65,7 @@ func NewUpstreamsRegistry(
 	ppr *clients.ProxyPoolRegistry,
 	mt *health.Tracker,
 	scoreRefreshInterval time.Duration,
+	onUpstreamRegistered func(*Upstream) error,
 ) *UpstreamsRegistry {
 	lg := logger.With().Str("component", "upstreams").Logger()
 	return &UpstreamsRegistry{
@@ -86,6 +87,7 @@ func NewUpstreamsRegistry(
 		upstreamsMu:            &sync.RWMutex{},
 		networkMu:              &sync.Map{},
 		initializer:            util.NewInitializer(appCtx, &lg, nil),
+		onUpstreamRegistered:   onUpstreamRegistered,
 	}
 }
 
@@ -96,10 +98,6 @@ func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
 	}
 
 	return u.registerUpstream(u.appCtx, u.upsCfg...)
-}
-
-func (u *UpstreamsRegistry) OnUpstreamRegistered(fn func(ups *Upstream) error) {
-	u.onUpstreamRegistered = fn
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
@@ -715,7 +713,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 			Float64("normalizedBlockHeadLag", normBlockHeadLags[i]).
 			Float64("normalizedFinalizationLag", normFinalizationLags[i]).
 			Msg("score updated")
-		telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), networkId, upsId, method).Set(score)
+		telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, method).Set(score)
 	}
 
 	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)

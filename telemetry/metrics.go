@@ -92,7 +92,7 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",
 		Help:      "Whether upstream is un/cordoned (excluded from routing by selection policy).",
-	}, []string{"project", "vendor", "network", "upstream", "category"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "reason"})
 
 	MetricUpstreamStaleLatestBlock = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

@@ -264,7 +264,7 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		if !state.isActive {
 			p.metricsTracker.Cordon(ups, method, "excluded by selection policy")
 		} else {
-			p.metricsTracker.Uncordon(ups, method)
+			p.metricsTracker.Uncordon(ups, method, "included by selection policy")
 		}
 
 		state.mu.Unlock()

@@ -17,6 +17,7 @@ const (
 
 type Network interface {
 	Id() string
+	Label() string
 	ProjectId() string
 	Architecture() NetworkArchitecture
 	Config() *NetworkConfig

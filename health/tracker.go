@@ -75,7 +75,7 @@ type TrackedMetrics struct {
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
 	Cordoned               atomic.Bool      `json:"cordoned"`
-	CordonedReason         atomic.Value     `json:"cordonedReason"`
+	LastCordonedReason     atomic.Value     `json:"lastCordonedReason"`
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
@@ -109,7 +109,7 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 		"blockHeadLag":           m.BlockHeadLag.Load(),
 		"finalizationLag":        m.FinalizationLag.Load(),
 		"cordoned":               m.Cordoned.Load(),
-		"cordonedReason":         m.CordonedReason.Load(),
+		"lastCordonedReason":     m.LastCordonedReason.Load(),
 		"errorRate":              m.ErrorRate(),
 		"throttledRate":          m.ThrottledRate(),
 	})
@@ -129,7 +129,7 @@ func (m *TrackedMetrics) Reset() {
 
 	// Optionally uncordon
 	m.Cordoned.Store(false)
-	m.CordonedReason.Store("")
+	m.LastCordonedReason.Store("")
 }
 
 // ------------------------------------
@@ -245,14 +245,21 @@ func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
 
 	tm := t.getUpsMetrics(upstreamKey{upstream, method})
 	tm.Cordoned.Store(true)
-	tm.CordonedReason.Store(reason)
+	tm.LastCordonedReason.Store(reason)
 
 	telemetry.MetricUpstreamCordoned.
-		WithLabelValues(t.projectId, upstream.VendorName(), upstream.NetworkId(), upstream.Id(), method).
+		WithLabelValues(
+			t.projectId,
+			upstream.VendorName(),
+			upstream.NetworkLabel(),
+			upstream.Id(),
+			method,
+			reason,
+		).
 		Set(1)
 }
 
-func (t *Tracker) Uncordon(upstream common.Upstream, method string) {
+func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason string) {
 	lg := upstream.Logger()
 	lg.Debug().
 		Str("method", method).
@@ -260,10 +267,17 @@ func (t *Tracker) Uncordon(upstream common.Upstream, method string) {
 
 	tm := t.getUpsMetrics(upstreamKey{upstream, method})
 	tm.Cordoned.Store(false)
-	tm.CordonedReason.Store("")
+	tm.LastCordonedReason.Store("")
 
 	telemetry.MetricUpstreamCordoned.
-		WithLabelValues(t.projectId, upstream.VendorName(), upstream.NetworkId(), upstream.Id(), method).
+		WithLabelValues(
+			t.projectId,
+			upstream.VendorName(),
+			upstream.NetworkLabel(),
+			upstream.Id(),
+			method,
+			reason,
+		).
 		Set(0)
 }
 
@@ -323,7 +337,15 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		}
 	}
 	telemetry.MetricUpstreamRequestDuration.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, comp, finality.String()).
+		WithLabelValues(
+			t.projectId,
+			up.VendorName(),
+			up.NetworkLabel(),
+			up.Id(),
+			method,
+			comp,
+			finality.String(),
+		).
 		Observe(sec)
 }
 
@@ -367,7 +389,16 @@ func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method strin
 	}
 
 	telemetry.MetricUpstreamSelfRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId, agentName, agentVersion).
+		WithLabelValues(
+			t.projectId,
+			up.VendorName(),
+			up.NetworkLabel(),
+			up.Id(),
+			method,
+			userId,
+			agentName,
+			agentVersion,
+		).
 		Inc()
 }
 
@@ -391,7 +422,16 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method str
 	}
 
 	telemetry.MetricUpstreamRemoteRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId, agentName, agentVersion).
+		WithLabelValues(
+			t.projectId,
+			up.VendorName(),
+			up.NetworkLabel(),
+			up.Id(),
+			method,
+			userId,
+			agentName,
+			agentVersion,
+		).
 		Inc()
 }
 
@@ -426,6 +466,7 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
+	netLabel := upstream.NetworkLabel()
 	vendor := upstream.VendorName()
 	lg := upstream.Logger().With().Str("networkId", net).Logger()
 
@@ -445,7 +486,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamLatestBlockNumber.
-			WithLabelValues(t.projectId, "*", net, "*").
+			WithLabelValues(t.projectId, "*", netLabel, "*").
 			Set(float64(blockNumber))
 		needsGlobalUpdate = true
 	}
@@ -456,7 +497,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	if blockNumber > oldUpsVal {
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamLatestBlockNumber.
-			WithLabelValues(t.projectId, vendor, net, id).
+			WithLabelValues(t.projectId, vendor, netLabel, id).
 			Set(float64(blockNumber))
 	}
 
@@ -469,7 +510,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 
 	upsLag := ntwBn - upsMeta.evmLatestBlockNumber.Load()
 	telemetry.MetricUpstreamBlockHeadLag.
-		WithLabelValues(t.projectId, vendor, net, id).
+		WithLabelValues(t.projectId, vendor, netLabel, id).
 		Set(float64(upsLag))
 
 	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
@@ -496,7 +537,12 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 				otherLag := ntwBn - otherVal
 				tm.BlockHeadLag.Store(otherLag)
 				telemetry.MetricUpstreamBlockHeadLag.
-					WithLabelValues(t.projectId, otherUps.VendorName(), net, otherUps.Id()).
+					WithLabelValues(
+						t.projectId,
+						otherUps.VendorName(),
+						otherUps.NetworkLabel(),
+						otherUps.Id(),
+					).
 					Set(float64(otherLag))
 			}
 			return true
@@ -523,7 +569,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int64) {
 	ntwMeta := t.getMetadata(metadataKey{nil, network})
 	ntwMeta.evmLatestBlockNumber.Store(blockNumber)
-	telemetry.MetricUpstreamLatestBlockNumber.WithLabelValues(t.projectId, "*", network, "*").Set(float64(blockNumber))
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
@@ -538,6 +583,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 
 	id := upstream.Id()
 	net := upstream.NetworkId()
+	netLabel := upstream.NetworkLabel()
 	vendor := upstream.VendorName()
 
 	mdKey := metadataKey{upstream, net}
@@ -552,7 +598,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamFinalizedBlockNumber.
-			WithLabelValues(t.projectId, "*", net, "*").
+			WithLabelValues(t.projectId, "*", netLabel, "*").
 			Set(float64(blockNumber))
 		needsGlobalUpdate = true
 	}
@@ -562,7 +608,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	if blockNumber > oldUpsVal {
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamFinalizedBlockNumber.
-			WithLabelValues(t.projectId, vendor, net, id).
+			WithLabelValues(t.projectId, vendor, netLabel, id).
 			Set(float64(blockNumber))
 	}
 
@@ -578,7 +624,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 
 	// Update Prometheus for this upstream
 	telemetry.MetricUpstreamFinalizationLag.
-		WithLabelValues(t.projectId, vendor, net, id).
+		WithLabelValues(t.projectId, vendor, netLabel, id).
 		Set(float64(upsLag))
 
 	// Update the finalization lag across the network if needed
@@ -604,7 +650,12 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 				otherLag := ntwVal - otherVal
 				tm.FinalizationLag.Store(otherLag)
 				telemetry.MetricUpstreamFinalizationLag.
-					WithLabelValues(t.projectId, otherUps.VendorName(), net, otherUps.Id()).
+					WithLabelValues(
+						t.projectId,
+						otherUps.VendorName(),
+						otherUps.NetworkLabel(),
+						otherUps.Id(),
+					).
 					Set(float64(otherLag))
 			}
 			return true
@@ -628,18 +679,13 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	}
 }
 
-func (t *Tracker) SetFinalizedBlockNumberForNetwork(network string, blockNumber int64) {
-	ntwMeta := t.getMetadata(metadataKey{nil, network})
-	ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
-	telemetry.MetricUpstreamFinalizedBlockNumber.WithLabelValues(t.projectId, "*", network, "*").Set(float64(blockNumber))
-}
-
 func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finality string, currentVal, newVal int64) {
 	rollback := currentVal - newVal
 
 	id := upstream.Id()
 	net := upstream.NetworkId()
 	vendor := upstream.VendorName()
+	netLabel := upstream.NetworkLabel()
 
 	lg := upstream.Logger().With().Str("networkId", net).Logger()
 	lg.Debug().
@@ -649,6 +695,11 @@ func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finalit
 		Msgf("recording block rollback in tracker")
 
 	telemetry.MetricUpstreamBlockHeadLargeRollback.
-		WithLabelValues(t.projectId, vendor, net, id).
+		WithLabelValues(
+			t.projectId,
+			vendor,
+			netLabel,
+			id,
+		).
 		Set(float64(rollback))
 }

@@ -175,6 +175,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	}
 	wg.Wait()
 
+	// Recalculate scores after the workload so ordering reflects latest metrics
+	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+
 	// wait until scores are calculated and erpc is shutdown down properly
 	time.Sleep(1 * time.Second)
 	cancel1()

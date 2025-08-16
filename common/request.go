@@ -218,6 +218,19 @@ func (r *NormalizedRequest) NetworkId() string {
 	return r.network.Id()
 }
 
+// NetworkLabel returns a user-friendly label for the network suitable for metrics.
+// It prefers the network alias when available, otherwise falls back to the canonical ID.
+func (r *NormalizedRequest) NetworkLabel() string {
+	if r == nil || r.network == nil {
+		return "n/a"
+	}
+	lbl := r.network.Label()
+	if lbl != "" {
+		return lbl
+	}
+	return r.network.Id()
+}
+
 func (r *NormalizedRequest) SetNetwork(network Network) {
 	r.network = network
 }

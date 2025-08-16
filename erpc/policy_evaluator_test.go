@@ -667,7 +667,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Verify upstream is cordoned for method1
 		metrics = mt.GetUpstreamMethodMetrics(ups1, "method1")
 		assert.True(t, metrics.Cordoned.Load(), "Upstream should be cordoned for method1")
-		reason, ok := metrics.CordonedReason.Load().(string)
+		reason, ok := metrics.LastCordonedReason.Load().(string)
 		assert.True(t, ok, "Cordon reason should be a string")
 		assert.Contains(t, reason, "excluded by selection policy", "Cordon reason should indicate policy exclusion")
 
@@ -1786,6 +1786,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 	)
 	err = upr.Bootstrap(ctx)
 	if err != nil {
@@ -1909,7 +1910,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		metrics2 = mt.GetUpstreamMethodMetrics(ups2, "*")
 		assert.False(t, metrics1.Cordoned.Load(), "ups1 should not be cordoned")
 		assert.True(t, metrics2.Cordoned.Load(), "ups2 should be cordoned")
-		assert.Equal(t, "excluded by selection policy", metrics2.CordonedReason.Load(), "ups2 should be cordoned due to selection policy")
+		assert.Equal(t, "excluded by selection policy", metrics2.LastCordonedReason.Load(), "ups2 should be cordoned due to selection policy")
 
 		// Phase 3: ups2 catches up (block head lag improves)
 		mt.SetLatestBlockNumber(ups2, 125) // ups2 catches up and becomes leader

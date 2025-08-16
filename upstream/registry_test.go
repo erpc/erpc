@@ -889,6 +889,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		nil, // ProxyPoolRegistry
 		metricsTracker,
 		1*time.Second,
+		nil,
 	)
 
 	err = registry.Bootstrap(ctx)

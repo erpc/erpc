@@ -201,7 +201,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			telemetry.MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold.WithLabelValues(
 				n.ProjectId(),
 				up.VendorName(),
-				up.NetworkId(),
+				n.Label(),
 				up.Id(),
 				nrq.UserId(),
 				nrq.AgentName(),
@@ -430,7 +430,7 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
 				u.VendorName(),
-				u.NetworkId(),
+				n.Label(),
 				u.Id(),
 				"block_range",
 				r.UserId(),
@@ -453,7 +453,7 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
 				u.VendorName(),
-				u.NetworkId(),
+				n.Label(),
 				u.Id(),
 				"addresses",
 				r.UserId(),
@@ -475,7 +475,7 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
 				u.VendorName(),
-				u.NetworkId(),
+				n.Label(),
 				u.Id(),
 				"topics",
 				r.UserId(),
@@ -545,7 +545,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
 					u.VendorName(),
-					u.NetworkId(),
+					n.Label(),
 					u.Id(),
 					r.UserId(),
 					r.AgentName(),
@@ -573,7 +573,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
 					u.VendorName(),
-					u.NetworkId(),
+					n.Label(),
 					u.Id(),
 					r.UserId(),
 					r.AgentName(),
@@ -590,7 +590,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
 					u.VendorName(),
-					u.NetworkId(),
+					n.Label(),
 					u.Id(),
 					r.UserId(),
 					r.AgentName(),
@@ -607,7 +607,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
 					u.VendorName(),
-					u.NetworkId(),
+					n.Label(),
 					u.Id(),
 					r.UserId(),
 					r.AgentName(),
@@ -624,7 +624,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
 					u.VendorName(),
-					u.NetworkId(),
+					n.Label(),
 					u.Id(),
 					r.UserId(),
 					r.AgentName(),
@@ -640,7 +640,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			telemetry.MetricUpstreamEvmGetLogsSplitSuccess.WithLabelValues(
 				n.ProjectId(),
 				u.VendorName(),
-				u.NetworkId(),
+				n.Label(),
 				u.Id(),
 				r.UserId(),
 				r.AgentName(),

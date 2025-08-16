@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"runtime/debug"
+	"strconv"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -136,6 +137,7 @@ func (e *executor) executeConsensus(
 
 	responses := make([]*execResult, 0, maxToSpawn)
 	var shortCircuited bool
+	var shortCircuitReason string
 	var analysis *consensusAnalysis
 	var winner *failsafeCommon.PolicyResult[*common.NormalizedResponse]
 
@@ -148,8 +150,9 @@ collectLoop:
 				if !shortCircuited {
 					analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
 					winner = e.determineWinner(ctx, lg, analysis)
-					if e.shouldShortCircuit(parentExecution, winner, analysis) {
+					if reason, ok := e.shouldShortCircuit(parentExecution, winner, analysis); ok {
 						shortCircuited = true
+						shortCircuitReason = reason
 						cancelRemaining()
 						// Explicitly cancel all outstanding attempt executions to abort in-flight work
 						for ai := range attempts {
@@ -174,6 +177,10 @@ collectLoop:
 		case <-ctx.Done():
 			lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
 			cancelRemaining()
+			// Record collection phase cancellation
+			telemetry.MetricConsensusCancellations.
+				WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).
+				Inc()
 			// Best-effort cancel all attempts when parent context is done
 			for ai := range attempts {
 				if attempts[ai] != nil {
@@ -204,6 +211,19 @@ collectLoop:
 		attribute.Bool("short_circuited", shortCircuited),
 		attribute.Int("responses.collected", len(responses)),
 	)
+	// Record how many responses were collected and whether we short-circuited
+	telemetry.MetricConsensusResponsesCollected.
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, strconv.FormatBool(shortCircuited), labels.finalityStr).
+		Observe(float64(len(responses)))
+	if shortCircuited {
+		reason := shortCircuitReason
+		if reason == "" {
+			reason = "unknown"
+		}
+		telemetry.MetricConsensusShortCircuit.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr).
+			Inc()
+	}
 	// After winner selection, release results appropriately to avoid leaks and double-releases
 	if analysis != nil {
 		var winnerResp *common.NormalizedResponse
@@ -260,6 +280,9 @@ func (e *executor) executeParticipant(
 
 	// Check for cancellation before execution
 	if ctx.Err() != nil {
+		telemetry.MetricConsensusCancellations.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr).
+			Inc()
 		responseChan <- nil
 		return
 	}
@@ -269,6 +292,9 @@ func (e *executor) executeParticipant(
 
 	// Check for cancellation after execution; release any produced result before dropping it
 	if ctx.Err() != nil {
+		telemetry.MetricConsensusCancellations.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).
+			Inc()
 		if result != nil {
 			if releasable, ok := any(result.Result).(interface{ Release() }); ok && releasable != nil {
 				releasable.Release()
@@ -316,13 +342,13 @@ func (e *executor) executeParticipant(
 // shouldShortCircuit decides if remaining requests can be safely cancelled.
 // This happens if one group's lead over the second-place group is greater
 // than the number of remaining responses.
-func (e *executor) shouldShortCircuit(exec failsafe.Execution[*common.NormalizedResponse], winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis) bool {
+func (e *executor) shouldShortCircuit(exec failsafe.Execution[*common.NormalizedResponse], winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis) (string, bool) {
 	for _, rule := range shortCircuitRules {
 		if rule.Condition(winner, analysis) {
-			return true
+			return rule.Reason, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // determineWinner applies configured policies to the analysis to produce a final result.
@@ -393,6 +419,10 @@ func (e *executor) checkAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels
 			if result.Upstream == nil {
 				continue
 			}
+			// Misbehavior detected for this upstream in the given context
+			telemetry.MetricConsensusMisbehaviorDetected.
+				WithLabelValues(labels.projectId, labels.networkId, result.Upstream.Id(), labels.category, labels.finalityStr, strconv.FormatBool(group.ResponseType == ResponseTypeEmpty)).
+				Inc()
 			upstreamId := result.Upstream.Id()
 			limiter := e.createRateLimiter(lg, upstreamId)
 			if !limiter.TryAcquirePermit() {
@@ -426,7 +456,7 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 
 	// Create the timer
 	timer := time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
-		upstream.Uncordon("*")
+		upstream.Uncordon("*", "end of consensus penalty")
 		e.misbehavingUpstreamsSitoutTimer.Delete(upstreamId)
 	})
 
@@ -467,7 +497,7 @@ func (e *executor) extractMetricsLabels(ctx context.Context, req *common.Normali
 	return metricsLabels{
 		method:      method,
 		category:    method,
-		networkId:   req.NetworkId(),
+		networkId:   req.NetworkLabel(),
 		projectId:   projectId,
 		finalityStr: req.Finality(ctx).String(),
 	}
@@ -499,7 +529,7 @@ func (e *executor) recordMetricsAndTracing(ctx context.Context, startTime time.T
 		} else if isLowParticipants {
 			outcome = "low_participants"
 		} else {
-			outcome = "error"
+			outcome = "generic_error"
 		}
 		common.SetTraceSpanError(span, result.Error)
 	} else {
@@ -518,4 +548,24 @@ func (e *executor) recordMetricsAndTracing(ctx context.Context, startTime time.T
 	duration := time.Since(startTime).Seconds()
 	telemetry.MetricConsensusTotal.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Inc()
 	telemetry.MetricConsensusDuration.WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).Observe(duration)
+	// Record agreement count histogram when available
+	if best != nil && best.Count > 0 {
+		telemetry.MetricConsensusAgreementCount.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
+			Observe(float64(best.Count))
+	}
+	// Record categorized error counters for failure modes
+	if result.Error != nil {
+		errLabel := "generic_error"
+		if hasConsensus {
+			errLabel = "consensus_on_error"
+		} else if isDispute {
+			errLabel = "dispute"
+		} else if isLowParticipants {
+			errLabel = "low_participants"
+		}
+		telemetry.MetricConsensusErrors.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, errLabel, labels.finalityStr).
+			Inc()
+	}
 }
