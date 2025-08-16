@@ -68,7 +68,9 @@ export interface ServerConfig {
   httpHostV4?: string;
   listenV6?: boolean;
   httpHostV6?: string;
-  httpPort?: number /* int */;
+  httpPort?: number /* int */; // Deprecated: use HttpPortV4
+  httpPortV4?: number /* int */;
+  httpPortV6?: number /* int */;
   maxTimeout?: Duration;
   readTimeout?: Duration;
   writeTimeout?: Duration;
@@ -253,12 +255,6 @@ export interface NetworkDefaults {
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -294,12 +290,6 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   ignoreFields?: { [key: string]: string[]};
@@ -367,6 +357,10 @@ export interface RetryPolicyConfig {
   jitter?: Duration;
   emptyResultConfidence?: AvailbilityConfidence;
   emptyResultIgnore?: string[];
+  /**
+   * EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
+   */
+  emptyResultMaxAttempts?: number /* int */;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
@@ -403,6 +397,8 @@ export interface ConsensusPolicyConfig {
   punishMisbehavior?: PunishMisbehaviorConfig;
   disputeLogLevel?: string; // "trace", "debug", "info", "warn", "error"
   ignoreFields?: { [key: string]: string[]};
+  preferNonEmpty?: boolean;
+  preferLargerResponses?: boolean;
 }
 export interface PunishMisbehaviorConfig {
   disputeThreshold: number /* uint */;
@@ -443,12 +439,6 @@ export interface NetworkConfig {
   alias?: string;
   methods?: MethodsConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
