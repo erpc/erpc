@@ -4,12 +4,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	// "runtime"
+	// "strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
+
+// Enable creation stack capture when ERPC_TRACE_NR_CREATE is set.
+// var captureNRCreateStack = os.Getenv("ERPC_TRACE_NR_CREATE") != ""
+// const maxNRStackDepth = 62
+// const maxNRLogFrames = 62
 
 type NormalizedResponse struct {
 	sync.RWMutex
@@ -32,6 +40,11 @@ type NormalizedResponse struct {
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
 	parseErr  error
+
+	// // optional creation stack (captured when leak tracing is enabled)
+	// creationPCs []uintptr
+	// creationSig string
+	// id          uint64
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -64,7 +77,43 @@ func LookupResponseMetadata(err error) ResponseMetadata {
 }
 
 func NewNormalizedResponse() *NormalizedResponse {
-	return &NormalizedResponse{}
+	nr := &NormalizedResponse{}
+	// Finalizer to catch missing Release
+	// runtime.SetFinalizer(nr, func(r *NormalizedResponse) {
+	// 	if r == nil {
+	// 		return
+	// 	}
+	// 	// Snapshot fields under read lock; keep work minimal in finalizer.
+	// 	r.RLock()
+	// 	hasBody := r.body != nil
+	// 	hasJRR := r.jsonRpcResponse.Load() != nil
+	// 	pcs := r.creationPCs
+	// 	csig := r.creationSig
+	// 	r.RUnlock()
+	// 	if hasBody || hasJRR {
+	// 		if len(pcs) > 0 {
+	// 			var b strings.Builder
+	// 			frames := runtime.CallersFrames(pcs)
+	// 			for i := 0; i < maxNRLogFrames; i++ {
+	// 				fr, more := frames.Next()
+	// 				if fr.Function == "" && fr.File == "" && fr.Line == 0 {
+	// 					break
+	// 				}
+	// 				if i > 0 {
+	// 					b.WriteString(" | ")
+	// 				}
+	// 				b.WriteString(fmt.Sprintf("%s:%d %s", fr.File, fr.Line, fr.Function))
+	// 				if !more {
+	// 					break
+	// 				}
+	// 			}
+	// 			log.Warn().Str("component", "finalizer").Str("creation_stack", b.String()).Uint64("nr_id", r.id).Msgf("NormalizedResponse GC'ed without Release; body=%t jsonRpc=%t", hasBody, hasJRR)
+	// 		} else {
+	// 			log.Warn().Str("component", "finalizer").Str("creation_stack", csig).Uint64("nr_id", r.id).Msgf("NormalizedResponse GC'ed without Release; body=%t jsonRpc=%t", hasBody, hasJRR)
+	// 		}
+	// 	}
+	// })
+	return nr
 }
 
 func (r *NormalizedResponse) LockWithTrace(ctx context.Context) {
@@ -279,6 +328,16 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 				return
 			}
 			r.jsonRpcResponse.Store(jrr)
+
+			// Close and release the upstream body as soon as we've fully parsed
+			// the JSON-RPC payload to avoid retaining large gzip/flate buffers
+			// and network read buffers until the response is ultimately released.
+			// It's safe to do so because all subsequent writes are served from
+			// the parsed JsonRpcResponse buffers.
+			if r.body != nil {
+				_ = r.body.Close()
+				r.body = nil
+			}
 		} else {
 			// No body to parse - this shouldn't happen in normal flow
 			// but we need to handle it gracefully

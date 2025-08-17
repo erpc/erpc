@@ -588,11 +588,16 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
 	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Release()
 	jrr, err := resp.JsonRpcResponse()
+	if jrr != nil {
+		defer jrr.Free()
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -610,11 +615,13 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
-				"blockTag": blockTag,
-				"result":   jrr.Result,
+				"blockTag":  blockTag,
+				"resultLen": len(jrr.Result),
 			},
 		}
 	}
+	// Force-copy the small string to avoid any potential reference to backing buffers
+	numberStr = string(append([]byte(nil), numberStr...))
 	blockNum, err := common.HexToInt64(numberStr)
 	if err != nil {
 		return 0, err
@@ -628,6 +635,9 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	// pr.SetNetwork(e.network)
 
 	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		if common.HasErrorCode(err,
 			common.ErrCodeUpstreamRequestSkipped,
@@ -640,9 +650,11 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		}
 		return false, err
 	}
-	defer resp.Release()
 
 	jrr, err := resp.JsonRpcResponse()
+	if jrr != nil {
+		defer jrr.Free()
+	}
 	if err != nil {
 		return false, err
 	}
@@ -654,11 +666,18 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	var syncing interface{}
 	err = common.SonicCfg.Unmarshal(jrr.Result, &syncing)
 	if err != nil {
+		// Include only a small, copied preview to avoid retaining large buffers
+		previewLen := 256
+		if len(jrr.Result) < previewLen {
+			previewLen = len(jrr.Result)
+		}
+		preview := string(append([]byte(nil), jrr.Result[:previewLen]...))
 		return false, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot parse syncing state result (must be boolean or object)",
 			Details: map[string]interface{}{
-				"result": util.B2Str(jrr.Result),
+				"resultLen":     len(jrr.Result),
+				"resultPreview": preview,
 			},
 		}
 	}
@@ -691,11 +710,18 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		}
 	}
 
+	// Include small, copied preview to avoid retaining large buffers
+	previewLen := 256
+	if len(jrr.Result) < previewLen {
+		previewLen = len(jrr.Result)
+	}
+	preview := string(append([]byte(nil), jrr.Result[:previewLen]...))
 	return false, &common.BaseError{
 		Code:    "ErrEvmStatePoller",
 		Message: "cannot parse syncing state result (must be boolean or object)",
 		Details: map[string]interface{}{
-			"result": util.B2Str(jrr.Result),
+			"resultLen":     len(jrr.Result),
+			"resultPreview": preview,
 		},
 	}
 }

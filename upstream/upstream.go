@@ -442,7 +442,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			isSuccess := false
-			if nrs != nil {
+			if errCall == nil && nrs != nil {
 				nrs.SetUpstream(u)
 				jrr, _ := nrs.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {

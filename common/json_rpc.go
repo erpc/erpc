@@ -227,7 +227,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawID, err := idNode.Raw(); err == nil {
 			r.idMu.Lock()
 			defer r.idMu.Unlock()
-			r.idBytes = util.S2Bytes(rawID)
+			r.idBytes = []byte(rawID)
 		}
 	}
 
@@ -286,7 +286,7 @@ func (r *JsonRpcResponse) ParseError(raw string) error {
 	// Check if the error is well-formed and has necessary fields
 	if rpcErr.Code != 0 || rpcErr.Message != "" {
 		r.Error = &rpcErr
-		r.errBytes = util.S2Bytes(raw)
+		r.errBytes = []byte(raw)
 		return nil
 	}
 

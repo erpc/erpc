@@ -973,11 +973,18 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	// Wait for result
 	select {
 	case <-mlx.done:
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		// Acquire read lock to safely access resp and err
+		// This prevents race with Release() which may set them to nil
+		mlx.mu.RLock()
+		resp := mlx.resp
+		mlxErr := mlx.err
+		mlx.mu.RUnlock()
+
+		copiedResp, err := common.CopyResponseForRequest(ctx, resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		return copiedResp, mlxErr
 	case <-ctx.Done():
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
@@ -989,9 +996,8 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 }
 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
-	mlx.mu.Lock()
-	defer mlx.mu.Unlock()
 	n.inFlightRequests.Delete(mlx.hash)
+	mlx.Release()
 }
 
 func (n *Network) shouldHandleMethod(method string, upsList []common.Upstream) error {

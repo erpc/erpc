@@ -656,10 +656,10 @@ func (r *NormalizedRequest) AgentName() string {
 		return "unknown"
 	}
 
-	// Check if cached agent name is available
-	if cachedAgentName := r.agentName.Load(); cachedAgentName != nil {
-		return cachedAgentName.(string)
-	}
+	// // Check if cached agent name is available
+	// if cachedAgentName := r.agentName.Load(); cachedAgentName != nil {
+	// 	return cachedAgentName.(string)
+	// }
 
 	// If not cached, return unknown (EnrichFromHttp should be called to populate this)
 	return "unknown"
@@ -671,10 +671,10 @@ func (r *NormalizedRequest) AgentVersion() string {
 		return "unknown"
 	}
 
-	// Check if cached agent version is available
-	if cachedAgentVersion := r.agentVersion.Load(); cachedAgentVersion != nil {
-		return cachedAgentVersion.(string)
-	}
+	// // Check if cached agent version is available
+	// if cachedAgentVersion := r.agentVersion.Load(); cachedAgentVersion != nil {
+	// 	return cachedAgentVersion.(string)
+	// }
 
 	// If not cached, return unknown (EnrichFromHttp should be called to populate this)
 	return "unknown"

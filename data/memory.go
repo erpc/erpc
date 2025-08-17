@@ -75,6 +75,9 @@ func NewMemoryConnector(
 		MaxCost:     maxCost,                 // maximum cost of cache.
 		BufferItems: 64,                      // number of keys per Get buffer.
 		Metrics:     enableMetrics,           // enable metrics based on config
+		Cost: func(v []byte) int64 {
+			return int64(len(v) + 256)
+		},
 	}
 
 	cache, err := ristretto.NewCache(ristrettoCfg)
@@ -109,14 +112,10 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
-	cost := int64(len(value)) // Cost is the size of the stored value in bytes
-	// Ristretto's Set might drop the item if the cache is full and the item isn't valuable enough.
-	// It returns true if the item was added, false otherwise. We don't explicitly check this boolean
-	// as per Ristretto's design philosophy (popular items will eventually get in).
 	if ttl != nil && *ttl > 0 {
-		m.cache.SetWithTTL(key, value, cost, *ttl)
+		m.cache.SetWithTTL(key, value, 0, *ttl)
 	} else {
-		m.cache.Set(key, value, cost)
+		m.cache.Set(key, value, 0)
 	}
 
 	/**
@@ -126,7 +125,7 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 		parts := strings.SplitAfterN(partitionKey, ":", 3)
 		if len(parts) >= 2 {
 			wildcardPartitionKey := parts[0] + parts[1] + "*"
-			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, []byte(partitionKey), int64(len(partitionKey)))
+			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, []byte(partitionKey), 0)
 		}
 	}
 

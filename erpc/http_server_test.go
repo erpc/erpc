@@ -474,7 +474,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		assert.True(t, successes > 0, "Expected some successes")
 	})
 }
-
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		cfg := &common.Config{
@@ -6413,7 +6412,6 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, errorObj["message"].(string), "missing")
 	})
 }
-
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()

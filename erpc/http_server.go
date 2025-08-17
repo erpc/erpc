@@ -455,6 +455,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
+					// If an error occurred but a response was produced (e.g., lastValidResponse),
+					// release it now since we are not going to write it.
+					if resp != nil {
+						resp.Release()
+					}
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
@@ -471,6 +476,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		defer writeResponseSpan.End()
 
 		if err := httpCtx.Err(); err != nil {
+			// Ensure we do not retain responses when the request context is done
+			for _, resp := range responses {
+				if v, ok := resp.(*common.NormalizedResponse); ok && v != nil {
+					v.Release()
+				}
+			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				cause := context.Cause(httpCtx)
 				if cause != nil {
@@ -1319,10 +1330,25 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 func gzipHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if client accepts gzip encoding
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		acceptEncoding := r.Header.Get("Accept-Encoding")
+		if !strings.Contains(acceptEncoding, "gzip") {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		// // Check User-Agent for known problematic clients
+		// userAgent := strings.ToLower(r.Header.Get("User-Agent"))
+		// // Skip gzip for Python clients that might have issues
+		// // (some Python libraries advertise gzip support but don't handle it properly)
+		// if strings.Contains(userAgent, "python-requests") ||
+		// 	strings.Contains(userAgent, "python-urllib") ||
+		// 	strings.Contains(userAgent, "aiohttp") {
+		// 	// Unless they explicitly request gzip with quality value
+		// 	if !strings.Contains(acceptEncoding, "gzip;q=") && !strings.Contains(acceptEncoding, "gzip, ") {
+		// 		next.ServeHTTP(w, r)
+		// 		return
+		// 	}
+		// }
 
 		// Initialize gzip writer
 		gz := gzip.NewWriter(w)
@@ -1340,6 +1366,10 @@ func gzipHandler(next http.Handler) http.Handler {
 		// Set required headers
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("Vary", "Accept-Encoding")
+		// Ensure Content-Type is preserved
+		if ct := w.Header().Get("Content-Type"); ct == "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
 
 		// Call the next handler with our gzip response writer
 		next.ServeHTTP(gzw, r)

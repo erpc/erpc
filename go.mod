@@ -42,7 +42,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250811170821-afd8e02a3136
+replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250817091226-65ca98ca2e58
 
 replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250811111520-9af9700f4b44
 

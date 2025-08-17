@@ -207,6 +207,18 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	c.logger.Trace().Interface("id", id).Object("request", req.request).Msgf("attempt to queue request for batch")
 	c.batchMu.Lock()
 
+	// If the request context is already canceled, fail it immediately and do not queue
+	if err := req.ctx.Err(); err != nil {
+		c.batchMu.Unlock()
+		// propagate a normalized error
+		if errors.Is(err, context.DeadlineExceeded) {
+			req.err <- common.NewErrEndpointRequestTimeout(0, err)
+		} else {
+			req.err <- common.NewErrEndpointRequestCanceled(err)
+		}
+		return
+	}
+
 	if _, ok := c.batchRequests[id]; ok {
 		// We must not include multiple requests with same ID in batch requests
 		// to avoid issues when mapping responses.
@@ -219,9 +231,10 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	c.batchRequests[id] = req
 	ctxd, ok := req.ctx.Deadline()
 	if ctxd.After(time.Now()) && ok {
-		if c.batchDeadline == nil || ctxd.After(*c.batchDeadline) {
+		// Use the earliest deadline among queued requests so the batch cancels promptly
+		if c.batchDeadline == nil || ctxd.Before(*c.batchDeadline) {
 			duration := time.Until(ctxd)
-			c.logger.Trace().Dur("duration", duration).Msgf("extending current batch deadline")
+			c.logger.Trace().Dur("deadline", duration).Msgf("setting batch deadline to earliest request deadline")
 			c.batchDeadline = &ctxd
 		}
 	}
@@ -299,11 +312,23 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		c.logger.Debug().Msgf("processing batch with %d requests", len(c.batchRequests))
 	}
 	requests := c.batchRequests
+	// Drop any requests that have been canceled before we go out to the network
+	for id, br := range requests {
+		if err := br.ctx.Err(); err != nil {
+			delete(requests, id)
+			if errors.Is(err, context.DeadlineExceeded) {
+				br.err <- common.NewErrEndpointRequestTimeout(0, err)
+			} else {
+				br.err <- common.NewErrEndpointRequestCanceled(err)
+			}
+		}
+	}
+
 	if c.batchDeadline != nil {
 		duration := time.Until(*c.batchDeadline)
 		c.logger.Trace().
 			Dur("deadline", duration).
-			Msg("creating batch context with highest deadline")
+			Msg("creating batch context with earliest deadline")
 		batchCtx, cancelCtx = context.WithDeadline(c.appCtx, *c.batchDeadline)
 		defer cancelCtx()
 	} else {
@@ -406,6 +431,14 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		}
 		return
 	}
+	// If batchCtx already canceled by the time we got a response, drop it and signal cancel to callers.
+	if cause := context.Cause(batchCtx); cause != nil {
+		resp.Body.Close()
+		for _, req := range requests {
+			req.err <- cause
+		}
+		return
+	}
 
 	c.processBatchResponse(requests, resp)
 }
@@ -483,12 +516,18 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 					nr.Release()
 					req.err <- err
 				} else {
-					err := c.normalizeJsonRpcError(resp, nr)
-					if err != nil {
+					// If this specific request's context is already canceled, don't deliver the response.
+					if cause := context.Cause(req.ctx); cause != nil {
 						nr.Release()
-						req.err <- err
+						req.err <- cause
 					} else {
-						req.response <- nr
+						err := c.normalizeJsonRpcError(resp, nr)
+						if err != nil {
+							nr.Release()
+							req.err <- err
+						} else {
+							req.response <- nr
+						}
 					}
 				}
 				delete(requests, id)
@@ -516,12 +555,18 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		}
 		for _, req := range requests {
 			nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
-			err := c.normalizeJsonRpcError(resp, nr)
-			if err != nil {
+			// Respect per-request cancellation
+			if cause := context.Cause(req.ctx); cause != nil {
 				nr.Release()
-				req.err <- err
+				req.err <- cause
 			} else {
-				req.response <- nr
+				err := c.normalizeJsonRpcError(resp, nr)
+				if err != nil {
+					nr.Release()
+					req.err <- err
+				} else {
+					req.response <- nr
+				}
 			}
 		}
 	} else {
@@ -647,6 +692,11 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			return nil, common.NewErrEndpointRequestCanceled(err)
 		}
 		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
+	}
+	// If our context is already canceled (e.g., timeout/hedge winner), treat the response as canceled.
+	if cause := context.Cause(ctx); cause != nil {
+		resp.Body.Close()
+		return nil, cause
 	}
 	defer resp.Body.Close()
 

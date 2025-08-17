@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
@@ -51,6 +53,21 @@ func init() {
 
 func main() {
 	logger := log.With().Logger()
+	ctx := context.Background()
+
+	go func() {
+		ticker := time.NewTicker(300 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runtime.GC()
+			}
+		}
+	}()
 
 	// Create a context that is cancelled on SIGINT/SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -18,8 +18,8 @@ github.com/alicebob/gopher-json v0.0.0-20230218143504-906a9b012302 h1:uvdUDbHQHO
 github.com/alicebob/gopher-json v0.0.0-20230218143504-906a9b012302/go.mod h1:SGnFV6hVsYE877CKEZ6tDNTjaSXYUk6QqoIK6PrAtcc=
 github.com/alicebob/miniredis/v2 v2.34.0 h1:mBFWMaJSNL9RwdGRyEDoAAv8OQc5UlEhLDQggTglU/0=
 github.com/alicebob/miniredis/v2 v2.34.0/go.mod h1:kWShP4b58T1CW0Y5dViCd5ztzrDqRWqM3nksiyXk5s8=
-github.com/aramalipoor/failsafe-go v0.0.0-20250811170821-afd8e02a3136 h1:gl8s0tyf5K5eym5OixSMcPrcqcebTuJZ1wH/Y9YBhmA=
-github.com/aramalipoor/failsafe-go v0.0.0-20250811170821-afd8e02a3136/go.mod h1:4Y0ElBvDejSTmE59wFOHPwJomW6UaSlE/EZHYtJ99UQ=
+github.com/aramalipoor/failsafe-go v0.0.0-20250817091226-65ca98ca2e58 h1:CXUOwOdKu7F5pbKi+7GHDgKx9uEwOU7VAwAvRexD0ck=
+github.com/aramalipoor/failsafe-go v0.0.0-20250817091226-65ca98ca2e58/go.mod h1:4Y0ElBvDejSTmE59wFOHPwJomW6UaSlE/EZHYtJ99UQ=
 github.com/aws/aws-sdk-go v1.55.5 h1:KKUZBfBoyqy5d3swXyiC7Q76ic40rYcbqH7qjh59kzU=
 github.com/aws/aws-sdk-go v1.55.5/go.mod h1:eRwEWoyTWFMVYVQzKMNHWP5/RV4xIUGMQfXQHfHkpNU=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
