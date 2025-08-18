@@ -117,7 +117,8 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 	}
 
 	if len(errBytes) > 0 {
-		err := jr.ParseError(util.B2Str(errBytes))
+		// Copy to avoid retaining buffer via unsafe conversion
+		err := jr.ParseError(string(errBytes))
 		if err != nil {
 			return nil, err
 		}
@@ -217,7 +218,8 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 	}
 
 	// Parse the JSON data into an ast.Node
-	searcher := ast.NewSearcher(util.B2Str(data))
+	// CRITICAL: Convert to string with copy to avoid retaining entire buffer
+	searcher := ast.NewSearcher(string(data))
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
@@ -227,7 +229,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawID, err := idNode.Raw(); err == nil {
 			r.idMu.Lock()
 			defer r.idMu.Unlock()
-			r.idBytes = util.S2Bytes(rawID)
+			r.idBytes = []byte(rawID)
 		}
 	}
 
@@ -235,7 +237,8 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawResult, err := resultNode.Raw(); err == nil {
 			r.resultMu.Lock()
 			defer r.resultMu.Unlock()
-			r.Result = util.S2Bytes(rawResult)
+			// CRITICAL: Copy to avoid retaining entire buffer via unsafe conversion
+			r.Result = []byte(rawResult)
 			// Copy to heap instead of storing local variable address
 			r.cachedNode = new(ast.Node)
 			*r.cachedNode = resultNode
@@ -250,7 +253,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		} else {
 			return err
 		}
-	} else if err := r.ParseError(util.B2Str(data)); err != nil {
+	} else if err := r.ParseError(string(data)); err != nil {
 		return err
 	}
 
@@ -286,7 +289,7 @@ func (r *JsonRpcResponse) ParseError(raw string) error {
 	// Check if the error is well-formed and has necessary fields
 	if rpcErr.Code != 0 || rpcErr.Message != "" {
 		r.Error = &rpcErr
-		r.errBytes = util.S2Bytes(raw)
+		r.errBytes = []byte(raw)
 		return nil
 	}
 
@@ -376,7 +379,7 @@ func (r *JsonRpcResponse) PeekBytesByPath(ctx context.Context, path ...interface
 	if err != nil {
 		return nil, fmt.Errorf("error getting raw JSON from node: %s", err)
 	}
-	return util.S2Bytes(rawStr), nil
+	return []byte(rawStr), nil
 }
 
 func (r *JsonRpcResponse) Size(ctx ...context.Context) (int, error) {
@@ -415,7 +418,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		if IsSemiValidJson(r.errBytes) {
 			e.RawJSON("error", r.errBytes)
 		} else {
-			e.Str("error", util.B2Str(r.errBytes))
+			e.Str("error", string(r.errBytes))
 		}
 	} else if r.Error != nil {
 		e.Interface("error", r.Error)
@@ -426,7 +429,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 			if IsSemiValidJson(r.Result) {
 				e.RawJSON("result", r.Result)
 			} else {
-				e.Str("result", util.B2Str(r.Result))
+				e.Str("result", string(r.Result))
 			}
 		} else {
 			head := 150 * 1024
@@ -434,7 +437,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 			if tail < head {
 				head = tail
 			}
-			e.Str("resultHead", util.B2Str(r.Result[:head])).Str("resultTail", util.B2Str(r.Result[tail:]))
+			e.Str("resultHead", string(r.Result[:head])).Str("resultTail", string(r.Result[tail:]))
 		}
 	} else if r.resultWriter != nil {
 		e.Bool("resultWriterEmpty", r.resultWriter.IsResultEmptyish())
@@ -444,7 +447,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 func (r *JsonRpcResponse) ensureCachedNode() error {
 	r.resultMu.RLock()
 	if r.cachedNode == nil {
-		srchr := ast.NewSearcher(util.B2Str(r.Result))
+		srchr := ast.NewSearcher(string(r.Result))
 		srchr.ValidateJSON = false
 		srchr.ConcurrentRead = false
 		srchr.CopyReturn = false
@@ -927,7 +930,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 		return b, nil
 
 	case string:
-		valb := util.S2Bytes(val)
+		valb := []byte(val)
 		if util.IsBytesEmptyish(valb) {
 			return nil, nil
 		}
@@ -1255,7 +1258,7 @@ func hashValue(h io.Writer, v interface{}) error {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if _, err := h.Write(util.S2Bytes(k)); err != nil {
+			if _, err := h.Write([]byte(k)); err != nil {
 				return err
 			}
 			err := hashValue(h, t[k])

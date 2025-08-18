@@ -60,7 +60,6 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
 					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
 					multiplexerResp.WithJsonRpcResponse(cloned)
-					// Silence leak tracker: stored mux copy is intentionally not Released
 					resp = multiplexerResp
 				}
 			}

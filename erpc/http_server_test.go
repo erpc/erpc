@@ -474,7 +474,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		assert.True(t, successes > 0, "Expected some successes")
 	})
 }
-
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		cfg := &common.Config{
@@ -1108,7 +1107,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Contains(t, body, "timeout policy")
 	})
 
-	t.Run("ShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
+	t.Run("GetLogsShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -6413,7 +6412,6 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, errorObj["message"].(string), "missing")
 	})
 }
-
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -8664,7 +8662,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 			resp, err := (&http.Client{Timeout: 500 * time.Millisecond}).Do(req)
 			if err == nil {
 				if resp != nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 				break
 			}

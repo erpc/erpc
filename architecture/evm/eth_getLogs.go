@@ -273,7 +273,6 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 					logger.Warn().Err(err).Object("request", rq).Msg("could not execute eth_getLogs sub-requests, returning original response")
 					return rs, re
 				}
-
 				return common.NewNormalizedResponse().
 					WithRequest(rq).
 					WithJsonRpcResponse(mergedResponse), nil

@@ -51,6 +51,7 @@ func init() {
 
 func main() {
 	logger := log.With().Logger()
+	ctx := context.Background()
 
 	// Create a context that is cancelled on SIGINT/SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

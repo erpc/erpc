@@ -135,6 +135,9 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	defer cancel()
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		return false, err
 	}

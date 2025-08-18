@@ -442,7 +442,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			isSuccess := false
-			if nrs != nil {
+			if errCall == nil && nrs != nil {
 				nrs.SetUpstream(u)
 				jrr, _ := nrs.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
@@ -676,11 +676,12 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
 	resp, err := u.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		return "", err
 	}
-	// Ensure response is always released after we parse it
-	defer resp.Release()
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
