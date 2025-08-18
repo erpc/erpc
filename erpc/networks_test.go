@@ -7991,7 +7991,7 @@ func TestNetwork_Forward(t *testing.T) {
 		reqBody := []byte(`{
 			"jsonrpc":"2.0",
 			"method":"debug_traceTransaction",
-			"params":["0x1234567890abcdef1234567890abcdef12345678"],
+			"params":["0x1294567890abcdef1234567890abcdef12345678"],
 			"id":1
 		}`)
 		req := common.NewNormalizedRequest(reqBody)
@@ -8025,6 +8025,9 @@ func TestNetwork_Forward(t *testing.T) {
 		// finally, check the payload round‑tripped correctly
 		jrr, err := resp.JsonRpcResponse()
 		assert.NoError(t, err)
+		if jrr == nil {
+			t.Fatalf("JsonRpcResponse returned nil")
+		}
 		// plus 2 bytes of quotes around the string
 		expectedLen := sampleSize + 2
 		if len(jrr.Result) != expectedLen {
@@ -8419,7 +8422,11 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			if responses[i] != nil {
 				jrr, err := responses[i].JsonRpcResponse()
 				assert.NoError(t, err, "Response %d should be a valid JSON-RPC response", i+1)
-				assert.Equal(t, i+1, jrr.ID(), "Response ID should match the request ID for request %d", i+1)
+				if jrr != nil {
+					assert.Equal(t, i+1, jrr.ID(), "Response ID should match the request ID for request %d", i+1)
+				} else {
+					t.Errorf("Response %d has nil JsonRpcResponse", i+1)
+				}
 			}
 		}
 	})

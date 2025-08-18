@@ -1107,7 +1107,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Contains(t, body, "timeout policy")
 	})
 
-	t.Run("ShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
+	t.Run("GetLogsShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()

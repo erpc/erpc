@@ -629,13 +629,14 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	// TODO check if context is cancellable and then get the "cause" that is already set
 	jrReq, err := req.JsonRpcRequest()
-	if err != nil {
+	if err != nil || jrReq == nil {
+		method, _ := req.Method()
 		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			c.upstream,
 			req.NetworkId(),
-			jrReq.Method,
+			method,
 			0,
 			0,
 			0,

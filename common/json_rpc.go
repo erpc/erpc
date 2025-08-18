@@ -117,7 +117,8 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 	}
 
 	if len(errBytes) > 0 {
-		err := jr.ParseError(util.B2Str(errBytes))
+		// Copy to avoid retaining buffer via unsafe conversion
+		err := jr.ParseError(string(errBytes))
 		if err != nil {
 			return nil, err
 		}
@@ -217,7 +218,8 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 	}
 
 	// Parse the JSON data into an ast.Node
-	searcher := ast.NewSearcher(util.B2Str(data))
+	// CRITICAL: Convert to string with copy to avoid retaining entire buffer
+	searcher := ast.NewSearcher(string(data))
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
@@ -235,7 +237,8 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawResult, err := resultNode.Raw(); err == nil {
 			r.resultMu.Lock()
 			defer r.resultMu.Unlock()
-			r.Result = util.S2Bytes(rawResult)
+			// CRITICAL: Copy to avoid retaining entire buffer via unsafe conversion
+			r.Result = []byte(rawResult)
 			// Copy to heap instead of storing local variable address
 			r.cachedNode = new(ast.Node)
 			*r.cachedNode = resultNode
@@ -250,7 +253,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		} else {
 			return err
 		}
-	} else if err := r.ParseError(util.B2Str(data)); err != nil {
+	} else if err := r.ParseError(string(data)); err != nil {
 		return err
 	}
 

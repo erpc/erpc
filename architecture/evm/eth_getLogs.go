@@ -562,6 +562,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			}
 
 			sbnrq := common.NewNormalizedRequestFromJsonRpcRequest(srq)
+			defer sbnrq.Release() // Critical: Release request to avoid memory leak
 			dr := r.Directives().Clone()
 			dr.SkipCacheRead = skipCacheRead
 			// TODO dr.UseUpstream = u.Config().Id should we force this (or opposite of it)?

@@ -587,6 +587,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
+	defer pr.Release()
 	resp, err := e.upstream.Forward(ctx, pr, true)
 	if resp != nil {
 		defer resp.Release()
@@ -632,6 +633,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
+	defer pr.Release()
 	// pr.SetNetwork(e.network)
 
 	resp, err := e.upstream.Forward(ctx, pr, true)

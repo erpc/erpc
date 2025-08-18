@@ -141,6 +141,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 				return nil, err
 			}
 			newReq := common.NewNormalizedRequestFromJsonRpcRequest(request)
+			defer newReq.Release() // Release request when done
 			dr := nq.Directives().Clone()
 			dr.SkipCacheRead = true
 			// In case a block number is extracted, it means the node actually has an older latest block.
@@ -199,6 +200,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 				return nil, err
 			}
 			newReq2 := common.NewNormalizedRequestFromJsonRpcRequest(request)
+			defer newReq2.Release() // Release request when done
 			dr := nq.Directives().Clone()
 			dr.SkipCacheRead = true
 			if respBlockNumber > 0 {

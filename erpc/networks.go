@@ -961,12 +961,14 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	// Check if result is already available
 	mlx.mu.RLock()
 	if mlx.resp != nil || mlx.err != nil {
+		resp := mlx.resp
+		mlxErr := mlx.err
 		mlx.mu.RUnlock()
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		copiedResp, err := common.CopyResponseForRequest(ctx, resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		return copiedResp, mlxErr
 	}
 	mlx.mu.RUnlock()
 
@@ -974,7 +976,6 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	select {
 	case <-mlx.done:
 		// Acquire read lock to safely access resp and err
-		// This prevents race with Release() which may set them to nil
 		mlx.mu.RLock()
 		resp := mlx.resp
 		mlxErr := mlx.err
@@ -986,6 +987,7 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 		}
 		return copiedResp, mlxErr
 	case <-ctx.Done():
+		// Clean up the multiplexer from the in-flight map
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -997,7 +999,6 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	n.inFlightRequests.Delete(mlx.hash)
-	mlx.Release()
 }
 
 func (n *Network) shouldHandleMethod(method string, upsList []common.Upstream) error {

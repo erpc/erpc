@@ -339,6 +339,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}()
 
 				nq := common.NewNormalizedRequest(rawReq)
+				defer nq.Release()
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
 
 				// Validate the raw JSON-RPC payload early
@@ -514,7 +515,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			_, err = bw.WriteTo(w)
 			for _, resp := range responses {
 				if r, ok := resp.(*common.NormalizedResponse); ok {
-					go r.Release()
+					r.Release()
 				}
 			}
 
@@ -534,7 +535,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			switch v := res.(type) {
 			case *common.NormalizedResponse:
 				_, err = v.WriteTo(w)
-				go v.Release()
+				v.Release()
 			case *HttpJsonRpcErrorResponse:
 				_, err = writeJsonRpcError(w, v)
 			default:

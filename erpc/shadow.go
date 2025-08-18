@@ -86,6 +86,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 				// Pre-populate the parsed request so Forward() does not need to unmarshal again
 				_, _ = shadowReq.JsonRpcRequest(shadowCtx)
 			}
+			defer shadowReq.Release()
 
 			// Copy directives so behaviour is consistent
 			if dirs := origReq.Directives(); dirs != nil {

@@ -674,13 +674,15 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 // TODO move to evm package
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
+	defer pr.Release()
 
 	resp, err := u.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		return "", err
 	}
-	// Ensure response is always released after we parse it
-	defer resp.Release()
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
