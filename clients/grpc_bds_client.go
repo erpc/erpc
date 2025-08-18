@@ -247,6 +247,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		if err != nil {
 			return nil, fmt.Errorf("gRPC call failed: %w", err)
 		}
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, cause
+		}
 
 		var result interface{}
 		if grpcResp.Block != nil {
@@ -289,6 +292,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 	grpcResp, err := c.rpcClient.GetBlockByNumber(ctx, grpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
 	}
 
 	var result interface{}
@@ -361,6 +367,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 	grpcResp, err := c.rpcClient.GetBlockByHash(ctx, grpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
 	}
 
 	var result interface{}
@@ -505,6 +514,9 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
+	}
 
 	var result []interface{}
 	for _, log := range grpcResp.Logs {
@@ -567,6 +579,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, r
 	grpcResp, err := c.rpcClient.GetTransactionByHash(ctx, grpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
 	}
 
 	var result interface{}
@@ -633,6 +648,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
+	}
 
 	var result interface{}
 	if grpcResp.Receipt != nil {
@@ -669,6 +687,9 @@ func (c *GenericGrpcBdsClient) handleChainId(ctx context.Context, req *common.No
 	grpcResp, err := c.rpcClient.ChainId(ctx, grpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
 	}
 
 	// Convert chain ID to hex string per JSON-RPC standard
@@ -730,6 +751,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 	grpcResp, err := c.rpcClient.GetBlockReceipts(ctx, grpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
 	}
 
 	// Convert receipts to JSON-RPC format

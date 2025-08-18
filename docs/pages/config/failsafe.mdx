@@ -186,13 +186,13 @@ export default createConfig({
 
 Automatically retries failed requests with configurable backoff strategies.
 
-### Retryable Errors
+#### Retryable Errors
 - `5xx` server errors (intermittent issues)
 - `408` request timeout
 - `429` rate limit exceeded
 - Empty responses for certain methods (e.g., `eth_getLogs` when node is lagging)
 
-### Non-Retryable Errors
+#### Non-Retryable Errors
 - `4xx` client errors (invalid requests)
 - Unsupported method errors
 

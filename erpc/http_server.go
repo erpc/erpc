@@ -455,6 +455,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
+					// If an error occurred but a response was produced (e.g., lastValidResponse),
+					// release it now since we are not going to write it.
+					if resp != nil {
+						resp.Release()
+					}
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
@@ -471,6 +476,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		defer writeResponseSpan.End()
 
 		if err := httpCtx.Err(); err != nil {
+			// Ensure we do not retain responses when the request context is done
+			for _, resp := range responses {
+				if v, ok := resp.(*common.NormalizedResponse); ok && v != nil {
+					v.Release()
+				}
+			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				cause := context.Cause(httpCtx)
 				if cause != nil {
@@ -503,7 +514,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			_, err = bw.WriteTo(w)
 			for _, resp := range responses {
 				if r, ok := resp.(*common.NormalizedResponse); ok {
-					go r.Release()
+					r.Release()
 				}
 			}
 
@@ -523,7 +534,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			switch v := res.(type) {
 			case *common.NormalizedResponse:
 				_, err = v.WriteTo(w)
-				go v.Release()
+				v.Release()
 			case *HttpJsonRpcErrorResponse:
 				_, err = writeJsonRpcError(w, v)
 			default:
@@ -1340,6 +1351,10 @@ func gzipHandler(next http.Handler) http.Handler {
 		// Set required headers
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("Vary", "Accept-Encoding")
+		// Ensure Content-Type is preserved
+		if ct := w.Header().Get("Content-Type"); ct == "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
 
 		// Call the next handler with our gzip response writer
 		next.ServeHTTP(gzw, r)

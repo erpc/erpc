@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 
 	"strconv"
@@ -36,6 +37,10 @@ type upsTestCfg struct {
 	syncing common.EvmSyncingState
 	finBn   int64
 	lstBn   int64
+}
+
+func stringToReaderCloser(s string) io.ReadCloser {
+	return io.NopCloser(strings.NewReader(s))
 }
 
 func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *evm.EvmJsonRpcCache) {
@@ -120,7 +125,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":null}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":null}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -138,7 +143,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabc",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -168,7 +173,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -197,7 +202,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x1234"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x1234"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -243,7 +248,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"` + tc.method + `","params":` + tc.params + `,"id":1}`))
 				req.SetNetwork(mockNetwork)
 				req.SetCacheDal(cache)
-				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(tc.result))
+				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(tc.result))
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
@@ -277,7 +282,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0x1","hash":"0xabc"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0x1","hash":"0xabc"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -306,7 +311,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0x399","hash":"0xdef"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0x399","hash":"0xdef"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -324,7 +329,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -342,7 +347,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -360,7 +365,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x14"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -378,7 +383,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -401,7 +406,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -433,7 +438,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":"0x1"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":"0x1"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -476,7 +481,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":"0x1"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":"0x1"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -703,7 +708,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}`, tc.method, tc.params)))
 				req.SetNetwork(mockNetwork)
 				req.SetCacheDal(cache)
-				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,%s}`, tc.result)))
+				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,%s}`, tc.result)))
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
@@ -745,7 +750,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -781,7 +786,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xabc"}}`))
+			WithBody(stringToReaderCloser(`{"result":{"number":"0x14","hash":"0xabc"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -819,7 +824,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xfeed"}}`))
+			WithBody(stringToReaderCloser(`{"result":{"number":"0x14","hash":"0xfeed"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -856,7 +861,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		reqLatest.SetCacheDal(cache)
 		respLatest := common.NewNormalizedResponse().
 			WithRequest(reqLatest).
-			WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+			WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
 		respLatest.SetUpstream(mockUpstreams[0])
 		reqLatest.SetLastValidResponse(ctx, respLatest)
 
@@ -914,7 +919,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		reqLatest.SetCacheDal(cache)
 		respLatest := common.NewNormalizedResponse().
 			WithRequest(reqLatest).
-			WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+			WithBody(stringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
 		respLatest.SetUpstream(mockUpstreams[0])
 		reqLatest.SetLastValidResponse(ctx, respLatest)
 
@@ -958,7 +963,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		reqNum.SetCacheDal(cache)
 		respNum := common.NewNormalizedResponse().
 			WithRequest(reqNum).
-			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x18","hash":"0xbeef"}}`))
+			WithBody(stringToReaderCloser(`{"result":{"number":"0x18","hash":"0xbeef"}}`))
 		respNum.SetUpstream(mockUpstreams[0])
 		reqNum.SetLastValidResponse(ctx, respNum)
 
@@ -1011,7 +1016,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		// Dummy response for eth_getLogs
 		respBody := `[{"address":"0x123","topics":["0xabc"],"data":"0xdef"}]`
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
 		resp.SetUpstream(mockUpstreams[0]) // associate with an upstream that has finalized block info
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1061,7 +1066,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 
 		respBody := `[{"address":"0x456","topics":["0xdef"],"data":"0xghi"}]`
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1164,7 +1169,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x2"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x2"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1184,7 +1189,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1222,7 +1227,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x1"}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":"0x1"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1349,7 +1354,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
 
-		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
+		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1369,7 +1374,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
+		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1390,7 +1395,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
+		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[1])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1423,7 +1428,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
-		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
+		resp := common.NewNormalizedResponse().WithBody(stringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[1])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -1755,7 +1760,7 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 				req.SetNetwork(mockNetwork)
 				req.SetCacheDal(cache)
 				resp := common.NewNormalizedResponse().
-					WithBody(util.StringToReaderCloser(tc.response)).
+					WithBody(stringToReaderCloser(tc.response)).
 					WithRequest(req)
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
@@ -1869,7 +1874,7 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 			req.SetNetwork(mockNetwork)
 			req.SetCacheDal(cache)
 			resp := common.NewNormalizedResponse().
-				WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":"%s"}`, responseBody))).
+				WithBody(stringToReaderCloser(fmt.Sprintf(`{"result":"%s"}`, responseBody))).
 				WithRequest(req)
 			resp.SetUpstream(mockUpstreams[0])
 			req.SetLastValidResponse(ctx, resp)
@@ -2014,7 +2019,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		responseBody := `{"number":"0x5","hash":"0xabc","transactions":[]}`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2056,7 +2061,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		}`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2099,7 +2104,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		responseBody := `[{"blockHash":"0xa917fcc721a5465a484e9be17cda0cc5493933dd3bc70c9adbee192cb419c9d7","blockNumber":"0xc5043f","contractAddress":null,"cumulativeGasUsed":"0x26a7d","effectiveGasPrice":"0x0","from":"0xc4a675c5041e9687768ce154554d6cddd2540712","gasUsed":"0x26a7d","logs":[{"address":"0x1f573d6fb3f13d689ff844b4ce37794d79a7ff1c","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x00000000000000000000000056178a0d5f301baf6cf3e1cd53d9863437345bf9","0x000000000000000000000000a57bd00134b2850b2a1c55860c9e9ea100fdd6cf"],"data":"0x0000000000000000000000000000000000000000000003a2a6d6da26e6902d28","blockNumber":"0xc5043f","transactionHash":"0x23e3362a76c8b9370dc65bac8eb1cda1d408ac238a466cfe690248025254bf52","transactionIndex":"0x0","blockHash":"0xa917fcc721a5465a484e9be17cda0cc5493933dd3bc70c9adbee192cb419c9d7","logIndex":"0x0","removed":false}]}]`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2142,7 +2147,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		responseBody := `{"number":"0xf","hash":"0xdef","transactions":[]}`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2245,7 +2250,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 
 				resp := common.NewNormalizedResponse().
 					WithRequest(req).
-					WithBody(util.StringToReaderCloser(tc.responseJSON))
+					WithBody(stringToReaderCloser(tc.responseJSON))
 				resp.SetUpstream(mockUpstream)
 				req.SetLastValidResponse(ctx, resp)
 
@@ -2379,7 +2384,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		responseBody := `{"number":"0x5","hash":"0xabc123","transactions":[]}`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2438,7 +2443,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		responseBody := `{"hash":"0xdef456","number":"0x8","transactions":[]}`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2497,7 +2502,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		responseBody := `"0x123456789abcdef"`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2541,7 +2546,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		responseBody := `{"hash":"0xabcdef123456","blockHash":"0xfedcba654321","blockNumber":"0x5","from":"0x123","to":"0x456"}`
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+			WithBody(stringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2651,7 +2656,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
+			WithBody(stringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2711,7 +2716,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":"` + smallData + `"}`))
+			WithBody(stringToReaderCloser(`{"result":"` + smallData + `"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2758,7 +2763,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithBody(util.StringToReaderCloser(`{"result":"` + randomData + `"}`))
+			WithBody(stringToReaderCloser(`{"result":"` + randomData + `"}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
@@ -2912,7 +2917,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 				resp := common.NewNormalizedResponse().
 					WithRequest(req).
-					WithBody(util.StringToReaderCloser(tc.responseData))
+					WithBody(stringToReaderCloser(tc.responseData))
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
@@ -2986,7 +2991,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 				resp := common.NewNormalizedResponse().
 					WithRequest(req).
-					WithBody(util.StringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
+					WithBody(stringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
@@ -3041,7 +3046,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 				resp := common.NewNormalizedResponse().
 					WithRequest(req).
-					WithBody(util.StringToReaderCloser(`{"result":"` + largeData + `"}`))
+					WithBody(stringToReaderCloser(`{"result":"` + largeData + `"}`))
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 
@@ -3131,7 +3136,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 				resp := common.NewNormalizedResponse().
 					WithRequest(req).
-					WithBody(util.StringToReaderCloser(`{"result":"` + testData + `"}`))
+					WithBody(stringToReaderCloser(`{"result":"` + testData + `"}`))
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(ctx, resp)
 

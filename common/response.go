@@ -279,6 +279,16 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 				return
 			}
 			r.jsonRpcResponse.Store(jrr)
+
+			// Close and release the upstream body as soon as we've fully parsed
+			// the JSON-RPC payload to avoid retaining large gzip/flate buffers
+			// and network read buffers until the response is ultimately released.
+			// It's safe to do so because all subsequent writes are served from
+			// the parsed JsonRpcResponse buffers.
+			if r.body != nil {
+				_ = r.body.Close()
+				r.body = nil
+			}
 		} else {
 			// No body to parse - this shouldn't happen in normal flow
 			// but we need to handle it gracefully

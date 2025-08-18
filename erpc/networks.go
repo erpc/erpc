@@ -961,24 +961,33 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	// Check if result is already available
 	mlx.mu.RLock()
 	if mlx.resp != nil || mlx.err != nil {
+		resp := mlx.resp
+		mlxErr := mlx.err
 		mlx.mu.RUnlock()
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		copiedResp, err := common.CopyResponseForRequest(ctx, resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		return copiedResp, mlxErr
 	}
 	mlx.mu.RUnlock()
 
 	// Wait for result
 	select {
 	case <-mlx.done:
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		// Acquire read lock to safely access resp and err
+		mlx.mu.RLock()
+		resp := mlx.resp
+		mlxErr := mlx.err
+		mlx.mu.RUnlock()
+
+		copiedResp, err := common.CopyResponseForRequest(ctx, resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		return copiedResp, mlxErr
 	case <-ctx.Done():
+		// Clean up the multiplexer from the in-flight map
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -989,8 +998,6 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 }
 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
-	mlx.mu.Lock()
-	defer mlx.mu.Unlock()
 	n.inFlightRequests.Delete(mlx.hash)
 }
 

@@ -11,7 +11,6 @@ import (
 	"unicode"
 
 	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -446,7 +445,7 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		if IsSemiValidJson(r.body) {
 			e.RawJSON("body", r.body)
 		} else {
-			e.Str("body", util.B2Str(r.body))
+			e.Str("body", string(r.body))
 		}
 	}
 }

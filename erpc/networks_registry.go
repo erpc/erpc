@@ -187,7 +187,7 @@ func (nr *NetworksRegistry) GetNetwork(networkId string) (*Network, error) {
 	}
 
 	if !util.IsValidNetworkId(networkId) {
-		return nil, fmt.Errorf("invalid network id format: '%s' either use a network alias (/main/arbitrum) or a valid network id (/main/evm/42161)", networkId)
+		return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid network id format: '%s' either use a network alias (/main/arbitrum) or a valid network id (/main/evm/42161)", networkId))
 	}
 
 	// Use appCtx because even if current request times out we still want to keep bootstrapping the network
@@ -199,7 +199,7 @@ func (nr *NetworksRegistry) GetNetwork(networkId string) (*Network, error) {
 	// If during first attempt of initialization it fails we must return err so user retries
 	ntw, ok := nr.preparedNetworks.Load(networkId)
 	if !ok {
-		return nil, fmt.Errorf("network %s is not properly initialized yet", networkId)
+		return nil, common.NewErrNetworkNotFound(networkId)
 	}
 
 	return ntw.(*Network), nil

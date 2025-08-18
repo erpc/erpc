@@ -250,9 +250,6 @@ func (s *SharedStateConfig) Validate() error {
 }
 
 func (c *CacheConfig) Validate() error {
-	if len(c.Connectors) == 0 {
-		return fmt.Errorf("cache.*.connectors is required, add at least one connector")
-	}
 	existingIds := make(map[string]bool)
 	for _, connector := range c.Connectors {
 		if err := connector.Validate(); err != nil {
@@ -262,9 +259,6 @@ func (c *CacheConfig) Validate() error {
 			return fmt.Errorf("cache.*.connectors.*.id must be unique, '%s' is duplicated", connector.Id)
 		}
 		existingIds[connector.Id] = true
-	}
-	if len(c.Policies) == 0 {
-		return fmt.Errorf("cache.*.policies is required, add at least one policy")
 	}
 	for _, policy := range c.Policies {
 		if err := policy.Validate(c); err != nil {
