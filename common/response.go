@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -32,6 +33,8 @@ type NormalizedResponse struct {
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
 	parseErr  error
+
+	duration time.Duration
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -143,6 +146,20 @@ func (r *NormalizedResponse) Finality(ctx context.Context) DataFinalityState {
 	}
 
 	return DataFinalityStateUnknown
+}
+
+func (r *NormalizedResponse) Duration() time.Duration {
+	if r == nil {
+		return 0
+	}
+	return r.duration
+}
+
+func (r *NormalizedResponse) SetDuration(dur time.Duration) {
+	if r == nil {
+		return
+	}
+	r.duration = dur
 }
 
 func (r *NormalizedResponse) Attempts() int {

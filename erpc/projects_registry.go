@@ -15,7 +15,6 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -121,12 +120,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	}
 	// Disable background score refresh timers during tests to keep upstream order deterministic
 	// and avoid random reordering while tests are executing.
-	var scoreRefreshInterval time.Duration
-	if util.IsTest() {
-		scoreRefreshInterval = 0
-	} else {
-		scoreRefreshInterval = 1 * time.Second
-	}
+	scoreRefreshInterval := 1 * time.Second
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		r.appCtx,
 		&lg,

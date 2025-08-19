@@ -898,6 +898,9 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 		w.Header().Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
 		w.Header().Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
 	}
+	if resp, ok := res.(*common.NormalizedResponse); ok {
+		w.Header().Set("X-ERPC-Duration", fmt.Sprintf("%d", resp.Duration().Milliseconds()))
+	}
 }
 
 func determineResponseStatusCode(respOrErr interface{}) int {

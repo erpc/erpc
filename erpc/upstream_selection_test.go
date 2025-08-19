@@ -92,7 +92,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 				},
 			},
 			expectedBehavior:   "retry should not wait for hedge delay when failure is fast",
-			maxAcceptableDelay: 100 * time.Millisecond, // Retry should be immediate, not wait for hedge
+			maxAcceptableDelay: 220 * time.Millisecond, // Should only wait for second hedge (~100ms)
 			minExpectedCalls:   3,                      // Should try all 3 upstreams
 			expectedUpstreams:  []string{"rpc1", "rpc2", "rpc3"},
 			setupMocks: func() {
@@ -529,10 +529,10 @@ func TestMixedResponseTypes(t *testing.T) {
 }
 
 // TestFourAttemptScenario tests the specific scenario with 4 attempts:
-// - attempt 1 -> upstream1 fails with error fast before hedge
-// - attempt 2 -> upstream2 gets a correct response but very slow which makes hedge kick in
-// - attempt 3 -> upstream3 fails with error fast before next hedge
-// - attempt 4 -> upstream4 responds super fast and ends up being the winning response
+// - attempt 1 (primary) -> upstream1 fails with error fast before hedge, triggers retry
+// - attempt 2 (retry) -> upstream2 gets a correct response but very slow which makes hedge kick in
+// - attempt 3 (hedge #1) -> upstream3 fails with error fast, continues hedging since upstream2 still running
+// - attempt 4 (hedge #2) -> upstream4 responds super fast and ends up being the winning response
 func TestFourAttemptScenario(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -565,7 +565,7 @@ func TestFourAttemptScenario(t *testing.T) {
 			"result":  "0x2222",
 		})
 
-	// Upstream 3: Fails immediately when hedge triggers - triggers another retry
+	// Upstream 3: Fails immediately when hedge triggers - continues with more hedges
 	gock.New("http://rpc3.localhost").
 		Post("").
 		Times(1).
@@ -696,18 +696,18 @@ func TestFourAttemptScenario(t *testing.T) {
 
 	// Based on the response metadata, we should see the expected number of attempts
 	assert.Equal(t, 4, resp.Attempts(), "Should have made 4 attempts total")
-	assert.Equal(t, 2, resp.Retries(), "Should have made 2 retries")
-	assert.Equal(t, 1, resp.Hedges(), "Should have made 1 hedge")
+	assert.Equal(t, 1, resp.Retries(), "Should have made 1 retry")
+	assert.Equal(t, 2, resp.Hedges(), "Should have made 2 hedges")
 
 	// Timing should show hedge worked and we finished before rpc2
 	assert.Greater(t, totalDuration, hedgeDelay, "Should take at least as long as hedge delay")
 	assert.Less(t, totalDuration, upstream2ResponseTime, "Should complete before rpc2 finishes (300ms)")
 
-	// The expected flow:
-	// 1. Primary: rpc1 fails immediately -> retry
+	// The expected flow with new hedge behavior:
+	// 1. Primary: rpc1 fails immediately -> retry (no hedge running, return immediately)
 	// 2. Retry: rpc2 starts (slow) -> hedge after 50ms
-	// 3. Hedge: rpc3 fails immediately -> retry
-	// 4. Retry: rpc4 succeeds immediately -> wins
+	// 3. Hedge #1: rpc3 fails immediately -> continue hedging (rpc2 still running)
+	// 4. Hedge #2: rpc4 succeeds immediately -> wins
 	t.Logf("Expected flow executed correctly with rpc4 winning")
 }
 

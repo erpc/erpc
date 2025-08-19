@@ -339,17 +339,12 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 	})
 
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
-		// We should not cancel the execution if no other upstream is available
-		// To let the original request to continue being served
-		if err != nil && common.HasErrorCode(
-			err,
-			common.ErrCodeNoUpstreamsLeftToSelect,
-			common.ErrCodeUpstreamsExhausted,
-		) {
+		// Don't cancel on ErrUpstreamsExhausted
+		if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
 			return false
 		}
-		// As soon as we have an error or a result we'll cancel the hedges
-		return err != nil || result != nil
+
+		return result != nil || err != nil
 	})
 
 	return builder.Build(), nil
