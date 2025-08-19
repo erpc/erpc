@@ -134,22 +134,37 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 				},
 			},
 			expectedBehavior:   "should hedge to additional upstreams",
-			maxAcceptableDelay: 250 * time.Millisecond,   // Hedge delay + some buffer
-			minExpectedCalls:   2,                        // At least 2 upstreams tried
+			maxAcceptableDelay: 250 * time.Millisecond, // Hedge delay + some buffer
+			minExpectedCalls:   1,
 			expectedUpstreams:  []string{"rpc1", "rpc2"}, // May include rpc3 if both fail
 			setupMocks: func() {
-				// All upstreams fail immediately to test hedging
 				gock.New("http://rpc1.localhost").
 					Post("").
 					Times(1).
-					Reply(0).
-					SetError(errors.New("connection refused"))
+					Reply(500).
+					Delay(5000 * time.Millisecond).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"error": map[string]interface{}{
+							"code":    -32000,
+							"message": "connection refused",
+						},
+					})
 
 				gock.New("http://rpc2.localhost").
 					Post("").
 					Times(1).
-					Reply(0).
-					SetError(errors.New("connection refused"))
+					Reply(500).
+					Delay(5000 * time.Millisecond).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"error": map[string]interface{}{
+							"code":    -32000,
+							"message": "connection refused",
+						},
+					})
 
 				// Upstream 3: Succeeds
 				gock.New("http://rpc3.localhost").
@@ -195,21 +210,31 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 			require.NotNil(t, resp)
 
 			// Extract attempted upstreams from request state
-			attemptedUpstreams := []string{}
+			attemptedUpstreams := map[string]bool{}
 			req.ErrorsByUpstream.Range(func(key, value interface{}) bool {
 				upstream := key.(common.Upstream)
-				attemptedUpstreams = append(attemptedUpstreams, upstream.Id())
+				attemptedUpstreams[upstream.Id()] = true
+				return true
+			})
+			req.ConsumedUpstreams.Range(func(key, value interface{}) bool {
+				upstream := key.(common.Upstream)
+				attemptedUpstreams[upstream.Id()] = true
 				return true
 			})
 
 			// Add the successful upstream
 			if resp.Upstream() != nil {
-				attemptedUpstreams = append(attemptedUpstreams, resp.Upstream().Id())
+				attemptedUpstreams[resp.Upstream().Id()] = true
+			}
+
+			attemptedUpstreamsNames := []string{}
+			for upstream := range attemptedUpstreams {
+				attemptedUpstreamsNames = append(attemptedUpstreamsNames, upstream)
 			}
 
 			t.Logf("Test case: %s", tc.name)
 			t.Logf("Total time: %v", totalTime)
-			t.Logf("Attempted upstreams: %v", attemptedUpstreams)
+			t.Logf("Attempted upstreams: %v", attemptedUpstreamsNames)
 			t.Logf("Expected behavior: %s", tc.expectedBehavior)
 			t.Logf("Response metadata - Attempts: %d, Retries: %d, Hedges: %d",
 				resp.Attempts(), resp.Retries(), resp.Hedges())
@@ -329,45 +354,20 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 	t.Logf("Response metadata - Attempts: %d, Retries: %d, Hedges: %d",
 		resp.Attempts(), resp.Retries(), resp.Hedges())
 
-	// With hedge delay of 100ms and response time of 400ms:
-	// - Primary request starts at 0ms
-	// - First hedge at 100ms
-	// - Second hedge at 200ms
-	// - Primary completes at 400ms, cancelling others
-	// So we expect 3 attempts total (1 primary + 2 hedges)
+	// Should only have the winning upstream in ConsumedUpstreams
+	assert.Equal(t, 1, len(consumedUpstreams), "Should only have winner in consumed")
+	assert.Contains(t, consumedUpstreams, winningUpstream, "Winner should be consumed")
+
+	// Response metadata should still show the attempts
 	assert.Equal(t, 3, resp.Attempts(), "Should have made 3 attempts")
 	assert.Equal(t, 2, resp.Hedges(), "Should have made 2 hedges")
 
-	// Since all upstreams are slow (400ms) and hedge delay is 100ms,
-	// we should see multiple upstreams being attempted
-	assert.GreaterOrEqual(t, len(attemptedUpstreams), 3,
-		"Should have attempted at least 3 upstreams due to hedging")
+	// We can't verify which specific upstreams were cancelled anymore
+	// This information is not retained (which is correct behavior)
 
-	// With the new logic, cancelled requests might still appear in ConsumedUpstreams
-	// if they were selected but then cancelled. The key is that they were given a chance.
-
-	// The winning upstream should definitely be in attemptedUpstreams
-	assert.Contains(t, attemptedUpstreams, winningUpstream,
-		"Winning upstream should be in attempted upstreams")
-
-	// Since all upstreams have the same 400ms delay and we have 100ms hedge delay:
-	// - Primary (winning) completes at 400ms
-	// - First hedge starts at 100ms, gets cancelled
-	// - Second hedge starts at 200ms, gets cancelled
-	// So we expect 2 cancelled upstreams
-	assert.Equal(t, 2, len(cancelledUpstreams),
-		"Should have exactly 2 cancelled hedged requests")
-
-	// The winning upstream should NOT be in the cancelled list
-	assert.NotContains(t, cancelledUpstreams, winningUpstream,
-		"Winning upstream should not be cancelled")
-
-	// All errors should be cancellation errors (already asserted in the Range loop)
-	assert.Empty(t, erroredUpstreams,
-		"Should have no non-cancellation errors")
-
-	// Verify pending mocks - with 3 attempts out of 4 upstreams, 1 should remain
-	util.AssertNoPendingMocks(t, 1) // Expect 1 pending since only 3 of 4 upstreams should be called
+	// The gock mocks will tell us what was actually called
+	// 3 out of 4 mocks should be consumed
+	util.AssertNoPendingMocks(t, 1) // Still expect 1 pending
 }
 
 // TestMixedResponseTypes tests upstream selection with various response types

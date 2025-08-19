@@ -1230,6 +1230,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Empty(t, result, "Result should be an empty array")
 	})
 }
+
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
 		util.ResetGock()

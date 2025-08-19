@@ -1128,6 +1128,37 @@ func (e *ErrUpstreamsExhausted) Hedges() int {
 	return 0
 }
 
+type ErrNoUpstreamsLeftToSelect struct{ BaseError }
+
+const ErrCodeNoUpstreamsLeftToSelect ErrorCode = "ErrNoUpstreamsLeftToSelect"
+
+var NewErrNoUpstreamsLeftToSelect = func(r *NormalizedRequest, reason string) error {
+	m, _ := r.Method()
+	details := map[string]interface{}{
+		"method": m,
+	}
+	for _, u := range r.upstreamList {
+		state := "unknown"
+		if _, ok := r.ErrorsByUpstream.Load(u); ok {
+			state = "errored"
+		} else if _, ok := r.EmptyResponses.Load(u); ok {
+			state = "empty_response"
+		} else if _, ok := r.ConsumedUpstreams.Load(u); ok {
+			state = "consumed"
+		} else {
+			state = "available"
+		}
+		details[u.Id()] = state
+	}
+	return &ErrNoUpstreamsLeftToSelect{
+		BaseError{
+			Code:    ErrCodeNoUpstreamsLeftToSelect,
+			Message: fmt.Sprintf("no upstreams left to select, %s", reason),
+			Details: details,
+		},
+	}
+}
+
 type ErrNoUpstreamsDefined struct{ BaseError }
 
 var NewErrNoUpstreamsDefined = func(project string) error {
