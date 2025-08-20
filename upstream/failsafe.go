@@ -338,19 +338,13 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		return true
 	})
 
-	// We will only cancel other hedged requests if we have non-error response, otherwise we'll wait for other in-flight requests to complete.
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
-		if err != nil || result == nil || result.IsObjectNull() {
+		// Don't cancel on ErrUpstreamsExhausted
+		if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
 			return false
 		}
-		jrr, err := result.JsonRpcResponse()
-		if jrr == nil || err != nil {
-			return false
-		}
-		if jrr.Error != nil {
-			return false
-		}
-		return true
+
+		return result != nil || err != nil
 	})
 
 	return builder.Build(), nil

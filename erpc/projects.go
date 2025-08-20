@@ -185,10 +185,12 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			nq.AgentName(),
 			nq.AgentVersion(),
 		).Inc()
+		dur := time.Since(start)
+		resp.SetDuration(dur)
 		if lg.GetLevel() == zerolog.TraceLevel {
-			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
+			lg.Info().Dur("durationMs", dur).Object("response", resp).Msgf("successfully forwarded request for network")
 		} else {
-			lg.Info().Msgf("successfully forwarded request for network")
+			lg.Info().Dur("durationMs", dur).Msgf("successfully forwarded request for network")
 		}
 		telemetry.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,
@@ -197,7 +199,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			upstreamId,
 			method,
 			finality.String(),
-		).Observe(time.Since(start).Seconds())
+		).Observe(dur.Seconds())
 		return resp, err
 	} else {
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {

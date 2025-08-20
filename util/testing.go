@@ -125,7 +125,8 @@ func ResetGock() {
 
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		host := strings.Split(req.URL.Host, ":")[0]
+		shouldMakeRealCall := host == "localhost" || host == "127.0.0.1"
 		return shouldMakeRealCall
 	})
 

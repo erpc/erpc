@@ -273,6 +273,10 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 					logger.Warn().Err(err).Object("request", rq).Msg("could not execute eth_getLogs sub-requests, returning original response")
 					return rs, re
 				}
+				// Original response is no longer used; release to avoid retention
+				if rs != nil {
+					rs.Release()
+				}
 				return common.NewNormalizedResponse().
 					WithRequest(rq).
 					WithJsonRpcResponse(mergedResponse), nil
@@ -293,6 +297,8 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 		nnr.SetHedges(rs.Hedges())
 		nnr.SetUpstream(u)
 		rq.SetLastValidResponse(ctx, nnr)
+		// We replaced the original response with a normalized one; release the old instance
+		rs.Release()
 		return nnr, nil
 	}
 

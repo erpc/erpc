@@ -476,12 +476,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		defer writeResponseSpan.End()
 
 		if err := httpCtx.Err(); err != nil {
-			// Ensure we do not retain responses when the request context is done
-			for _, resp := range responses {
-				if v, ok := resp.(*common.NormalizedResponse); ok && v != nil {
-					go v.Release()
-				}
-			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				cause := context.Cause(httpCtx)
 				if cause != nil {
@@ -489,6 +483,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				s.logger.Trace().Err(err).Msg("request premature context error")
 				writeFatalError(httpCtx, http.StatusInternalServerError, err)
+			}
+			// Ensure we do not retain responses when the request context is done
+			for _, resp := range responses {
+				if v, ok := resp.(*common.NormalizedResponse); ok && v != nil {
+					go v.Release()
+				}
 			}
 			return
 		}
@@ -897,6 +897,9 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 		w.Header().Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
 		w.Header().Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
 		w.Header().Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
+	}
+	if resp, ok := res.(*common.NormalizedResponse); ok {
+		w.Header().Set("X-ERPC-Duration", fmt.Sprintf("%d", resp.Duration().Milliseconds()))
 	}
 }
 

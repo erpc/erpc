@@ -77,7 +77,7 @@ type NormalizedRequest struct {
 	ErrorsByUpstream sync.Map
 	EmptyResponses   sync.Map // TODO we can potentially remove this map entirely, only use is to report "wrong empty responses"
 
-	// New fields for centralized upstream management
+	// Fields for centralized upstream management
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
@@ -857,7 +857,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	defer r.upstreamMutex.Unlock()
 
 	if len(r.upstreamList) == 0 {
-		return nil, fmt.Errorf("no upstreams available for this request")
+		return nil, NewErrNoUpstreamsLeftToSelect(
+			r,
+			"no upstreams are set for this request",
+		)
 	}
 
 	// Check if UseUpstream directive is set
@@ -876,7 +879,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			}
 		}
 		// If no matching upstream found or all consumed, return error
-		return nil, fmt.Errorf("no more non-consumed matching upstreams left")
+		return nil, NewErrNoUpstreamsLeftToSelect(
+			r,
+			"no more non-consumed matching upstreams",
+		)
 	}
 
 	upstreamCount := len(r.upstreamList)
@@ -915,8 +921,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		// If we reach here, another goroutine reserved this upstream, continue to next
 	}
 
-	// All upstreams exhausted
-	return nil, fmt.Errorf("no more good upstreams left")
+	return nil, NewErrNoUpstreamsLeftToSelect(
+		r,
+		"no more non-consumed or working upstreams left",
+	)
 }
 
 func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream Upstream, resp *NormalizedResponse, err error) {
@@ -924,6 +932,14 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 	defer r.upstreamMutex.Unlock()
 
 	hasResponse := resp != nil && !resp.IsObjectNull(ctx)
+
+	// Check if this is a cancelled hedge - if so, just release and return
+	if err != nil && HasErrorCode(err, ErrCodeEndpointRequestCanceled) {
+		r.ConsumedUpstreams.Delete(upstream)
+		// Don't store the error - this upstream wasn't really "tried"
+		return
+	}
+
 	// We can re-use the same upstream on next rotation if there's no response or the error is retryable towards the upstream
 	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
 

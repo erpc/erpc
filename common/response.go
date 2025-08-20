@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -32,6 +33,8 @@ type NormalizedResponse struct {
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
 	parseErr  error
+
+	duration time.Duration
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -143,6 +146,20 @@ func (r *NormalizedResponse) Finality(ctx context.Context) DataFinalityState {
 	}
 
 	return DataFinalityStateUnknown
+}
+
+func (r *NormalizedResponse) Duration() time.Duration {
+	if r == nil {
+		return 0
+	}
+	return r.duration
+}
+
+func (r *NormalizedResponse) SetDuration(dur time.Duration) {
+	if r == nil {
+		return
+	}
+	r.duration = dur
 }
 
 func (r *NormalizedResponse) Attempts() int {
@@ -384,30 +401,32 @@ func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
 
 	return 0, fmt.Errorf("unexpected empty response when calling NormalizedResponse.WriteTo")
 }
-
 func (r *NormalizedResponse) Release() {
 	if r == nil {
 		return
 	}
 
 	r.Lock()
-	defer r.Unlock()
+	body := r.body
+	r.body = nil // Clear reference immediately
 
-	// If body is not closed yet, close it
-	if r.body != nil {
-		err := r.body.Close()
-		if err != nil {
-			log.Error().Err(err).Object("response", r).Msg("failed to close response body")
-		}
-		r.body = nil
-	}
-
-	// Aggressively free heavy fields of JsonRpcResponse before dropping the pointer
+	// Clear these synchronously (fast, no I/O)
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
 		jrr.Free()
 	}
-
 	r.jsonRpcResponse.Store(nil)
+
+	if r.request != nil {
+		r.request = nil // Break cycle immediately
+	}
+	r.Unlock()
+
+	// Only async the potentially blocking I/O
+	if body != nil {
+		if err := body.Close(); err != nil {
+			log.Error().Err(err).Msg("failed to close response body")
+		}
+	}
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
