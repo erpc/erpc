@@ -425,6 +425,10 @@ func (r *NormalizedResponse) Release() {
 	}
 
 	r.jsonRpcResponse.Store(nil)
+
+	if r.request != nil {
+		r.request = nil
+	}
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
