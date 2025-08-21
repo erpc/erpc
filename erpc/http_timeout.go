@@ -75,6 +75,8 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(tw.code)
 		_, err := w.Write(tw.wbuf.Bytes())
+		// Proactively release buffered memory now that response is written
+		tw.wbuf = bytes.Buffer{}
 		if err != nil {
 			log.Warn().Err(err).Msg("failed to write response")
 		}
@@ -94,6 +96,8 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Error().Err(err).Msg("failed to write error response")
 			}
 			tw.err = ErrHandlerTimeout
+			// Drop any buffered response data to avoid retaining large allocations
+			tw.wbuf = bytes.Buffer{}
 		default:
 			w.WriteHeader(http.StatusServiceUnavailable)
 			tw.err = err

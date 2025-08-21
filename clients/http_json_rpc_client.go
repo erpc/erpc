@@ -49,6 +49,9 @@ type GenericHttpJsonRpcClient struct {
 	batchRequests map[interface{}]*batchRequest
 	batchDeadline *time.Time
 	batchTimer    *time.Timer
+
+	// gzip reader pool to reduce allocations
+	gzipPool *util.GzipReaderPool
 }
 
 type batchRequest struct {
@@ -57,6 +60,8 @@ type batchRequest struct {
 	response chan *common.NormalizedResponse
 	err      chan error
 }
+
+// (gzip pooling implemented via util.GzipReaderPool)
 
 func NewGenericHttpJsonRpcClient(
 	appCtx context.Context,
@@ -75,6 +80,7 @@ func NewGenericHttpJsonRpcClient(
 		upstream:        upstream,
 		proxyPool:       proxyPool,
 		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
+		gzipPool:        util.NewGzipReaderPool(),
 	}
 
 	// Default fallback transport (no proxy)
@@ -444,7 +450,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	bodyBytes, err := readResponseBody(resp, int(resp.ContentLength))
+	bodyBytes, err := c.readResponseBody(resp, int(resp.ContentLength))
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -698,12 +704,11 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	var bodyReader io.ReadCloser = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := gzip.NewReader(resp.Body)
+		gzReader, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
-		defer gzReader.Close()
-		bodyReader = gzReader
+		bodyReader = c.gzipPool.WrapGzipReader(gzReader)
 	}
 
 	nr := common.NewNormalizedResponse().
@@ -773,18 +778,18 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	return httpReq, nil
 }
 
-func readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
+func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
 	var reader io.ReadCloser = resp.Body
 	defer resp.Body.Close()
 
 	// Check if response is gzipped
 	if resp.Header.Get("Content-Encoding") == "gzip" {
-		var err error
-		reader, err = gzip.NewReader(resp.Body)
+		gr, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("error creating gzip reader: %w", err)
 		}
-		defer reader.Close()
+		defer c.gzipPool.Put(gr)
+		reader = gr
 	}
 
 	return util.ReadAll(reader, 128*1024, expectedSize) // 128KB

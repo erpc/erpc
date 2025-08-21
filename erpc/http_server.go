@@ -40,6 +40,7 @@ type HttpServer struct {
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
 	draining                *atomic.Bool
+	gzipPool                *util.GzipReaderPool
 }
 
 func NewHttpServer(
@@ -70,6 +71,8 @@ func NewHttpServer(
 		log.Info().Msg("entering draining mode → healthcheck will fail")
 	}()
 
+	gzipPool := util.NewGzipReaderPool()
+
 	srv := &HttpServer{
 		logger:         logger,
 		appCtx:         ctx,
@@ -78,6 +81,7 @@ func NewHttpServer(
 		adminCfg:       adminCfg,
 		erpc:           erpc,
 		draining:       &draining,
+		gzipPool:       gzipPool,
 	}
 
 	h := srv.createRequestHandler()
@@ -244,7 +248,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		// Handle gzipped request bodies
 		var bodyReader io.Reader = r.Body
 		if r.Header.Get("Content-Encoding") == "gzip" {
-			gzReader, err := gzip.NewReader(r.Body)
+			gzReader, err := s.gzipPool.GetReset(r.Body)
 			if err != nil {
 				handleErrorResponse(
 					httpCtx,
@@ -259,7 +263,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				)
 				return
 			}
-			defer gzReader.Close()
+			defer s.gzipPool.Put(gzReader)
 			bodyReader = gzReader
 		}
 
@@ -318,6 +322,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		parseRequestsSpan.End()
 
+		// We no longer need the top-level body; drop reference early to free its backing array
+		body = nil
+
 		for i, reqBody := range requests {
 			wg.Add(1)
 			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
@@ -339,6 +346,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}()
 
 				nq := common.NewNormalizedRequest(rawReq)
+				// Help GC: drop reference to the rawReq slice copy in the parent slice as soon as possible
+				rawReq = nil
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
 
 				// Validate the raw JSON-RPC payload early

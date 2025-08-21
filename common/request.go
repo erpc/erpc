@@ -381,6 +381,8 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 	}
 
 	r.jsonRpcRequest.Store(rpcReq)
+	// Safe to drop the raw body after successful parse to reduce retention of ReadAll buffers.
+	r.body = nil
 
 	return rpcReq, nil
 }

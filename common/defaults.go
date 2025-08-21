@@ -636,7 +636,7 @@ func (m *MetricsConfig) SetDefaults() error {
 		m.Port = util.IntPtr(4001)
 	}
 	if m.ErrorLabelMode == "" {
-		m.ErrorLabelMode = ErrorLabelModeVerbose
+		m.ErrorLabelMode = ErrorLabelModeCompact
 	}
 
 	return nil

@@ -285,8 +285,11 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 
 	// Ensure parsing happens only once
 	r.parseOnce.Do(func() {
+		// Snapshot current body/expected size safely
+		r.Lock()
 		body := r.body
 		expectedSize := r.expectedSize
+		r.Unlock()
 
 		if body != nil {
 			jrr := &JsonRpcResponse{}
@@ -295,6 +298,11 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 				r.parseErr = err
 				return
 			}
+			// Parsing succeeded: eagerly close and clear body to release gzip/flate buffers ASAP
+			_ = body.Close()
+			r.Lock()
+			r.body = nil
+			r.Unlock()
 			r.jsonRpcResponse.Store(jrr)
 		} else {
 			// No body to parse - this shouldn't happen in normal flow
