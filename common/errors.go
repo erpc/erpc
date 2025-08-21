@@ -1997,7 +1997,10 @@ func (e *ErrEndpointBillingIssue) ErrorStatusCode() int {
 	return http.StatusPaymentRequired
 }
 
-type ErrEndpointMissingData struct{ BaseError }
+type ErrEndpointMissingData struct {
+	UpstreamAwareError
+	BaseError
+}
 
 const ErrCodeEndpointMissingData = "ErrEndpointMissingData"
 
@@ -2019,7 +2022,8 @@ var NewErrEndpointMissingData = func(cause error, upstream Upstream) error {
 	}
 
 	return &ErrEndpointMissingData{
-		BaseError{
+		UpstreamAwareError: UpstreamAwareError{upstream},
+		BaseError: BaseError{
 			Code:    ErrCodeEndpointMissingData,
 			Message: "remote endpoint does not have this data",
 			Cause:   cause,
