@@ -117,7 +117,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	jrq.RUnlock()
 
 	if fromBlock > toBlock {
-		return true, nil, errors.New("fromBlock must be less than or equal to toBlock")
+		return true, nil, errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (%" + strconv.FormatInt(toBlock, 10) + ")")
 	}
 	requestRange := toBlock - fromBlock + 1
 	cfg := up.Config()
@@ -178,8 +178,11 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return true, nil, err
 	}
 	if !available {
+		latestBlock := statePoller.LatestBlock()
+		finalizedBlock := statePoller.FinalizedBlock()
+
 		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found for eth_getLogs, because requested toBlock %d is not available on the upstream node", toBlock),
+			fmt.Errorf("block not found for eth_getLogs, requested toBlock %d is not available on the upstream node (latestBlock: %d, finalizedBlock: %d)", toBlock, latestBlock, finalizedBlock),
 			up,
 		)
 	}
@@ -188,8 +191,11 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return true, nil, err
 	}
 	if !available {
+		latestBlock := statePoller.LatestBlock()
+		finalizedBlock := statePoller.FinalizedBlock()
+
 		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found for eth_getLogs, because fromBlock %d is not available on the upstream node", fromBlock),
+			fmt.Errorf("block not found for eth_getLogs, fromBlock %d is not available on the upstream node (latestBlock: %d, finalizedBlock: %d)", fromBlock, latestBlock, finalizedBlock),
 			up,
 		)
 	}

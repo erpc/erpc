@@ -42,12 +42,15 @@ func (v *ErpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 	}
 
 	endpoint, _ := settings["endpoint"].(string)
-	secret, _ := settings["secret"].(string)
-
 	if endpoint == "" {
 		return false, nil
 	}
 
+	// Secret from settings is only used if not already in the endpoint URL
+	secret, _ := settings["secret"].(string)
+
+	// If endpoint already contains query params (e.g., erpc://domain.com?secret=xxx&other=yyy),
+	// parseEndpointURL will preserve them. The secret param is only added if provided separately.
 	parsedURL, err := v.parseEndpointURL(endpoint, secret, chainId)
 	if err != nil {
 		return false, err
@@ -100,21 +103,16 @@ func (v *ErpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 
 	// If endpoint is already set, use it directly
 	if upstream.Endpoint != "" {
-		// If it's an erpc:// URL, parse it and convert to https://
+		// If it's an erpc:// URL, parse it and convert to http/https based on port
 		if strings.HasPrefix(upstream.Endpoint, "erpc://") || strings.HasPrefix(upstream.Endpoint, "evm+erpc://") {
-			trimmedEndpoint := strings.TrimPrefix(strings.TrimPrefix(upstream.Endpoint, "evm+"), "erpc://")
-
-			// Extract secret if present
-			secret := ""
-			if strings.Contains(trimmedEndpoint, "?secret=") {
-				parts := strings.Split(trimmedEndpoint, "?secret=")
-				trimmedEndpoint = parts[0]
-				if len(parts) > 1 {
-					secret = parts[1]
-				}
+			endpoint := upstream.Endpoint
+			if strings.HasPrefix(endpoint, "evm+erpc://") {
+				endpoint = strings.TrimPrefix(endpoint, "evm+")
 			}
 
-			parsedURL, err := v.parseEndpointURL(trimmedEndpoint, secret, upstream.Evm.ChainId)
+			// Parse the endpoint URL directly - parseEndpointURL handles erpc:// prefix
+			// and preserves all query parameters
+			parsedURL, err := v.parseEndpointURL(endpoint, "", upstream.Evm.ChainId)
 			if err != nil {
 				return nil, err
 			}
@@ -170,17 +168,75 @@ func (v *ErpcVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 }
 
 func (v *ErpcVendor) parseEndpointURL(endpoint string, secret string, chainId int64) (*url.URL, error) {
-	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-		endpoint = "https://" + endpoint
+	// First, handle the case where it's already a full URL (http:// or https://)
+	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		// Parse as-is and append chainId to path
+		parsedURL, err := url.Parse(endpoint)
+		if err != nil {
+			return nil, err
+		}
+
+		// Append chainId to path
+		if parsedURL.Path == "" || parsedURL.Path == "/" {
+			parsedURL.Path = "/" + strconv.FormatInt(chainId, 10)
+		} else {
+			parsedURL.Path = strings.TrimSuffix(parsedURL.Path, "/") + "/" + strconv.FormatInt(chainId, 10)
+		}
+
+		// Add secret if provided (backwards compatibility)
+		if secret != "" {
+			q := parsedURL.Query()
+			q.Set("secret", secret)
+			parsedURL.RawQuery = q.Encode()
+		}
+
+		return parsedURL, nil
 	}
 
-	endpoint = endpoint + "/" + strconv.FormatInt(chainId, 10)
+	// For erpc:// or plain endpoints, we need to determine the protocol based on port
+	// Parse the endpoint to extract host, port, path, and query params
+	var rawURL string
+	if strings.HasPrefix(endpoint, "erpc://") {
+		rawURL = strings.TrimPrefix(endpoint, "erpc://")
+	} else {
+		rawURL = endpoint
+	}
 
-	parsedURL, err := url.Parse(endpoint)
+	// Create a temporary URL with http:// to use Go's URL parser
+	tempURL := "http://" + rawURL
+	parsedURL, err := url.Parse(tempURL)
 	if err != nil {
 		return nil, err
 	}
 
+	// Determine the protocol based on port
+	var scheme string
+	port := parsedURL.Port()
+
+	switch port {
+	case "443":
+		scheme = "https"
+	case "80":
+		scheme = "http"
+	case "":
+		// No port specified, default to https
+		scheme = "https"
+	default:
+		// Any other port, use http
+		scheme = "http"
+	}
+
+	// Update the scheme
+	parsedURL.Scheme = scheme
+
+	// Append chainId to path
+	if parsedURL.Path == "" || parsedURL.Path == "/" {
+		parsedURL.Path = "/" + strconv.FormatInt(chainId, 10)
+	} else {
+		parsedURL.Path = strings.TrimSuffix(parsedURL.Path, "/") + "/" + strconv.FormatInt(chainId, 10)
+	}
+
+	// Add secret if provided
 	if secret != "" {
 		q := parsedURL.Query()
 		q.Set("secret", secret)
