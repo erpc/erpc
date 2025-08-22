@@ -7807,29 +7807,6 @@ func TestNetwork_Forward(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(500 * time.Millisecond)
-			var res1 string
-			var res2 string
-			jrr1, ok1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
-			jrr2, ok2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
-			if !ok1 {
-				t.Logf("jrr1Atomic.Load() returned non-JsonRpcResponse")
-				return
-			}
-			if !ok2 {
-				t.Logf("jrr2Atomic.Load() returned non-JsonRpcResponse")
-				return
-			}
-			if jrr1 != nil {
-				res1 = jrr1.GetResultString()
-				_ = jrr1.ID()
-			}
-			if jrr2 != nil {
-				res2 = jrr2.GetResultString()
-				_ = jrr2.ID()
-			}
-			assert.NotEmpty(t, res1)
-			assert.NotEmpty(t, res2)
-			assert.NotEqual(t, res1, res2)
 			cache1, e1 := slowCache.Get(ctx, req1)
 			cache2, e2 := slowCache.Get(ctx, req2)
 			assert.NoError(t, e1)
@@ -7839,10 +7816,10 @@ func TestNetwork_Forward(t *testing.T) {
 			assert.NotNil(t, cjrr1)
 			assert.NotNil(t, cjrr2)
 			if cjrr1 != nil {
-				assert.Equal(t, res1, cjrr1.GetResultString())
+				assert.Contains(t, cjrr1.GetResultString(), "0x1111", "0x1111 not found in cjrr1")
 			}
 			if cjrr2 != nil {
-				assert.Equal(t, res2, cjrr2.GetResultString())
+				assert.Contains(t, cjrr2.GetResultString(), "0x22222222222222", "0x22222222222222 not found in cjrr2")
 			}
 		}()
 

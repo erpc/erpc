@@ -207,7 +207,7 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 
 	e.cfg = cfg.Evm
-	if cfg != nil && cfg.Alias != "" {
+	if cfg.Alias != "" {
 		e.networkLabel = cfg.Alias
 	} else {
 		e.networkLabel = cfg.NetworkId()
@@ -702,7 +702,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		Code:    "ErrEvmStatePoller",
 		Message: "cannot parse syncing state result (must be boolean or object)",
 		Details: map[string]interface{}{
-			"result": len(result),
+			"result": result,
 		},
 	}
 }

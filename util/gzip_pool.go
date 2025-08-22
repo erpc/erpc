@@ -53,14 +53,21 @@ func (p *GzipReaderPool) Put(zr *gzip.Reader) {
 type pooledGzipReadCloser struct {
 	zr   *gzip.Reader
 	pool *GzipReaderPool
+	once sync.Once
 }
 
 func (pgrc *pooledGzipReadCloser) Read(b []byte) (int, error) { return pgrc.zr.Read(b) }
 
 func (pgrc *pooledGzipReadCloser) Close() error {
-	// Close underlying gzip reader first, then return to pool.
-	err := pgrc.zr.Close()
-	pgrc.pool.Put(pgrc.zr)
+	var err error
+	pgrc.once.Do(func() {
+		// Close underlying gzip reader first, then return to pool exactly once.
+		err = pgrc.zr.Close()
+		pgrc.pool.Put(pgrc.zr)
+		// Clear references to avoid accidental reuse and help GC
+		pgrc.zr = nil
+		pgrc.pool = nil
+	})
 	return err
 }
 
