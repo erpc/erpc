@@ -755,10 +755,9 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstFillLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			nonEmpty,
-			emptyResp,
-		})
+		ne1, _ := nonEmpty.Clone()
+		er1, _ := emptyResp.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{ne1, er1})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -784,10 +783,9 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstEmptyLastFill", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			emptyResp,
-			nonEmpty,
-		})
+		er2, _ := emptyResp.Clone()
+		ne2, _ := nonEmpty.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er2, ne2})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -813,10 +811,9 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstFillMidNullLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			emptyResp,
-			nonEmpty,
-		})
+		er3, _ := emptyResp.Clone()
+		ne3, _ := nonEmpty.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er3, ne3})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -842,14 +839,13 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstNullMidMixLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			nullResp,
-			nonEmpty,
-			emptyResp,
-			nullResp,
-			emptyResp,
-			nonEmpty,
-		})
+		nu1, _ := nullResp.Clone()
+		ne4, _ := nonEmpty.Clone()
+		er4, _ := emptyResp.Clone()
+		nu2, _ := nullResp.Clone()
+		er5, _ := emptyResp.Clone()
+		ne5, _ := nonEmpty.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{nu1, ne4, er4, nu2, er5, ne5})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)

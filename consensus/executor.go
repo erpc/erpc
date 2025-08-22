@@ -436,12 +436,16 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 	// Track different types of disagreements
 	consensusSize := consensusGroup.ResponseSize
 
+	// Determine if the dispute log level is enabled; if not, avoid heavy preparation
+	shouldLog := e.logger.GetLevel() <= e.disputeLogLevel
+
 	// Collect all misbehaving upstreams first
 	type misbehaviorInfo struct {
 		upstreamId          string
 		upstream            common.Upstream
 		responseType        ResponseType
-		responseData        string
+		responseHash        string
+		responseSize        int
 		largerThanConsensus bool
 	}
 	var misbehaviors []misbehaviorInfo
@@ -508,12 +512,14 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 				if consensusGroup.ResponseType == ResponseTypeEmpty || consensusGroup.ResponseType == ResponseTypeNonEmpty {
 					upstreamId := result.Upstream.Id()
 
-					// Get the full response data (not truncated)
-					responseData := "null"
-					if result.Result != nil {
+					// Compute compact descriptors only if logging is enabled
+					var responseHash string
+					var responseSize int
+					if shouldLog && result.Result != nil {
 						if jrr, err := result.Result.JsonRpcResponse(); err == nil && jrr != nil {
-							if jrr.ResultLength() > 0 {
-								responseData = jrr.GetResultString()
+							responseSize = jrr.ResultLength()
+							if h, err := jrr.CanonicalHash(); err == nil {
+								responseHash = h
 							}
 						}
 					}
@@ -523,7 +529,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 						upstreamId:          upstreamId,
 						upstream:            result.Upstream,
 						responseType:        group.ResponseType,
-						responseData:        responseData,
+						responseHash:        responseHash,
+						responseSize:        responseSize,
 						largerThanConsensus: largerThanConsensus,
 					})
 
@@ -551,17 +558,11 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 		}
 	}
 
-	// Log all misbehaviors in a single log entry if any were found
-	if len(misbehaviors) > 0 {
-		// Get consensus response data (full, not truncated)
-		consensusData := "null"
-		if consensusGroup.FirstResult != nil {
-			if jrr, err := consensusGroup.FirstResult.JsonRpcResponse(); err == nil && jrr != nil {
-				if jrr.ResultLength() > 0 {
-					consensusData = jrr.GetResultString()
-				}
-			}
-		}
+	// Log all misbehaviors in a single log entry if any were found and logging is enabled
+	if len(misbehaviors) > 0 && shouldLog {
+		// Get consensus response data (compact)
+		consensusHash := consensusGroup.Hash
+		consensusSize := consensusGroup.ResponseSize
 
 		logEvent := e.logger.WithLevel(e.disputeLogLevel).
 			Str("projectId", labels.projectId).
@@ -572,9 +573,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 			Int("totalParticipants", analysis.totalParticipants).
 			Int("validParticipants", analysis.validParticipants).
 			Str("consensusResponseType", consensusGroup.ResponseType.String()).
-			Str("consensusHash", consensusGroup.Hash).
-			Str("consensusResponse", consensusData).
-			Int("misbehavingCount", len(misbehaviors)).
+			Str("consensusHash", consensusHash).
+			Int("consensusSize", consensusSize).
 			Object("request", req)
 
 		// Add each misbehaving upstream with numbered keys
@@ -584,7 +584,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 				Str("upstream"+idx, misbehavior.upstreamId).
 				Str("responseType"+idx, misbehavior.responseType.String()).
 				Bool("largerThanConsensus"+idx, misbehavior.largerThanConsensus).
-				Str("response"+idx, misbehavior.responseData)
+				Str("responseHash"+idx, misbehavior.responseHash).
+				Int("responseSize"+idx, misbehavior.responseSize)
 		}
 
 		logEvent.Msg("consensus misbehavior detected - upstreams differ from consensus")

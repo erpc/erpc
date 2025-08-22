@@ -313,6 +313,7 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 
 type GetLogsMultiResponseWriter struct {
 	responses []*common.JsonRpcResponse
+	once      sync.Once
 }
 
 func NewGetLogsMultiResponseWriter(responses []*common.JsonRpcResponse) *GetLogsMultiResponseWriter {
@@ -358,8 +359,21 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer, trimSides bool) (n int
 	if !trimSides {
 		// Write closing bracket
 		nn, err := w.Write([]byte{']'})
-		return n + int64(nn), err
+		if err != nil {
+			return n + int64(nn), err
+		}
+		n += int64(nn)
 	}
+
+	// After writing, free memory retained by sub-responses and release their owners.
+	g.once.Do(func() {
+		for _, r := range g.responses {
+			if r != nil {
+				r.Free()
+			}
+		}
+		g.responses = nil
+	})
 
 	return n, nil
 }

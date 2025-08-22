@@ -1340,6 +1340,8 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 }
 
 func gzipHandler(next http.Handler) http.Handler {
+	// Pool writers across responses
+	var gzPool = util.NewGzipWriterPool()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if client accepts gzip encoding
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -1347,9 +1349,12 @@ func gzipHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Initialize gzip writer
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
+		// Initialize gzip writer from pool
+		gz := gzPool.Get(w)
+		defer func() {
+			_ = gz.Close()
+			gzPool.Put(gz)
+		}()
 
 		// Create gzip response writer
 		gzw := &gzipResponseWriter{

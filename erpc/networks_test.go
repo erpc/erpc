@@ -7931,7 +7931,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Prepare a large payload and allowed overhead
 		sampleSize := 100 * 1024 * 1024
-		allowedOverhead := int(float64(sampleSize) * 1.1)
+		allowedMemoryUsageLeft := int(float64(sampleSize) * 0.04)
 		largeResult := strings.Repeat("x", sampleSize)
 
 		// Stub only the actual debug_traceTransaction call and return our big string
@@ -7990,11 +7990,19 @@ func TestNetwork_Forward(t *testing.T) {
 		runtime.GC()
 		runtime.ReadMemStats(&mAfter)
 
-		used := mAfter.Alloc - mBefore.Alloc
+		// Under the race detector (and due to GC), mAfter.Alloc can be less than
+		// mBefore.Alloc, which would underflow a uint64 subtraction and yield a
+		// gigantic number. Clamp negative deltas to zero.
+		var used uint64
+		if mAfter.Alloc >= mBefore.Alloc {
+			used = mAfter.Alloc - mBefore.Alloc
+		} else {
+			used = 0
+		}
 		t.Logf("Memory used for request: %.2f MB", float64(used)/(1024*1024))
 
 		// assert we stayed under sampleSize + overhead
-		maxAllowed := uint64(sampleSize + allowedOverhead)
+		maxAllowed := uint64(sampleSize + allowedMemoryUsageLeft)
 		if used > maxAllowed {
 			maxAllowedStr := fmt.Sprintf("%.2f MB", float64(maxAllowed)/(1024*1024))
 			usedStr := fmt.Sprintf("%.2f MB", float64(used)/(1024*1024))

@@ -210,8 +210,13 @@ func (r *NormalizedRequest) ID() interface{} {
 }
 
 func (r *NormalizedRequest) NetworkId() string {
-	if r == nil || r.network == nil {
+	if r == nil {
 		// For certain requests such as internal eth_chainId requests, network might not be available yet.
+		return "n/a"
+	}
+	r.RLock()
+	defer r.RUnlock()
+	if r.network == nil {
 		return "n/a"
 	}
 	return r.network.Id()
@@ -220,7 +225,12 @@ func (r *NormalizedRequest) NetworkId() string {
 // NetworkLabel returns a user-friendly label for the network suitable for metrics.
 // It prefers the network alias when available, otherwise falls back to the canonical ID.
 func (r *NormalizedRequest) NetworkLabel() string {
-	if r == nil || r.network == nil {
+	if r == nil {
+		return "n/a"
+	}
+	r.RLock()
+	defer r.RUnlock()
+	if r.network == nil {
 		return "n/a"
 	}
 	lbl := r.network.Label()
@@ -231,10 +241,14 @@ func (r *NormalizedRequest) NetworkLabel() string {
 }
 
 func (r *NormalizedRequest) SetNetwork(network Network) {
+	r.Lock()
+	defer r.Unlock()
 	r.network = network
 }
 
 func (r *NormalizedRequest) SetCacheDal(cacheDal CacheDAL) {
+	r.Lock()
+	defer r.Unlock()
 	r.cacheDal = cacheDal
 }
 
@@ -242,6 +256,8 @@ func (r *NormalizedRequest) CacheDal() CacheDAL {
 	if r == nil {
 		return nil
 	}
+	r.RLock()
+	defer r.RUnlock()
 	return r.cacheDal
 }
 
@@ -249,6 +265,8 @@ func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
 	if r == nil {
 		return
 	}
+	r.Lock()
+	defer r.Unlock()
 	r.directives = directives
 }
 

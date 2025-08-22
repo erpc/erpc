@@ -2,7 +2,6 @@ package clients
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -52,6 +51,8 @@ type GenericHttpJsonRpcClient struct {
 
 	// gzip reader pool to reduce allocations
 	gzipPool *util.GzipReaderPool
+	// gzip writer pool to reduce allocations when compressing requests
+	gzipWriterPool *util.GzipWriterPool
 }
 
 type batchRequest struct {
@@ -81,6 +82,7 @@ func NewGenericHttpJsonRpcClient(
 		proxyPool:       proxyPool,
 		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
 		gzipPool:        util.NewGzipReaderPool(),
+		gzipWriterPool:  util.NewGzipWriterPool(),
 	}
 
 	// Default fallback transport (no proxy)
@@ -726,17 +728,23 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	var bodyReader io.Reader = bytes.NewReader(body)
+	var pooledRC io.ReadCloser
 
 	// Check if gzip compression is enabled
 	if c.enableGzip {
-		var buf bytes.Buffer
-		gw := gzip.NewWriter(&buf)
+		buf := util.BorrowBuf()
+		gw := c.gzipWriterPool.Get(buf)
 		if _, err := gw.Write(body); err != nil {
+			c.gzipWriterPool.Put(gw)
+			util.ReturnBuf(buf)
 			return nil, err
 		}
 		if err := gw.Close(); err != nil {
+			c.gzipWriterPool.Put(gw)
+			util.ReturnBuf(buf)
 			return nil, err
 		}
+		c.gzipWriterPool.Put(gw)
 		if c.isLogLevelTrace {
 			compressedSize := buf.Len()
 			originalSize := len(body)
@@ -746,11 +754,17 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 				Float64("compressionRatio", float64(compressedSize)/float64(originalSize)).
 				Msg("compressed request body")
 		}
-		bodyReader = &buf
+		// Wrap pooled buffer so it is returned when the request body is consumed
+		prc := util.NewPooledBufferReadCloser(buf)
+		pooledRC = prc
+		bodyReader = prc
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bodyReader)
 	if err != nil {
+		if pooledRC != nil {
+			_ = pooledRC.Close()
+		}
 		return nil, err
 	}
 

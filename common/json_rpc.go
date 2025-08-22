@@ -56,24 +56,6 @@ type JsonRpcResponse struct {
 	canonicalHashWithIgnored sync.Map
 }
 
-type GoSlice struct {
-	Ptr unsafe.Pointer
-	Len int
-	Cap int
-}
-
-type GoString struct {
-	Ptr unsafe.Pointer
-	Len int
-}
-
-//go:nosplit
-func Mem2Str(v []byte) (s string) {
-	(*GoString)(unsafe.Pointer(&s)).Len = (*GoSlice)(unsafe.Pointer(&v)).Len // #nosec G103
-	(*GoString)(unsafe.Pointer(&s)).Ptr = (*GoSlice)(unsafe.Pointer(&v)).Ptr // #nosec G103
-	return
-}
-
 func (r *JsonRpcResponse) SetResult(result []byte) {
 	r.resultMu.Lock()
 	defer r.resultMu.Unlock()
@@ -87,7 +69,7 @@ func (r *JsonRpcResponse) GetResultBytes() []byte {
 }
 
 func (r *JsonRpcResponse) GetResultString() string {
-	return Mem2Str(r.GetResultBytes())
+	return util.B2Str(r.GetResultBytes())
 }
 
 func (r *JsonRpcResponse) ResultLength() int {
@@ -274,7 +256,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 
 	// Parse the JSON data into an ast.Node
 	// CRITICAL: Convert to string with copy to avoid retaining entire buffer
-	searcher := ast.NewSearcher(Mem2Str(data))
+	searcher := ast.NewSearcher(string(data))
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
@@ -499,7 +481,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 func (r *JsonRpcResponse) ensureCachedNode() error {
 	r.resultMu.RLock()
 	if r.cachedNode == nil {
-		srchr := ast.NewSearcher(Mem2Str(r.result))
+		srchr := ast.NewSearcher(util.B2Str(r.result))
 		srchr.ValidateJSON = false
 		srchr.ConcurrentRead = false
 		srchr.CopyReturn = false
@@ -982,7 +964,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 		return b, nil
 
 	case string:
-		valb := []byte(val)
+		valb := util.S2Bytes(val)
 		if util.IsBytesEmptyish(valb) {
 			return nil, nil
 		}

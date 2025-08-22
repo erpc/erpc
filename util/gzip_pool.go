@@ -75,3 +75,34 @@ func (pgrc *pooledGzipReadCloser) Close() error {
 func (p *GzipReaderPool) WrapGzipReader(zr *gzip.Reader) io.ReadCloser {
 	return &pooledGzipReadCloser{zr: zr, pool: p}
 }
+
+// GzipWriterPool wraps a sync.Pool for gzip.Writer with helpers to reset writers
+// and avoid repeated allocations on hot paths.
+type GzipWriterPool struct {
+	pool sync.Pool
+}
+
+func NewGzipWriterPool() *GzipWriterPool {
+	return &GzipWriterPool{pool: sync.Pool{New: func() any { return nil }}}
+}
+
+// Get returns a gzip.Writer reset to write into w. May allocate on first use.
+func (p *GzipWriterPool) Get(w io.Writer) *gzip.Writer {
+	if pooled := p.pool.Get(); pooled != nil {
+		zw := pooled.(*gzip.Writer)
+		zw.Reset(w)
+		return zw
+	}
+	return gzip.NewWriter(w)
+}
+
+// Put returns a gzip.Writer to the pool. Callers should Close the writer before Put
+// so any buffered data is flushed to the underlying writer.
+func (p *GzipWriterPool) Put(zw *gzip.Writer) {
+	if zw == nil {
+		return
+	}
+	// Drop reference to the previous io.Writer to avoid retaining it.
+	zw.Reset(io.Discard)
+	p.pool.Put(zw)
+}
