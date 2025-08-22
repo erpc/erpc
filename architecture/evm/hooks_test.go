@@ -31,9 +31,11 @@ func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 	for _, m := range methods {
 		// Build a minimal request with method m
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + m + `","params":["0x1"]}`))
+		jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`"1"`), []byte("null"), nil)
+		assert.NoError(t, err)
 		resp := common.NewNormalizedResponse().
 			WithRequest(req).
-			WithJsonRpcResponse(&common.JsonRpcResponse{Result: []byte("null")})
+			WithJsonRpcResponse(jrr)
 
 		outResp, err := HandleUpstreamPostForward(
 			context.Background(),

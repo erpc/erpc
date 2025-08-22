@@ -372,9 +372,7 @@ func TestExtractBlockReference(t *testing.T) {
 			request: &common.JsonRpcRequest{
 				Method: "eth_getTransactionReceipt",
 			},
-			response: &common.JsonRpcResponse{
-				Result: []byte(`{"blockNumber":"0x1b4","blockHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`),
-			},
+			response:    common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`{"blockNumber":"0x1b4","blockHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`), nil),
 			expectedRef: "436",
 			expectedNum: 436,
 			expectedErr: false,

@@ -512,8 +512,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					responseData := "null"
 					if result.Result != nil {
 						if jrr, err := result.Result.JsonRpcResponse(); err == nil && jrr != nil {
-							if len(jrr.Result) > 0 {
-								responseData = string(jrr.Result)
+							if jrr.ResultLength() > 0 {
+								responseData = jrr.GetResultString()
 							}
 						}
 					}
@@ -557,8 +557,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 		consensusData := "null"
 		if consensusGroup.FirstResult != nil {
 			if jrr, err := consensusGroup.FirstResult.JsonRpcResponse(); err == nil && jrr != nil {
-				if len(jrr.Result) > 0 {
-					consensusData = string(jrr.Result)
+				if jrr.ResultLength() > 0 {
+					consensusData = jrr.GetResultString()
 				}
 			}
 		}

@@ -24,7 +24,7 @@ func upstreamPostForward_markUnexpectedEmpty(
 	method, _ := rq.Method()
 	details := map[string]interface{}{"method": method}
 	if jrr, jerr := rs.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
-		details["rawResult"] = string(jrr.Result)
+		details["rawResult"] = jrr.GetResultString()
 	}
 
 	return rs, common.NewErrEndpointMissingData(

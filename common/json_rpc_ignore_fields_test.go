@@ -87,8 +87,8 @@ func TestJsonRpcResponse_CanonicalHashWithIgnoredFields(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			resp1 := &JsonRpcResponse{Result: []byte(tc.result1)}
-			resp2 := &JsonRpcResponse{Result: []byte(tc.result2)}
+			resp1 := &JsonRpcResponse{result: []byte(tc.result1)}
+			resp2 := &JsonRpcResponse{result: []byte(tc.result2)}
 
 			hash1, err1 := resp1.CanonicalHashWithIgnoredFields(tc.ignoreFields)
 			hash2, err2 := resp2.CanonicalHashWithIgnoredFields(tc.ignoreFields)
@@ -107,7 +107,7 @@ func TestJsonRpcResponse_CanonicalHashWithIgnoredFields(t *testing.T) {
 
 func BenchmarkCanonicalHashWithIgnoredFields(b *testing.B) {
 	resp := &JsonRpcResponse{
-		Result: []byte(`{"hash": "0xa52b", "status": "0x1", "transactions": [{"hash": "0x18c4", "from": "0x3d2f", "chainId": null, "accessList": [], "v": "0x1c"}, {"hash": "0x2", "input": "0xdef", "v": "0x1b"}]}`),
+		result: []byte(`{"hash": "0xa52b", "status": "0x1", "transactions": [{"hash": "0x18c4", "from": "0x3d2f", "chainId": null, "accessList": [], "v": "0x1c"}, {"hash": "0x2", "input": "0xdef", "v": "0x1b"}]}`),
 	}
 
 	// Same slice reused (simulating consensus policy behavior)

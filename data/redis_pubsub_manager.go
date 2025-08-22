@@ -310,7 +310,7 @@ func (m *RedisPubSubManager) runMessageLoop() error {
 			if msg != nil && strings.HasPrefix(msg.Channel, "counter:") {
 				key := strings.TrimPrefix(msg.Channel, "counter:")
 				if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
-					m.logger.Info().Str("key", key).Int64("value", val).Msg("received counter update via pubsub")
+					m.logger.Debug().Str("key", key).Int64("value", val).Msg("received counter update via pubsub")
 					m.notifySubscribers(key, val)
 				} else {
 					m.logger.Debug().

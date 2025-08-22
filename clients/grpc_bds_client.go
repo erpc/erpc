@@ -264,9 +264,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal result: %w", err)
 			}
-			jsonRpcResp.Result = resultBytes
+			jsonRpcResp.SetResult(resultBytes)
 		} else {
-			jsonRpcResp.Result = []byte("null")
+			jsonRpcResp.SetResult([]byte("null"))
 		}
 
 		return common.NewNormalizedResponse().
@@ -307,9 +307,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -379,9 +379,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -523,7 +523,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
-	jsonRpcResp.Result = resultBytes
+	jsonRpcResp.SetResult(resultBytes)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -585,9 +585,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, r
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -650,9 +650,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, 
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -684,7 +684,7 @@ func (c *GenericGrpcBdsClient) handleChainId(ctx context.Context, req *common.No
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
-	jsonRpcResp.Result = resultBytes
+	jsonRpcResp.SetResult(resultBytes)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -752,9 +752,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().

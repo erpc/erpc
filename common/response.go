@@ -35,6 +35,10 @@ type NormalizedResponse struct {
 	parseErr  error
 
 	duration time.Duration
+
+	// pendingOps tracks background users (e.g., async cache writes).
+	// Release will wait for all pending ops to finish before freeing buffers.
+	pendingOps sync.WaitGroup
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -336,6 +340,23 @@ func (r *NormalizedResponse) WithExpectedSize(expectedSize int) *NormalizedRespo
 	return r
 }
 
+// AddRef increments the number of pending operations that use this response.
+// Call DoneRef when the operation ends so Release can free resources safely.
+func (r *NormalizedResponse) AddRef() {
+	if r == nil {
+		return
+	}
+	r.pendingOps.Add(1)
+}
+
+// DoneRef decrements the number of pending operations that use this response.
+func (r *NormalizedResponse) DoneRef() {
+	if r == nil {
+		return
+	}
+	r.pendingOps.Done()
+}
+
 func (r *NormalizedResponse) WithJsonRpcResponse(jrr *JsonRpcResponse) *NormalizedResponse {
 	r.jsonRpcResponse.Store(jrr)
 	return r
@@ -383,7 +404,7 @@ func (r *NormalizedResponse) IsObjectNull(ctx ...context.Context) bool {
 	jrr.resultMu.RLock()
 	defer jrr.resultMu.RUnlock()
 
-	if len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == 0 {
+	if len(jrr.result) == 0 && jrr.Error == nil && jrr.ID() == 0 {
 		return true
 	}
 
@@ -413,6 +434,10 @@ func (r *NormalizedResponse) Release() {
 	if r == nil {
 		return
 	}
+
+	// Wait for all pending background operations (e.g., cache set) to complete
+	// before freeing heavy buffers.
+	r.pendingOps.Wait()
 
 	r.Lock()
 	body := r.body

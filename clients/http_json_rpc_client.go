@@ -801,18 +801,19 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 	if c.isLogLevelTrace {
 		if jr != nil {
 			maxTraceSize := 20 * 1024
-			if len(jr.Result) > maxTraceSize {
-				tailStart := len(jr.Result) - maxTraceSize
+			size := jr.ResultLength()
+			if size > maxTraceSize {
+				tailStart := size - maxTraceSize
 				if tailStart < maxTraceSize {
 					tailStart = maxTraceSize
 				}
-				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", string(jr.Result[:maxTraceSize])).Str("tail", string(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", jr.GetResultString()[:maxTraceSize]).Str("tail", jr.GetResultString()[tailStart:]).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
 			} else {
-				if len(jr.Result) > 0 {
-					if common.IsSemiValidJson(jr.Result) {
-						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
+				if size > 0 {
+					if common.IsSemiValidJson(jr.GetResultBytes()) {
+						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", jr.GetResultBytes()).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 					} else {
-						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", string(jr.Result)).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
+						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", jr.GetResultString()).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
 					}
 				} else {
 					c.logger.Trace().Int("statusCode", r.StatusCode).Interface("error", jr.Error).Msgf("processing empty json-rpc result response from upstream")

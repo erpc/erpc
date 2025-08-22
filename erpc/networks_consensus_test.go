@@ -2276,7 +2276,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 
 		// The test is about goroutine cancellation, not which specific result is returned
 		// Accept either the fast response or slow response as long as consensus was achieved
-		result := string(jrr.Result)
+		result := jrr.GetResultString()
 		assert.True(t, result == `"0x1234567890"` || result == `"0x9876543210"`,
 			"Expected either fast or slow response, got %s", result)
 
@@ -2354,7 +2354,7 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 		respString := ""
 		if resp != nil {
 			if jrr, _ := resp.JsonRpcResponse(); jrr != nil {
-				respString = string(jrr.Result)
+				respString = jrr.GetResultString()
 			}
 		}
 		require.Error(t, err, "expected an error but got response: %v", respString)
@@ -2375,10 +2375,10 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 			require.NotNil(t, jrr)
 
 			if tc.expectedResult.jsonRpcResult != "" {
-				assert.Equal(t, tc.expectedResult.jsonRpcResult, string(jrr.Result), "jsonrpc result mismatch")
+				assert.Equal(t, tc.expectedResult.jsonRpcResult, jrr.GetResultString(), "jsonrpc result mismatch")
 			}
 			if tc.expectedResult.contains != "" {
-				assert.Contains(t, string(jrr.Result), tc.expectedResult.contains, "response body mismatch")
+				assert.Contains(t, jrr.GetResultString(), tc.expectedResult.contains, "response body mismatch")
 			}
 			if tc.expectedResult.check != nil {
 				tc.expectedResult.check(t, resp, duration)

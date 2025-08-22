@@ -1481,8 +1481,9 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Check that the result field is an empty array as expected
-		if len(jrr.Result) != 2 || jrr.Result[0] != '[' || jrr.Result[1] != ']' {
-			t.Fatalf("Expected result to be an empty array, got %s", string(jrr.Result))
+		result := jrr.GetResultString()
+		if len(result) != 2 || result[0] != '[' || result[1] != ']' {
+			t.Fatalf("Expected result to be an empty array, got %s", result)
 		}
 	})
 
@@ -1687,7 +1688,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
 		}
 		var result []interface{}
-		err = sonic.Unmarshal(jrr.Result, &result)
+		err = sonic.Unmarshal(jrr.GetResultBytes(), &result)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}
@@ -1894,11 +1895,11 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unable to parse JSON-RPC response: %v", err)
 		}
-		if jrr.Result == nil {
+		if jrr.GetResultBytes() == nil {
 			t.Fatal("Expected a successful 'result' field, got nil")
 		}
 
-		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
+		assert.Equal(t, "\"0x123\"", strings.ToLower(jrr.GetResultString()))
 	})
 
 	t.Run("ForwardRetriesOnInvalidArgumentCodeClientError", func(t *testing.T) {
@@ -2088,11 +2089,11 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unable to parse JSON-RPC response: %v", err)
 		}
-		if jrr.Result == nil {
+		if jrr.GetResultBytes() == nil {
 			t.Fatal("Expected a successful 'result' field, got nil")
 		}
 
-		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
+		assert.Equal(t, "\"0x123\"", strings.ToLower(jrr.GetResultString()))
 	})
 
 	t.Run("HedgeRequestsBlockedBySharedJsonRpcLock", func(t *testing.T) {
@@ -2447,7 +2448,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -2639,7 +2640,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -2831,7 +2832,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -3026,7 +3027,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -3247,7 +3248,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -3653,7 +3654,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -3843,7 +3844,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -4945,7 +4946,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected result, got %v", jrr)
 		}
 
@@ -5366,7 +5367,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected result, got nil")
 		}
 
@@ -5520,7 +5521,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected result, got nil")
 		}
 
@@ -5674,7 +5675,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected result, got nil")
 		}
 
@@ -6404,7 +6405,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected result, got nil")
 		}
 
@@ -6679,7 +6680,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -6830,11 +6831,11 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		if jrr.Result[0] != '[' || jrr.Result[1] != ']' {
+		if jrr.GetResultString()[0] != '[' || jrr.GetResultString()[1] != ']' {
 			t.Fatalf("Expected result to be an array")
 		}
 	})
@@ -6978,12 +6979,13 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		if len(jrr.Result) != 2 || jrr.Result[0] != '[' || jrr.Result[1] != ']' {
-			t.Errorf("Expected empty array result, got %s", string(jrr.Result))
+		result := jrr.GetResultString()
+		if len(result) != 2 || result[0] != '[' || result[1] != ']' {
+			t.Errorf("Expected empty array result, got %s", result)
 		}
 	})
 
@@ -7665,7 +7667,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Check that the result field is an empty array as expected
 		result := []interface{}{}
-		err = sonic.Unmarshal(jrr.Result, &result)
+		err = sonic.Unmarshal(jrr.GetResultBytes(), &result)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal result: %v", err)
 		}
@@ -7818,11 +7820,11 @@ func TestNetwork_Forward(t *testing.T) {
 				return
 			}
 			if jrr1 != nil {
-				res1 = string(jrr1.Result)
+				res1 = jrr1.GetResultString()
 				_ = jrr1.ID()
 			}
 			if jrr2 != nil {
-				res2 = string(jrr2.Result)
+				res2 = jrr2.GetResultString()
 				_ = jrr2.ID()
 			}
 			assert.NotEmpty(t, res1)
@@ -7837,10 +7839,10 @@ func TestNetwork_Forward(t *testing.T) {
 			assert.NotNil(t, cjrr1)
 			assert.NotNil(t, cjrr2)
 			if cjrr1 != nil {
-				assert.Equal(t, res1, string(cjrr1.Result))
+				assert.Equal(t, res1, cjrr1.GetResultString())
 			}
 			if cjrr2 != nil {
-				assert.Equal(t, res2, string(cjrr2.Result))
+				assert.Equal(t, res2, cjrr2.GetResultString())
 			}
 		}()
 
@@ -7952,7 +7954,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Prepare a large payload and allowed overhead
 		sampleSize := 100 * 1024 * 1024
-		allowedOverhead := int(float64(sampleSize) * 2.1)
+		allowedOverhead := int(float64(sampleSize) * 1.1)
 		largeResult := strings.Repeat("x", sampleSize)
 
 		// Stub only the actual debug_traceTransaction call and return our big string
@@ -8030,8 +8032,8 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// plus 2 bytes of quotes around the string
 		expectedLen := sampleSize + 2
-		if len(jrr.Result) != expectedLen {
-			t.Fatalf("Expected result length %d, got %d", expectedLen, len(jrr.Result))
+		if jrr.ResultLength() != expectedLen {
+			t.Fatalf("Expected result length %d, got %d", expectedLen, jrr.ResultLength())
 		}
 	})
 }
@@ -8569,7 +8571,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -8622,7 +8624,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -8666,7 +8668,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -8710,7 +8712,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -8780,7 +8782,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -8870,7 +8872,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		if jrr.Result == nil {
+		if jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -8940,7 +8942,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		} else if jrr == nil || jrr.Result == nil {
+		} else if jrr == nil || jrr.ResultLength() == 0 {
 			t.Fatalf("Expected non-nil result")
 		}
 
@@ -9026,7 +9028,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.NotNil(t, resp)
 		jrr, err := resp.JsonRpcResponse()
 		assert.NoError(t, err)
-		assert.NotNil(t, jrr.Result)
+		assert.NotZero(t, jrr.ResultLength())
 		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		assert.NoError(t, err)
 		assert.Equal(t, "rpc2", fromHost)
@@ -9072,7 +9074,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Convert the raw response to a map to access custom fields like fromHost
 		jrr, err := resp.JsonRpcResponse()
 		assert.NoError(t, err)
-		assert.NotNil(t, jrr.Result)
+		assert.NotZero(t, jrr.ResultLength())
 
 		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		assert.NoError(t, err)
@@ -10914,7 +10916,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		assert.True(t, resp.FromCache())
 		rjrr, err := resp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, "[]", string(rjrr.Result))
+		assert.Equal(t, "[]", rjrr.GetResultString())
 		cache.AssertExpectations(t)
 	})
 
@@ -10959,7 +10961,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		assert.False(t, resp.FromCache())
 		rjrr, err := resp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Contains(t, string(rjrr.Result), `"logIndex":"0x1"`)
+		assert.Contains(t, rjrr.GetResultString(), `"logIndex":"0x1"`)
 		cache.AssertExpectations(t)
 	})
 }

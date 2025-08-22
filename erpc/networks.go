@@ -668,6 +668,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if resp != nil {
 		if n.cacheDal != nil {
 			resp.RLockWithTrace(ctx)
+			// Hold a reference so Release waits for cache-set to complete
+			resp.AddRef()
 
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
 				defer (func() {
@@ -684,6 +686,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				})()
 				defer resp.RUnlock()
+				defer resp.DoneRef()
 
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
 				defer timeoutCtxCancel()

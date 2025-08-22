@@ -58,7 +58,7 @@ func ParseBlockParameter(param interface{}) (blockNumber string, blockHash []byt
 				blockNumber = bt
 			}
 		}
-		if blockNumber == "" && blockHash == nil {
+		if blockNumber == "" {
 			return "", nil, fmt.Errorf("block parameter object must contain blockHash, blockNumber, or blockTag")
 		}
 	default:

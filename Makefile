@@ -50,7 +50,7 @@ build:
 test:
 	@go clean -testcache
 	@go test ./cmd/... -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -race -count 1 -parallel 1 -timeout 15m
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -v -race -count 1 -parallel 1 -timeout 15m
 
 .PHONY: test-fast
 test-fast:

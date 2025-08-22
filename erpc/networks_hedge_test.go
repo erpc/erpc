@@ -86,7 +86,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc2 (hedged request)
-		assert.Contains(t, string(jrr.Result), "0x2222")
+		assert.Contains(t, jrr.GetResultString(), "0x2222")
 	})
 
 	t.Run("FixedDelayHedge_FirstRequestFastNoHedge", func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc1 (no hedge triggered)
-		assert.Contains(t, string(jrr.Result), "0x1111")
+		assert.Contains(t, jrr.GetResultString(), "0x1111")
 	})
 
 	t.Run("QuantileBasedHedge_DynamicDelay", func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from hedged request
-		assert.Contains(t, string(jrr.Result), "0x2222")
+		assert.Contains(t, jrr.GetResultString(), "0x2222")
 	})
 
 	t.Run("QuantileBasedHedge_MinDelayBoundary", func(t *testing.T) {
@@ -495,7 +495,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should only get response from primary
-		assert.Contains(t, string(jrr.Result), "0x1234567890abcdef")
+		assert.Contains(t, jrr.GetResultString(), "0x1234567890abcdef")
 	})
 
 	t.Run("HedgePolicy_MaxCountLimit", func(t *testing.T) {
@@ -551,7 +551,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc3 (second hedge, fastest to complete)
-		assert.Contains(t, string(jrr.Result), "rpc3")
+		assert.Contains(t, jrr.GetResultString(), "rpc3")
 	})
 
 	t.Run("HedgePolicy_AllRequestsFail", func(t *testing.T) {
@@ -748,7 +748,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc3 (fastest)
-		assert.Contains(t, string(jrr.Result), "rpc3")
+		assert.Contains(t, jrr.GetResultString(), "rpc3")
 	})
 
 	t.Run("QuantileBasedHedge_NoMetricsAvailable", func(t *testing.T) {
@@ -878,7 +878,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 					return
 				}
 				jrr, _ := resp.JsonRpcResponse()
-				results <- string(jrr.Result)
+				results <- jrr.GetResultString()
 			}()
 		}
 
