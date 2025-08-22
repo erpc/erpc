@@ -5,8 +5,8 @@ import (
 )
 
 func ReadAll(r io.Reader, chunkSize int64, expected int) ([]byte, error) {
-	buf := borrowBuf()
-	defer returnBuf(buf)
+	buf := BorrowBuf()
+	defer ReturnBuf(buf)
 
 	// grow up to expected when it is smaller than pool cap and reasonable
 	if expected > 0 && expected < maxBufCap {
