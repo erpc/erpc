@@ -56,6 +56,24 @@ type JsonRpcResponse struct {
 	canonicalHashWithIgnored sync.Map
 }
 
+type GoSlice struct {
+	Ptr unsafe.Pointer
+	Len int
+	Cap int
+}
+
+type GoString struct {
+	Ptr unsafe.Pointer
+	Len int
+}
+
+//go:nosplit
+func Mem2Str(v []byte) (s string) {
+	(*GoString)(unsafe.Pointer(&s)).Len = (*GoSlice)(unsafe.Pointer(&v)).Len
+	(*GoString)(unsafe.Pointer(&s)).Ptr = (*GoSlice)(unsafe.Pointer(&v)).Ptr
+	return
+}
+
 // Free releases heavy, memory-retaining fields so that upstream response buffers
 // can be garbage collected as soon as the response is no longer needed.
 //
@@ -219,7 +237,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 
 	// Parse the JSON data into an ast.Node
 	// CRITICAL: Convert to string with copy to avoid retaining entire buffer
-	searcher := ast.NewSearcher(string(data))
+	searcher := ast.NewSearcher(Mem2Str(data))
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false

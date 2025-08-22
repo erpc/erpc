@@ -1,22 +1,22 @@
 package util
 
 import (
-	"bytes"
 	"io"
 )
 
-func ReadAll(reader io.Reader, chunkSize int64, expectedSize int) ([]byte, error) {
-	buf := bytes.NewBuffer(make([]byte, 0, 16*1024)) // 16KB default
+func ReadAll(r io.Reader, chunkSize int64, expected int) ([]byte, error) {
+	buf := borrowBuf()
+	defer returnBuf(buf)
 
-	if expectedSize > 0 && expectedSize < 50*1024*1024 { // 50MB cap to avoid DDoS by a corrupt/malicious upstream
-		n := expectedSize - buf.Cap()
-		if n > 0 {
-			buf.Grow(n)
+	// grow up to expected when it is smaller than pool cap and reasonable
+	if expected > 0 && expected < maxBufCap {
+		if need := expected - buf.Cap(); need > 0 {
+			buf.Grow(need)
 		}
 	}
 
 	for {
-		n, err := io.CopyN(buf, reader, chunkSize)
+		n, err := io.CopyN(buf, r, chunkSize)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -28,5 +28,8 @@ func ReadAll(reader io.Reader, chunkSize int64, expectedSize int) ([]byte, error
 		}
 	}
 
-	return buf.Bytes(), nil
+	// copy out to a minimal slice so caller cannot retain pooled buffer
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out, nil
 }
