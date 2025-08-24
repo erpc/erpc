@@ -32,7 +32,6 @@ type NormalizedResponse struct {
 
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
-	parseErr  error
 
 	duration time.Duration
 
@@ -289,7 +288,7 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 
 	// Check if already parsed
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
-		return jrr, r.parseErr
+		return jrr, nil
 	}
 
 	// Ensure parsing happens only once
@@ -304,26 +303,31 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 		expectedSize := r.expectedSize
 		r.Unlock()
 
+		jrr := &JsonRpcResponse{}
 		if body != nil {
-			jrr := &JsonRpcResponse{}
 			err := jrr.ParseFromStream(ctx, body, expectedSize)
 			if err != nil {
-				r.parseErr = err
-				return
+				jrr.Error = NewErrJsonRpcExceptionExternal(
+					int(JsonRpcErrorParseException),
+					fmt.Sprintf("cannot parse json-rpc response: %s", err.Error()),
+					jrr.GetResultString(),
+				)
 			}
 			// Parsing succeeded: eagerly close and clear body to release gzip/flate buffers ASAP
 			r.closeBodyOnce()
-			r.jsonRpcResponse.Store(jrr)
 		} else {
 			// No body to parse - this shouldn't happen in normal flow
 			// but we need to handle it gracefully
-			r.parseErr = fmt.Errorf("no body available to parse JsonRpcResponse")
+			jrr.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorParseException),
+				"no body available to parse JsonRpcResponse",
+				"",
+			)
 		}
+		r.jsonRpcResponse.Store(jrr)
 	})
 
-	// Return the parsed response or error
-	jrr := r.jsonRpcResponse.Load()
-	return jrr, r.parseErr
+	return r.jsonRpcResponse.Load(), nil
 }
 
 func (r *NormalizedResponse) WithBody(body io.ReadCloser) *NormalizedResponse {

@@ -159,6 +159,8 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			httpClient:      oldHttpClient,
 			isLogLevelTrace: false,
 			upstream:        &phonyUpstream{},
+			gzipPool:        util.NewGzipReaderPool(),
+			gzipWriterPool:  util.NewGzipWriterPool(),
 		}
 
 		// Send requests concurrently to simulate load
@@ -174,9 +176,13 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 				for j := 0; j < requestsPerWorker; j++ {
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%d}`, workerID*requestsPerWorker+j)))
 
-					_, err := client.SendRequest(ctx, req)
+					resp, err := client.SendRequest(ctx, req)
 					if err != nil {
 						t.Logf("Request failed: %v", err)
+					} else if resp != nil {
+						// Consume the response to enable connection reuse
+						_, _ = resp.JsonRpcResponse()
+						resp.Release()
 					}
 
 					// Small delay to simulate realistic request pacing
@@ -249,6 +255,8 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			httpClient:      fixedHttpClient,
 			isLogLevelTrace: false,
 			upstream:        &phonyUpstream{},
+			gzipPool:        util.NewGzipReaderPool(),
+			gzipWriterPool:  util.NewGzipWriterPool(),
 		}
 
 		// Send the same load pattern as before
@@ -264,9 +272,13 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 				for j := 0; j < requestsPerWorker; j++ {
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%d}`, workerID*requestsPerWorker+j)))
 
-					_, err := client.SendRequest(ctx, req)
+					resp, err := client.SendRequest(ctx, req)
 					if err != nil {
 						t.Logf("Request failed: %v", err)
+					} else if resp != nil {
+						// Consume the response to enable connection reuse
+						_, _ = resp.JsonRpcResponse()
+						resp.Release()
 					}
 
 					// Small delay to simulate realistic request pacing
@@ -332,6 +344,8 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			httpClient:      httpClient,
 			isLogLevelTrace: false,
 			upstream:        &phonyUpstream{},
+			gzipPool:        util.NewGzipReaderPool(),
+			gzipWriterPool:  util.NewGzipWriterPool(),
 		}
 
 		// Send the same load pattern
@@ -347,9 +361,13 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 				for j := 0; j < requestsPerWorker; j++ {
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%d}`, workerID*requestsPerWorker+j)))
 
-					_, err := client.SendRequest(ctx, req)
+					resp, err := client.SendRequest(ctx, req)
 					if err != nil {
 						t.Logf("Request failed: %v", err)
+					} else if resp != nil {
+						// Consume the response to enable connection reuse
+						_, _ = resp.JsonRpcResponse()
+						resp.Release()
 					}
 
 					// Small delay to simulate realistic request pacing

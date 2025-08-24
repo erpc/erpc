@@ -249,46 +249,51 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		defer span.End()
 	}
 
-	data, err := util.ReadAll(reader, 16*1024, expectedSize) // 16KB
+	data, err := util.ReadAll(reader, 16*1024, expectedSize)
 	if err != nil {
 		return err
 	}
 
-	// Parse the JSON data into an ast.Node
-	// CRITICAL: Convert to string with copy to avoid retaining entire buffer
-	searcher := ast.NewSearcher(string(data))
-	searcher.CopyReturn = false
-	searcher.ConcurrentRead = false
-	searcher.ValidateJSON = false
+	// Parse into a temporary struct to extract fields without string conversion
+	var temp struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
 
-	// Extract the "id" field
-	if idNode, err := searcher.GetByPath("id"); err == nil {
-		if rawID, err := idNode.Raw(); err == nil {
-			r.idMu.Lock()
-			defer r.idMu.Unlock()
-			r.idBytes = []byte(rawID)
+	// Use Sonic's Unmarshal which works directly with bytes
+	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
+		// Store the raw data even if parsing fails, so vendor-specific error detection can access it
+		r.resultMu.Lock()
+		r.result = data
+		r.resultMu.Unlock()
+		return err
+	}
+
+	// Store the raw bytes directly
+	if len(temp.ID) > 0 {
+		r.idMu.Lock()
+		r.idBytes = temp.ID
+		r.idMu.Unlock()
+	}
+
+	if len(temp.Result) > 0 {
+		r.resultMu.Lock()
+		r.result = temp.Result
+		r.resultMu.Unlock()
+	}
+
+	if len(temp.Error) > 0 {
+		if err := r.ParseError(string(temp.Error)); err != nil {
+			return err
 		}
 	}
 
-	if resultNode, err := searcher.GetByPath("result"); err == nil {
-		if rawResult, err := resultNode.Raw(); err == nil {
-			r.resultMu.Lock()
-			defer r.resultMu.Unlock()
-			// CRITICAL: Copy to avoid retaining entire buffer via unsafe conversion
-			r.result = []byte(rawResult)
-		} else {
+	// Parse ID if needed
+	if len(r.idBytes) > 0 {
+		if err := r.parseID(); err != nil {
 			return err
 		}
-	} else if errorNode, err := searcher.GetByPath("error"); err == nil {
-		if rawError, err := errorNode.Raw(); err == nil {
-			if err := r.ParseError(rawError); err != nil {
-				return err
-			}
-		} else {
-			return err
-		}
-	} else if err := r.ParseError(string(data)); err != nil {
-		return err
 	}
 
 	return nil

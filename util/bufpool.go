@@ -23,11 +23,5 @@ func ReturnBuf(buf *bytes.Buffer) {
 	if buf == nil {
 		return
 	}
-	// Only return buffers with reasonable capacity to prevent memory bloat.
-	// Without this check, large buffers would accumulate in the pool, consuming
-	// excessive memory. The pool would grow unbounded as each large buffer
-	// stays allocated even when not in use.
-	if buf.Cap() <= maxBufCap {
-		byteBufPool.Put(buf)
-	}
+	byteBufPool.Put(buf)
 }

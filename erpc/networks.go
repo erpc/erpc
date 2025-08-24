@@ -976,11 +976,17 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	// Wait for result
 	select {
 	case <-mlx.done:
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		// Need to lock when accessing mlx.resp to avoid race with cleanupMultiplexer
+		mlx.mu.Lock()
+		respToCopy := mlx.resp
+		mlxErr := mlx.err
+		mlx.mu.Unlock()
+
+		resp, err := common.CopyResponseForRequest(ctx, respToCopy, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		return resp, mlxErr
 	case <-ctx.Done():
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
@@ -994,6 +1000,12 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	mlx.mu.Lock()
 	defer mlx.mu.Unlock()
+
+	if mlx.resp != nil {
+		mlx.resp.Release()
+		mlx.resp = nil
+	}
+
 	n.inFlightRequests.Delete(mlx.hash)
 }
 

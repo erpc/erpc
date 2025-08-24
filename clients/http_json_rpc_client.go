@@ -702,12 +702,13 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
 	}
-	defer resp.Body.Close()
+	// DO NOT close resp.Body here - it will be closed by NormalizedResponse after reading
 
 	var bodyReader io.ReadCloser = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzReader, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
+			resp.Body.Close() // Must close on error path
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
 		bodyReader = c.gzipPool.WrapGzipReader(gzReader)
@@ -815,19 +816,19 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 	if c.isLogLevelTrace {
 		if jr != nil {
 			maxTraceSize := 20 * 1024
-			size := jr.ResultLength()
-			if size > maxTraceSize {
-				tailStart := size - maxTraceSize
+			result := jr.GetResultBytes()
+			if len(result) > maxTraceSize {
+				tailStart := len(result) - maxTraceSize
 				if tailStart < maxTraceSize {
 					tailStart = maxTraceSize
 				}
-				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", jr.GetResultString()[:maxTraceSize]).Str("tail", jr.GetResultString()[tailStart:]).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", string(result[:maxTraceSize])).Str("tail", string(result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
 			} else {
-				if size > 0 {
-					if common.IsSemiValidJson(jr.GetResultBytes()) {
-						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", jr.GetResultBytes()).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
+				if len(result) > 0 {
+					if common.IsSemiValidJson(result) {
+						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 					} else {
-						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", jr.GetResultString()).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
+						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", string(result)).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
 					}
 				} else {
 					c.logger.Trace().Int("statusCode", r.StatusCode).Interface("error", jr.Error).Msgf("processing empty json-rpc result response from upstream")

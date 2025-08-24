@@ -95,9 +95,11 @@ func NewHttpServer(
 	// Create IPv4 server if configured
 	if cfg.ListenV4 != nil && *cfg.ListenV4 {
 		srv.serverV4 = &http.Server{
-			Handler:      handlerWithTimeout,
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
+			Handler:        handlerWithTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+			IdleTimeout:    300 * time.Second,
+			MaxHeaderBytes: 1 << 20, // 1MB
 		}
 	}
 

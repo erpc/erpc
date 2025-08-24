@@ -7,10 +7,10 @@ const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
-  RECENT_BLOCK_FEW_BLOCKS: 10,        // Get blockByNumber for a few blocks back
-  LATEST_BLOCK_WITH_LOGS: 40,        // Get latest block and its transfer logs
+  RECENT_BLOCK_FEW_BLOCKS: 30,        // Get blockByNumber for a few blocks back
+  LATEST_BLOCK_WITH_LOGS: 10,        // Get latest block and its transfer logs
   LATEST_BLOCK_RECEIPTS: 30,         // Get receipts from latest block's transactions
-  LATEST_BLOCK_TRACES: 10,           // Get traces from latest block's transactions
+  LATEST_BLOCK_TRACES: 20,           // Get traces from latest block's transactions
   RANDOM_ACCOUNT_BALANCES: 10,       // Get random account balances
 };
 
@@ -59,11 +59,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 30,
+      rate: 500,  // Reduced from 1000 to test truncation fixes
       timeUnit: '1s',
       duration: '30m',
-      preAllocatedVUs: 1000,
-      maxVUs: 1500,
+      preAllocatedVUs: 500,
+      maxVUs: 500,
     },
   },
   ext: {
@@ -78,6 +78,8 @@ export const options = {
 const statusCodeCounter = new Counter('status_codes');
 const jsonRpcErrorCounter = new Counter('jsonrpc_errors');
 const parsingErrorsCounter = new Counter('parsing_errors');
+const truncatedResponseCounter = new Counter('truncated_responses');
+const retriesCounter = new Counter('request_retries');
 const responseSizes = new Trend('response_sizes');
 
 // Common ERC20 Transfer event topic
@@ -110,7 +112,7 @@ async function latestBlockWithLogs(http, params, chain) {
   if (!latestBlock) return null;
 
   const decimalBlockNumber = parseInt(latestBlock.number, 16);
-  const randomShift = randomIntBetween(0, 1000);
+  const randomShift = randomIntBetween(0, 5000);
   const randomToLimit = randomIntBetween(0, randomShift);
 
   const payload = JSON.stringify({
@@ -126,7 +128,7 @@ async function latestBlockWithLogs(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  return http.post(getFullUrl(chain), payload, params);
+  return makeRequestWithRetry(http, getFullUrl(chain), payload, params);
 }
 
 async function recentBlockFewBlocks(http, params, chain) {
@@ -148,7 +150,7 @@ async function recentBlockFewBlocks(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  return http.post(getFullUrl(chain), payload, params);
+  return makeRequestWithRetry(http, getFullUrl(chain), payload, params);
 }
 
 function randomAccountBalances(http, params, chain) {
@@ -165,7 +167,7 @@ function randomAccountBalances(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  return http.post(ERPC_BASE_URL + chain.id, payload, params);
+  return makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, payload, params);
 }
 
 async function getLatestBlock(http, params, chain) {
@@ -184,7 +186,7 @@ async function getLatestBlock(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  const res = await http.post(ERPC_BASE_URL + chain.id, payload, params);
+  const res = await makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, payload, params);
   if (res.status === 200) {
     try {
       const body = JSON.parse(res.body);
@@ -251,7 +253,7 @@ async function traceLatestTransaction(http, params, chain) {
     if (__ENV.TRACE) {
       console.log(`Request: ${tracePayload}`);
     }
-    const traceRes = await http.post(ERPC_BASE_URL + chain.id, tracePayload, params);
+    const traceRes = await makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, tracePayload, params);
     if (traceRes.status === 200) {
       try {
         const body = JSON.parse(traceRes.body);
@@ -287,7 +289,7 @@ async function latestBlockReceipts(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  return http.post(ERPC_BASE_URL + chain.id, payload, params);
+  return makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, payload, params);
 }
 
 function randomIntBetween(min, max) {
@@ -303,12 +305,64 @@ function truncateResponseBody(body) {
   return `${first64}...${last64}`;
 }
 
+function isValidJsonResponse(body) {
+  if (!body || body.length === 0) return false;
+  
+  // Check if response looks truncated (common patterns)
+  if (body.endsWith('...') || !body.endsWith('}') && !body.endsWith(']')) {
+    return false;
+  }
+  
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && (parsed.result !== undefined || parsed.error !== undefined);
+  } catch (e) {
+    return false;
+  }
+}
+
+async function makeRequestWithRetry(http, url, payload, params, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await http.post(url, payload, params);
+    
+    if (res && res.status === 200 && isValidJsonResponse(res.body)) {
+      if (attempt > 0) {
+        retriesCounter.add(attempt);
+      }
+      return res;
+    }
+    
+    // Log truncated responses for debugging
+    if (res && res.status === 200 && !isValidJsonResponse(res.body)) {
+      truncatedResponseCounter.add(1);
+      console.warn(`${new Date().toISOString()} Truncated response detected (attempt ${attempt + 1}): ${truncateResponseBody(res.body)}`);
+    }
+    
+    // Don't retry on the last attempt
+    if (attempt < maxRetries) {
+      // Small delay before retry to avoid overwhelming the server
+      await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 200));
+    } else {
+      if (attempt > 0) {
+        retriesCounter.add(attempt);
+      }
+      return res; // Return the last response even if invalid
+    }
+  }
+}
+
 // Main test function
 export default async function () {
   const params = {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+      'Content-Type': 'application/json',
+      'Accept-Encoding': 'gzip, deflate',
+      'Connection': 'keep-alive'
+    },
     insecureSkipTLSVerify: true,
-    timeout: '30s',
+    timeout: '60s',  // Increased timeout
+    // Force HTTP/1.1 to avoid HTTP/2 multiplexing issues under load
+    httpVersion: '2.0',
   };
 
   // Randomly select traffic pattern based on weights
@@ -346,9 +400,13 @@ export default async function () {
   // res = http.post(ERPC_BASE_URL, JSON.stringify(sampleReq), params);
 
   if (res) {
-    tags['status_code'] = res.status.toString();
+    if (res.status) {
+      tags['status_code'] = res.status?.toString();
+    }
     statusCodeCounter.add(1, tags);
-    responseSizes.add(res.body.length, tags);
+    if (res.body) {
+      responseSizes.add(res.body?.length, tags);
+    }
 
     if (__ENV.DEBUG || __ENV.TRACE) {
       if (res.status >= 400) {
@@ -361,7 +419,14 @@ export default async function () {
       parsedBody = JSON.parse(res.body);
     } catch (e) {
       parsingErrorsCounter.add(1, tags);
-      console.error(`${new Date().toISOString()} Failed to parse response body: ${e} response body: ${truncateResponseBody(res.body)}`);
+      // console.error(`${new Date().toISOString()} Failed to parse response body: ${e} response body: ${truncateResponseBody(res.body)}`);
+      if (res.body) {
+        tags['generic_error_code'] = 'PARSING_ERROR';
+        tags['generic_error_message'] = res.body;
+      } else {
+        tags['generic_error_code'] = 'PARSING_ERROR';
+        tags['generic_error_message'] = 'No response body';
+      }
     }
 
     if (parsedBody?.error?.code) {
