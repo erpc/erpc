@@ -708,7 +708,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzReader, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
-			resp.Body.Close() // Must close on error path
+			_ = resp.Body.Close() // Must close on error path
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
 		bodyReader = c.gzipPool.WrapGzipReader(gzReader)

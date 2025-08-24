@@ -149,8 +149,9 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32000, "execution reverted")},
 				{status: 200, body: jsonRpcSuccess("0xdata")},
 			},
-			expectedCalls: []int{1, 1, 1},
-			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "execution reverted"},
+			expectedCalls:        []int{1, 1, -1}, // -1 means Persist() for the third mock which may or may not be called
+			expectedError:        &expectedError{code: common.ErrCodeUpstreamRequest, contains: "execution reverted"},
+			expectedPendingMocks: 1, // Third upstream may not be called due to short-circuit on error consensus
 		},
 		{
 			name:        "accept_most_common_below_threshold_tie_sizes_prefer_larger",
@@ -2310,11 +2311,10 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 
 	// Setup mocks
 	for i, upstreamCfg := range tc.upstreams {
-		if i < len(tc.mockResponses) && (tc.expectedCalls == nil || (len(tc.expectedCalls) > i && tc.expectedCalls[i] > 0)) {
+		if i < len(tc.mockResponses) && (tc.expectedCalls == nil || (len(tc.expectedCalls) > i && tc.expectedCalls[i] != 0)) {
 			mock := tc.mockResponses[i]
-			gock.New(upstreamCfg.Endpoint).
+			m := gock.New(upstreamCfg.Endpoint).
 				Post("/").
-				Times(tc.expectedCalls[i]).
 				Filter(func(request *http.Request) bool {
 					body := util.SafeReadBody(request)
 					method := tc.requestMethod
@@ -2322,8 +2322,18 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 						method = "eth_randomMethod"
 					}
 					return strings.Contains(string(body), method)
-				}).
-				Reply(mock.status).
+				})
+
+			// Handle special case: -1 means Persist() (may or may not be called)
+			if tc.expectedCalls != nil && len(tc.expectedCalls) > i && tc.expectedCalls[i] == -1 {
+				m.Persist()
+			} else if tc.expectedCalls != nil && len(tc.expectedCalls) > i {
+				m.Times(tc.expectedCalls[i])
+			} else {
+				m.Times(1) // default to 1 if not specified
+			}
+
+			m.Reply(mock.status).
 				Delay(mock.delay).
 				SetHeader("Content-Type", "application/json").
 				JSON(mock.body)

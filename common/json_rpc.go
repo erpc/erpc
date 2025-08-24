@@ -102,6 +102,12 @@ func (r *JsonRpcResponse) Free() {
 	r.errMu.Unlock()
 
 	r.resultMu.Lock()
+	// Release the resultWriter if it implements ReleasableByteWriter
+	if r.resultWriter != nil {
+		if releasable, ok := r.resultWriter.(util.ReleasableByteWriter); ok {
+			releasable.Release()
+		}
+	}
 	r.resultWriter = nil
 	r.cachedNode = nil
 	r.result = nil
@@ -658,6 +664,18 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 	if r.result != nil {
 		clone.result = make([]byte, len(r.result))
 		copy(clone.result, r.result)
+	} else if r.resultWriter != nil {
+		// If we have a resultWriter but no materialized result,
+		// materialize it now to avoid sharing the writer instance
+		// which could lead to data races or premature cleanup
+		var buf bytes.Buffer
+		_, err := r.resultWriter.WriteTo(&buf, false)
+		if err != nil {
+			return nil, err
+		}
+		clone.result = buf.Bytes()
+		// Don't copy the resultWriter since we've materialized the result
+		clone.resultWriter = nil
 	}
 
 	// Copy the canonical hash if it exists
@@ -665,7 +683,10 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		clone.canonicalHashWithIgnored.Store(defaultCanonicalHashPlaceholder, cached)
 	}
 
-	clone.resultWriter = r.resultWriter
+	// Only copy resultWriter if we didn't materialize the result above
+	if clone.result == nil && r.resultWriter != nil {
+		clone.resultWriter = r.resultWriter
+	}
 
 	return clone, nil
 }

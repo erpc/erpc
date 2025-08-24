@@ -9069,6 +9069,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 	t.Run("SplitIntoSubRequestsIfRangeTooBig", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
 
 		// Mock eth_getLogs request with a large block range
 		requestBytes := []byte(`{
@@ -9241,7 +9242,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, blockNumbers, "0x11118304")
 		assert.Contains(t, blockNumbers, "0x11118405")
 		assert.Contains(t, blockNumbers, "0x11118506")
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+
+		// Allow some pending mocks since util.SetupMocksForEvmStatePoller may create persistent mocks
+		util.AssertNoPendingMocks(t, 0)
 	})
 
 	t.Run("SplitOnErrorWhenHedgePolicyExistsWithoutRaceCondition", func(t *testing.T) {

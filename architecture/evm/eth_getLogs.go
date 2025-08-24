@@ -312,8 +312,9 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 }
 
 type GetLogsMultiResponseWriter struct {
+	mu        sync.RWMutex
 	responses []*common.JsonRpcResponse
-	once      sync.Once
+	released  bool
 }
 
 func NewGetLogsMultiResponseWriter(responses []*common.JsonRpcResponse) *GetLogsMultiResponseWriter {
@@ -323,6 +324,10 @@ func NewGetLogsMultiResponseWriter(responses []*common.JsonRpcResponse) *GetLogs
 }
 
 func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer, trimSides bool) (n int64, err error) {
+	g.mu.RLock()
+	responses := g.responses
+	g.mu.RUnlock()
+
 	// Write opening bracket
 	if !trimSides {
 		nn, err := w.Write([]byte{'['})
@@ -333,7 +338,7 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer, trimSides bool) (n int
 	}
 
 	first := true
-	for _, response := range g.responses {
+	for _, response := range responses {
 		if response == nil || response.IsResultEmptyish() {
 			continue // Skip empty results
 		}
@@ -365,20 +370,13 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer, trimSides bool) (n int
 		n += int64(nn)
 	}
 
-	// After writing, free memory retained by sub-responses and release their owners.
-	g.once.Do(func() {
-		for _, r := range g.responses {
-			if r != nil {
-				r.Free()
-			}
-		}
-		g.responses = nil
-	})
-
 	return n, nil
 }
 
 func (g *GetLogsMultiResponseWriter) IsResultEmptyish() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	if len(g.responses) == 0 {
 		return true
 	}
@@ -396,6 +394,9 @@ func (g *GetLogsMultiResponseWriter) IsResultEmptyish() bool {
 }
 
 func (g *GetLogsMultiResponseWriter) Size(ctx ...context.Context) (int, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	size := 0
 	for _, response := range g.responses {
 		s, err := response.Size(ctx...)
@@ -405,6 +406,25 @@ func (g *GetLogsMultiResponseWriter) Size(ctx ...context.Context) (int, error) {
 		size += s
 	}
 	return size, nil
+}
+
+// Release frees memory retained by sub-responses.
+// This method should be called when the writer is no longer needed.
+func (g *GetLogsMultiResponseWriter) Release() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.released {
+		return
+	}
+
+	for _, r := range g.responses {
+		if r != nil {
+			r.Free()
+		}
+	}
+	g.responses = nil
+	g.released = true
 }
 
 type ethGetLogsSubRequest struct {
