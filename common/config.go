@@ -191,6 +191,7 @@ type CacheMethodConfig struct {
 	RespRefs  [][]interface{} `yaml:"respRefs" json:"respRefs"`
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
+	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
 }
 
 type CachePolicyConfig struct {
