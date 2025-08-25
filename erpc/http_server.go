@@ -40,6 +40,7 @@ type HttpServer struct {
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
 	draining                *atomic.Bool
+	gzipPool                *util.GzipReaderPool
 }
 
 func NewHttpServer(
@@ -70,6 +71,8 @@ func NewHttpServer(
 		log.Info().Msg("entering draining mode → healthcheck will fail")
 	}()
 
+	gzipPool := util.NewGzipReaderPool()
+
 	srv := &HttpServer{
 		logger:         logger,
 		appCtx:         ctx,
@@ -78,6 +81,7 @@ func NewHttpServer(
 		adminCfg:       adminCfg,
 		erpc:           erpc,
 		draining:       &draining,
+		gzipPool:       gzipPool,
 	}
 
 	h := srv.createRequestHandler()
@@ -91,9 +95,11 @@ func NewHttpServer(
 	// Create IPv4 server if configured
 	if cfg.ListenV4 != nil && *cfg.ListenV4 {
 		srv.serverV4 = &http.Server{
-			Handler:      handlerWithTimeout,
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
+			Handler:        handlerWithTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+			IdleTimeout:    300 * time.Second,
+			MaxHeaderBytes: 1 << 20, // 1MB
 		}
 	}
 
@@ -244,7 +250,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		// Handle gzipped request bodies
 		var bodyReader io.Reader = r.Body
 		if r.Header.Get("Content-Encoding") == "gzip" {
-			gzReader, err := gzip.NewReader(r.Body)
+			gzReader, err := s.gzipPool.GetReset(r.Body)
 			if err != nil {
 				handleErrorResponse(
 					httpCtx,
@@ -259,7 +265,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				)
 				return
 			}
-			defer gzReader.Close()
+			defer s.gzipPool.Put(gzReader)
 			bodyReader = gzReader
 		}
 
@@ -318,6 +324,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		parseRequestsSpan.End()
 
+		// We no longer need the top-level body; drop reference early to free its backing array
+		body = nil
+
 		for i, reqBody := range requests {
 			wg.Add(1)
 			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
@@ -339,6 +348,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}()
 
 				nq := common.NewNormalizedRequest(rawReq)
+				// Help GC: drop reference to the rawReq slice copy in the parent slice as soon as possible
+				rawReq = nil
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
 
 				// Validate the raw JSON-RPC payload early
@@ -1331,6 +1342,8 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 }
 
 func gzipHandler(next http.Handler) http.Handler {
+	// Pool writers across responses
+	var gzPool = util.NewGzipWriterPool()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if client accepts gzip encoding
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -1338,9 +1351,12 @@ func gzipHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Initialize gzip writer
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
+		// Initialize gzip writer from pool
+		gz := gzPool.Get(w)
+		defer func() {
+			_ = gz.Close()
+			gzPool.Put(gz)
+		}()
 
 		// Create gzip response writer
 		gzw := &gzipResponseWriter{

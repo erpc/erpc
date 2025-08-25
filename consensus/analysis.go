@@ -17,12 +17,12 @@ type responseGroup struct {
 	IsTie   bool // Flag to indicate a tie with another group
 
 	ResponseType ResponseType
-	ResponseSize int // Cached from the first result in the group
+	ResponseSize int // Size of the largest result in the group
 
-	// Cached first result/error for quick access
-	FirstResult *common.NormalizedResponse
-	FirstError  error
-	HasResult   bool
+	// Cached largest result/error for quick access (prefer largest response even within same consensus group)
+	LargestResult *common.NormalizedResponse
+	FirstError    error
+	HasResult     bool
 }
 
 func (g *responseGroup) participants() []common.ParticipantInfo {
@@ -95,10 +95,19 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 
 		group.Count++
 		group.Results = append(group.Results, r)
-		if !group.HasResult && r.Err == nil {
-			group.FirstResult = r.Result
-			group.FirstError = nil
-			group.HasResult = true
+		// Track the largest successful response in the group
+		if r.Err == nil {
+			if !group.HasResult {
+				// First successful response in this group
+				group.LargestResult = r.Result
+				group.ResponseSize = r.CachedResponseSize
+				group.FirstError = nil
+				group.HasResult = true
+			} else if r.CachedResponseSize > group.ResponseSize {
+				// Found a larger response in the same consensus group
+				group.LargestResult = r.Result
+				group.ResponseSize = r.CachedResponseSize
+			}
 		} else if group.FirstError == nil && r.Err != nil {
 			group.FirstError = r.Err
 		}

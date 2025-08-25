@@ -32,9 +32,17 @@ type NormalizedResponse struct {
 
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
-	parseErr  error
 
 	duration time.Duration
+
+	// pendingOps tracks background users (e.g., async cache writes).
+	// Release will wait for all pending ops to finish before freeing buffers.
+	pendingOps sync.WaitGroup
+
+	// bodyOnce ensures the response body is closed exactly once
+	bodyOnce sync.Once
+	// bodyMu coordinates concurrent parsing and releasing of the body
+	bodyMu sync.RWMutex
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -280,32 +288,46 @@ func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcRe
 
 	// Check if already parsed
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
-		return jrr, r.parseErr
+		return jrr, nil
 	}
 
 	// Ensure parsing happens only once
 	r.parseOnce.Do(func() {
+		// Coordinate with Release(): hold a read lock while parsing
+		r.bodyMu.RLock()
+		defer r.bodyMu.RUnlock()
+
+		// Snapshot current body/expected size safely
+		r.Lock()
 		body := r.body
 		expectedSize := r.expectedSize
+		r.Unlock()
 
+		jrr := &JsonRpcResponse{}
 		if body != nil {
-			jrr := &JsonRpcResponse{}
 			err := jrr.ParseFromStream(ctx, body, expectedSize)
 			if err != nil {
-				r.parseErr = err
-				return
+				jrr.Error = NewErrJsonRpcExceptionExternal(
+					int(JsonRpcErrorParseException),
+					fmt.Sprintf("cannot parse json-rpc response: %s", err.Error()),
+					jrr.GetResultString(),
+				)
 			}
-			r.jsonRpcResponse.Store(jrr)
+			// Parsing succeeded: eagerly close and clear body to release gzip/flate buffers ASAP
+			r.closeBodyOnce()
 		} else {
 			// No body to parse - this shouldn't happen in normal flow
 			// but we need to handle it gracefully
-			r.parseErr = fmt.Errorf("no body available to parse JsonRpcResponse")
+			jrr.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorParseException),
+				"no body available to parse JsonRpcResponse",
+				"",
+			)
 		}
+		r.jsonRpcResponse.Store(jrr)
 	})
 
-	// Return the parsed response or error
-	jrr := r.jsonRpcResponse.Load()
-	return jrr, r.parseErr
+	return r.jsonRpcResponse.Load(), nil
 }
 
 func (r *NormalizedResponse) WithBody(body io.ReadCloser) *NormalizedResponse {
@@ -326,6 +348,23 @@ func (r *NormalizedResponse) WithExpectedSize(expectedSize int) *NormalizedRespo
 	defer r.Unlock()
 	r.expectedSize = expectedSize
 	return r
+}
+
+// AddRef increments the number of pending operations that use this response.
+// Call DoneRef when the operation ends so Release can free resources safely.
+func (r *NormalizedResponse) AddRef() {
+	if r == nil {
+		return
+	}
+	r.pendingOps.Add(1)
+}
+
+// DoneRef decrements the number of pending operations that use this response.
+func (r *NormalizedResponse) DoneRef() {
+	if r == nil {
+		return
+	}
+	r.pendingOps.Done()
 }
 
 func (r *NormalizedResponse) WithJsonRpcResponse(jrr *JsonRpcResponse) *NormalizedResponse {
@@ -375,7 +414,7 @@ func (r *NormalizedResponse) IsObjectNull(ctx ...context.Context) bool {
 	jrr.resultMu.RLock()
 	defer jrr.resultMu.RUnlock()
 
-	if len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == 0 {
+	if len(jrr.result) == 0 && jrr.Error == nil && jrr.ID() == 0 {
 		return true
 	}
 
@@ -401,32 +440,50 @@ func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
 
 	return 0, fmt.Errorf("unexpected empty response when calling NormalizedResponse.WriteTo")
 }
+
 func (r *NormalizedResponse) Release() {
 	if r == nil {
 		return
 	}
 
-	r.Lock()
-	body := r.body
-	r.body = nil // Clear reference immediately
+	// Wait for all pending background operations (e.g., cache set) to complete
+	// before freeing heavy buffers.
+	r.pendingOps.Wait()
 
 	// Clear these synchronously (fast, no I/O)
+	r.Lock()
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
 		jrr.Free()
 	}
 	r.jsonRpcResponse.Store(nil)
-
 	if r.request != nil {
 		r.request = nil // Break cycle immediately
 	}
 	r.Unlock()
 
-	// Only async the potentially blocking I/O
-	if body != nil {
-		if err := body.Close(); err != nil {
-			log.Error().Err(err).Msg("failed to close response body")
-		}
+	// Close the body exactly once and only after parsing completes
+	r.bodyMu.Lock()
+	r.closeBodyOnce()
+	r.bodyMu.Unlock()
+}
+
+// closeBodyOnce closes and detaches the response body exactly once.
+func (r *NormalizedResponse) closeBodyOnce() {
+	if r == nil {
+		return
 	}
+	r.bodyOnce.Do(func() {
+		// Detach under lock first
+		r.Lock()
+		body := r.body
+		r.body = nil
+		r.Unlock()
+		if body != nil {
+			if err := body.Close(); err != nil {
+				log.Error().Err(err).Msg("failed to close response body")
+			}
+		}
+	})
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {

@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -115,7 +116,29 @@ func (e *executor) Apply(innerFn func(failsafe.Execution[*common.NormalizedRespo
 			innerFn,
 		)
 
-		e.trackAndPunishMisbehavingUpstreams(&lg, labels, winner, analysis)
+		// Track misbehaviors while responses are still available
+		e.trackAndPunishMisbehavingUpstreams(&lg, originalReq, labels, winner, analysis)
+
+		// Now release non-winning responses to free memory
+		if analysis != nil {
+			var winnerResp *common.NormalizedResponse
+			if winner != nil {
+				if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
+					winnerResp = wr
+				}
+			}
+			// Release responses from the groups in analysis
+			for _, group := range analysis.groups {
+				for _, result := range group.Results {
+					if result != nil && result.Result != nil {
+						// Only release if it's not the winner
+						if result.Result != winnerResp {
+							result.Result.Release()
+						}
+					}
+				}
+			}
+		}
 
 		// --- Finalization ---
 		e.recordMetricsAndTracing(originalReq, startTime, winner, analysis, labels, consensusSpan)
@@ -239,33 +262,6 @@ collectLoop:
 		telemetry.MetricConsensusShortCircuit.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr).
 			Inc()
-	}
-	// After winner selection, release results appropriately to avoid leaks and double-releases
-	if analysis != nil {
-		var winnerResp *common.NormalizedResponse
-		if winner != nil {
-			if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
-				winnerResp = wr
-			}
-		}
-		if winnerResp != nil {
-			// We have a concrete response winner: release only non-winning results
-			for _, r := range responses {
-				if r == nil || r.Result == nil {
-					continue
-				}
-				if r.Result != winnerResp {
-					r.Result.Release()
-				}
-			}
-		} else {
-			// No response winner (nil winner or error-only winner): release all collected results once
-			for _, r := range responses {
-				if r != nil && r.Result != nil {
-					r.Result.Release()
-				}
-			}
-		}
 	}
 
 	return winner, analysis
@@ -392,7 +388,7 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 
 // --- Tracing, Metrics, and Punishment ---
 
-func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels metricsLabels, winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis) {
+func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *common.NormalizedRequest, labels metricsLabels, winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis) {
 	// Skip tracking when there are no valid participants (all infra errors)
 	if analysis.validParticipants == 0 {
 		return
@@ -436,17 +432,86 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels
 	// Track different types of disagreements
 	consensusSize := consensusGroup.ResponseSize
 
-	for _, group := range analysis.groups {
-		if group.Hash == consensusGroup.Hash {
-			continue // This group agreed with consensus
-		}
+	// Determine if the dispute log level is enabled; if not, avoid heavy preparation
+	shouldLog := e.logger.GetLevel() <= e.disputeLogLevel
 
-		// Check if this group's response is larger than consensus
-		largerThanConsensus := strconv.FormatBool(group.ResponseSize > consensusSize)
+	// Only define participant tracking structures if we'll actually log
+	type participantInfo struct {
+		upstreamId          string
+		upstream            common.Upstream
+		responseType        ResponseType
+		responseHash        string
+		responseSize        int
+		responseBody        string // Full response content for debugging disputes
+		errorMessage        string
+		agreesWithConsensus bool
+	}
+	var allParticipants []participantInfo
+	if shouldLog {
+		allParticipants = make([]participantInfo, 0, analysis.totalParticipants)
+	}
+	var misbehavingCount int
+
+	for _, group := range analysis.groups {
+		agreesWithConsensus := group.Hash == consensusGroup.Hash
+		largerThanConsensus := group.ResponseSize > consensusSize
+		largerThanConsensusStr := strconv.FormatBool(largerThanConsensus)
 
 		for _, result := range group.Results {
 			if result == nil || result.Upstream == nil {
 				continue
+			}
+
+			upstreamId := result.Upstream.Id()
+
+			// Only collect participant details if we'll actually log them
+			if shouldLog {
+				var responseHash string
+				var responseSize int
+				var responseBody string
+				var errorMessage string
+
+				if result.Result != nil {
+					if jrr, err := result.Result.JsonRpcResponse(); err == nil && jrr != nil {
+						responseSize = jrr.ResultLength()
+						if h, err := jrr.CanonicalHash(); err == nil {
+							responseHash = h
+						}
+						// Get the full response body for debugging
+						responseBody = jrr.GetResultString()
+
+						// Debug: Log if we have a mismatch between empty response and non-empty type
+						if group.ResponseType == ResponseTypeNonEmpty && jrr.IsResultEmptyish() {
+							lg.Warn().
+								Str("upstream", upstreamId).
+								Str("responseType", group.ResponseType.String()).
+								Str("result", jrr.GetResultString()).
+								Msg("WARN: Response marked as non_empty but IsResultEmptyish returns true")
+						}
+					} else {
+						// Couldn't extract JsonRpcResponse
+						responseBody = fmt.Sprintf("<error extracting response: %v>", err)
+					}
+				} else if result.Err != nil {
+					// For errors, include the full error details as the "body"
+					responseBody = fmt.Sprintf("<error: %v>", result.Err)
+				}
+
+				if result.Err != nil {
+					errorMessage = common.ErrorSummary(result.Err)
+				}
+
+				// Add to participants list for logging
+				allParticipants = append(allParticipants, participantInfo{
+					upstreamId:          upstreamId,
+					upstream:            result.Upstream,
+					responseType:        group.ResponseType,
+					responseHash:        responseHash,
+					responseSize:        responseSize,
+					responseBody:        responseBody,
+					errorMessage:        errorMessage,
+					agreesWithConsensus: agreesWithConsensus,
+				})
 			}
 
 			// Track errors separately - these are NOT misbehavior
@@ -475,40 +540,44 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels
 					}
 				}
 
-				// Track as error, not misbehavior
-				telemetry.MetricConsensusUpstreamErrors.
-					WithLabelValues(
-						labels.projectId,
-						labels.networkId,
-						result.Upstream.Id(),
-						labels.category,
-						labels.finalityStr,
-						group.ResponseType.String(),
-						errorCode,
-					).Inc()
+				if !agreesWithConsensus {
+					// Track as error, not misbehavior
+					telemetry.MetricConsensusUpstreamErrors.
+						WithLabelValues(
+							labels.projectId,
+							labels.networkId,
+							upstreamId,
+							labels.category,
+							labels.finalityStr,
+							group.ResponseType.String(),
+							errorCode,
+						).Inc()
+				}
 
 				continue // Don't track as misbehavior
 			}
 
 			// Only track actual data disagreements as misbehavior
 			// This includes: empty vs non-empty, or different non-empty responses
-			if group.ResponseType == ResponseTypeEmpty || group.ResponseType == ResponseTypeNonEmpty {
+			if !agreesWithConsensus && (group.ResponseType == ResponseTypeEmpty || group.ResponseType == ResponseTypeNonEmpty) {
 				// Only count as misbehavior if consensus is also data (not error)
 				if consensusGroup.ResponseType == ResponseTypeEmpty || consensusGroup.ResponseType == ResponseTypeNonEmpty {
+					misbehavingCount++
+
+					// Record metric
 					telemetry.MetricConsensusMisbehaviorDetected.
 						WithLabelValues(
 							labels.projectId,
 							labels.networkId,
-							result.Upstream.Id(),
+							upstreamId,
 							labels.category,
 							labels.finalityStr,
 							group.ResponseType.String(),
-							largerThanConsensus,
+							largerThanConsensusStr,
 						).Inc()
 
 					// Apply punishment only if configured and conditions are met
 					if e.shouldPunishUpstream(lg, consensusGroup, analysis) {
-						upstreamId := result.Upstream.Id()
 						limiter := e.createRateLimiter(lg, upstreamId)
 						if !limiter.TryAcquirePermit() {
 							e.handleMisbehavingUpstream(lg, result.Upstream, upstreamId, labels.projectId, labels.networkId)
@@ -517,6 +586,58 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, labels
 				}
 			}
 		}
+	}
+
+	// Log all participants in a single log entry if misbehavior was found and logging is enabled
+	if misbehavingCount > 0 && shouldLog {
+		// Get consensus response data (compact)
+		consensusHash := consensusGroup.Hash
+		consensusSize := consensusGroup.ResponseSize
+		var consensusBody string
+
+		// Get the consensus response body for comparison
+		if consensusGroup.LargestResult != nil {
+			if jrr, err := consensusGroup.LargestResult.JsonRpcResponse(); err == nil && jrr != nil {
+				consensusBody = jrr.GetResultString()
+			} else {
+				consensusBody = fmt.Sprintf("<error extracting consensus response: %v>", err)
+			}
+		} else if consensusGroup.FirstError != nil {
+			consensusBody = fmt.Sprintf("<consensus error: %v>", consensusGroup.FirstError)
+		}
+
+		logEvent := e.logger.WithLevel(e.disputeLogLevel).
+			Str("projectId", labels.projectId).
+			Str("networkId", labels.networkId).
+			Str("category", labels.category).
+			Str("finality", labels.finalityStr).
+			Int("consensusCount", consensusGroup.Count).
+			Int("totalParticipants", analysis.totalParticipants).
+			Int("validParticipants", analysis.validParticipants).
+			Int("misbehavingCount", misbehavingCount).
+			Str("consensusResponseType", consensusGroup.ResponseType.String()).
+			Str("consensusHash", consensusHash).
+			Int("consensusSize", consensusSize).
+			Str("consensusResponse", consensusBody).
+			Object("request", req)
+
+			// Add ALL participants with numbered keys
+		for i, participant := range allParticipants {
+			idx := strconv.Itoa(i + 1)
+			logEvent = logEvent.
+				Str("upstream"+idx, participant.upstreamId).
+				Str("responseType"+idx, participant.responseType.String()).
+				Bool("agreesWithConsensus"+idx, participant.agreesWithConsensus).
+				Str("responseHash"+idx, participant.responseHash).
+				Int("responseSize"+idx, participant.responseSize).
+				Str("response"+idx, participant.responseBody)
+
+			if participant.errorMessage != "" {
+				logEvent = logEvent.Str("error"+idx, participant.errorMessage)
+			}
+		}
+
+		logEvent.Msg("consensus misbehavior detected - upstreams differ from consensus")
 	}
 }
 
@@ -590,76 +711,6 @@ func (e *executor) createRateLimiter(logger *zerolog.Logger, upstreamId string) 
 	return actual.(ratelimiter.RateLimiter[any])
 }
 
-func (e *executor) logAndTrackDispute(req *common.NormalizedRequest, analysis *consensusAnalysis, labels metricsLabels) {
-	// Find the group with most agreement among valid participants
-	var majorityGroup *responseGroup
-	majoritySize := 0
-	for _, g := range analysis.getValidGroups() {
-		if majorityGroup == nil || g.Count > majorityGroup.Count {
-			majorityGroup = g
-			majoritySize = g.ResponseSize
-		}
-	}
-
-	// Build detailed log message about the dispute
-	logEvent := e.logger.WithLevel(e.disputeLogLevel).
-		Str("projectId", labels.projectId).
-		Str("networkId", labels.networkId).
-		Str("category", labels.category).
-		Str("finality", labels.finalityStr).
-		Int("totalParticipants", analysis.totalParticipants).
-		Int("validParticipants", analysis.validParticipants).
-		Int("agreementThreshold", e.agreementThreshold).
-		Object("request", req)
-
-	if majorityGroup != nil {
-		logEvent = logEvent.
-			Str("majorityHash", majorityGroup.Hash).
-			Int("majorityCount", majorityGroup.Count).
-			Int("majoritySize", majoritySize)
-	}
-
-	// Add details about each response group
-	groupDetails := make([]interface{}, 0)
-	for hash, group := range analysis.groups {
-		groupInfo := map[string]interface{}{
-			"hash":               hash,
-			"count":              group.Count,
-			"responseType":       group.ResponseType.String(),
-			"responseSize":       group.ResponseSize,
-			"largerThanMajority": group.ResponseSize > majoritySize,
-			"upstreams":          []string{},
-		}
-
-		upstreams := make([]string, 0, len(group.Results))
-		for _, result := range group.Results {
-			if result.Upstream != nil {
-				upstreamId := result.Upstream.Id()
-				upstreams = append(upstreams, upstreamId)
-			}
-		}
-		groupInfo["upstreams"] = upstreams
-
-		// Add actual response body or error details
-		if group.FirstError != nil {
-			groupInfo["error"] = group.FirstError
-		} else if group.FirstResult != nil {
-			if jrr, err := group.FirstResult.JsonRpcResponse(); err == nil && jrr != nil {
-				if len(jrr.Result) > 0 {
-					groupInfo["result"] = string(jrr.Result)
-				} else {
-					groupInfo["result"] = nil
-				}
-			}
-		}
-
-		groupDetails = append(groupDetails, groupInfo)
-	}
-
-	logEvent.Interface("responseGroups", groupDetails).
-		Msg("consensus dispute detected - no agreement reached")
-}
-
 func (e *executor) extractMetricsLabels(ctx context.Context, req *common.NormalizedRequest) metricsLabels {
 	method := "unknown"
 	if m, err := req.Method(); err == nil {
@@ -709,11 +760,6 @@ func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startT
 		common.SetTraceSpanError(span, result.Error)
 	} else {
 		span.SetStatus(codes.Ok, "Consensus successful")
-	}
-
-	// Log disputes with detailed information about all response groups
-	if isDispute {
-		e.logAndTrackDispute(req, analysis, labels)
 	}
 
 	span.SetAttributes(

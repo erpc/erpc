@@ -670,8 +670,8 @@ func TestFourAttemptScenario(t *testing.T) {
 
 	// Extract the result as string
 	var resultStr string
-	if len(jrpcResp.Result) > 0 {
-		err = json.Unmarshal(jrpcResp.Result, &resultStr)
+	if jrpcResp.ResultLength() > 0 {
+		err = json.Unmarshal(jrpcResp.GetResultBytes(), &resultStr)
 		require.NoError(t, err)
 	}
 

@@ -207,7 +207,7 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 
 	e.cfg = cfg.Evm
-	if cfg != nil && cfg.Alias != "" {
+	if cfg.Alias != "" {
 		e.networkLabel = cfg.Alias
 	} else {
 		e.networkLabel = cfg.NetworkId()
@@ -602,7 +602,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		return 0, jrr.Error
 	}
 
-	if util.IsBytesEmptyish(jrr.Result) {
+	if jrr.IsResultEmptyish(ctx) {
 		return 0, nil
 	}
 
@@ -612,8 +612,8 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
-				"blockTag":  blockTag,
-				"resultLen": len(jrr.Result),
+				"blockTag": blockTag,
+				"result":   jrr.GetResultString(),
 			},
 		}
 	}
@@ -656,21 +656,16 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, jrr.Error
 	}
 
+	result := jrr.GetResultBytes()
+
 	var syncing interface{}
-	err = common.SonicCfg.Unmarshal(jrr.Result, &syncing)
+	err = common.SonicCfg.Unmarshal(result, &syncing)
 	if err != nil {
-		// Include only a small, copied preview to avoid retaining large buffers
-		previewLen := 256
-		if len(jrr.Result) < previewLen {
-			previewLen = len(jrr.Result)
-		}
-		preview := string(append([]byte(nil), jrr.Result[:previewLen]...))
 		return false, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot parse syncing state result (must be boolean or object)",
 			Details: map[string]interface{}{
-				"resultLen":     len(jrr.Result),
-				"resultPreview": preview,
+				"result": result,
 			},
 		}
 	}
@@ -703,18 +698,11 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		}
 	}
 
-	// Include small, copied preview to avoid retaining large buffers
-	previewLen := 256
-	if len(jrr.Result) < previewLen {
-		previewLen = len(jrr.Result)
-	}
-	preview := string(append([]byte(nil), jrr.Result[:previewLen]...))
 	return false, &common.BaseError{
 		Code:    "ErrEvmStatePoller",
 		Message: "cannot parse syncing state result (must be boolean or object)",
 		Details: map[string]interface{}{
-			"resultLen":     len(jrr.Result),
-			"resultPreview": preview,
+			"result": result,
 		},
 	}
 }

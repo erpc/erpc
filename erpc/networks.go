@@ -668,6 +668,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if resp != nil {
 		if n.cacheDal != nil {
 			resp.RLockWithTrace(ctx)
+			// Hold a reference so Release waits for cache-set to complete
+			resp.AddRef()
 
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
 				defer (func() {
@@ -684,6 +686,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				})()
 				defer resp.RUnlock()
+				defer resp.DoneRef()
 
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
 				defer timeoutCtxCancel()
@@ -973,11 +976,17 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	// Wait for result
 	select {
 	case <-mlx.done:
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		// Need to lock when accessing mlx.resp to avoid race with cleanupMultiplexer
+		mlx.mu.Lock()
+		respToCopy := mlx.resp
+		mlxErr := mlx.err
+		mlx.mu.Unlock()
+
+		resp, err := common.CopyResponseForRequest(ctx, respToCopy, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		return resp, mlxErr
 	case <-ctx.Done():
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
@@ -991,6 +1000,12 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	mlx.mu.Lock()
 	defer mlx.mu.Unlock()
+
+	if mlx.resp != nil {
+		mlx.resp.Release()
+		mlx.resp = nil
+	}
+
 	n.inFlightRequests.Delete(mlx.hash)
 }
 

@@ -2,7 +2,6 @@ package clients
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -49,6 +48,11 @@ type GenericHttpJsonRpcClient struct {
 	batchRequests map[interface{}]*batchRequest
 	batchDeadline *time.Time
 	batchTimer    *time.Timer
+
+	// gzip reader pool to reduce allocations
+	gzipPool *util.GzipReaderPool
+	// gzip writer pool to reduce allocations when compressing requests
+	gzipWriterPool *util.GzipWriterPool
 }
 
 type batchRequest struct {
@@ -57,6 +61,8 @@ type batchRequest struct {
 	response chan *common.NormalizedResponse
 	err      chan error
 }
+
+// (gzip pooling implemented via util.GzipReaderPool)
 
 func NewGenericHttpJsonRpcClient(
 	appCtx context.Context,
@@ -75,6 +81,8 @@ func NewGenericHttpJsonRpcClient(
 		upstream:        upstream,
 		proxyPool:       proxyPool,
 		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
+		gzipPool:        util.NewGzipReaderPool(),
+		gzipWriterPool:  util.NewGzipWriterPool(),
 	}
 
 	// Default fallback transport (no proxy)
@@ -444,7 +452,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	bodyBytes, err := readResponseBody(resp, int(resp.ContentLength))
+	bodyBytes, err := c.readResponseBody(resp, int(resp.ContentLength))
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -694,16 +702,16 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
 	}
-	defer resp.Body.Close()
+	// DO NOT close resp.Body here - it will be closed by NormalizedResponse after reading
 
 	var bodyReader io.ReadCloser = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := gzip.NewReader(resp.Body)
+		gzReader, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
+			_ = resp.Body.Close() // Must close on error path
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
-		defer gzReader.Close()
-		bodyReader = gzReader
+		bodyReader = c.gzipPool.WrapGzipReader(gzReader)
 	}
 
 	nr := common.NewNormalizedResponse().
@@ -721,17 +729,23 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	var bodyReader io.Reader = bytes.NewReader(body)
+	var pooledRC io.ReadCloser
 
 	// Check if gzip compression is enabled
 	if c.enableGzip {
-		var buf bytes.Buffer
-		gw := gzip.NewWriter(&buf)
+		buf := util.BorrowBuf()
+		gw := c.gzipWriterPool.Get(buf)
 		if _, err := gw.Write(body); err != nil {
+			c.gzipWriterPool.Put(gw)
+			util.ReturnBuf(buf)
 			return nil, err
 		}
 		if err := gw.Close(); err != nil {
+			c.gzipWriterPool.Put(gw)
+			util.ReturnBuf(buf)
 			return nil, err
 		}
+		c.gzipWriterPool.Put(gw)
 		if c.isLogLevelTrace {
 			compressedSize := buf.Len()
 			originalSize := len(body)
@@ -741,11 +755,17 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 				Float64("compressionRatio", float64(compressedSize)/float64(originalSize)).
 				Msg("compressed request body")
 		}
-		bodyReader = &buf
+		// Wrap pooled buffer so it is returned when the request body is consumed
+		prc := util.NewPooledBufferReadCloser(buf)
+		pooledRC = prc
+		bodyReader = prc
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bodyReader)
 	if err != nil {
+		if pooledRC != nil {
+			_ = pooledRC.Close()
+		}
 		return nil, err
 	}
 
@@ -773,18 +793,18 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	return httpReq, nil
 }
 
-func readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
+func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
 	var reader io.ReadCloser = resp.Body
 	defer resp.Body.Close()
 
 	// Check if response is gzipped
 	if resp.Header.Get("Content-Encoding") == "gzip" {
-		var err error
-		reader, err = gzip.NewReader(resp.Body)
+		gr, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("error creating gzip reader: %w", err)
 		}
-		defer reader.Close()
+		defer c.gzipPool.Put(gr)
+		reader = gr
 	}
 
 	return util.ReadAll(reader, 128*1024, expectedSize) // 128KB
@@ -796,18 +816,19 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 	if c.isLogLevelTrace {
 		if jr != nil {
 			maxTraceSize := 20 * 1024
-			if len(jr.Result) > maxTraceSize {
-				tailStart := len(jr.Result) - maxTraceSize
+			result := jr.GetResultBytes()
+			if len(result) > maxTraceSize {
+				tailStart := len(result) - maxTraceSize
 				if tailStart < maxTraceSize {
 					tailStart = maxTraceSize
 				}
-				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", string(jr.Result[:maxTraceSize])).Str("tail", string(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", string(result[:maxTraceSize])).Str("tail", string(result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
 			} else {
-				if len(jr.Result) > 0 {
-					if common.IsSemiValidJson(jr.Result) {
-						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
+				if len(result) > 0 {
+					if common.IsSemiValidJson(result) {
+						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 					} else {
-						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", string(jr.Result)).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
+						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", string(result)).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
 					}
 				} else {
 					c.logger.Trace().Int("statusCode", r.StatusCode).Interface("error", jr.Error).Msgf("processing empty json-rpc result response from upstream")

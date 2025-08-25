@@ -12,6 +12,13 @@ type ByteWriter interface {
 	Size(ctx ...context.Context) (int, error)
 }
 
+// ReleasableByteWriter extends ByteWriter with a Release method for cleanup.
+// Implementations should use Release to free resources safely without data races.
+type ReleasableByteWriter interface {
+	ByteWriter
+	Release()
+}
+
 func IsBytesEmptyish(b []byte) bool {
 	lnr := len(b)
 	if lnr > 2 {

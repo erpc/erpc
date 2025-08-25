@@ -214,12 +214,17 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					Object("response", shadowResp).
 					Msg("shadow response identical to primary response")
 			} else {
+				finality := "n/a"
+				if shadowResp != nil {
+					finality = shadowResp.Finality(shadowCtx).String()
+				}
 				telemetry.MetricShadowResponseMismatchTotal.WithLabelValues(
 					p.Config.Id,
 					ups.VendorName(),
 					network.Label(),
 					ups.Id(),
 					method,
+					finality,
 					strconv.FormatBool(isShadowEmpty),
 					strconv.FormatBool(isShadowLarger),
 				).Inc()

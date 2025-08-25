@@ -1271,7 +1271,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		assert.True(t, resp.FromCache())
 		jrr, err := resp.JsonRpcResponse()
 		assert.NoError(t, err)
-		assert.Equal(t, cachedResponse, string(jrr.Result))
+		assert.Equal(t, cachedResponse, jrr.GetResultString())
 	})
 
 	t.Run("SkipCacheForUnfinalizedBlock", func(t *testing.T) {
@@ -1331,7 +1331,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		assert.True(t, resp.FromCache())
 		jrr, err := resp.JsonRpcResponse()
 		assert.NoError(t, err)
-		assert.Equal(t, cachedResponse, string(jrr.Result))
+		assert.Equal(t, cachedResponse, jrr.GetResultString())
 
 		// Verify both connectors were checked in order
 		mockConnectors[0].AssertCalled(t, "Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything)
@@ -2035,7 +2035,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		// Verify response
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.Equal(t, responseBody, jrr.GetResultString())
 		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
 	})
 
@@ -2086,7 +2086,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		// Verify response
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.Equal(t, responseBody, jrr.GetResultString())
 		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
 	})
 
@@ -2129,7 +2129,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		// Verify response
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.Equal(t, responseBody, jrr.GetResultString())
 		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
 	})
 
@@ -2408,7 +2408,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		// Verify response
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.Equal(t, responseBody, jrr.GetResultString())
 		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
 
 		// Verify we can also get it by block hash
@@ -2467,7 +2467,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		// Verify response
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.Equal(t, responseBody, jrr.GetResultString())
 		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
 
 		// Verify we can't get it by block number
@@ -2526,7 +2526,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		// Verify response
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.Equal(t, responseBody, jrr.GetResultString())
 		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
 	})
 
@@ -2570,7 +2570,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		// Verify response
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.Equal(t, responseBody, jrr.GetResultString())
 		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
 	})
 }
@@ -2693,7 +2693,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Contains(t, string(jrr.Result), largeData)
+		assert.Contains(t, jrr.GetResultString(), largeData)
 	})
 
 	t.Run("CompressionThreshold_BelowThreshold", func(t *testing.T) {
@@ -3095,7 +3095,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		jrr, err := cachedResp.JsonRpcResponse()
 		require.NoError(t, err)
-		assert.Equal(t, string(nonCompressedData), string(jrr.Result))
+		assert.Equal(t, string(nonCompressedData), jrr.GetResultString())
 	})
 
 	t.Run("CompressionBoundaryConditions", func(t *testing.T) {

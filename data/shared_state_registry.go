@@ -152,7 +152,7 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 					return
 				}
 
-				r.logger.Info().
+				r.logger.Debug().
 					Str("key", counter.key).
 					Int64("newValue", newValue).
 					Msg("received new value from shared state sync")

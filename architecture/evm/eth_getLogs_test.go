@@ -293,13 +293,13 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
-						&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
 					),
 					nil,
 				).Once()
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
-						&common.JsonRpcResponse{Result: []byte(`["log2"]`)},
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
 					),
 					nil,
 				).Once()
@@ -322,7 +322,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 					Return(
 						func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 							return common.NewNormalizedResponse().WithJsonRpcResponse(
-								&common.JsonRpcResponse{Result: []byte(`["log2"]`)},
+								common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
 							), nil
 						},
 						nil,
@@ -428,7 +428,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 						return common.NewNormalizedResponse().WithJsonRpcResponse(
-							&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
+							common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
 						), nil
 					},
 					nil,
@@ -668,13 +668,13 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
-						&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
 					),
 					nil,
 				).Times(1)
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
-						&common.JsonRpcResponse{Result: []byte(`["log2"]`)},
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
 					),
 					nil,
 				).Times(1)
@@ -749,16 +749,15 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 }
 
 func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
-	nonEmpty := &common.JsonRpcResponse{Result: []byte(`[{"logIndex":1,"address":"0x123","topics":["0xabc"],"data":"0x1234567890"}]`)}
-	emptyResp := &common.JsonRpcResponse{Result: []byte(`[]`)}
-	nullResp := &common.JsonRpcResponse{Result: []byte(`null`)}
+	nonEmpty := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[{"logIndex":1,"address":"0x123","topics":["0xabc"],"data":"0x1234567890"}]`), nil)
+	emptyResp := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil)
+	nullResp := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`null`), nil)
 
 	t.Run("FirstFillLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			nonEmpty,
-			emptyResp,
-		})
+		ne1, _ := nonEmpty.Clone()
+		er1, _ := emptyResp.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{ne1, er1})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -784,10 +783,9 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstEmptyLastFill", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			emptyResp,
-			nonEmpty,
-		})
+		er2, _ := emptyResp.Clone()
+		ne2, _ := nonEmpty.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er2, ne2})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -813,10 +811,9 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstFillMidNullLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			emptyResp,
-			nonEmpty,
-		})
+		er3, _ := emptyResp.Clone()
+		ne3, _ := nonEmpty.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er3, ne3})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -842,14 +839,13 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstNullMidMixLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
-			nullResp,
-			nonEmpty,
-			emptyResp,
-			nullResp,
-			emptyResp,
-			nonEmpty,
-		})
+		nu1, _ := nullResp.Clone()
+		ne4, _ := nonEmpty.Clone()
+		er4, _ := emptyResp.Clone()
+		nu2, _ := nullResp.Clone()
+		er5, _ := emptyResp.Clone()
+		ne5, _ := nonEmpty.Clone()
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{nu1, ne4, er4, nu2, er5, ne5})
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -937,14 +933,14 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 				}
 
 			case fromBlock == "0x1" && toBlock == "0x2":
-				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x1","address":"0x123","topics":["0xabc"],"data":"0x1"}]`)}
+				subJrr = common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[{"logIndex":"0x1","address":"0x123","topics":["0xabc"],"data":"0x1"}]`), nil)
 			case fromBlock == "0x3" && toBlock == "0x4":
-				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x2","address":"0x123","topics":["0xdef"],"data":"0x2"}]`)}
+				subJrr = common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[{"logIndex":"0x2","address":"0x123","topics":["0xdef"],"data":"0x2"}]`), nil)
 
 			case fromBlock == "0x5" && toBlock == "0x6":
-				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x3","address":"0x456","topics":["0xabc"],"data":"0x3"}]`)}
+				subJrr = common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[{"logIndex":"0x3","address":"0x456","topics":["0xabc"],"data":"0x3"}]`), nil)
 			case fromBlock == "0x7" && toBlock == "0x8":
-				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x4","address":"0x456","topics":["0xdef"],"data":"0x4"}]`)}
+				subJrr = common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[{"logIndex":"0x4","address":"0x456","topics":["0xdef"],"data":"0x4"}]`), nil)
 			}
 
 			return common.NewNormalizedResponse().WithJsonRpcResponse(subJrr), nil

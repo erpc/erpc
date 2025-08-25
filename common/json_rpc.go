@@ -42,10 +42,10 @@ type JsonRpcResponse struct {
 	errBytes []byte
 	errMu    sync.RWMutex
 
-	// Result is the raw bytes of the result from the response, and is used when writing responses.
+	// result is the raw bytes of the result from the response, and is used when writing responses.
 	// Ideally we don't need to parse these bytes. In cases where we need a specific field (e.g. blockNumber)
 	// we use Sonic library to traverse directly to target such field (vs marshalling the whole result in memory).
-	Result       []byte
+	result       []byte
 	resultWriter util.ByteWriter
 	resultMu     sync.RWMutex
 	cachedNode   *ast.Node
@@ -54,6 +54,28 @@ type JsonRpcResponse struct {
 	// Key is the pointer to the first element of the ignoreFields slice (if non-empty)
 	// This works because consensus policy reuses the same slice for the same ignore patterns
 	canonicalHashWithIgnored sync.Map
+}
+
+func (r *JsonRpcResponse) SetResult(result []byte) {
+	r.resultMu.Lock()
+	defer r.resultMu.Unlock()
+	r.result = result
+}
+
+func (r *JsonRpcResponse) GetResultBytes() []byte {
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+	return r.result
+}
+
+func (r *JsonRpcResponse) GetResultString() string {
+	return util.B2Str(r.GetResultBytes())
+}
+
+func (r *JsonRpcResponse) ResultLength() int {
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+	return len(r.result)
 }
 
 // Free releases heavy, memory-retaining fields so that upstream response buffers
@@ -79,11 +101,16 @@ func (r *JsonRpcResponse) Free() {
 	// keep r.Error reference small
 	r.errMu.Unlock()
 
-	// Clear result-related auxiliary fields but keep Result bytes intact to avoid
-	// data races with concurrent readers that may still hold a reference to this response.
 	r.resultMu.Lock()
+	// Release the resultWriter if it implements ReleasableByteWriter
+	if r.resultWriter != nil {
+		if releasable, ok := r.resultWriter.(util.ReleasableByteWriter); ok {
+			releasable.Release()
+		}
+	}
 	r.resultWriter = nil
 	r.cachedNode = nil
+	r.result = nil
 	r.resultMu.Unlock()
 
 	// Clear canonical hash caches
@@ -105,15 +132,23 @@ func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpc
 	return &JsonRpcResponse{
 		id:      id,
 		idBytes: idBytes,
-		Result:  resultRaw,
+		result:  resultRaw,
 		Error:   rpcError,
 	}, nil
+}
+
+func MustNewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) *JsonRpcResponse {
+	jr, err := NewJsonRpcResponse(id, result, rpcError)
+	if err != nil {
+		panic(err)
+	}
+	return jr
 }
 
 func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (*JsonRpcResponse, error) {
 	jr := &JsonRpcResponse{
 		idBytes: id,
-		Result:  resultRaw,
+		result:  resultRaw,
 	}
 
 	if len(errBytes) > 0 {
@@ -132,6 +167,14 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 	}
 
 	return jr, nil
+}
+
+func MustNewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) *JsonRpcResponse {
+	jr, err := NewJsonRpcResponseFromBytes(id, resultRaw, errBytes)
+	if err != nil {
+		panic(err)
+	}
+	return jr
 }
 
 func (r *JsonRpcResponse) parseID() error {
@@ -212,49 +255,51 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		defer span.End()
 	}
 
-	data, err := util.ReadAll(reader, 16*1024, expectedSize) // 16KB
+	data, err := util.ReadAll(reader, 16*1024, expectedSize)
 	if err != nil {
 		return err
 	}
 
-	// Parse the JSON data into an ast.Node
-	// CRITICAL: Convert to string with copy to avoid retaining entire buffer
-	searcher := ast.NewSearcher(string(data))
-	searcher.CopyReturn = false
-	searcher.ConcurrentRead = false
-	searcher.ValidateJSON = false
+	// Parse into a temporary struct to extract fields without string conversion
+	var temp struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
 
-	// Extract the "id" field
-	if idNode, err := searcher.GetByPath("id"); err == nil {
-		if rawID, err := idNode.Raw(); err == nil {
-			r.idMu.Lock()
-			defer r.idMu.Unlock()
-			r.idBytes = []byte(rawID)
+	// Use Sonic's Unmarshal which works directly with bytes
+	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
+		// Store the raw data even if parsing fails, so vendor-specific error detection can access it
+		r.resultMu.Lock()
+		r.result = data
+		r.resultMu.Unlock()
+		return err
+	}
+
+	// Store the raw bytes directly
+	if len(temp.ID) > 0 {
+		r.idMu.Lock()
+		r.idBytes = temp.ID
+		r.idMu.Unlock()
+	}
+
+	if len(temp.Result) > 0 {
+		r.resultMu.Lock()
+		r.result = temp.Result
+		r.resultMu.Unlock()
+	}
+
+	if len(temp.Error) > 0 {
+		if err := r.ParseError(string(temp.Error)); err != nil {
+			return err
 		}
 	}
 
-	if resultNode, err := searcher.GetByPath("result"); err == nil {
-		if rawResult, err := resultNode.Raw(); err == nil {
-			r.resultMu.Lock()
-			defer r.resultMu.Unlock()
-			// CRITICAL: Copy to avoid retaining entire buffer via unsafe conversion
-			r.Result = []byte(rawResult)
-			// Copy to heap instead of storing local variable address
-			r.cachedNode = new(ast.Node)
-			*r.cachedNode = resultNode
-		} else {
+	// Parse ID if needed
+	if len(r.idBytes) > 0 {
+		if err := r.parseID(); err != nil {
 			return err
 		}
-	} else if errorNode, err := searcher.GetByPath("error"); err == nil {
-		if rawError, err := errorNode.Raw(); err == nil {
-			if err := r.ParseError(rawError); err != nil {
-				return err
-			}
-		} else {
-			return err
-		}
-	} else if err := r.ParseError(string(data)); err != nil {
-		return err
 	}
 
 	return nil
@@ -388,7 +433,7 @@ func (r *JsonRpcResponse) Size(ctx ...context.Context) (int, error) {
 	}
 
 	r.resultMu.RLock()
-	rl := len(r.Result)
+	rl := len(r.result)
 	hasResult := rl > 0
 	rw := r.resultWriter
 	r.resultMu.RUnlock()
@@ -412,7 +457,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
-	e.Interface("id", r.ID()).Int("resultSize", len(r.Result))
+	e.Interface("id", r.ID()).Int("resultSize", len(r.result))
 
 	if len(r.errBytes) > 0 {
 		if IsSemiValidJson(r.errBytes) {
@@ -424,20 +469,20 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		e.Interface("error", r.Error)
 	}
 
-	if len(r.Result) > 0 {
-		if len(r.Result) < 300*1024 {
-			if IsSemiValidJson(r.Result) {
-				e.RawJSON("result", r.Result)
+	if len(r.result) > 0 {
+		if len(r.result) < 300*1024 {
+			if IsSemiValidJson(r.result) {
+				e.RawJSON("result", r.result)
 			} else {
-				e.Str("result", string(r.Result))
+				e.Str("result", string(r.result))
 			}
 		} else {
 			head := 150 * 1024
-			tail := len(r.Result) - head
+			tail := len(r.result) - head
 			if tail < head {
 				head = tail
 			}
-			e.Str("resultHead", string(r.Result[:head])).Str("resultTail", string(r.Result[tail:]))
+			e.Str("resultHead", string(r.result[:head])).Str("resultTail", string(r.result[tail:]))
 		}
 	} else if r.resultWriter != nil {
 		e.Bool("resultWriterEmpty", r.resultWriter.IsResultEmptyish())
@@ -447,7 +492,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 func (r *JsonRpcResponse) ensureCachedNode() error {
 	r.resultMu.RLock()
 	if r.cachedNode == nil {
-		srchr := ast.NewSearcher(string(r.Result))
+		srchr := ast.NewSearcher(util.B2Str(r.result))
 		srchr.ValidateJSON = false
 		srchr.ConcurrentRead = false
 		srchr.CopyReturn = false
@@ -533,7 +578,7 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 		n += int64(nn)
 	}
 
-	if len(r.Result) > 0 {
+	if len(r.result) > 0 {
 		// Write result field
 		nn, err = w.Write([]byte(`,"result":`))
 		if err != nil {
@@ -541,7 +586,7 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 		}
 		n += int64(nn)
 
-		nn, err = w.Write(r.Result)
+		nn, err = w.Write(r.result)
 		if err != nil {
 			return n + int64(nn), err
 		}
@@ -570,15 +615,15 @@ func (r *JsonRpcResponse) WriteResultTo(w io.Writer, trimSides bool) (n int64, e
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
-	if len(r.Result) > 0 {
+	if len(r.result) > 0 {
 		if trimSides {
-			if len(r.Result) <= 2 {
+			if len(r.result) <= 2 {
 				return 0, nil
 			}
-			nn, err := w.Write(r.Result[1 : len(r.Result)-1])
+			nn, err := w.Write(r.result[1 : len(r.result)-1])
 			return int64(nn), err
 		}
-		nn, err := w.Write(r.Result)
+		nn, err := w.Write(r.result)
 		return int64(nn), err
 	}
 
@@ -616,9 +661,21 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		copy(clone.errBytes, r.errBytes)
 	}
 
-	if r.Result != nil {
-		clone.Result = make([]byte, len(r.Result))
-		copy(clone.Result, r.Result)
+	if r.result != nil {
+		clone.result = make([]byte, len(r.result))
+		copy(clone.result, r.result)
+	} else if r.resultWriter != nil {
+		// If we have a resultWriter but no materialized result,
+		// materialize it now to avoid sharing the writer instance
+		// which could lead to data races or premature cleanup
+		var buf bytes.Buffer
+		_, err := r.resultWriter.WriteTo(&buf, false)
+		if err != nil {
+			return nil, err
+		}
+		clone.result = buf.Bytes()
+		// Don't copy the resultWriter since we've materialized the result
+		clone.resultWriter = nil
 	}
 
 	// Copy the canonical hash if it exists
@@ -626,7 +683,10 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		clone.canonicalHashWithIgnored.Store(defaultCanonicalHashPlaceholder, cached)
 	}
 
-	clone.resultWriter = r.resultWriter
+	// Only copy resultWriter if we didn't materialize the result above
+	if clone.result == nil && r.resultWriter != nil {
+		clone.resultWriter = r.resultWriter
+	}
 
 	return clone, nil
 }
@@ -648,8 +708,8 @@ func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
 	r.resultMu.RLock()
 	defer r.resultMu.RUnlock()
 
-	if len(r.Result) > 0 {
-		e := util.IsBytesEmptyish(r.Result)
+	if len(r.result) > 0 {
+		e := util.IsBytesEmptyish(r.result)
 		if span != nil {
 			span.SetAttributes(attribute.Bool("resultEmptyish", e))
 		}
@@ -682,7 +742,7 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 
 	// Compute hash
 	r.resultMu.RLock()
-	resultCopy := r.Result
+	resultCopy := r.result
 	r.resultMu.RUnlock()
 
 	var obj interface{}
@@ -729,7 +789,7 @@ func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, 
 
 	// Compute hash with ignored fields
 	r.resultMu.RLock()
-	resultCopy := r.Result
+	resultCopy := r.result
 	r.resultMu.RUnlock()
 
 	var obj interface{}
@@ -930,7 +990,7 @@ func canonicalize(v interface{}) ([]byte, error) {
 		return b, nil
 
 	case string:
-		valb := []byte(val)
+		valb := util.S2Bytes(val)
 		if util.IsBytesEmptyish(valb) {
 			return nil, nil
 		}

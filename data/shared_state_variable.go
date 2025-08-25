@@ -66,12 +66,12 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	if newVal > currentValue {
 		c.value.Store(newVal)
 		updated = true
-		c.registry.logger.Info().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
+		c.registry.logger.Debug().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
 		c.triggerValueCallback(newVal)
 	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {
 		c.value.Store(newVal)
 		updated = true
-		c.registry.logger.Info().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Int64("rollback", currentValue-newVal).Msg("counter value rolled back")
+		c.registry.logger.Warn().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Int64("rollback", currentValue-newVal).Msg("counter value rolled back")
 		c.triggerValueCallback(newVal)
 		c.callbackMu.RLock()
 		callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))

@@ -554,7 +554,7 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
-	r.logger.Info().Str("key", key).Int64("value", value).Msg("published counter int64 update to redis")
+	r.logger.Debug().Str("key", key).Int64("value", value).Msg("published counter int64 update to redis")
 	return err
 }
 
