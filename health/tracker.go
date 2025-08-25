@@ -72,6 +72,7 @@ type TrackedMetrics struct {
 	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
 	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
 	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
+	MisbehaviorsTotal      atomic.Int64     `json:"misbehaviorsTotal"`
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
 	Cordoned               atomic.Bool      `json:"cordoned"`
@@ -99,6 +100,14 @@ func (m *TrackedMetrics) ThrottledRate() float64 {
 	return throttled / float64(reqs)
 }
 
+func (m *TrackedMetrics) MisbehaviorRate() float64 {
+	reqs := m.RequestsTotal.Load()
+	if reqs == 0 {
+		return 0
+	}
+	return float64(m.MisbehaviorsTotal.Load()) / float64(reqs)
+}
+
 func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 	return common.SonicCfg.Marshal(map[string]interface{}{
 		"responseQuantiles":      m.ResponseQuantiles,
@@ -106,12 +115,14 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 		"selfRateLimitedTotal":   m.SelfRateLimitedTotal.Load(),
 		"remoteRateLimitedTotal": m.RemoteRateLimitedTotal.Load(),
 		"requestsTotal":          m.RequestsTotal.Load(),
+		"misbehaviorsTotal":      m.MisbehaviorsTotal.Load(),
 		"blockHeadLag":           m.BlockHeadLag.Load(),
 		"finalizationLag":        m.FinalizationLag.Load(),
 		"cordoned":               m.Cordoned.Load(),
 		"lastCordonedReason":     m.LastCordonedReason.Load(),
 		"errorRate":              m.ErrorRate(),
 		"throttledRate":          m.ThrottledRate(),
+		"misbehaviorRate":        m.MisbehaviorRate(),
 	})
 }
 
@@ -123,6 +134,7 @@ func (m *TrackedMetrics) Reset() {
 	m.RequestsTotal.Store(0)
 	m.SelfRateLimitedTotal.Store(0)
 	m.RemoteRateLimitedTotal.Store(0)
+	m.MisbehaviorsTotal.Store(0)
 	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
 	// DO NOT reset m.FinalizationLag - it's a state metric, not cumulative
 	m.ResponseQuantiles.Reset()
@@ -366,6 +378,15 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
 		t.getNtwMetrics(nk).ErrorsTotal.Add(1)
+	}
+}
+
+func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
+	for _, k := range t.getUpsKeys(up, method) {
+		t.getUpsMetrics(k).MisbehaviorsTotal.Add(1)
+	}
+	for _, nk := range t.getNtwKeys(up, method) {
+		t.getNtwMetrics(nk).MisbehaviorsTotal.Add(1)
 	}
 }
 

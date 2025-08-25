@@ -343,6 +343,7 @@ type ProjectConfig struct {
 	Networks               []*NetworkConfig                    `yaml:"networks,omitempty" json:"networks"`
 	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
+	ScoreRefreshInterval   Duration                            `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
 	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 }
 
@@ -613,6 +614,7 @@ type ScoreMultiplierConfig struct {
 	ThrottledRate   *float64 `yaml:"throttledRate" json:"throttledRate"`
 	BlockHeadLag    *float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
 	FinalizationLag *float64 `yaml:"finalizationLag" json:"finalizationLag"`
+	Misbehaviors    *float64 `yaml:"misbehaviors" json:"misbehaviors"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {

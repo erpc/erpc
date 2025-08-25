@@ -237,6 +237,13 @@ func (u *Upstream) MetricsTracker() *health.Tracker {
 	return u.metricsTracker
 }
 
+func (u *Upstream) Tracker() common.HealthTracker {
+	if u == nil {
+		return nil
+	}
+	return u.metricsTracker
+}
+
 func (u *Upstream) Logger() *zerolog.Logger {
 	return u.logger
 }

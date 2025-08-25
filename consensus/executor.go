@@ -576,6 +576,11 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 							largerThanConsensusStr,
 						).Inc()
 
+					// Record misbehavior in tracker for score calculation
+					if result.Upstream != nil && result.Upstream.Tracker() != nil {
+						result.Upstream.Tracker().RecordUpstreamMisbehavior(result.Upstream, labels.method)
+					}
+
 					// Apply punishment only if configured and conditions are met
 					if e.shouldPunishUpstream(lg, consensusGroup, analysis) {
 						limiter := e.createRateLimiter(lg, upstreamId)

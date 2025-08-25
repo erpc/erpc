@@ -22,7 +22,7 @@ func init() {
 func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 	// Test that when multiple responses are in the same consensus group,
 	// the largest response is selected (not just the first one)
-	
+
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -82,11 +82,11 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 
 	// Create receipt responses with same core data but different additional fields
 	// The ignored fields (blockTimestamp) allow them to be in the same consensus group
-	
+
 	// All receipts MUST have the same fields (except ignored ones) to be in same consensus group
 	// Only the ignored fields (blockTimestamp, gasUsedRatio) can differ in value
 	// Response size difference comes from different values of ignored fields
-	
+
 	// Small receipt - short values for ignored fields
 	smallReceipt := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -110,7 +110,7 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 		},
 	}
 
-	// Medium receipt - medium values for ignored fields  
+	// Medium receipt - medium values for ignored fields
 	mediumReceipt := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -154,7 +154,7 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 			"logsBloom":         "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
 			"contractAddress":   nil,
 			"blockTimestamp":    "0x6500000012345678901234567890abcdef", // Large value (ignored field)
-			"gasUsedRatio":      "0.555555555555555555555555555555555", // Large value (ignored field)
+			"gasUsedRatio":      "0.555555555555555555555555555555555",  // Large value (ignored field)
 		},
 	}
 
@@ -213,12 +213,12 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 
 	// Verify that the largest response was selected
 	resultStr := jrr.GetResultString()
-	
+
 	// The largest response should contain all the extra fields
 	assert.Contains(t, resultStr, "effectiveGasPrice", "Expected the largest response with effectiveGasPrice to be selected")
 	assert.Contains(t, resultStr, "logsBloom", "Expected the largest response with logsBloom to be selected")
 	assert.Contains(t, resultStr, "transactionIndex", "Expected the largest response with transactionIndex to be selected")
-	
+
 	// Verify the response size is the largest
 	resultLen := jrr.ResultLength()
 	assert.True(t, resultLen > 500, "Expected large result length from the largest response")
