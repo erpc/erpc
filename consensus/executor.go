@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -115,7 +116,29 @@ func (e *executor) Apply(innerFn func(failsafe.Execution[*common.NormalizedRespo
 			innerFn,
 		)
 
+		// Track misbehaviors while responses are still available
 		e.trackAndPunishMisbehavingUpstreams(&lg, originalReq, labels, winner, analysis)
+
+		// Now release non-winning responses to free memory
+		if analysis != nil {
+			var winnerResp *common.NormalizedResponse
+			if winner != nil {
+				if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
+					winnerResp = wr
+				}
+			}
+			// Release responses from the groups in analysis
+			for _, group := range analysis.groups {
+				for _, result := range group.Results {
+					if result != nil && result.Result != nil {
+						// Only release if it's not the winner
+						if result.Result != winnerResp {
+							result.Result.Release()
+						}
+					}
+				}
+			}
+		}
 
 		// --- Finalization ---
 		e.recordMetricsAndTracing(originalReq, startTime, winner, analysis, labels, consensusSpan)
@@ -239,33 +262,6 @@ collectLoop:
 		telemetry.MetricConsensusShortCircuit.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, reason, labels.finalityStr).
 			Inc()
-	}
-	// After winner selection, release results appropriately to avoid leaks and double-releases
-	if analysis != nil {
-		var winnerResp *common.NormalizedResponse
-		if winner != nil {
-			if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
-				winnerResp = wr
-			}
-		}
-		if winnerResp != nil {
-			// We have a concrete response winner: release only non-winning results
-			for _, r := range responses {
-				if r == nil || r.Result == nil {
-					continue
-				}
-				if r.Result != winnerResp {
-					r.Result.Release()
-				}
-			}
-		} else {
-			// No response winner (nil winner or error-only winner): release all collected results once
-			for _, r := range responses {
-				if r != nil && r.Result != nil {
-					r.Result.Release()
-				}
-			}
-		}
 	}
 
 	return winner, analysis
@@ -446,6 +442,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 		responseType        ResponseType
 		responseHash        string
 		responseSize        int
+		responseBody        string // Full response content for debugging disputes
 		errorMessage        string
 		agreesWithConsensus bool
 	}
@@ -471,6 +468,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 			if shouldLog {
 				var responseHash string
 				var responseSize int
+				var responseBody string
 				var errorMessage string
 
 				if result.Result != nil {
@@ -479,6 +477,9 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 						if h, err := jrr.CanonicalHash(); err == nil {
 							responseHash = h
 						}
+						// Get the full response body for debugging
+						responseBody = jrr.GetResultString()
+
 						// Debug: Log if we have a mismatch between empty response and non-empty type
 						if group.ResponseType == ResponseTypeNonEmpty && jrr.IsResultEmptyish() {
 							lg.Warn().
@@ -487,8 +488,15 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 								Str("result", jrr.GetResultString()).
 								Msg("WARN: Response marked as non_empty but IsResultEmptyish returns true")
 						}
+					} else {
+						// Couldn't extract JsonRpcResponse
+						responseBody = fmt.Sprintf("<error extracting response: %v>", err)
 					}
+				} else if result.Err != nil {
+					// For errors, include the full error details as the "body"
+					responseBody = fmt.Sprintf("<error: %v>", result.Err)
 				}
+
 				if result.Err != nil {
 					errorMessage = common.ErrorSummary(result.Err)
 				}
@@ -500,6 +508,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					responseType:        group.ResponseType,
 					responseHash:        responseHash,
 					responseSize:        responseSize,
+					responseBody:        responseBody,
 					errorMessage:        errorMessage,
 					agreesWithConsensus: agreesWithConsensus,
 				})
@@ -584,6 +593,18 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 		// Get consensus response data (compact)
 		consensusHash := consensusGroup.Hash
 		consensusSize := consensusGroup.ResponseSize
+		var consensusBody string
+
+		// Get the consensus response body for comparison
+		if consensusGroup.LargestResult != nil {
+			if jrr, err := consensusGroup.LargestResult.JsonRpcResponse(); err == nil && jrr != nil {
+				consensusBody = jrr.GetResultString()
+			} else {
+				consensusBody = fmt.Sprintf("<error extracting consensus response: %v>", err)
+			}
+		} else if consensusGroup.FirstError != nil {
+			consensusBody = fmt.Sprintf("<consensus error: %v>", consensusGroup.FirstError)
+		}
 
 		logEvent := e.logger.WithLevel(e.disputeLogLevel).
 			Str("projectId", labels.projectId).
@@ -597,9 +618,10 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 			Str("consensusResponseType", consensusGroup.ResponseType.String()).
 			Str("consensusHash", consensusHash).
 			Int("consensusSize", consensusSize).
+			Str("consensusResponse", consensusBody).
 			Object("request", req)
 
-		// Add ALL participants with numbered keys
+			// Add ALL participants with numbered keys
 		for i, participant := range allParticipants {
 			idx := strconv.Itoa(i + 1)
 			logEvent = logEvent.
@@ -607,7 +629,8 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 				Str("responseType"+idx, participant.responseType.String()).
 				Bool("agreesWithConsensus"+idx, participant.agreesWithConsensus).
 				Str("responseHash"+idx, participant.responseHash).
-				Int("responseSize"+idx, participant.responseSize)
+				Int("responseSize"+idx, participant.responseSize).
+				Str("response"+idx, participant.responseBody)
 
 			if participant.errorMessage != "" {
 				logEvent = logEvent.Str("error"+idx, participant.errorMessage)
