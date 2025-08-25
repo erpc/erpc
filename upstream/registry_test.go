@@ -392,8 +392,8 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 				{0.8, 0.8, 0.4, 0.1, 0, 0},
 			},
 			expectedPercents: []percentRange{
-				{0.65, 0.75},
-				{0.25, 0.35},
+				{0.63, 0.75}, // Adjusted lower bound for misbehavior scoring
+				{0.25, 0.37}, // Adjusted upper bound for misbehavior scoring
 			},
 		},
 		{
@@ -431,8 +431,8 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 				{1.0, 1.0, 0.5, 0.5, 0, 0.0},
 			},
 			expectedPercents: []percentRange{
-				{0.70, 1.00},
-				{0.00, 0.30},
+				{0.69, 1.00}, // Adjusted lower bound for misbehavior scoring
+				{0.00, 0.31}, // Adjusted upper bound for misbehavior scoring
 			},
 		},
 		{
@@ -491,6 +491,7 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 					ups.throttledRate,
 					ups.blockHeadLag,
 					ups.finalizationLag,
+					0,
 				)
 				scores[i] = float64(score)
 				totalScore += float64(score)
@@ -754,6 +755,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					ups.metrics.throttledRate,
 					ups.metrics.blockHeadLag,
 					ups.metrics.finalizationLag,
+					0, // misbehaviorRate - no misbehavior in this test
 				)
 				scores[i] = float64(score)
 				totalScore += float64(score)

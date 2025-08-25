@@ -480,7 +480,11 @@ func (r *NormalizedResponse) closeBodyOnce() {
 		r.Unlock()
 		if body != nil {
 			if err := body.Close(); err != nil {
-				log.Error().Err(err).Msg("failed to close response body")
+				if IsClientDisconnect(err) {
+					log.Debug().Err(err).Msg("response body close on canceled request")
+				} else {
+					log.Error().Err(err).Msg("failed to close response body")
+				}
 			}
 		}
 	})

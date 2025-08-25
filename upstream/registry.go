@@ -649,7 +649,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.UpdateScoresAndSort")
 	defer span.End()
 
-	var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
+	var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags, misbehaviorRates []float64
 
 	for _, ups := range upsList {
 		qn := 0.70
@@ -675,6 +675,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 		errorRates = append(errorRates, metrics.ErrorRate())
 		throttledRates = append(throttledRates, metrics.ThrottledRate())
 		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
+		misbehaviorRates = append(misbehaviorRates, metrics.MisbehaviorRate())
 	}
 
 	normRespLatencies := normalizeValuesLogWithInvalid(respLatencies)
@@ -683,6 +684,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 	normTotalRequests := normalizeValues(totalRequests)
 	normBlockHeadLags := normalizeValuesLog(blockHeadLags)
 	normFinalizationLags := normalizeValuesLog(finalizationLags)
+	normMisbehaviorRates := normalizeValues(misbehaviorRates)
 	for i, ups := range upsList {
 		upsId := ups.Id()
 		score := u.calculateScore(
@@ -695,6 +697,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 			normThrottledRates[i],
 			normBlockHeadLags[i],
 			normFinalizationLags[i],
+			normMisbehaviorRates[i],
 		)
 		// Upstream might not have scores initialized yet (especially when networkId is *)
 		// TODO add a test case to send request to network A when network B is defined in config but no requests sent yet
@@ -729,7 +732,8 @@ func (u *UpstreamsRegistry) calculateScore(
 	normErrorRate,
 	normThrottledRate,
 	normBlockHeadLag,
-	normFinalizationLag float64,
+	normFinalizationLag,
+	normMisbehaviorRate float64,
 ) float64 {
 	mul := ups.getScoreMultipliers(networkId, method)
 
@@ -763,6 +767,11 @@ func (u *UpstreamsRegistry) calculateScore(
 	// Higher score for lower finalization lag
 	if mul.FinalizationLag != nil && *mul.FinalizationLag > 0 {
 		score += expCurve(1-normFinalizationLag) * *mul.FinalizationLag
+	}
+
+	// Higher score for lower misbehavior rate
+	if mul.Misbehaviors != nil && *mul.Misbehaviors > 0 {
+		score += expCurve(1-normMisbehaviorRate) * *mul.Misbehaviors
 	}
 
 	if mul.Overall != nil && *mul.Overall > 0 {

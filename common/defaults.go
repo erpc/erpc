@@ -2029,6 +2029,7 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	ThrottledRate:   util.Float64Ptr(3.0),
 	BlockHeadLag:    util.Float64Ptr(2.0),
 	FinalizationLag: util.Float64Ptr(1.0),
+	Misbehaviors:    util.Float64Ptr(5.0),
 
 	Overall: util.Float64Ptr(1.0),
 }
@@ -2057,6 +2058,9 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	}
 	if s.FinalizationLag == nil {
 		s.FinalizationLag = DefaultScoreMultiplier.FinalizationLag
+	}
+	if s.Misbehaviors == nil {
+		s.Misbehaviors = DefaultScoreMultiplier.Misbehaviors
 	}
 	if s.Overall == nil {
 		s.Overall = DefaultScoreMultiplier.Overall

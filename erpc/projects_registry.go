@@ -118,9 +118,10 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		rateLimitersRegistry: r.rateLimitersRegistry,
 		cfgMu:                sync.RWMutex{},
 	}
-	// Disable background score refresh timers during tests to keep upstream order deterministic
-	// and avoid random reordering while tests are executing.
-	scoreRefreshInterval := 10 * time.Second
+	scoreRefreshInterval := prjCfg.ScoreRefreshInterval.Duration()
+	if scoreRefreshInterval == 0 {
+		scoreRefreshInterval = 10 * time.Second
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		r.appCtx,
 		&lg,

@@ -78,6 +78,49 @@ export default createConfig({
   </Tabs.Tab>
 </Tabs>
 
+#### A real-world example of `ignoreFields`
+
+The following fields are often safe to ignore, but you should verify them for your specific use case:
+
+```yaml
+ignoreFields:
+  eth_getLogs:
+    - "*.blockTimestamp"
+  eth_getTransactionReceipt:
+    - "blockTimestamp"
+    - "logs.*.blockTimestamp"
+    - "l1Fee"
+    - "l1GasPrice"
+    - "l1GasUsed"
+    - "gasUsedForL1"
+    - "timeboosted"
+    - "l1BlockNumber"
+  eth_getBlockByHash:
+    - "requestsHash"
+    - "transactions.*.gasPrice"
+    - "transactions.*.accessList"
+    - "transactions.*.chainId"
+    - "transactions.*.l1Fee"
+    - "transactions.*.yParity"
+    - "transactions.*.isSystemTx"
+    - "transactions.*.depositReceiptVersion"
+  eth_getBlockByNumber:
+    - "requestsHash"
+    - "transactions.*.gasPrice"
+    - "transactions.*.accessList"
+    - "transactions.*.chainId"
+    - "transactions.*.l1Fee"
+    - "transactions.*.yParity"
+    - "transactions.*.isSystemTx"
+    - "transactions.*.depositReceiptVersion"
+  eth_getBlockReceipts:
+    - "*.blockTimestamp"
+    - "*.l1Fee"
+    - "*.l1GasPrice"
+    - "*.l1GasUsed"
+    - "*.logs.*.blockTimestamp"
+```
+
 ## Key options
 
 ### `maxParticipants`
