@@ -81,7 +81,11 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		util.ReturnBuf(tw.wbuf)
 		tw.wbuf = nil
 		if err != nil {
-			log.Warn().Err(err).Msg("failed to write response")
+			if common.IsClientDisconnect(err) {
+				log.Debug().Err(err).Msg("client disconnected while writing response")
+			} else {
+				log.Warn().Err(err).Msg("failed to write response")
+			}
 		}
 	case <-ctx.Done():
 		tw.mu.Lock()

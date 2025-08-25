@@ -104,6 +104,32 @@ func ErrorFingerprint(err interface{}) string {
 	return summary
 }
 
+// Helper to detect benign client disconnect/cancellation scenarios
+// These occur when the downstream client closes the connection or when our
+// context is canceled (e.g., hedging canceled other attempts).
+func IsClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Fast-path for context cancellations/timeouts
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// net.ErrClosed and common syscall errors
+	// We avoid importing syscall names directly if not already present in the file,
+	// and rely on substring checks as a safe fallback across platforms.
+	msg := err.Error()
+	if msg == "use of closed network connection" ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "ECONNRESET") ||
+		strings.Contains(msg, "EPIPE") {
+		return true
+	}
+	return false
+}
+
 var longHash = regexp.MustCompile(`0x[a-fA-F0-9][a-fA-F0-9]+`)
 var txHashErr = regexp.MustCompile(`transaction [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]+`)
 var trieNodeErr = regexp.MustCompile(`trie node [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]+`)
