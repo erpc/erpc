@@ -12,6 +12,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -81,7 +82,29 @@ func main() {
 		Name:  "validate",
 		Usage: "Validate the eRPC configuration",
 		Action: baseCliAction(logger, func(ctx context.Context, cfg *common.Config) error {
-			return erpc.AnalyseConfig(cfg, logger)
+			if err := erpc.AnalyseConfig(cfg, logger); err != nil {
+				return err
+			}
+			// Initialize histogram buckets so metrics are registered before any upstream calls
+			bucketStr := ""
+			if cfg.Metrics != nil && cfg.Metrics.HistogramBuckets != "" {
+				bucketStr = cfg.Metrics.HistogramBuckets
+			}
+			if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
+				logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
+			}
+
+			// Build core and bootstrap projects directly to enforce failures (e.g., chainId mismatch)
+			erpcInstance, err := erpc.NewERPC(ctx, &logger, nil, nil, cfg)
+			if err != nil {
+				return err
+			}
+			for _, prj := range erpcInstance.GetProjects() {
+				if err := prj.Bootstrap(ctx); err != nil {
+					return err
+				}
+			}
+			return nil
 		}),
 	}
 
