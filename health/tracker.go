@@ -55,11 +55,12 @@ type Timer struct {
 	compositeType string
 	tracker       *Tracker
 	finality      common.DataFinalityState
+	userId        string
 }
 
 func (t *Timer) ObserveDuration(isSuccess bool) {
 	duration := time.Since(t.start)
-	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality)
+	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality, t.userId)
 }
 
 // ------------------------------------
@@ -319,7 +320,7 @@ func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState) *Timer {
+func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState, userId string) *Timer {
 	if compositeType == "" {
 		compositeType = "none"
 	}
@@ -330,10 +331,11 @@ func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method s
 		compositeType: compositeType,
 		finality:      finality,
 		tracker:       t,
+		userId:        userId,
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState) {
+func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState, userId string) {
 	if comp == "" {
 		comp = "none"
 	}
@@ -357,6 +359,7 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 			method,
 			comp,
 			finality.String(),
+			userId,
 		).
 		Observe(sec)
 }

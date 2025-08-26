@@ -719,7 +719,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Did not expect ErrNetworkRateLimitRuleExceeded")
 		}
 	})
-
 	t.Run("ForwardUpstreamRetryIntermittentFailuresWithoutSuccessAndNoErrCode", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -1486,7 +1485,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result to be an empty array, got %s", result)
 		}
 	})
-
 	t.Run("RetryWhenNodeIsNotSynced", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -2250,7 +2248,6 @@ func TestNetwork_Forward(t *testing.T) {
 				totalDuration, hedgeDelay)
 		}
 	})
-
 	t.Run("RetryWhenWeDoNotKnowNodeSyncState", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -3047,7 +3044,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
 	})
-
 	t.Run("RetryEmptyAndUseLastNonEmptyResponse", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -3674,7 +3670,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
 	})
-
 	t.Run("NotRetryPendingTXsWhenDirectiveIsNotSet", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -4436,7 +4431,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Did not expect ErrUpstreamsExhausted, got: %s", err.Error())
 		}
 	})
-
 	t.Run("ForwardMustNotRetryBillingIssues", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -5213,7 +5207,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Did not expect %v", "ErrFailsafeTimeoutExceeded")
 		}
 	})
-
 	t.Run("ForwardHedgePolicyTriggered", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -5958,7 +5951,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected error message to contain 'ErrFailsafeCircuitBreakerOpen', got %v", lastErr.Error())
 		}
 	})
-
 	t.Run("ForwardCBClosesAfterUpstreamIsBackUp", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -6689,7 +6681,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
 	})
-
 	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithoutRetryOnEmpty", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -7358,7 +7349,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
 		}
 	})
-
 	t.Run("DynamicMethodSpecificLatencyPreference", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -8710,7 +8700,6 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 		}
 	})
 }
-
 func TestNetwork_EvmGetLogs(t *testing.T) {
 	t.Run("EnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
 		util.ResetGock()
@@ -9395,7 +9384,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, blockNumbers, "0x18101")
 		assert.Contains(t, blockNumbers, "0x18202")
 	})
-
 	t.Run("SplitCorrectlyWhenMaxRangeIsOne", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -9892,7 +9880,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.True(t, len(pendings) == 0, "Expected no pending mocks")
 	})
 }
-
 func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -10601,7 +10588,6 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 
 	return network
 }
-
 func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 	t.Run("EvmHighestLatestBlockNumber_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
 		util.ResetGock()
@@ -10860,7 +10846,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		// Create good metrics for included upstream
 		metricsTracker.RecordUpstreamRequest(includedUpstream, "*")
-		metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for selection policy to evaluate
 		time.Sleep(150 * time.Millisecond)

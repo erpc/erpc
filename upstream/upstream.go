@@ -445,7 +445,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				nrq.AgentName(),
 				nrq.AgentVersion(),
 			).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality)
+			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			isSuccess := false
