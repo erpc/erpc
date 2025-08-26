@@ -199,6 +199,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			upstreamId,
 			method,
 			finality.String(),
+			nq.UserId(),
 		).Observe(dur.Seconds())
 		return resp, err
 	} else {
@@ -230,6 +231,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			"<error>",
 			method,
 			finality.String(),
+			nq.UserId(),
 		).Observe(time.Since(start).Seconds())
 	}
 
