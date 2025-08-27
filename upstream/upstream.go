@@ -1079,22 +1079,22 @@ func (u *Upstream) guessVendorName() string {
 
 	// If the host is an IP address, return it as-is (no root domain concept).
 	if ip := net.ParseIP(host); ip != nil {
-		return host
+		return "unknown-" + host
 	}
 
 	parts := strings.Split(host, ".")
 	if len(parts) <= 2 {
-		return host
+		return "unknown-" + host
 	}
 
 	// Return last two segments as a naive root domain (example.com).
 	rooDomain := strings.Join(parts[len(parts)-2:], ".")
 	if len(rooDomain) < 5 {
 		// Above is a simple heuristic and might not work for multi-level TLDs like co.uk.
-		return strings.Join(parts[len(parts)-3:], ".")
+		return "unknown-" + strings.Join(parts[len(parts)-3:], ".")
 	}
 
-	return rooDomain
+	return "unknown-" + rooDomain
 }
 
 func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest) (reason error, skip bool) {
