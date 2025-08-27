@@ -1047,7 +1047,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 					u,
 				)
 			}
-		} else {
+		} else if common.IsChainIdChecksEnabled(ctx) {
 			// If chainId is explicitly configured, strictly validate upstream reports the same chainId.
 			// This avoids misconfigured endpoints corrupting network metrics and routing decisions.
 			vctx, cancel := context.WithTimeout(ctx, 5*time.Second)

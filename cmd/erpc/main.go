@@ -94,6 +94,8 @@ func main() {
 				logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
 			}
 
+			// Enable chainId checks in validate path
+			ctx = common.WithChainIdChecks(ctx, true)
 			// Build core and bootstrap projects directly to enforce failures (e.g., chainId mismatch)
 			erpcInstance, err := erpc.NewERPC(ctx, &logger, nil, nil, cfg)
 			if err != nil {
