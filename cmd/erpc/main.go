@@ -12,7 +12,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -85,14 +84,7 @@ func main() {
 			if err := erpc.AnalyseConfig(cfg, logger); err != nil {
 				return err
 			}
-			// Initialize histogram buckets so metrics are registered before any upstream calls
-			bucketStr := ""
-			if cfg.Metrics != nil && cfg.Metrics.HistogramBuckets != "" {
-				bucketStr = cfg.Metrics.HistogramBuckets
-			}
-			if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
-				logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
-			}
+			// Telemetry histograms are initialized at package load; no extra setup needed here
 
 			// Enable chainId checks in validate path
 			ctx = common.WithChainIdChecks(ctx, true)

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -408,6 +409,14 @@ var (
 	MetricCacheGetErrorDuration,
 	MetricConsensusDuration *prometheus.HistogramVec
 )
+
+var telemetryInitOnce sync.Once
+
+func init() {
+	telemetryInitOnce.Do(func() {
+		_ = SetHistogramBuckets("")
+	})
+}
 
 func SetHistogramBuckets(bucketsStr string) error {
 	buckets, err := ParseHistogramBuckets(bucketsStr)
