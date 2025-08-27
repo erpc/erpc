@@ -84,7 +84,6 @@ func main() {
 			if err := erpc.AnalyseConfig(cfg, logger); err != nil {
 				return err
 			}
-			// Telemetry histograms are initialized at package load; no extra setup needed here
 
 			// Enable chainId checks in validate path
 			ctx = common.WithChainIdChecks(ctx, true)
