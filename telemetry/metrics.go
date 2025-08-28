@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -410,20 +409,11 @@ var (
 	MetricConsensusDuration *prometheus.HistogramVec
 )
 
-var telemetryInitOnce sync.Once
-
-func init() {
-	telemetryInitOnce.Do(func() {
-		_ = SetHistogramBuckets("")
-	})
-}
-
 func SetHistogramBuckets(bucketsStr string) error {
 	buckets, err := ParseHistogramBuckets(bucketsStr)
 	if err != nil {
 		return err
 	}
-
 	if MetricUpstreamRequestDuration != nil {
 		prometheus.DefaultRegisterer.Unregister(MetricUpstreamRequestDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricNetworkRequestDuration)
@@ -494,13 +484,11 @@ func SetHistogramBuckets(bucketsStr string) error {
 }
 
 func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
-	if bucketsStr == "" {
+	if strings.TrimSpace(bucketsStr) == "" {
 		return DefaultHistogramBuckets, nil
 	}
-
 	parts := strings.Split(bucketsStr, ",")
 	buckets := make([]float64, 0, len(parts))
-
 	for _, part := range parts {
 		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
 		if err != nil {
@@ -508,7 +496,6 @@ func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
 		}
 		buckets = append(buckets, value)
 	}
-
 	sort.Float64s(buckets)
 	return buckets, nil
 }
