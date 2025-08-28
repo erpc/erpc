@@ -7,14 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -83,56 +80,48 @@ func main() {
 	validateCmd := &cli.Command{
 		Name:  "validate",
 		Usage: "Validate the eRPC configuration",
-		Action: baseCliAction(logger, func(ctx context.Context, cfg *common.Config) error {
-			if err := erpc.AnalyseConfig(cfg, logger); err != nil {
-				return err
-			}
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "format",
+				Usage: "Output format: json|md",
+				Value: "json",
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			// Suppress all logs
+			zerolog.SetGlobalLevel(zerolog.Disabled)
 
-			// Ensure telemetry histograms are initialized for validation path
-			var bucketStr string
-			if cfg.Metrics != nil && cfg.Metrics.HistogramBuckets != "" {
-				bucketStr = cfg.Metrics.HistogramBuckets
-			}
-			_ = telemetry.SetHistogramBuckets(bucketStr)
-
-			// Build the app and bootstrap projects
-			erpcInstance, err := erpc.NewERPC(ctx, &logger, nil, nil, cfg)
+			cfg, err := getConfig(logger, cmd)
 			if err != nil {
-				return err
+				// Config load errors should be included as Errors in output, not printed
+				report := &erpc.ValidationReport{Errors: []string{fmt.Sprintf("config load error: %v", err)}}
+				format := cmd.String("format")
+				if format == "md" {
+					out := erpc.RenderValidationReportMarkdown(report)
+					fmt.Println(out)
+				} else {
+					out, _ := erpc.RenderValidationReportJSON(report, true)
+					fmt.Println(out)
+				}
+				util.OsExit(1)
+				return nil
 			}
-			for _, prj := range erpcInstance.GetProjects() {
-				if err := prj.Bootstrap(ctx); err != nil {
-					return err
-				}
-				// Isolated chainId validation loop: keep core app logic clean
-				hi, err := prj.GatherHealthInfo()
-				if err != nil {
-					return err
-				}
-				vctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				for _, ups := range hi.UpstreamsHealth.Upstreams {
-					uc := ups.Config()
-					if uc != nil && uc.Type == common.UpstreamTypeEvm && uc.Evm != nil && uc.Evm.ChainId != 0 {
-						nid, err := ups.EvmGetChainId(vctx)
-						if err != nil {
-							cancel()
-							return fmt.Errorf("evm chainId check failed for upstream %s: %w", ups.Id(), err)
-						}
-						actual, err := strconv.ParseInt(nid, 10, 64)
-						if err != nil {
-							cancel()
-							return fmt.Errorf("invalid chainId returned by upstream %s: %w", ups.Id(), err)
-						}
-						if actual != uc.Evm.ChainId {
-							cancel()
-							return fmt.Errorf("chainId mismatch on upstream %s: expected %d, got %d", ups.Id(), uc.Evm.ChainId, actual)
-						}
-					}
-				}
-				cancel()
+
+			report := erpc.GenerateValidationReport(ctx, cfg)
+			format := cmd.String("format")
+			if format == "md" {
+				out := erpc.RenderValidationReportMarkdown(report)
+				fmt.Println(out)
+			} else {
+				out, _ := erpc.RenderValidationReportJSON(report, true)
+				fmt.Println(out)
+			}
+
+			if len(report.Errors) > 0 {
+				util.OsExit(1)
 			}
 			return nil
-		}),
+		},
 	}
 
 	// Define the start command
