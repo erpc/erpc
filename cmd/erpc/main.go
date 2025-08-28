@@ -14,6 +14,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -86,6 +87,13 @@ func main() {
 			if err := erpc.AnalyseConfig(cfg, logger); err != nil {
 				return err
 			}
+
+			// Ensure telemetry histograms are initialized for validation path
+			var bucketStr string
+			if cfg.Metrics != nil && cfg.Metrics.HistogramBuckets != "" {
+				bucketStr = cfg.Metrics.HistogramBuckets
+			}
+			_ = telemetry.SetHistogramBuckets(bucketStr)
 
 			// Build the app and bootstrap projects
 			erpcInstance, err := erpc.NewERPC(ctx, &logger, nil, nil, cfg)
