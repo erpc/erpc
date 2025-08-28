@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
@@ -85,9 +87,7 @@ func main() {
 				return err
 			}
 
-			// Enable chainId checks in validate path
-			ctx = common.WithChainIdChecks(ctx, true)
-			// Build core and bootstrap projects directly to enforce failures (e.g., chainId mismatch)
+			// Build the app and bootstrap projects
 			erpcInstance, err := erpc.NewERPC(ctx, &logger, nil, nil, cfg)
 			if err != nil {
 				return err
@@ -96,6 +96,32 @@ func main() {
 				if err := prj.Bootstrap(ctx); err != nil {
 					return err
 				}
+				// Isolated chainId validation loop: keep core app logic clean
+				hi, err := prj.GatherHealthInfo()
+				if err != nil {
+					return err
+				}
+				vctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				for _, ups := range hi.UpstreamsHealth.Upstreams {
+					uc := ups.Config()
+					if uc != nil && uc.Type == common.UpstreamTypeEvm && uc.Evm != nil && uc.Evm.ChainId != 0 {
+						nid, err := ups.EvmGetChainId(vctx)
+						if err != nil {
+							cancel()
+							return fmt.Errorf("evm chainId check failed for upstream %s: %w", ups.Id(), err)
+						}
+						actual, err := strconv.ParseInt(nid, 10, 64)
+						if err != nil {
+							cancel()
+							return fmt.Errorf("invalid chainId returned by upstream %s: %w", ups.Id(), err)
+						}
+						if actual != uc.Evm.ChainId {
+							cancel()
+							return fmt.Errorf("chainId mismatch on upstream %s: expected %d, got %d", ups.Id(), uc.Evm.ChainId, actual)
+						}
+					}
+				}
+				cancel()
 			}
 			return nil
 		}),
