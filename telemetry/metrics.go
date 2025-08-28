@@ -414,6 +414,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	if err != nil {
 		return err
 	}
+
 	if MetricUpstreamRequestDuration != nil {
 		prometheus.DefaultRegisterer.Unregister(MetricUpstreamRequestDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricNetworkRequestDuration)
@@ -484,11 +485,13 @@ func SetHistogramBuckets(bucketsStr string) error {
 }
 
 func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
-	if strings.TrimSpace(bucketsStr) == "" {
+	if bucketsStr == "" {
 		return DefaultHistogramBuckets, nil
 	}
+
 	parts := strings.Split(bucketsStr, ",")
 	buckets := make([]float64, 0, len(parts))
+
 	for _, part := range parts {
 		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
 		if err != nil {
@@ -496,6 +499,7 @@ func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
 		}
 		buckets = append(buckets, value)
 	}
+
 	sort.Float64s(buckets)
 	return buckets, nil
 }
