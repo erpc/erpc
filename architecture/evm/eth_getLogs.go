@@ -140,10 +140,16 @@ func NetworkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 			continue
 		}
 		th := cu.Config().Evm.GetLogsAutoSplittingRangeThreshold
+		if th <= 0 {
+			// Explicitly disable splitting if any upstream sets non-positive
+			effectiveThreshold = 0
+			break
+		}
 		if th > 0 && (effectiveThreshold == 0 || th < effectiveThreshold) {
 			effectiveThreshold = th
 		}
 	}
+	// If none configured, keep default; otherwise use computed value (including possible 0)
 	if maxRange := ncfg.Evm.GetLogsMaxAllowedRange; maxRange > 0 && effectiveThreshold > maxRange {
 		effectiveThreshold = maxRange
 	}
