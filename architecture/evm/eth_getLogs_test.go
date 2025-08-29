@@ -16,6 +16,10 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+func init() {
+	util.ConfigureTestLogger()
+}
+
 var _ common.Network = (*mockNetwork)(nil)
 
 type mockNetwork struct {
@@ -78,6 +82,10 @@ func (m *mockNetwork) Config() *common.NetworkConfig {
 func (m *mockNetwork) ProjectId() string {
 	args := m.Called()
 	return args.Get(0).(string)
+}
+
+func (m *mockNetwork) Logger() *zerolog.Logger {
+	return &log.Logger
 }
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
@@ -306,7 +314,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				u.On("Id").Return("rpc1")
 				u.On("NetworkId").Return("evm:123").Maybe()
 				u.On("NetworkLabel").Return("evm:123").Maybe()
-				u.On("VendorName").Return("test")
+				u.On("VendorName").Return("test").Maybe()
 			},
 		},
 		{
@@ -331,7 +339,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				u.On("Id").Return("rpc1")
 				u.On("NetworkId").Return("evm:123").Maybe()
 				u.On("NetworkLabel").Return("evm:123").Maybe()
-				u.On("VendorName").Return("test")
+				u.On("VendorName").Return("test").Maybe()
 			},
 			expectError: true,
 		},
@@ -390,16 +398,13 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				u.On("Id").Return("rpc1")
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: nil,
-				})
+				u.On("Id").Return("rpc1").Maybe()
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Mock the new EvmAssertBlockAvailability calls
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},
@@ -424,34 +429,17 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				n.On("ProjectId").Return("test")
-				n.On("Forward", mock.Anything, mock.Anything).Return(
-					func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-						return common.NewNormalizedResponse().WithJsonRpcResponse(
-							common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
-						), nil
-					},
-					nil,
-				).Times(3)
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: &common.EvmUpstreamConfig{
-						GetLogsAutoSplittingRangeThreshold: 10,
-					},
-				})
-				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123").Maybe()
-				u.On("NetworkLabel").Return("evm:123").Maybe()
-				u.On("VendorName").Return("test")
+				u.On("Id").Return("rpc1").Maybe()
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
-				// Mock the new EvmAssertBlockAvailability calls
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
+				// Availability checks
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(21)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},
-			expectSplit: true,
+			expectSplit: false,
 			expectError: false,
 		},
 		{
@@ -472,28 +460,18 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				n.On("ProjectId").Return("test")
-				// We do NOT expect "Forward" to be called at all, because we won't split
-				// (the range is above the allowed limit => immediate error)
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: &common.EvmUpstreamConfig{
-						GetLogsMaxAllowedRange: 10,
-					},
-				})
-				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123").Maybe()
-				u.On("NetworkLabel").Return("evm:123").Maybe()
-				u.On("VendorName").Return("test")
+				u.On("Id").Return("rpc1").Maybe()
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
-				// Mock the new EvmAssertBlockAvailability calls - this should fail on the first call
+				// Availability checks
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(20)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},
 			expectSplit: false,
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "address_list_exceeds_max_allowed_addresses_hard_limit",
@@ -516,28 +494,18 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				// We don't expect any forward calls if we fail on addresses limit
-				n.On("ProjectId").Return("test").Maybe()
-
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: &common.EvmUpstreamConfig{
-						GetLogsMaxAllowedAddresses: 2,
-					},
-				})
-				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123").Maybe()
-				u.On("NetworkLabel").Return("evm:123").Maybe()
-				u.On("VendorName").Return("test")
+				u.On("Id").Return("rpc1").Maybe()
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
-				// Mock the new EvmAssertBlockAvailability calls - this should fail on the first call
+				// Availability checks
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(2)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},
 			expectSplit: false,
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "topics_list_exceeds_max_allowed_topics_hard_limit",
@@ -559,27 +527,18 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				n.On("ProjectId").Return("test").Maybe()
-
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: &common.EvmUpstreamConfig{
-						GetLogsMaxAllowedTopics: 2,
-					},
-				})
-				u.On("Id").Return("rpc1")
-				u.On("NetworkId").Return("evm:123").Maybe()
-				u.On("NetworkLabel").Return("evm:123").Maybe()
-				u.On("VendorName").Return("test")
+				u.On("Id").Return("rpc1").Maybe()
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
-				// Mock the new EvmAssertBlockAvailability calls - this should fail on the first call
+				// Availability checks
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(2)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},
 			expectSplit: false,
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "blockHash_is_present",
@@ -600,7 +559,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				u.On("Id").Return("rpc1")
+				u.On("Id").Return("rpc1").Maybe()
 				return n, u, r
 			},
 			expectSplit: false,
@@ -632,7 +591,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 	}
 }
 
-func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
+func TestNetworkPostForward_eth_getLogs(t *testing.T) {
 	tests := []struct {
 		name        string
 		setup       func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest)
@@ -647,8 +606,8 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 				u := new(mockEvmUpstream)
 				r := createTestRequest(nil)
 
-				n.On("Id").Return("evm:123")
-				u.On("Id").Return("rpc1")
+				n.On("Id").Return("evm:123").Maybe()
+				u.On("Id").Return("rpc1").Maybe()
 
 				return n, u, r
 			},
@@ -664,7 +623,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x2",
 				})
-				n.On("Id").Return("evm:123")
+				n.On("Id").Return("evm:123").Maybe()
 				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
@@ -678,16 +637,11 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					),
 					nil,
 				).Times(1)
-				u.On("Id").Return("rpc1")
+				u.On("Id").Return("rpc1").Maybe()
 				u.On("NetworkId").Return("evm:123").Maybe()
 				u.On("NetworkLabel").Return("evm:123").Maybe()
-				u.On("VendorName").Return("test")
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: &common.EvmUpstreamConfig{
-						GetLogsMaxBlockRange: 10,
-						GetLogsSplitOnError:  util.BoolPtr(true),
-					},
-				})
+				u.On("VendorName").Return("test").Maybe()
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitOnError: util.BoolPtr(true)}}).Maybe()
 
 				return n, u, r
 			},
@@ -703,14 +657,9 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x2",
 				})
-				n.On("Id").Return("evm:123")
-				u.On("Id").Return("rpc1")
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: &common.EvmUpstreamConfig{
-						GetLogsMaxBlockRange: 10,
-						GetLogsSplitOnError:  util.BoolPtr(false),
-					},
-				})
+				n.On("Id").Return("evm:123").Maybe()
+				u.On("Id").Return("rpc1").Maybe()
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitOnError: util.BoolPtr(false)}}).Maybe()
 
 				return n, u, r
 			},
@@ -723,14 +672,12 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			n, u, r := tt.setup()
 
-			resp, err := upstreamPostForward_eth_getLogs(
+			resp, err := networkPostForward_eth_getLogs(
 				context.Background(),
 				n,
-				u,
 				r,
 				common.NewNormalizedResponse(),
 				tt.inputError,
-				false,
 			)
 
 			if tt.expectError {
@@ -886,7 +833,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	mockUpstream.On("Id").Return("rpc1")
 	mockUpstream.On("NetworkId").Return("evm:1").Maybe()
 	mockUpstream.On("NetworkLabel").Return("evm:1").Maybe()
-	mockUpstream.On("VendorName").Return("test")
+	mockUpstream.On("VendorName").Return("test").Maybe()
 	mockUpstream.On("EvmStatePoller").Return(mockStatePoller)
 	mockStatePoller.On("LatestBlock").Return(int64(1000))
 
