@@ -124,14 +124,13 @@ func NetworkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	// Enforce network-level hard limits first
 	requestRange := toBlock - fromBlock + 1
 	if maxRange := ncfg.Evm.GetLogsMaxAllowedRange; maxRange > 0 && requestRange > maxRange {
-		// Reuse upstream-style error code for consistent handling
-		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedRange(n.Id(), requestRange, maxRange)
+		return true, nil, common.NewErrGetLogsExceededMaxAllowedRange(requestRange, maxRange)
 	}
 	if maxAddrs := ncfg.Evm.GetLogsMaxAllowedAddresses; maxAddrs > 0 && addrCount > maxAddrs {
-		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedAddresses(n.Id(), addrCount, maxAddrs)
+		return true, nil, common.NewErrGetLogsExceededMaxAllowedAddresses(addrCount, maxAddrs)
 	}
 	if maxTopics := ncfg.Evm.GetLogsMaxAllowedTopics; maxTopics > 0 && topicCount > maxTopics {
-		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedTopics(n.Id(), topicCount, maxTopics)
+		return true, nil, common.NewErrGetLogsExceededMaxAllowedTopics(topicCount, maxTopics)
 	}
 
 	// Compute effective auto-splitting threshold (min across upstreams), default 2000

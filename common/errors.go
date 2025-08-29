@@ -2566,3 +2566,66 @@ func (e *ErrConsensusLowParticipants) SummarizeParticipants() string {
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
 }
+
+type ErrGetLogsExceededMaxAllowedRange struct{ BaseError }
+
+const ErrCodeGetLogsExceededMaxAllowedRange ErrorCode = "ErrGetLogsExceededMaxAllowedRange"
+
+var NewErrGetLogsExceededMaxAllowedRange = func(requestRange int64, maxAllowedRange int64) error {
+	return &ErrGetLogsExceededMaxAllowedRange{
+		BaseError{
+			Code:    ErrCodeGetLogsExceededMaxAllowedRange,
+			Message: "getLogs request range exceeded max allowed range",
+			Details: map[string]interface{}{
+				"requestRange":    requestRange,
+				"maxAllowedRange": maxAllowedRange,
+			},
+		},
+	}
+}
+
+func (e *ErrGetLogsExceededMaxAllowedRange) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
+type ErrGetLogsExceededMaxAllowedAddresses struct{ BaseError }
+
+const ErrCodeGetLogsExceededMaxAllowedAddresses ErrorCode = "ErrGetLogsExceededMaxAllowedAddresses"
+
+var NewErrGetLogsExceededMaxAllowedAddresses = func(requestAddresses int64, maxAllowedAddresses int64) error {
+	return &ErrGetLogsExceededMaxAllowedAddresses{
+		BaseError{
+			Code:    ErrCodeGetLogsExceededMaxAllowedAddresses,
+			Message: "getLogs request addresses exceeded max allowed addresses",
+			Details: map[string]interface{}{
+				"requestAddresses":    requestAddresses,
+				"maxAllowedAddresses": maxAllowedAddresses,
+			},
+		},
+	}
+}
+
+func (e *ErrGetLogsExceededMaxAllowedAddresses) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
+type ErrGetLogsExceededMaxAllowedTopics struct{ BaseError }
+
+const ErrCodeGetLogsExceededMaxAllowedTopics ErrorCode = "ErrGetLogsExceededMaxAllowedTopics"
+
+var NewErrGetLogsExceededMaxAllowedTopics = func(requestTopics int64, maxAllowedTopics int64) error {
+	return &ErrGetLogsExceededMaxAllowedTopics{
+		BaseError{
+			Code:    ErrCodeGetLogsExceededMaxAllowedTopics,
+			Message: "getLogs request topics exceeded max allowed topics",
+			Details: map[string]interface{}{
+				"requestTopics":    requestTopics,
+				"maxAllowedTopics": maxAllowedTopics,
+			},
+		},
+	}
+}
+
+func (e *ErrGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
