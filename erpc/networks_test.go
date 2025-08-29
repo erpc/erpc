@@ -8727,6 +8727,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Mock the eth_getLogs response
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getLogs")
