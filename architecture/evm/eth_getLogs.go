@@ -632,8 +632,12 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
-	// TODO should we make this semaphore configurable?
-	semaphore := make(chan struct{}, 200)
+	// Use network-level concurrency configuration for split sub-requests
+	concurrency := 200
+	if cfg := n.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsSplitConcurrency > 0 {
+		concurrency = cfg.Evm.GetLogsSplitConcurrency
+	}
+	semaphore := make(chan struct{}, concurrency)
 	for _, sr := range subRequests {
 		wg.Add(1)
 		// Acquire semaphore token (blocks if at capacity)
