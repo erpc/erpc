@@ -10,10 +10,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// networkPreForward_eth_blockNumber calls the normal forward, then compares the returned block number,
+// projectPreForward_eth_blockNumber calls the normal forward, then compares the returned block number,
 // to all EVM upstreams' StatePoller for this network and returns the highest block number across them.
-func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
-	ctx, span := common.StartDetailSpan(ctx, "Network.PreForwardHook.eth_blockNumber", trace.WithAttributes(
+func projectPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ctx, span := common.StartDetailSpan(ctx, "Project.PreForwardHook.eth_blockNumber", trace.WithAttributes(
 		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
 		attribute.String("network.id", network.Id()),
 	))

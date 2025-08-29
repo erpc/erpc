@@ -21,11 +21,11 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 
 	switch strings.ToLower(method) {
 	case "eth_blocknumber":
-		return networkPreForward_eth_blockNumber(ctx, network, nq)
+		return projectPreForward_eth_blockNumber(ctx, network, nq)
 	case "eth_call":
-		return networkPreForward_eth_call(ctx, network, nq)
+		return projectPreForward_eth_call(ctx, network, nq)
 	case "eth_chainid":
-		return networkPreForward_eth_chainId(ctx, network, nq)
+		return projectPreForward_eth_chainId(ctx, network, nq)
 	default:
 		return false, nil, nil
 	}
@@ -45,15 +45,6 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *co
 	}
 
 	switch strings.ToLower(method) {
-	case "eth_blocknumber":
-		return networkPreForward_eth_blockNumber(ctx, network, nq)
-	case "eth_call":
-		return networkPreForward_eth_call(ctx, network, nq)
-	case "eth_chainid":
-		return networkPreForward_eth_chainId(ctx, network, nq)
-	case "eth_getlogs":
-		// Let Network.Forward handle eth_getLogs pre-forward after upstream selection
-		return false, nil, nil
 	default:
 		return false, nil, nil
 	}
