@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
@@ -32,7 +33,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -50,7 +51,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -61,7 +62,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -74,7 +75,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -87,7 +88,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x111111",
 			})
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -101,8 +102,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -129,7 +134,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -147,7 +152,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -158,7 +163,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -169,7 +174,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc3.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -183,7 +188,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary request - fails with 500 error
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -196,7 +201,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2 and rpc3: Never called because primary fails before hedge starts
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Persist(). // Keep it pending
 			Reply(503).
 			JSON(map[string]interface{}{
@@ -204,7 +213,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		gock.New("http://rpc3.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Persist(). // Keep it pending
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -213,8 +226,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x333333",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -242,7 +259,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -260,7 +277,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -271,7 +288,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -282,7 +299,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc3.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -296,7 +313,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary request - fails after hedge starts
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -309,7 +326,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: First hedge - also fails
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -322,7 +339,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc3: Second hedge - succeeds
 		gock.New("http://rpc3.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -335,8 +352,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x333333",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -364,7 +385,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -386,7 +407,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -397,7 +418,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -411,7 +432,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: First attempt - fails immediately
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(500).
 			Delay(10 * time.Millisecond). // Fails very quickly
 			JSON(map[string]interface{}{
@@ -420,7 +445,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Retry attempt - succeeds
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(200).
 			Delay(50 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -429,9 +458,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x222222",
 			})
 
-		start := time.Now()
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+		start := time.Now()
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 		elapsed := time.Since(start)
@@ -449,6 +481,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -461,7 +495,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -483,7 +517,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -494,7 +528,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -509,7 +543,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// First attempt: both fail but hedge is running
 		// rpc1: Primary - fails after hedge starts
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Times(1).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fails after hedge starts (30ms)
@@ -519,7 +553,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - also fails
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Times(1).
 			Reply(503).
 			Delay(100 * time.Millisecond). // Takes longer
@@ -529,7 +563,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Second attempt (retry): succeeds
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Times(1).
 			Reply(200).
 			Delay(20 * time.Millisecond).
@@ -540,8 +574,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		start := time.Now()
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 		elapsed := time.Since(start)
@@ -571,7 +609,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -589,7 +627,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -600,7 +638,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -611,7 +649,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc3.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -625,7 +663,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - succeeds quickly
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Reply(200).
 			Delay(75 * time.Millisecond). // Succeeds before second hedge
 			JSON(map[string]interface{}{
@@ -636,7 +674,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: First hedge - would succeed but gets cancelled
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Persist(). // Might be cancelled
 			Reply(200).
 			Delay(200 * time.Millisecond).
@@ -648,7 +686,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc3: Second hedge - would succeed but gets cancelled
 		gock.New("http://rpc3.localhost").
-			Post("/").
+			Post("").
 			Persist(). // Might be cancelled
 			Reply(200).
 			Delay(200 * time.Millisecond).
@@ -658,8 +696,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x333333",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -686,7 +728,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -704,7 +746,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -715,7 +757,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -729,7 +771,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - succeeds quickly
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
 			Reply(200).
 			Delay(50 * time.Millisecond). // Much faster than hedge delay
 			JSON(map[string]interface{}{
@@ -740,7 +785,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Would be hedge but never called
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -748,8 +796,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x222222",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -775,7 +827,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -793,7 +845,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -804,7 +856,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -818,7 +870,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - slow but succeeds
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Persist(). // Might be cancelled
 			Reply(200).
 			Delay(500 * time.Millisecond). // Very slow
@@ -830,7 +882,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - fast and succeeds
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Reply(200).
 			Delay(50 * time.Millisecond). // Fast
 			JSON(map[string]interface{}{
@@ -839,8 +891,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x222222",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -866,7 +922,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -884,7 +940,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -895,7 +951,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -909,7 +965,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - slow but succeeds
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(200).
 			Delay(300 * time.Millisecond). // Slow
 			JSON(map[string]interface{}{
@@ -920,15 +980,23 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - fast but fails
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fast fail
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -954,7 +1022,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -972,7 +1040,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -983,7 +1051,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -997,7 +1065,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - fails quickly
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fast fail
 			JSON(map[string]interface{}{
@@ -1006,7 +1078,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Never called because primary fails before hedge starts
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Persist(). // Keep it pending
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -1015,8 +1091,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x222222",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -1043,7 +1123,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1061,7 +1141,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1072,7 +1152,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1086,7 +1166,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - fails after hedge has started
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(500).
 			Delay(100 * time.Millisecond). // Fails after hedge starts (50ms)
 			JSON(map[string]interface{}{
@@ -1095,7 +1179,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - succeeds quickly
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(200).
 			Delay(30 * time.Millisecond). // Quick success
 			JSON(map[string]interface{}{
@@ -1104,8 +1192,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0xHedgeSuccess",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -1132,7 +1224,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1150,7 +1242,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1161,7 +1253,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1175,7 +1267,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - slow and fails
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(500).
 			Delay(300 * time.Millisecond). // Slow fail
 			JSON(map[string]interface{}{
@@ -1184,7 +1280,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - fast and succeeds
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Reply(200).
 			Delay(50 * time.Millisecond). // Fast success
 			JSON(map[string]interface{}{
@@ -1193,8 +1289,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x222222",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -1220,7 +1320,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1238,7 +1338,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1249,7 +1349,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1263,7 +1363,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - fails before hedge starts
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fails before hedge delay (100ms)
 			JSON(map[string]interface{}{
@@ -1272,15 +1376,23 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Never called because primary fails before hedge starts
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Persist(). // Keep it pending
 			Reply(503).
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -1307,7 +1419,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1325,7 +1437,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1336,7 +1448,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1350,7 +1462,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - fails after hedge starts
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(500).
 			Delay(50 * time.Millisecond). // Fails after hedge starts (30ms)
 			JSON(map[string]interface{}{
@@ -1359,7 +1475,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - also fails
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(503).
 			Delay(60 * time.Millisecond). // Takes slightly longer
 			JSON(map[string]interface{}{
@@ -1395,7 +1515,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1413,7 +1533,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1427,7 +1547,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary request - succeeds after hedge would trigger
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Reply(200).
 			Delay(200 * time.Millisecond). // Slower than hedge delay
 			JSON(map[string]interface{}{
@@ -1465,7 +1585,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1482,7 +1602,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Id:       "rpc1",
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -1492,7 +1612,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary request - slow but succeeds
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1536,7 +1656,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1553,14 +1673,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Id:       "rpc1",
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 						{
 							Id:       "rpc2",
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -1570,7 +1690,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - fast success
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1585,7 +1705,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - slower success
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1629,7 +1749,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1646,14 +1766,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Id:       "rpc1",
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 						{
 							Id:       "rpc2",
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -1663,7 +1783,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc1: Primary - slow success
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1678,7 +1798,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - fast success
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1691,15 +1811,19 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0xHedge",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
 		statusCode, _, respBody := sendRequest(body, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 		var resp map[string]interface{}
-		err := json.Unmarshal([]byte(respBody), &resp)
+		err = json.Unmarshal([]byte(respBody), &resp)
 		require.NoError(t, err)
 		assert.Equal(t, "0xHedge", resp["result"]) // Hedge wins
 	})
@@ -1722,7 +1846,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1743,14 +1867,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Id:       "rpc1",
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 						{
 							Id:       "rpc2",
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -1761,7 +1885,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// First attempt: both fail
 		// rpc1: Primary - fails fast
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1775,7 +1899,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// rpc2: Hedge - also fails
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1789,7 +1913,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Second attempt (retry): succeeds
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1833,7 +1957,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1851,7 +1975,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1864,7 +1988,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		}
 
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1877,7 +2001,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0x111111",
 			})
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1891,8 +2015,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -1912,7 +2040,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1932,7 +2060,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1951,7 +2079,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1977,7 +2105,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := string(util.SafeReadBody(request))
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
@@ -1991,7 +2119,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					"result":  "0x111_SLOW",
 				}})
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
@@ -2005,8 +2133,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			}})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":111}`, nil, nil)
 
@@ -2026,7 +2158,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2048,7 +2180,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2067,7 +2199,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2089,9 +2221,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2105,7 +2239,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2119,8 +2253,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -2140,7 +2278,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2162,7 +2300,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2181,7 +2319,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2207,7 +2345,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2224,7 +2362,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2259,7 +2397,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2281,7 +2419,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2300,7 +2438,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2326,7 +2464,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2343,7 +2481,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2378,7 +2516,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
-							Evm:          &common.EvmNetworkConfig{ChainId: 1},
+							Evm:          &common.EvmNetworkConfig{ChainId: 123},
 							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								{
@@ -2396,7 +2534,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2407,7 +2545,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2426,7 +2564,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Mock #1 (slower) – "original request"
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
@@ -2441,7 +2579,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Mock #2 (faster) – "hedge request"
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "FAST")
@@ -2483,7 +2621,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
-							Evm:          &common.EvmNetworkConfig{ChainId: 1},
+							Evm:          &common.EvmNetworkConfig{ChainId: 123},
 							Failsafe: []*common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								{
@@ -2501,7 +2639,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2512,7 +2650,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2531,7 +2669,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Mock #1 (faster) – "original request"
 		gock.New("http://rpc1.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2546,7 +2684,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Mock #2 (slower) – "hedge request"
 		gock.New("http://rpc2.localhost").
-			Post("/").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -2585,7 +2723,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
-							Evm:          &common.EvmNetworkConfig{ChainId: 1},
+							Evm:          &common.EvmNetworkConfig{ChainId: 123},
 							Failsafe: []*common.FailsafeConfig{
 								// Network-level hedge configuration
 								{
@@ -2601,9 +2739,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Id:       "rpc1",
 							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://primary.localhost",
+							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2612,9 +2750,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 						{
 							Id:       "rpc2",
 							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://backup.localhost",
+							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2634,11 +2772,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		// Mock first upstream - initially slow but eventually completes faster
 		// The key feature is that this request looks like it will be slow (it waits 300ms before responding)
 		// but actually finishes before the second request
-		gock.New("http://primary.localhost").
-			Post("/").
+		gock.New("http://rpc1.localhost").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_blockNumber")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			Delay(300 * time.Millisecond). // Enough delay to trigger hedge but not too long
@@ -2650,11 +2788,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Mock second upstream - hedge request goes to this upstream
 		// This request is much slower overall (1000ms)
-		gock.New("http://backup.localhost").
-			Post("/").
+		gock.New("http://rpc2.localhost").
+			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_blockNumber")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			Delay(1000 * time.Millisecond).
@@ -2670,7 +2808,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		// Time the request to verify we don't wait for the slower hedge
 		start := time.Now()
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`, nil, nil)
+		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1}`, nil, nil)
 		elapsed := time.Since(start)
 
 		// Verify correct response was returned

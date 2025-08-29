@@ -125,6 +125,8 @@ func (m *MockUpstreamServer) handleRequest(w http.ResponseWriter, r *http.Reques
 	// Return a successful response based on method
 	var result interface{}
 	switch method {
+	case "eth_chainId":
+		result = "0x7b"
 	case "eth_blockNumber":
 		result = "0x1234567"
 	case "eth_getBalance":
@@ -297,7 +299,7 @@ type TestScenario struct {
 	// Scoring configuration
 	ScoreMetricsWindow time.Duration // If 0, uses default
 
-	// Expected final score order (by upstream ID) for network "evm:1" and method "*"
+	// Expected final score order (by upstream ID) for network "evm:123" and method "*"
 	ExpectedFinalScoreOrder []string
 }
 
@@ -339,7 +341,7 @@ func createUpstreamConfig(behavior UpstreamBehavior) *common.UpstreamConfig {
 		Type:     common.UpstreamTypeEvm,
 		Endpoint: behavior.Endpoint,
 		Evm: &common.EvmUpstreamConfig{
-			ChainId: 1,
+			ChainId: 123,
 		},
 		JsonRpc: &common.JsonRpcUpstreamConfig{
 			SupportsBatch: &common.FALSE,
@@ -400,7 +402,7 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 	// Use provided scoring window or default
 	scoreWindow := scenario.ScoreMetricsWindow
 	if scoreWindow == 0 {
-		scoreWindow = 5 * time.Second
+		scoreWindow = 1 * time.Second
 	}
 
 	// Scenario preface logs
@@ -434,11 +436,12 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 			{
 				Id:                     "test_project",
 				ScoreMetricsWindowSize: common.Duration(scoreWindow),
+				ScoreRefreshInterval:   common.Duration(100 * time.Millisecond),
 				Networks: []*common.NetworkConfig{
 					{
 						Architecture: common.ArchitectureEvm,
 						Evm: &common.EvmNetworkConfig{
-							ChainId: 1,
+							ChainId: 123,
 						},
 						Failsafe: []*common.FailsafeConfig{networkFailsafe},
 					},
@@ -472,7 +475,7 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 		if err != nil {
 			return nil, ""
 		}
-		networkId := "evm:1"
+		networkId := "evm:123"
 		order := h.SortedUpstreams[networkId]["*"]
 		selectedMethod := "*"
 		if len(order) == 0 {

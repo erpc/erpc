@@ -1036,7 +1036,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 				u,
 			)
 		}
-		realChainID, err := strconv.ParseInt(nid, 10, 64)
+		realChainID, err := strconv.ParseInt(nid, 0, 64)
 		if err != nil {
 			return common.NewErrUpstreamClientInitialization(
 				&common.BaseError{

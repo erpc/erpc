@@ -1457,7 +1457,7 @@ func TestConsensusPolicy(t *testing.T) {
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we’ll override upstream2 via setupFn
+			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcSuccess("0x1")},
 			},
@@ -2107,7 +2107,7 @@ func TestConsensusPolicy(t *testing.T) {
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we’ll override upstream2 via setupFn
+			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcSuccess("0x1")},
 			},
@@ -2301,20 +2301,12 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 		time.Sleep(50 * time.Millisecond) // allow goroutines to settle
 	}()
 
-	// Setup Network
-	ntw, upsReg := setupNetworkForConsensusTest(t, ctx, tc)
-
-	// Apply special setup if any
-	if tc.setupFn != nil {
-		tc.setupFn(t, ctx, upsReg)
-	}
-
-	// Setup mocks
+	// Setup mocks BEFORE any network components initialize
 	for i, upstreamCfg := range tc.upstreams {
 		if i < len(tc.mockResponses) && (tc.expectedCalls == nil || (len(tc.expectedCalls) > i && tc.expectedCalls[i] != 0)) {
 			mock := tc.mockResponses[i]
 			m := gock.New(upstreamCfg.Endpoint).
-				Post("/").
+				Post("").
 				Filter(func(request *http.Request) bool {
 					body := util.SafeReadBody(request)
 					method := tc.requestMethod
@@ -2339,6 +2331,17 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 				JSON(mock.body)
 		}
 	}
+
+	// Setup Network AFTER mocks to avoid races during background initialization
+	ntw, upsReg := setupNetworkForConsensusTest(t, ctx, tc)
+
+	// Apply special setup if any (e.g., block heights/leader)
+	if tc.setupFn != nil {
+		tc.setupFn(t, ctx, upsReg)
+	}
+
+	// Allow background bootstrap to settle to avoid flakiness in tests
+	time.Sleep(200 * time.Millisecond)
 
 	// Make request
 	method := tc.requestMethod

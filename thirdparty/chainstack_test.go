@@ -25,7 +25,7 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 
 		upstream := &common.UpstreamConfig{
 			Evm: &common.EvmUpstreamConfig{
-				ChainId: 1, // Ethereum mainnet
+				ChainId: 123, // Ethereum mainnet
 			},
 		}
 
@@ -45,7 +45,7 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 
 		upstream := &common.UpstreamConfig{
 			Evm: &common.EvmUpstreamConfig{
-				ChainId: 1,
+				ChainId: 123,
 			},
 		}
 
@@ -63,7 +63,7 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 		upstream := &common.UpstreamConfig{
 			Endpoint: "https://ethereum-mainnet.core.chainstack.com/test-key",
 			Evm: &common.EvmUpstreamConfig{
-				ChainId: 1,
+				ChainId: 123,
 			},
 		}
 
@@ -81,7 +81,7 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 		}
 
 		// Should return false due to authentication failure
-		supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:1")
+		supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:123")
 		assert.Error(t, err)
 		assert.False(t, supported)
 	})
@@ -91,7 +91,7 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 		settings := common.VendorSettings{}
 
 		// Should return false when no API key is provided
-		supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:1")
+		supported, err := vendor.SupportsNetwork(ctx, &logger, settings, "evm:123")
 		assert.NoError(t, err)
 		assert.False(t, supported)
 	})

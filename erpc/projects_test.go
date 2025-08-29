@@ -166,7 +166,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{{
 								Timeout: &common.TimeoutPolicyConfig{
@@ -181,7 +181,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							// Very short upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
@@ -227,7 +227,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		}
 
 		fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_blockNumber","params":[]}`))
-		_, lastErr := prj.Forward(ctx, "evm:1", fakeReq)
+		_, lastErr := prj.Forward(ctx, "evm:123", fakeReq)
 
 		if lastErr == nil {
 			t.Error("Expected an upstream timeout error, got nil")
@@ -280,7 +280,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{{
 								// Very short network timeout
@@ -296,7 +296,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							// Higher upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
@@ -339,7 +339,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		}
 
 		fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_getBalance","params":["0x123"]}`))
-		_, lastErr := prj.Forward(ctx, "evm:1", fakeReq)
+		_, lastErr := prj.Forward(ctx, "evm:123", fakeReq)
 
 		if lastErr == nil {
 			t.Error("Expected a network timeout error, got nil")
@@ -514,7 +514,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Alias: "ethereum",
 						},
@@ -525,7 +525,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -560,8 +560,8 @@ func TestProject_NetworkAlias(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to get network by ID: %v", err)
 		}
-		if network.Id() != "evm:1" {
-			t.Errorf("Expected network ID 'evm:1', got '%s'", network.Id())
+		if network.Id() != "evm:123" {
+			t.Errorf("Expected network ID 'evm:123', got '%s'", network.Id())
 		}
 
 		// Test getting non-existent alias
@@ -611,7 +611,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Alias: "same_alias", // First use of the alias
 						},
@@ -629,7 +629,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 						{

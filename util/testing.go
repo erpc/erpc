@@ -39,7 +39,7 @@ func ConfigureTestLogger() {
 }
 
 const (
-	EvmBlockTrackerMocks = 8
+	EvmBlockTrackerMocks = 20
 )
 
 func SetupMocksForEvmStatePoller() {
@@ -115,6 +115,114 @@ func SetupMocksForEvmStatePoller() {
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":false,"_note":"evm state poller expected mock for eth_syncing"}`))
+
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_chainId")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b","_note":"detectFeatures expected mock for eth_chainId"}`))
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(SafeReadBody(request), "eth_syncing")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":false,"_note":"evm state poller expected mock for eth_syncing"}`))
+
+	gock.New("http://rpc4.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_chainId")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b","_note":"detectFeatures expected mock for eth_chainId"}`))
+	gock.New("http://rpc4.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+	gock.New("http://rpc4.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+	gock.New("http://rpc4.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(SafeReadBody(request), "eth_syncing")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":false,"_note":"evm state poller expected mock for eth_syncing"}`))
+
+	gock.New("http://rpc5.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_chainId")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b","_note":"detectFeatures expected mock for eth_chainId"}`))
+	gock.New("http://rpc5.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+	gock.New("http://rpc5.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+	gock.New("http://rpc5.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(SafeReadBody(request), "eth_syncing")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":false,"_note":"evm state poller expected mock for eth_syncing"}`))
 }
 
 func ResetGock() {
@@ -168,6 +276,6 @@ func AssertNoPendingMocks(t *testing.T, expected int) {
 			t.Errorf("Expected %v evm block tracker mocks to be pending, did you forget util.SetupMocksForEvmStatePoller()?", EvmBlockTrackerMocks)
 		}
 
-		t.Errorf("Expected %v user mocks to be pending (out of %v total), got %v pending user mocks (out of %v total)", totalExpectedUserMocks, totalExpected, totalPendingUserMocks, totalPending)
+		t.Errorf("Expected %v user mocks to be pending got %v pending user mocks (%v total expected != %v actual pending including poller mocks)", totalExpectedUserMocks, totalPendingUserMocks, totalExpected, totalPending)
 	}
 }

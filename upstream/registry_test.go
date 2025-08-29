@@ -544,13 +544,13 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 	}{
 		{
 			name:      "Premium provider preferred for eth_call",
-			networkId: "evm:1",
+			networkId: "evm:123",
 			method:    "eth_call",
 			upstreams: []upstreamConfig{
 				{
 					id: "premium-provider",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:   "evm:1",
+						Network:   "evm:123",
 						Method:    "eth_call",
 						Overall:   util.Float64Ptr(2.0), // Double the weight for this specific method
 						ErrorRate: util.Float64Ptr(8.0), // Heavily penalize errors
@@ -567,7 +567,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 				{
 					id: "standard-provider",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:   "evm:1",
+						Network:   "evm:123",
 						Method:    "eth_call",
 						Overall:   util.Float64Ptr(1.0),
 						ErrorRate: util.Float64Ptr(2.0),
@@ -590,13 +590,13 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 		},
 		{
 			name:      "Archive node preferred for eth_getLogs",
-			networkId: "evm:1",
+			networkId: "evm:123",
 			method:    "eth_getLogs",
 			upstreams: []upstreamConfig{
 				{
 					id: "archive-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:     "evm:1",
+						Network:     "evm:123",
 						Method:      "eth_getLogs",
 						Overall:     util.Float64Ptr(3.0), // Heavily prefer for historical queries
 						RespLatency: util.Float64Ptr(2.0), // Latency less important for historical data
@@ -613,7 +613,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 				{
 					id: "full-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:     "evm:1",
+						Network:     "evm:123",
 						Method:      "eth_getLogs",
 						Overall:     util.Float64Ptr(1.0),
 						RespLatency: util.Float64Ptr(2.0),
@@ -636,13 +636,13 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 		},
 		{
 			name:      "Low latency node preferred for eth_getBalance",
-			networkId: "evm:1",
+			networkId: "evm:123",
 			method:    "eth_getBalance",
 			upstreams: []upstreamConfig{
 				{
 					id: "fast-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:     "evm:1",
+						Network:     "evm:123",
 						Method:      "eth_getBalance",
 						Overall:     util.Float64Ptr(1.0),
 						RespLatency: util.Float64Ptr(8.0), // Heavily weight latency
@@ -659,7 +659,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 				{
 					id: "slow-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:     "evm:1",
+						Network:     "evm:123",
 						Method:      "eth_getBalance",
 						Overall:     util.Float64Ptr(1.0),
 						RespLatency: util.Float64Ptr(8.0), // Same latency weight
@@ -682,13 +682,13 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 		},
 		{
 			name:      "Latest block preference for eth_getBlockByNumber",
-			networkId: "evm:1",
+			networkId: "evm:123",
 			method:    "eth_getBlockByNumber",
 			upstreams: []upstreamConfig{
 				{
 					id: "realtime-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:      "evm:1",
+						Network:      "evm:123",
 						Method:       "eth_getBlockByNumber",
 						Overall:      util.Float64Ptr(1.0),
 						BlockHeadLag: util.Float64Ptr(5.0), // Heavily weight block lag
@@ -706,7 +706,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 				{
 					id: "delayed-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						Network:      "evm:1",
+						Network:      "evm:123",
 						Method:       "eth_getBlockByNumber",
 						Overall:      util.Float64Ptr(1.0),
 						BlockHeadLag: util.Float64Ptr(5.0), // Same block lag weight
