@@ -1527,6 +1527,7 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
+	// Deprecated upstream-level split-on-error; keep default to false but will be ignored at runtime
 	if e.GetLogsSplitOnError == nil {
 		if defaults != nil && defaults.GetLogsSplitOnError != nil {
 			e.GetLogsSplitOnError = defaults.GetLogsSplitOnError
@@ -1544,27 +1545,12 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		} else if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
 			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
 		} else {
-			e.GetLogsAutoSplittingRangeThreshold = 10_000
+			// Legacy default was 10k; new upstream default for threshold is 2k (applied by network using min across upstreams)
+			e.GetLogsAutoSplittingRangeThreshold = 2_000
 		}
 	}
 
-	if e.GetLogsMaxAllowedRange == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
-			e.GetLogsMaxAllowedRange = defaults.GetLogsMaxAllowedRange
-		}
-	}
-
-	if e.GetLogsMaxAllowedAddresses == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedAddresses != 0 {
-			e.GetLogsMaxAllowedAddresses = defaults.GetLogsMaxAllowedAddresses
-		}
-	}
-
-	if e.GetLogsMaxAllowedTopics == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedTopics != 0 {
-			e.GetLogsMaxAllowedTopics = defaults.GetLogsMaxAllowedTopics
-		}
-	}
+	// Deprecated upstream-level hard limits retained for backward compatibility; network-level limits now used
 
 	if e.SkipWhenSyncing == nil {
 		if defaults != nil && defaults.SkipWhenSyncing != nil {
@@ -1729,6 +1715,17 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if err := e.Integrity.SetDefaults(); err != nil {
 		return err
+	}
+
+	// Defaults for network-level getLogs controls
+	if e.GetLogsMaxAllowedRange == 0 {
+		e.GetLogsMaxAllowedRange = 10_000
+	}
+	if e.GetLogsSplitOnError == nil {
+		e.GetLogsSplitOnError = util.BoolPtr(true)
+	}
+	if e.GetLogsSplitConcurrency == 0 {
+		e.GetLogsSplitConcurrency = 200
 	}
 
 	return nil

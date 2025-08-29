@@ -20,12 +20,12 @@ func BuildEthChainIdRequest() (*common.JsonRpcRequest, error) {
 	return jrq, nil
 }
 
-func networkPreForward_eth_chainId(ctx context.Context, n common.Network, r *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+func projectPreForward_eth_chainId(ctx context.Context, n common.Network, r *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	if r.Directives().SkipCacheRead {
 		return false, nil, nil // Proceed to actual upstream call
 	}
 
-	ctx, span := common.StartDetailSpan(ctx, "Network.PreForwardHook.eth_chainId", trace.WithAttributes(
+	ctx, span := common.StartDetailSpan(ctx, "Project.PreForwardHook.eth_chainId", trace.WithAttributes(
 		attribute.String("request.id", fmt.Sprintf("%v", r.ID())),
 		attribute.String("network.id", n.Id()),
 	))

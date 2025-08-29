@@ -8683,6 +8683,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Mock the eth_getLogs response
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getLogs")
@@ -8698,8 +8699,30 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
 
+		// Avoid auto-splitting in this test by setting a very large upstream threshold
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+		for _, up := range upsList {
+			if up != nil && up.Config() != nil {
+				if up.Config().Evm == nil {
+					up.Config().Evm = &common.EvmUpstreamConfig{}
+				}
+				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+			}
+		}
+
 		// Wait for state poller debounce to pass
 		time.Sleep(1010 * time.Millisecond)
+
+		// Disable auto-splitting so we only issue a single getLogs call covered by mocks
+		upsList = network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+		for _, up := range upsList {
+			if up != nil && up.Config() != nil {
+				if up.Config().Evm == nil {
+					up.Config().Evm = &common.EvmUpstreamConfig{}
+				}
+				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+			}
+		}
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -9175,7 +9198,15 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Small range to force splitting
+		// Configure network-level auto-splitting threshold via upstreams (effective min), keep it small to force splitting
+		for _, up := range upsList {
+			if up != nil && up.Config() != nil {
+				if up.Config().Evm == nil {
+					up.Config().Evm = &common.EvmUpstreamConfig{}
+				}
+				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100
+			}
+		}
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -9323,8 +9354,17 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		})
 
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
-		upsList[0].Config().Evm.GetLogsSplitOnError = util.BoolPtr(true)
+		for _, up := range upsList {
+			if up != nil && up.Config() != nil {
+				if up.Config().Evm == nil {
+					up.Config().Evm = &common.EvmUpstreamConfig{}
+				}
+				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
+			}
+		}
+		if network.cfg != nil && network.cfg.Evm != nil {
+			network.cfg.Evm.GetLogsSplitOnError = util.BoolPtr(true)
+		}
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)

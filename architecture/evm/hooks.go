@@ -7,12 +7,11 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-// HandleNetworkPreForward checks if the request matches a known EVM method customization on network level,
-// and returns a custom response if it applies. If it returns (false, nil, nil),
-// then it's not a method we handle here. If it returns (true, resp, err),
-// that means we've handled it. If any error is returned, it means handling failed.
-func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
-	ctx, span := common.StartDetailSpan(ctx, "Network.PreForwardHook")
+// HandleProjectPreForward is the early pre-forward hook executed at project layer
+// before cache and before upstream selection. Use this for transformations that
+// affect cache hash or short-circuit results without upstream context.
+func HandleProjectPreForward(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ctx, span := common.StartDetailSpan(ctx, "Project.PreForwardHook")
 	defer span.End()
 
 	method, err := nq.Method()
@@ -22,11 +21,30 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *co
 
 	switch strings.ToLower(method) {
 	case "eth_blocknumber":
-		return networkPreForward_eth_blockNumber(ctx, network, nq)
+		return projectPreForward_eth_blockNumber(ctx, network, nq)
 	case "eth_call":
-		return networkPreForward_eth_call(ctx, network, nq)
+		return projectPreForward_eth_call(ctx, network, nq)
 	case "eth_chainid":
-		return networkPreForward_eth_chainId(ctx, network, nq)
+		return projectPreForward_eth_chainId(ctx, network, nq)
+	default:
+		return false, nil, nil
+	}
+}
+
+// HandleNetworkPreForward is executed after upstream selection for upstream-aware logic.
+// Pass the selected upstreams to allow computing effective thresholds, availability, etc.
+func HandleNetworkPreForward(ctx context.Context, network common.Network, upstreams []common.Upstream, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ctx, span := common.StartDetailSpan(ctx, "Network.PreForwardHook")
+	defer span.End()
+
+	method, err := nq.Method()
+	if err != nil {
+		return false, nil, err
+	}
+
+	switch strings.ToLower(method) {
+	case "eth_getlogs":
+		return networkPreForward_eth_getLogs(ctx, network, upstreams, nq)
 	default:
 		return false, nil, nil
 	}
@@ -46,6 +64,8 @@ func HandleNetworkPostForward(ctx context.Context, network common.Network, nq *c
 	switch strings.ToLower(method) {
 	case "eth_getblockbynumber":
 		return networkPostForward_eth_getBlockByNumber(ctx, network, nq, nr, re)
+	case "eth_getlogs":
+		return networkPostForward_eth_getLogs(ctx, network, nq, nr, re)
 	default:
 		return nr, re
 	}
