@@ -150,15 +150,6 @@ func NetworkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 
 	// Proactive split if needed
 	if requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
-		// Choose a representative upstream for logging/metrics
-		var u common.Upstream
-		if u = n.EvmLeaderUpstream(ctx); u == nil && len(ups) > 0 {
-			u = ups[0]
-		}
-		if u == nil {
-			return true, nil, common.NewErrUpstreamInitialization(fmt.Errorf("no upstream available for sub-request orchestration"), n.Id())
-		}
-
 		// Build contiguous block sub-requests
 		subRequests := make([]ethGetLogsSubRequest, 0)
 		sb := fromBlock
@@ -174,13 +165,12 @@ func NetworkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 
 		nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-		mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, nrq, subRequests, nrq.Directives().SkipCacheRead)
+		mergedResponse, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, nrq.Directives().SkipCacheRead)
 		if err != nil {
 			return true, nil, err
 		}
 
 		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
-		nrs.SetUpstream(u)
 		nrq.SetLastValidResponse(ctx, nrs)
 		return true, nrs, nil
 	}
@@ -342,19 +332,7 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 		return rs, re
 	}
 	// Trigger on standardized 413 errors or upstream getLogs limit errors
-	if !common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge, common.ErrCodeUpstreamGetLogsExceededMaxAllowedRange, common.ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses, common.ErrCodeUpstreamGetLogsExceededMaxAllowedTopics) {
-		return rs, re
-	}
-
-	// Choose an upstream to attribute sub-requests (leader, or last upstream if available)
-	var u common.Upstream
-	if lu := rq.LastUpstream(); lu != nil {
-		u = lu
-	}
-	if u == nil {
-		u = n.EvmLeaderUpstream(ctx)
-	}
-	if u == nil {
+	if !common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge, common.ErrCodeGetLogsExceededMaxAllowedRange, common.ErrCodeGetLogsExceededMaxAllowedAddresses, common.ErrCodeGetLogsExceededMaxAllowedTopics) {
 		return rs, re
 	}
 
@@ -365,7 +343,7 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	}
 
 	rq.SetCompositeType(common.CompositeTypeLogsSplitOnError)
-	merged, err := executeGetLogsSubRequests(ctx, n, u, rq, subs, rq.Directives().SkipCacheRead)
+	merged, err := executeGetLogsSubRequests(ctx, n, rq, subs, rq.Directives().SkipCacheRead)
 	if err != nil {
 		return rs, re
 	}
@@ -521,26 +499,14 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	}
 
 	n := r.Network()
-	var u common.Upstream
-	var c *common.UpstreamConfig
-	if p := r.LastValidResponse(); p != nil {
-		if s := p.Upstream(); s != nil {
-			u = s
-			if f := u.Config(); f != nil {
-				c = f
-			}
-		}
-	}
 
 	// First try splitting by block range
 	blockRange := tb - fb + 1
 	if blockRange > 1 {
-		if n != nil && u != nil && c != nil {
-			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+		if n != nil {
+			telemetry.MetricNetworkEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
-				u.VendorName(),
 				n.Label(),
-				u.Id(),
 				"block_range",
 				r.UserId(),
 				r.AgentName(),
@@ -558,12 +524,10 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	addresses, ok := filter["address"].([]interface{})
 	if ok && len(addresses) > 1 {
 		mid := len(addresses) / 2
-		if n != nil && u != nil && c != nil {
-			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+		if n != nil {
+			telemetry.MetricNetworkEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
-				u.VendorName(),
 				n.Label(),
-				u.Id(),
 				"addresses",
 				r.UserId(),
 				r.AgentName(),
@@ -580,12 +544,10 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	topics, ok := filter["topics"].([]interface{})
 	if ok && len(topics) > 1 {
 		mid := len(topics) / 2
-		if n != nil && u != nil && c != nil {
-			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+		if n != nil {
+			telemetry.MetricNetworkEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
-				u.VendorName(),
 				n.Label(),
-				u.Id(),
 				"topics",
 				r.UserId(),
 				r.AgentName(),
@@ -623,8 +585,8 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
-func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
-	logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
+	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
 	responses := make([]*common.JsonRpcResponse, 0)
@@ -655,11 +617,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 
 			if err != nil {
 				mu.Lock()
-				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
-					u.VendorName(),
 					n.Label(),
-					u.Id(),
 					r.UserId(),
 					r.AgentName(),
 					r.AgentVersion(),
@@ -683,11 +643,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			rs, re := n.Forward(ctx, sbnrq)
 			if re != nil {
 				mu.Lock()
-				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
-					u.VendorName(),
 					n.Label(),
-					u.Id(),
 					r.UserId(),
 					r.AgentName(),
 					r.AgentVersion(),
@@ -700,11 +658,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			jrr, err := rs.JsonRpcResponse(ctx)
 			if err != nil {
 				mu.Lock()
-				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
-					u.VendorName(),
 					n.Label(),
-					u.Id(),
 					r.UserId(),
 					r.AgentName(),
 					r.AgentVersion(),
@@ -717,11 +673,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 
 			if jrr == nil {
 				mu.Lock()
-				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
-					u.VendorName(),
 					n.Label(),
-					u.Id(),
 					r.UserId(),
 					r.AgentName(),
 					r.AgentVersion(),
@@ -734,11 +688,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 
 			if jrr.Error != nil {
 				mu.Lock()
-				telemetry.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
 					n.ProjectId(),
-					u.VendorName(),
 					n.Label(),
-					u.Id(),
 					r.UserId(),
 					r.AgentName(),
 					r.AgentVersion(),
@@ -750,11 +702,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			}
 
 			mu.Lock()
-			telemetry.MetricUpstreamEvmGetLogsSplitSuccess.WithLabelValues(
+			telemetry.MetricNetworkEvmGetLogsSplitSuccess.WithLabelValues(
 				n.ProjectId(),
-				u.VendorName(),
 				n.Label(),
-				u.Id(),
 				r.UserId(),
 				r.AgentName(),
 				r.AgentVersion(),

@@ -142,6 +142,24 @@ var (
 		Help:      "Total number of eth_getLogs request splits due to upstream complain by dimension (block_range, addresses, topics).",
 	}, []string{"project", "vendor", "network", "upstream", "dimension", "user", "agent_name", "agent_version"})
 
+	MetricNetworkEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_get_logs_split_success_total",
+		Help:      "Total number of successful split eth_getLogs sub-requests (network-scoped).",
+	}, []string{"project", "network", "user", "agent_name", "agent_version"})
+
+	MetricNetworkEvmGetLogsSplitFailure = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_get_logs_split_failure_total",
+		Help:      "Total number of failed split eth_getLogs sub-requests (network-scoped).",
+	}, []string{"project", "network", "user", "agent_name", "agent_version"})
+
+	MetricNetworkEvmGetLogsForcedSplits = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_get_logs_forced_splits_total",
+		Help:      "Total number of eth_getLogs request splits by dimension (block_range, addresses, topics), network-scoped.",
+	}, []string{"project", "network", "dimension", "user", "agent_name", "agent_version"})
+
 	MetricUpstreamLatestBlockPolled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_latest_block_polled_total",

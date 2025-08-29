@@ -1000,7 +1000,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamRequestSkipped) {
 				skips++
 				continue
-			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge, ErrCodeUpstreamGetLogsExceededMaxAllowedRange, ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses, ErrCodeUpstreamGetLogsExceededMaxAllowedTopics) {
+			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge, ErrCodeGetLogsExceededMaxAllowedRange, ErrCodeGetLogsExceededMaxAllowedAddresses, ErrCodeGetLogsExceededMaxAllowedTopics) {
 				tooLarge++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointUnauthorized) {
@@ -2427,9 +2427,9 @@ func IsClientError(err error) bool {
 		err,
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
-		ErrCodeUpstreamGetLogsExceededMaxAllowedRange,
-		ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses,
-		ErrCodeUpstreamGetLogsExceededMaxAllowedTopics,
+		ErrCodeGetLogsExceededMaxAllowedRange,
+		ErrCodeGetLogsExceededMaxAllowedAddresses,
+		ErrCodeGetLogsExceededMaxAllowedTopics,
 	))
 }
 

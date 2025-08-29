@@ -1437,7 +1437,7 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
-	if HasErrorCode(err, ErrCodeUpstreamGetLogsExceededMaxAllowedRange, ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses, ErrCodeUpstreamGetLogsExceededMaxAllowedTopics) {
+	if HasErrorCode(err, ErrCodeGetLogsExceededMaxAllowedRange, ErrCodeGetLogsExceededMaxAllowedAddresses, ErrCodeGetLogsExceededMaxAllowedTopics) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
 			JsonRpcErrorEvmLargeRange,
