@@ -6,7 +6,7 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func networkPreForward_eth_call(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+func projectPreForward_eth_call(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	jrq, err := nq.JsonRpcRequest()
 	if err != nil {
 		return false, nil, nil
