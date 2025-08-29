@@ -27,6 +27,9 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *co
 		return networkPreForward_eth_call(ctx, network, nq)
 	case "eth_chainid":
 		return networkPreForward_eth_chainId(ctx, network, nq)
+	case "eth_getlogs":
+		// Let Network.Forward handle eth_getLogs pre-forward after upstream selection
+		return false, nil, nil
 	default:
 		return false, nil, nil
 	}
@@ -46,6 +49,8 @@ func HandleNetworkPostForward(ctx context.Context, network common.Network, nq *c
 	switch strings.ToLower(method) {
 	case "eth_getblockbynumber":
 		return networkPostForward_eth_getBlockByNumber(ctx, network, nq, nr, re)
+	case "eth_getlogs":
+		return networkPostForward_eth_getLogs(ctx, network, nq, nr, re)
 	default:
 		return nr, re
 	}
