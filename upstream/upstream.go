@@ -1026,28 +1026,36 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		if cfg.Evm == nil {
 			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
-		if cfg.Evm.ChainId == 0 {
-			nid, err := u.EvmGetChainId(ctx)
-			if err != nil {
-				return common.NewErrUpstreamClientInitialization(
-					&common.BaseError{
-						Code:  "ErrUpstreamChainIdDetectionFailed",
-						Cause: err,
-					},
-					u,
-				)
-			}
-			cfg.Evm.ChainId, err = strconv.ParseInt(nid, 10, 64)
-			if err != nil {
-				return common.NewErrUpstreamClientInitialization(
-					&common.BaseError{
-						Code:  "ErrUpstreamChainIdDetectionFailed",
-						Cause: err,
-					},
-					u,
-				)
-			}
+		nid, err := u.EvmGetChainId(ctx)
+		if err != nil {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrUpstreamChainIdDetectionFailed",
+					Cause: err,
+				},
+				u,
+			)
 		}
+		realChainID, err := strconv.ParseInt(nid, 10, 64)
+		if err != nil {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrUpstreamChainIdDetectionFailed",
+					Cause: err,
+				},
+				u,
+			)
+		}
+		if cfg.Evm.ChainId > 0 && cfg.Evm.ChainId != realChainID {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrUpstreamChainIdMismatch",
+					Cause: fmt.Errorf("chainId mismatch: configured %d, detected %d", cfg.Evm.ChainId, realChainID),
+				},
+				u,
+			)
+		}
+		cfg.Evm.ChainId = realChainID
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
 
 		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {

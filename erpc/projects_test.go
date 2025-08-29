@@ -556,7 +556,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 			t.Errorf("Expected architecture=evm, chainId=1 for alias 'ethereum', got arch=%s, chainId=%s", arch, chainId)
 		}
 
-		network, err := prj.networksRegistry.GetNetwork(fmt.Sprintf("%s:%s", arch, chainId))
+		network, err := prj.networksRegistry.GetNetwork(ctx, fmt.Sprintf("%s:%s", arch, chainId))
 		if err != nil {
 			t.Fatalf("Failed to get network by ID: %v", err)
 		}

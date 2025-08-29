@@ -452,7 +452,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				nw, err := project.GetNetwork(networkId)
+				nw, err := project.GetNetwork(httpCtx, networkId)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)

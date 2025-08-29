@@ -119,7 +119,7 @@ func (e *ERPC) GetNetwork(ctx context.Context, projectId string, networkId strin
 		return nil, err
 	}
 
-	return prj.GetNetwork(networkId)
+	return prj.GetNetwork(ctx, networkId)
 }
 
 func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {

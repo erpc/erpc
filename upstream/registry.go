@@ -97,7 +97,14 @@ func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
 		return err
 	}
 
-	return u.registerUpstream(u.appCtx, u.upsCfg...)
+	// Fire-and-forget: register upstreams in background to avoid blocking service startup
+	go func() {
+		if err := u.registerUpstreams(u.appCtx, u.upsCfg...); err != nil {
+			u.logger.Error().Err(err).Msg("failed to register upstreams in background")
+		}
+	}()
+
+	return nil
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
@@ -141,16 +148,14 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		t := u.buildProviderBootstrapTask(provider, networkId)
 		tasks = append(tasks, t)
 	}
-	errCh := make(chan error, 1)
+	// Start provider tasks in background; do not fail the network init on provider errors.
 	go func() {
 		if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
 			u.logger.Error().
 				Err(err).
 				Str("networkId", networkId).
-				Msg("failed to execute provider bootstrap tasks")
-			errCh <- err
+				Msg("provider bootstrap tasks encountered errors; continuing to wait for first healthy upstream")
 		}
-		close(errCh)
 	}()
 
 	// Wait for at least one upstream, completion, or error
@@ -161,15 +166,10 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-errCh:
-			return err
 		case <-ticker.C:
-			// check if the initializer has failed
-			status := u.initializer.Status()
-
-			if status.State == util.StateFailed {
-				return fmt.Errorf("initialization failed with state: %s", status.State.String())
-			}
+			// Note: we do not fail fast when initializer reports failed state.
+			// It will keep retrying, and we wait until at least one upstream is ready
+			// or until the provided context is canceled (e.g., request timeout/shutdown).
 
 			// Check if we have at least one upstream for this network
 			u.upstreamsMu.RLock()
@@ -393,7 +393,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
+func (u *UpstreamsRegistry) registerUpstreams(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
 	tasks := make([]*util.BootstrapTask, 0)
 	for _, c := range upsCfgs {
 		upsCfg := c
@@ -484,12 +484,7 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 			} else {
 				lg.Info().Msgf("registering %d upstream(s) from provider", len(upsCfgs))
 			}
-			err = u.registerUpstream(ctx, upsCfgs...)
-			if err != nil {
-				lg.Error().Err(err).Msg("failed to bootstrap upstreams from provider")
-				return err
-			}
-			return nil
+			return u.registerUpstreams(ctx, upsCfgs...)
 		},
 	)
 }
