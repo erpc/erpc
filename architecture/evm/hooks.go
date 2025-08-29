@@ -31,11 +31,9 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 	}
 }
 
-// HandleNetworkPreForward checks if the request matches a known EVM method customization on network level,
-// and returns a custom response if it applies. If it returns (false, nil, nil),
-// then it's not a method we handle here. If it returns (true, resp, err),
-// that means we've handled it. If any error is returned, it means handling failed.
-func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+// HandleNetworkPreForward is executed after upstream selection for upstream-aware logic.
+// Pass the selected upstreams to allow computing effective thresholds, availability, etc.
+func HandleNetworkPreForward(ctx context.Context, network common.Network, upstreams []common.Upstream, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	ctx, span := common.StartDetailSpan(ctx, "Network.PreForwardHook")
 	defer span.End()
 
@@ -45,6 +43,8 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *co
 	}
 
 	switch strings.ToLower(method) {
+	case "eth_getlogs":
+		return NetworkPreForward_eth_getLogs(ctx, network, upstreams, nq)
 	default:
 		return false, nil, nil
 	}

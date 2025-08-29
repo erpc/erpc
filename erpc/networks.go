@@ -367,20 +367,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
-	// Network-level pre-forward for methods that need upstream context (e.g., eth_getLogs splitting)
-	if strings.EqualFold(method, "eth_getLogs") {
-		if handled, resp, err := evm.NetworkPreForward_eth_getLogs(ctx, n, upsList, req); handled {
-			if err != nil {
-				if mlx != nil {
-					mlx.Close(ctx, nil, err)
-				}
-				return nil, err
-			}
+	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
+	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
+		if err != nil {
 			if mlx != nil {
-				mlx.Close(ctx, resp, nil)
+				mlx.Close(ctx, nil, err)
 			}
-			return resp, nil
+			return nil, err
 		}
+		if mlx != nil {
+			mlx.Close(ctx, resp, nil)
+		}
+		return resp, nil
 	}
 
 	// 3) Check if we should handle this method on this network
