@@ -245,10 +245,6 @@ func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *c
 		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
 			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
 		}
-		// Legacy network pre-forward for any remaining early handlers (kept for compatibility)
-		if handled, resp, err := evm.HandleNetworkPreForward(ctx, network, nq); handled {
-			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
-		}
 	}
 
 	// If not handled, then fallback to the normal forward
