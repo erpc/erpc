@@ -7,6 +7,30 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+// HandleProjectPreForward is the early pre-forward hook executed at project layer
+// before cache and before upstream selection. Use this for transformations that
+// affect cache hash or short-circuit results without upstream context.
+func HandleProjectPreForward(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ctx, span := common.StartDetailSpan(ctx, "Project.PreForwardHook")
+	defer span.End()
+
+	method, err := nq.Method()
+	if err != nil {
+		return false, nil, err
+	}
+
+	switch strings.ToLower(method) {
+	case "eth_blocknumber":
+		return networkPreForward_eth_blockNumber(ctx, network, nq)
+	case "eth_call":
+		return networkPreForward_eth_call(ctx, network, nq)
+	case "eth_chainid":
+		return networkPreForward_eth_chainId(ctx, network, nq)
+	default:
+		return false, nil, nil
+	}
+}
+
 // HandleNetworkPreForward checks if the request matches a known EVM method customization on network level,
 // and returns a custom response if it applies. If it returns (false, nil, nil),
 // then it's not a method we handle here. If it returns (true, resp, err),
