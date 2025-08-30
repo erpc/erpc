@@ -460,6 +460,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
 		upstream.ReorderUpstreams(prj.upstreamsRegistry)
@@ -1425,7 +1426,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								{
 									Hedge: &common.HedgePolicyConfig{
 										MaxCount: 1,
-										Delay:    common.Duration(30 * time.Millisecond), // Short delay
+										Delay:    common.Duration(500 * time.Millisecond), // Short delay
 									},
 								},
 							},
@@ -1468,7 +1469,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(500).
-			Delay(50 * time.Millisecond). // Fails after hedge starts (30ms)
+			Delay(800 * time.Millisecond). // Fails after hedge starts (500ms)
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
@@ -1481,13 +1482,17 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(503).
-			Delay(60 * time.Millisecond). // Takes slightly longer
+			Delay(900 * time.Millisecond). // Takes slightly longer
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -1661,7 +1666,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Hedge: &common.HedgePolicyConfig{
-										Delay:    common.Duration(50 * time.Millisecond),
+										Delay:    common.Duration(300 * time.Millisecond),
 										MaxCount: 2,
 									},
 								},
@@ -1696,7 +1701,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(60 * time.Millisecond). // Finishes at 60ms
+			Delay(350 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1711,22 +1716,26 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(100 * time.Millisecond). // Would finish at 150ms (50ms hedge delay + 100ms)
+			Delay(400 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  "0xHedge",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
 		statusCode, _, respBody := sendRequest(body, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 		var resp map[string]interface{}
-		err := json.Unmarshal([]byte(respBody), &resp)
+		err = json.Unmarshal([]byte(respBody), &resp)
 		require.NoError(t, err)
 		assert.Equal(t, "0xPrimary", resp["result"]) // Primary wins
 	})
@@ -1927,15 +1936,21 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"result":  "0xRetrySuccess",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		time.Sleep(500 * time.Millisecond)
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`
 		statusCode, _, respBody := sendRequest(body, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 		var resp map[string]interface{}
-		err := json.Unmarshal([]byte(respBody), &resp)
+		err = json.Unmarshal([]byte(respBody), &resp)
 		require.NoError(t, err)
 		assert.Equal(t, "0xRetrySuccess", resp["result"]) // Retry succeeds
 	})
@@ -2376,8 +2391,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 

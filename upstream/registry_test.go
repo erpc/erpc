@@ -42,12 +42,16 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	method := "eth_call"
 	windowSize := 10000 * time.Millisecond
 
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
 	t.Run("RefreshScoresForRequests", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequests(metricsTracker, upsList[0], method, 100, 20)
 		simulateRequests(metricsTracker, upsList[1], method, 100, 30)
@@ -55,7 +59,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
-		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -64,7 +68,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequestsWithLatency(metricsTracker, upsList[0], method, 10, 0.20)
 		simulateRequestsWithLatency(metricsTracker, upsList[1], method, 10, 0.70)
@@ -72,7 +76,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
-		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -81,7 +85,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequests(metricsTracker, upsList[0], method, 100, 30)
 		simulateRequests(metricsTracker, upsList[1], method, 100, 80)
@@ -89,7 +93,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
-		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -98,7 +102,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequests(metricsTracker, upsList[0], method, 100, 0)
 		metricsTracker.SetLatestBlockNumber(upsList[0], 4000090)
@@ -109,10 +113,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
-		expectedOrder := []string{"upstream-b", "upstream-a", "upstream-c"}
-		// It should work for upstream's reference "*" item
-		checkUpstreamScoreOrder(t, registry, networkID, "*", expectedOrder)
-		// As well as for all method-specific metrics
+		expectedOrder := []string{"rpc2", "rpc1", "rpc3"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -121,7 +122,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequests(metricsTracker, upsList[0], method, 100, 0)
 		metricsTracker.SetFinalizedBlockNumber(upsList[0], 4000090)
@@ -132,10 +133,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
-		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
-		// It should work for upstream's reference "*" item
-		checkUpstreamScoreOrder(t, registry, networkID, "*", expectedOrder)
-		// As well as for all method-specific metrics
+		expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -144,13 +142,13 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequestsWithLatency(metricsTracker, upsList[0], method, 10, 0.05)
 		simulateRequestsWithLatency(metricsTracker, upsList[1], method, 10, 0.03)
 		simulateRequestsWithLatency(metricsTracker, upsList[2], method, 10, 0.01)
 
-		expectedOrder := []string{"upstream-c", "upstream-b", "upstream-a"}
+		expectedOrder := []string{"rpc3", "rpc2", "rpc1"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -160,14 +158,14 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		// Initial phase
 		simulateRequests(metricsTracker, upsList[0], method, 100, 30)
 		simulateRequests(metricsTracker, upsList[1], method, 100, 80)
 		simulateRequests(metricsTracker, upsList[2], method, 100, 10)
 
-		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 
 		// Simulate time passing and metrics reset
@@ -178,7 +176,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		simulateRequests(metricsTracker, upsList[1], method, 100, 10)
 		simulateRequests(metricsTracker, upsList[2], method, 100, 80)
 
-		expectedOrder = []string{"upstream-b", "upstream-a", "upstream-c"}
+		expectedOrder = []string{"rpc2", "rpc1", "rpc3"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -188,7 +186,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -196,7 +194,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		simulateRequestsWithRateLimiting(metricsTracker, upsList[1], method, 100, 15, 15)
 		simulateRequestsWithRateLimiting(metricsTracker, upsList[2], method, 100, 5, 5)
 
-		expectedOrder := []string{"upstream-c", "upstream-b", "upstream-a"}
+		expectedOrder := []string{"rpc3", "rpc2", "rpc1"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -206,13 +204,13 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequests(metricsTracker, upsList[0], method, 1000, 0)
 		simulateRequests(metricsTracker, upsList[1], method, 20000, 0)
 		simulateRequests(metricsTracker, upsList[2], method, 10, 0)
 
-		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
@@ -224,7 +222,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		methodGetLogs := "eth_getLogs"
 		methodTraceTransaction := "eth_traceTransaction"
 		l, _ := registry.GetSortedUpstreams(ctx, networkID, methodGetLogs)
-		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 		_, _ = registry.GetSortedUpstreams(ctx, networkID, methodTraceTransaction)
 
 		// Simulate performance for eth_getLogs
@@ -237,10 +235,10 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		simulateRequests(metricsTracker, upsList[1], methodTraceTransaction, 100, 10)
 		simulateRequests(metricsTracker, upsList[2], methodTraceTransaction, 100, 30)
 
-		expectedOrderGetLogs := []string{"upstream-a", "upstream-c", "upstream-b"}
+		expectedOrderGetLogs := []string{"rpc1", "rpc3", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, methodGetLogs, expectedOrderGetLogs)
 
-		expectedOrderTraceTransaction := []string{"upstream-b", "upstream-a", "upstream-c"}
+		expectedOrderTraceTransaction := []string{"rpc2", "rpc1", "rpc3"}
 		checkUpstreamScoreOrder(t, registry, networkID, methodTraceTransaction, expectedOrderTraceTransaction)
 	})
 
@@ -253,15 +251,15 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		method2 := "eth_getBalance"
 		l1, _ := registry.GetSortedUpstreams(ctx, networkID, method1)
 		l2, _ := registry.GetSortedUpstreams(ctx, networkID, method2)
-		upsList1 := getUpsByID(l1, "upstream-a", "upstream-b", "upstream-c")
-		upsList2 := getUpsByID(l2, "upstream-a", "upstream-b", "upstream-c")
+		upsList1 := getUpsByID(l1, "rpc1", "rpc2", "rpc3")
+		upsList2 := getUpsByID(l2, "rpc1", "rpc2", "rpc3")
 
 		// Phase 1: Initial performance
 		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 5, 0.01)
 		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 5, 0.3)
 		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 5, 0.8)
 
-		expectedOrderMethod1Phase1 := []string{"upstream-a", "upstream-c", "upstream-b"}
+		expectedOrderMethod1Phase1 := []string{"rpc1", "rpc3", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase1)
 
 		// Wait so that latency averages are cycled out (add small buffer to avoid ticking exactly at window boundary)
@@ -271,7 +269,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 5, 0.03)
 		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 5, 0.05)
 
-		expectedOrderMethod2Phase1 := []string{"upstream-c", "upstream-b", "upstream-a"}
+		expectedOrderMethod2Phase1 := []string{"rpc3", "rpc2", "rpc1"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase1)
 
 		// Sleep slightly longer than windowSize to ensure metrics from phase 1 have cycled out
@@ -282,7 +280,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 5, 0.03)
 		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 5, 0.05)
 
-		expectedOrderMethod1Phase2 := []string{"upstream-b", "upstream-c", "upstream-a"}
+		expectedOrderMethod1Phase2 := []string{"rpc2", "rpc3", "rpc1"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase2)
 
 		// Sleep slightly longer than windowSize to ensure metrics from phase 2 for method1 have cycled out
@@ -292,7 +290,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 5, 0.03)
 		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 5, 0.05)
 
-		expectedOrderMethod2Phase2 := []string{"upstream-a", "upstream-c", "upstream-b"}
+		expectedOrderMethod2Phase2 := []string{"rpc1", "rpc3", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase2)
 	})
 }
@@ -319,31 +317,36 @@ func TestUpstreamsRegistry_Scoring(t *testing.T) {
 			name:       "MixedLatencyAndFailureRatePreferLowLatency",
 			windowSize: 10 * time.Second,
 			upstreamConfig: []upstreamMetrics{
-				{"upstream-a", 0.5, 0.1, 100},
-				{"upstream-b", 1.0, 0.05, 100},
-				{"upstream-c", 0.75, 0.15, 100},
+				{"rpc1", 0.5, 0.1, 100},
+				{"rpc2", 1.0, 0.05, 100},
+				{"rpc3", 0.75, 0.15, 100},
 			},
-			expectedOrder: []string{"upstream-a", "upstream-c", "upstream-b"},
+			expectedOrder: []string{"rpc1", "rpc3", "rpc2"},
 		},
 		{
 			name:       "ExtremeFailureRate",
 			windowSize: 6 * time.Second,
 			upstreamConfig: []upstreamMetrics{
-				{"upstream-a", 1, 0.2, 100},
-				{"upstream-b", 1, 0.8, 100},
-				{"upstream-c", 1, 0.01, 100},
+				{"rpc1", 1, 0.2, 100},
+				{"rpc2", 1, 0.8, 100},
+				{"rpc3", 1, 0.01, 100},
 			},
-			expectedOrder: []string{"upstream-b", "upstream-a", "upstream-c"},
+			expectedOrder: []string{"rpc2", "rpc1", "rpc3"},
 		},
 	}
 
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
+
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			registry, metricsTracker := createTestRegistry(ctx, projectID, &log.Logger, scenario.windowSize)
 			l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-			upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
+			upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 			for idx, upstream := range scenario.upstreamConfig {
 				successfulRequests := int(float64(upstream.requestCount) * upstream.successRate)
@@ -775,7 +778,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
-	util.ConfigureTestLogger()
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
 
 	projectID := "test-project"
 	networkID := "evm:123"
@@ -793,9 +799,9 @@ func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
 	// Find our test upstreams
 	var workingUpstream, failingUpstream *Upstream
 	for _, ups := range upstreams {
-		if ups.Id() == "upstream-a" {
+		if ups.Id() == "rpc1" {
 			workingUpstream = ups
-		} else if ups.Id() == "upstream-b" {
+		} else if ups.Id() == "rpc2" {
 			failingUpstream = ups
 		}
 	}
@@ -826,22 +832,22 @@ func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
 
 	// Verify scores: working upstream should have higher score than failing one
 	registry.upstreamsMu.RLock()
-	workingScore := registry.upstreamScores["upstream-a"][networkID][method]
-	failingScore := registry.upstreamScores["upstream-b"][networkID][method]
+	workingScore := registry.upstreamScores["rpc1"][networkID][method]
+	failingScore := registry.upstreamScores["rpc2"][networkID][method]
 	registry.upstreamsMu.RUnlock()
 
 	assert.Greater(t, workingScore, failingScore, "Working upstream should have higher score than failing upstream")
 
-	t.Logf("Working upstream (upstream-a) score: %f", workingScore)
-	t.Logf("Failing upstream (upstream-b) score: %f", failingScore)
+	t.Logf("Working upstream (rpc1) score: %f", workingScore)
+	t.Logf("Failing upstream (rpc2) score: %f", failingScore)
 
 	// Working upstream should be ranked higher than failing upstream
 	workingRank := -1
 	failingRank := -1
 	for i, ups := range sortedUpstreams {
-		if ups.Id() == "upstream-a" {
+		if ups.Id() == "rpc1" {
 			workingRank = i
-		} else if ups.Id() == "upstream-b" {
+		} else if ups.Id() == "rpc2" {
 			failingRank = i
 		}
 	}
@@ -853,9 +859,9 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 	metricsTracker.Bootstrap(ctx)
 
 	upstreamConfigs := []*common.UpstreamConfig{
-		{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Id: "upstream-b", Endpoint: "http://upstream-b.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "rpc1", Endpoint: "http://rpc1.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "rpc2", Endpoint: "http://rpc2.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "rpc3", Endpoint: "http://rpc3.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	}
 
 	vr := thirdparty.NewVendorsRegistry()

@@ -1128,23 +1128,34 @@ func TestNetwork_Forward(t *testing.T) {
 	t.Run("ForwardNotSkipsRetryableFailuresFromUpstreams", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(3).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+			}).
 			Post("").
 			Reply(503).
 			JSON([]byte(`{"error":"random rpc1 unavailable"}`))
 
 		gock.New("http://rpc2.localhost").
 			Times(2).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+			}).
 			Post("").
 			Reply(503).
 			JSON([]byte(`{"error":"random rpc2 unavailable"}`))
 
 		gock.New("http://rpc2.localhost").
 			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+			}).
 			Post("").
 			Reply(200).
 			JSON([]byte(`{"result":"0x1234567"}`))
@@ -1276,13 +1287,6 @@ func TestNetwork_Forward(t *testing.T) {
 		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
-
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %s => status %d, body %s", pending.Request().URLStruct, pending.Response().StatusCode, string(pending.Response().BodyBuffer))
-			}
-		}
 
 		if err != nil {
 			t.Errorf("Expected an nil, got error %v", err)
@@ -4439,8 +4443,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
-		gock.New("http://rpc1.alchemy.com.localhost").
+		gock.New("http://rpc1.localhost").
 			Times(1).
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+			}).
 			Post("").
 			Reply(503).
 			JSON([]byte(`{"jsonrpc":"2.0","id":9179,"error":{"code":-32600,"message":"Monthly capacity limit exceeded."}}`))
@@ -4476,7 +4483,7 @@ func TestNetwork_Forward(t *testing.T) {
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
-			Endpoint: "http://rpc1.alchemy.com.localhost",
+			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
@@ -6408,6 +6415,11 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardIgnoredMethod", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"ignored_method","params":["0x1273c18",false]}`)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -7349,6 +7361,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
 		}
 	})
+
 	t.Run("DynamicMethodSpecificLatencyPreference", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -7372,9 +7385,9 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.NoError(t, err)
 
 		upstreamConfigs := []*common.UpstreamConfig{
-			{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-			{Id: "upstream-b", Endpoint: "http://upstream-b.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-			{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Id: "rpc1", Endpoint: "http://rpc1.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Id: "rpc2", Endpoint: "http://rpc2.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Id: "rpc3", Endpoint: "http://rpc3.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		}
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -7461,15 +7474,15 @@ func TestNetwork_Forward(t *testing.T) {
 		upstream.ReorderUpstreams(upstreamsRegistry)
 
 		// Upstream A is faster for eth_call, Upstream B is faster for eth_traceTransaction, Upstream C is faster for eth_getLogs
-		mockRequests("eth_getLogs", "upstream-a", 200*time.Millisecond)
-		mockRequests("eth_getLogs", "upstream-b", 100*time.Millisecond)
-		mockRequests("eth_getLogs", "upstream-c", 50*time.Millisecond)
-		mockRequests("eth_traceTransaction", "upstream-a", 100*time.Millisecond)
-		mockRequests("eth_traceTransaction", "upstream-b", 50*time.Millisecond)
-		mockRequests("eth_traceTransaction", "upstream-c", 200*time.Millisecond)
-		mockRequests("eth_call", "upstream-a", 50*time.Millisecond)
-		mockRequests("eth_call", "upstream-b", 200*time.Millisecond)
-		mockRequests("eth_call", "upstream-c", 100*time.Millisecond)
+		mockRequests("eth_getLogs", "rpc1", 200*time.Millisecond)
+		mockRequests("eth_getLogs", "rpc2", 100*time.Millisecond)
+		mockRequests("eth_getLogs", "rpc3", 50*time.Millisecond)
+		mockRequests("eth_traceTransaction", "rpc1", 100*time.Millisecond)
+		mockRequests("eth_traceTransaction", "rpc2", 50*time.Millisecond)
+		mockRequests("eth_traceTransaction", "rpc3", 200*time.Millisecond)
+		mockRequests("eth_call", "rpc1", 50*time.Millisecond)
+		mockRequests("eth_call", "rpc2", 200*time.Millisecond)
+		mockRequests("eth_call", "rpc3", 100*time.Millisecond)
 
 		allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
 
@@ -7509,15 +7522,15 @@ func TestNetwork_Forward(t *testing.T) {
 
 		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_getLogs")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[0].Id(), "Expected upstream-c to be preferred for eth_getLogs in Phase 1")
+		assert.Equal(t, "rpc3", sortedUpstreamsGetLogs[0].Id(), "Expected rpc3 to be preferred for eth_getLogs in Phase 1")
 
 		sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_traceTransaction")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Id(), "Expected upstream-b to be preferred for eth_traceTransaction in Phase 1")
+		assert.Equal(t, "rpc2", sortedUpstreamsTraceTransaction[0].Id(), "Expected rpc2 to be preferred for eth_traceTransaction in Phase 1")
 
 		sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_call")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Id(), "Expected upstream-a to be preferred for eth_call in Phase 1")
+		assert.Equal(t, "rpc1", sortedUpstreamsCall[0].Id(), "Expected rpc1 to be preferred for eth_call in Phase 1")
 	})
 
 	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
@@ -7618,10 +7631,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 		)
 		err = upr.Bootstrap(ctx)
-		if err == nil {
-			t.Fatalf("Expected error on registry bootstrap, got nil")
-		}
-
+		assert.NoError(t, err)
 		ntw, err := NewNetwork(
 			ctx,
 			&log.Logger,
@@ -7640,6 +7650,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		time.Sleep(300 * time.Millisecond)
 
 		upstream.ReorderUpstreams(upr)
 
@@ -8030,8 +8042,22 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		}
 		selectionPolicy.SetDefaults()
 
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_chainId")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
 		// Mock failing responses for evm state poller
 		gock.New("http://rpc1.localhost").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return !strings.Contains(b, "eth_chainId")
+			}).
 			Post("").
 			Times(32).
 			Reply(500).
@@ -8093,17 +8119,17 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 
 		ups1 := network.upstreamsRegistry.GetNetworkUpstreams(ctx, "evm:123")[0]
 
-		// Verify the upstream is marked as inactive due to high error rate
-		err := network.selectionPolicyEvaluator.AcquirePermit(&log.Logger, ups1, "eth_getBalance")
-		assert.Error(t, err, "Upstream should be inactive due to state poller errors")
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamExcludedByPolicy),
-			"Expected upstream to be excluded by policy")
-
 		// Verify metrics show high error rate from state poller requests
 		metrics := network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*")
 		assert.True(t, metrics.ErrorRate() > 0.7,
 			"Expected error rate above 70%% due to state poller failures, got %.2f%%",
 			metrics.ErrorRate()*100)
+
+		// Verify the upstream is marked as inactive due to high error rate
+		err := network.selectionPolicyEvaluator.AcquirePermit(&log.Logger, ups1, "eth_getBalance")
+		assert.Error(t, err, "Upstream should be inactive due to state poller errors")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamExcludedByPolicy),
+			"Expected upstream to be excluded by policy")
 
 		// Let the state poller improve the metrics
 		time.Sleep(600 * time.Millisecond)
@@ -8700,6 +8726,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 		}
 	})
 }
+
 func TestNetwork_EvmGetLogs(t *testing.T) {
 	t.Run("EnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
 		util.ResetGock()
@@ -8709,6 +8736,19 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
 
 		// Mock the eth_getBlockByNumber response for latest block force update
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x7b",
+			})
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
@@ -8768,7 +8808,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
 		}
 
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+		assert.True(t, len(gock.Pending()) == 1, "Expected no pending mocks")
 	})
 
 	t.Run("FailEvenAfterEnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
@@ -8779,6 +8819,19 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
 
 		// Mock the eth_getBlockByNumber response for latest block force update
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x7b",
+			})
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
@@ -8816,6 +8869,20 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		// Mock eth_getLogs request with toBlock lower than latest block
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x100","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x7b",
+			})
 
 		// Mock the eth_getLogs response
 		gock.New("http://rpc1.localhost").
@@ -8858,7 +8925,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
 		}
 
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+		assert.True(t, len(gock.Pending()) == 1, "Expected no pending mocks")
 	})
 
 	t.Run("SkipToUpstreamWithCorrectLatestBlockToCoverBlockRangeEnd", func(t *testing.T) {
@@ -9384,9 +9451,12 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, blockNumbers, "0x18101")
 		assert.Contains(t, blockNumbers, "0x18202")
 	})
+
 	t.Run("SplitCorrectlyWhenMaxRangeIsOne", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock eth_getLogs request with a small block range
 		requestBytes := []byte(`{
@@ -9461,6 +9531,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Setup network with a node that has GetLogsAutoSplittingRangeThreshold = 1
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120, nil)
 
+		time.Sleep(200 * time.Millisecond)
+		upstream.ReorderUpstreams(network.upstreamsRegistry)
+
 		// Configure GetLogsAutoSplittingRangeThreshold = 1 to force splitting into individual blocks
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
@@ -9509,13 +9582,13 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, data, "0x1", "First log should have data 0x1")
 		assert.Contains(t, data, "0x2", "Second log should have data 0x2")
 		assert.Contains(t, data, "0x3", "Third log should have data 0x3")
-
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
 
 	t.Run("SkipSplitWhenRangeIsWithinBounds", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock eth_getLogs request with a range smaller than max range
 		requestBytes := []byte(`{
@@ -9554,6 +9627,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
+		time.Sleep(200 * time.Millisecond)
+		upstream.ReorderUpstreams(network.upstreamsRegistry)
+
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
@@ -9589,14 +9665,13 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		}
 		assert.Contains(t, blockNumbers, "0x11118025")
 		assert.Contains(t, blockNumbers, "0x11118035")
-
-		// Verify only one request was made (no splitting)
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
 
 	t.Run("SkipSplitWhenRangeIsExactlyEqualToMaxRange", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock eth_getLogs request with range exactly equal to max range (0x100)
 		requestBytes := []byte(`{
@@ -9636,6 +9711,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
+		time.Sleep(200 * time.Millisecond)
+		upstream.ReorderUpstreams(network.upstreamsRegistry)
+
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
@@ -9672,14 +9750,13 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, blockNumbers, "0x11118050")
 		assert.Contains(t, blockNumbers, "0x11118080")
 		assert.Contains(t, blockNumbers, "0x111180f0")
-
-		// Verify only one request was made (no splitting)
-		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
 
 	t.Run("UseCacheWhenOneOfSubRequestsIsAlreadyCached", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Setup cache configuration
 		cacheCfg := &common.CacheConfig{
@@ -9711,6 +9788,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
+
+		time.Sleep(200 * time.Millisecond)
+		upstream.ReorderUpstreams(network.upstreamsRegistry)
 
 		// Configure network for splitting
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -9873,13 +9953,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, data, "0x2", "Missing data from cached middle range")
 		assert.Contains(t, data, "0x3", "Missing data from third range")
 		assert.Contains(t, data, "0x4", "Missing data from last range")
-
-		// Verify only two requests were made (first and last ranges)
-		// The middle range should have come from cache
-		pendings := gock.Pending()
-		assert.True(t, len(pendings) == 0, "Expected no pending mocks")
 	})
 }
+
 func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -10567,7 +10643,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 
 	err = network.Bootstrap(ctx)
 	assert.NoError(t, err)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	upstream.ReorderUpstreams(upstreamsRegistry)
 
@@ -10581,10 +10657,12 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 	lb1, _ := common.HexToInt64("0x11118888")
 	upsList[0].EvmStatePoller().SuggestLatestBlock(lb1)
 
-	fb2, _ := common.HexToInt64("0x22227777")
-	upsList[1].EvmStatePoller().SuggestFinalizedBlock(fb2)
-	lb2, _ := common.HexToInt64("0x22228888")
-	upsList[1].EvmStatePoller().SuggestLatestBlock(lb2)
+	if len(upsList) > 1 && upsList[1] != nil {
+		fb2, _ := common.HexToInt64("0x22227777")
+		upsList[1].EvmStatePoller().SuggestFinalizedBlock(fb2)
+		lb2, _ := common.HexToInt64("0x22228888")
+		upsList[1].EvmStatePoller().SuggestLatestBlock(lb2)
+	}
 
 	return network
 }

@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -139,38 +140,69 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 	networkMu.Lock()
 	defer networkMu.Unlock()
 
-	allProviders := u.providersRegistry.GetAllProviders()
+	// 1) Static upstreams are expected to be registered via Bootstrap() already.
 
+	// 2) Start execution of provider-based upstreams tasks in background; errors are logged but do not fail the caller
+	allProviders := u.providersRegistry.GetAllProviders()
 	var tasks []*util.BootstrapTask
 	for _, p := range allProviders {
-		// Capture loop variable in local scope
 		provider := p
 		t := u.buildProviderBootstrapTask(provider, networkId)
 		tasks = append(tasks, t)
 	}
-	// Start execution of tasks in background; errors are logged but do not fail the caller
 	go func() {
 		if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
 			u.logger.Error().
 				Err(err).
 				Str("networkId", networkId).
+				Interface("status", u.initializer.Status()).
 				Msg("failed to execute provider bootstrap tasks")
+		} else {
+			u.logger.Info().
+				Str("networkId", networkId).
+				Interface("status", u.initializer.Status()).
+				Msg("provider bootstrap tasks executed successfully")
 		}
 	}()
 
-	// Require only one ready upstream to start handling requests
+	// Require only one ready upstream to start handling requests, maximum 5 seconds
 	minReady := 1
+	waitTimeout := 5 * time.Second
 
-	// Wait until enough upstreams are ready, or context ends
+	// 3) Wait until either static upstreams or provider-based upstreams are ready, or timeout/context ends
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
-
+	timeoutCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-timeoutCtx.Done():
+			err := timeoutCtx.Err()
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				// Timeout reached, check if we have any upstreams ready
+				u.upstreamsMu.RLock()
+				upstreamsCount := len(u.networkUpstreams[networkId])
+				u.upstreamsMu.RUnlock()
+
+				if upstreamsCount > 0 {
+					u.logger.Info().
+						Str("networkId", networkId).
+						Int("upstreamsCount", upstreamsCount).
+						Int("minReady", minReady).
+						Dur("waitTimeout", waitTimeout).
+						Msg("timeout reached but some upstreams are ready for network initialization")
+					return nil
+				}
+				return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+			}
+			return timeoutCtx.Err()
 		case <-ticker.C:
-			// Note: do not fail fast on initializer failure; it auto-retries.
+			state := u.initializer.State()
+			if state == util.StateFailed {
+				return u.initializer.Errors()
+			} else if state == util.StateReady {
+				return nil
+			}
 
 			// Check how many upstreams are ready for this network
 			u.upstreamsMu.RLock()
