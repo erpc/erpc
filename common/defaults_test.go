@@ -276,6 +276,114 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 	})
 }
 
+func TestMethodsConfigStatefulMethodsWithPreserveDefaultsFalse(t *testing.T) {
+	// Test case 1: Custom definitions with PreserveDefaultMethods=false
+	// This should still mark default stateful methods as stateful
+	m := &MethodsConfig{
+		PreserveDefaultMethods: false,
+		Definitions: map[string]*CacheMethodConfig{
+			"custom_method": {
+				Finalized: true,
+			},
+		},
+	}
+
+	err := m.SetDefaults()
+	assert.NoError(t, err, "SetDefaults should not fail")
+
+	// Verify that default stateful methods are marked as stateful
+	for _, methodName := range DefaultStatefulMethodNames {
+		method, exists := m.Definitions[methodName]
+		assert.True(t, exists, "Default stateful method %s should exist in definitions", methodName)
+		if exists {
+			assert.True(t, method.Stateful, "Default stateful method %s should be marked as stateful", methodName)
+		}
+	}
+
+	// Verify custom method still exists
+	_, exists := m.Definitions["custom_method"]
+	assert.True(t, exists, "Custom method 'custom_method' should still exist in definitions")
+}
+
+func TestMethodsConfigStatefulMethodsWithPreserveDefaultsTrue(t *testing.T) {
+	// Test case 2: Custom definitions with PreserveDefaultMethods=true
+	// This should preserve all defaults and mark stateful methods
+	m := &MethodsConfig{
+		PreserveDefaultMethods: true,
+		Definitions: map[string]*CacheMethodConfig{
+			"custom_method": {
+				Finalized: true,
+			},
+		},
+	}
+
+	err := m.SetDefaults()
+	assert.NoError(t, err, "SetDefaults should not fail")
+
+	// Verify that default stateful methods are marked as stateful
+	for _, methodName := range DefaultStatefulMethodNames {
+		method, exists := m.Definitions[methodName]
+		assert.True(t, exists, "Default stateful method %s should exist in definitions", methodName)
+		if exists {
+			assert.True(t, method.Stateful, "Default stateful method %s should be marked as stateful", methodName)
+		}
+	}
+
+	// Verify some default cache methods exist (since PreserveDefaultMethods=true)
+	_, exists := m.Definitions["eth_chainId"]
+	assert.True(t, exists, "Default cache method 'eth_chainId' should exist when PreserveDefaultMethods=true")
+
+	// Verify custom method still exists
+	_, exists = m.Definitions["custom_method"]
+	assert.True(t, exists, "Custom method 'custom_method' should still exist in definitions")
+}
+
+func TestMethodsConfigStatefulMethodsNoCustomDefinitions(t *testing.T) {
+	// Test case 3: No custom definitions provided
+	// Should use all defaults including stateful methods
+	m := &MethodsConfig{}
+
+	err := m.SetDefaults()
+	assert.NoError(t, err, "SetDefaults should not fail")
+
+	// Verify that default stateful methods are marked as stateful
+	for _, methodName := range DefaultStatefulMethodNames {
+		method, exists := m.Definitions[methodName]
+		assert.True(t, exists, "Default stateful method %s should exist in definitions", methodName)
+		if exists {
+			assert.True(t, method.Stateful, "Default stateful method %s should be marked as stateful", methodName)
+		}
+	}
+
+	// Verify some default cache methods exist
+	_, exists := m.Definitions["eth_chainId"]
+	assert.True(t, exists, "Default cache method 'eth_chainId' should exist")
+}
+
+func TestMethodsConfigStatefulMethodOverride(t *testing.T) {
+	// Test case 4: User tries to override a default stateful method
+	// The stateful flag should still be enforced
+	m := &MethodsConfig{
+		PreserveDefaultMethods: false,
+		Definitions: map[string]*CacheMethodConfig{
+			"eth_newFilter": {
+				Finalized: true,
+				Stateful:  false, // User tries to make it non-stateful
+			},
+		},
+	}
+
+	err := m.SetDefaults()
+	assert.NoError(t, err, "SetDefaults should not fail")
+
+	// Verify that eth_newFilter is still marked as stateful
+	method, exists := m.Definitions["eth_newFilter"]
+	assert.True(t, exists, "Method 'eth_newFilter' should exist in definitions")
+	if exists {
+		assert.True(t, method.Stateful, "Method 'eth_newFilter' should be marked as stateful even when user tries to override")
+	}
+}
+
 func TestBuildProviderSettings(t *testing.T) {
 	// Test case for Chainstack with query parameters
 	t.Run("chainstack with filters", func(t *testing.T) {
