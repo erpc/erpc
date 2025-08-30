@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -57,13 +56,15 @@ func (p *PreparedProject) Bootstrap(appCtx context.Context) error {
 	}()
 	wg.Wait()
 	if len(errs) > 0 {
-		return errors.Join(errs...)
+		for _, err := range errs {
+			p.Logger.Warn().Err(err).Msgf("will continue with partial initialization")
+		}
 	}
 	return nil
 }
 
-func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
-	return p.networksRegistry.GetNetwork(networkId)
+func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
+	return p.networksRegistry.GetNetwork(ctx, networkId)
 }
 
 // ExposeNetworkConfig is used to add lazy-loaded network configs to the project
@@ -114,7 +115,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	ctx, span := common.StartDetailSpan(ctx, "Project.Forward")
 	defer span.End()
 
-	network, err := p.networksRegistry.GetNetwork(networkId)
+	network, err := p.networksRegistry.GetNetwork(ctx, networkId)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err

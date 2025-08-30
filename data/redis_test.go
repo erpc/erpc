@@ -698,8 +698,8 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
 
 	rangeKey := "eth_getTransactionReceipt:d49fc9409c70839c9c3251e4ff36babf30adfc3c41d6425d878032077896f7c8"
-	concretePartitionKey := "evm:1:latest"
-	wildcardPartitionKey := "evm:1:*"
+	concretePartitionKey := "evm:123:latest"
+	wildcardPartitionKey := "evm:123:*"
 	value := []byte("tx-receipt-value")
 
 	// Store the value using the concrete partition key. This should also create the reverse index entry.
@@ -749,7 +749,7 @@ func TestRedisConnector_ChainIsolation(t *testing.T) {
 	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
 
 	// Define test data for two different chains
-	chainA := "evm:1"   // Ethereum mainnet
+	chainA := "evm:123" // Ethereum mainnet
 	chainB := "evm:137" // Polygon
 	method := "eth_blockNumber"
 	blockNumberA := []byte("0x1234567")

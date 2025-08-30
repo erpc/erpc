@@ -309,7 +309,7 @@ func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// Simulate eth_getLogs checking fromBlock and toBlock
@@ -339,7 +339,7 @@ func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// eth_getLogs with toBlock beyond latest
@@ -364,7 +364,7 @@ func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// eth_getLogs with fromBlock too old
@@ -394,7 +394,7 @@ func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// Simulate retry policy checking if block is available
@@ -417,7 +417,7 @@ func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// Check old block that's not available
@@ -439,7 +439,7 @@ func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// This would normally be called by retry policy, but for ignored methods it shouldn't
@@ -618,7 +618,7 @@ func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// Should handle empty ProjectId gracefully
@@ -631,7 +631,7 @@ func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 		// Test with various NetworkId formats
 		testCases := []string{
 			"",              // Empty
-			"evm:1",         // Standard format
+			"evm:123",       // Standard format
 			"evm:137",       // Polygon
 			"unknown-chain", // Non-standard format
 		}
@@ -866,7 +866,7 @@ func BenchmarkEvmAssertBlockAvailability(b *testing.B) {
 		},
 		logger:         &zerolog.Logger{},
 		evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 10000, finalizedBlock: 9900},
-		networkId:      util.AtomicValue("evm:1"),
+		networkId:      util.AtomicValue("evm:123"),
 	}
 
 	ctx := context.Background()

@@ -159,7 +159,7 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	defer connector.Close()
 
 	// Define test data for two different chains
-	chainA := "evm:1"   // Ethereum mainnet
+	chainA := "evm:123" // Ethereum mainnet
 	chainB := "evm:137" // Polygon
 	method := "eth_blockNumber"
 	blockNumberA := []byte("0x1234567")

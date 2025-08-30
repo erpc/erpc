@@ -78,7 +78,7 @@ func TestInit_AllGood(t *testing.T) {
 						Endpoint: "http://rpc1.localhost",
 						Type:     "evm",
 						Evm: &common.EvmUpstreamConfig{
-							ChainId: 1,
+							ChainId: 123,
 						},
 					},
 				},
@@ -86,7 +86,7 @@ func TestInit_AllGood(t *testing.T) {
 					{
 						Architecture: "evm",
 						Evm: &common.EvmNetworkConfig{
-							ChainId: 1,
+							ChainId: 123,
 						},
 					},
 				},
@@ -114,7 +114,7 @@ func TestInit_AllGood(t *testing.T) {
 			"jsonrpc": "2.0"
 		}
 	`))
-	res, err := http.Post(fmt.Sprintf("%s/main/evm/1", localBaseUrl), "application/json", body)
+	res, err := http.Post(fmt.Sprintf("%s/main/evm/123", localBaseUrl), "application/json", body)
 
 	if err != nil {
 		t.Fatal(err)

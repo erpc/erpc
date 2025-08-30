@@ -40,7 +40,7 @@ func (m *mockUpstreamForRetry) Id() string {
 }
 
 func (m *mockUpstreamForRetry) NetworkId() string {
-	return "evm:1"
+	return "evm:123"
 }
 
 func (m *mockUpstreamForRetry) VendorName() string {

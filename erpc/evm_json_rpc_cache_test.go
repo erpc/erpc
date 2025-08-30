@@ -46,6 +46,9 @@ func stringToReaderCloser(s string) io.ReadCloser {
 func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *evm.EvmJsonRpcCache) {
 	logger := log.Logger
 
+	// Seed EVM poller mocks so upstream Bootstrap/detectFeatures doesn't dial real endpoints
+	util.SetupMocksForEvmStatePoller()
+
 	mockConnector1 := data.NewMockConnector("mock1")
 	mockConnector2 := data.NewMockConnector("mock2")
 	mockNetwork := &Network{
@@ -1453,7 +1456,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "NoParamsInPolicy",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Finality: common.DataFinalityStateFinalized,
 			},
@@ -1464,7 +1467,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "ExactMatch",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"0x1", "true"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1478,7 +1481,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "BlockNumberGreaterThan",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">0x100", "*"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1490,7 +1493,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "BlockNumberLessThan",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"<0x100", "*"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1502,7 +1505,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "BlockNumberRange",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">=0x100|<=0x200", "*"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1516,7 +1519,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "GetLogsWithBlockRange",
 			config: &common.CachePolicyConfig{
-				Network: "evm:1",
+				Network: "evm:123",
 				Method:  "eth_getLogs",
 				Params: []interface{}{
 					map[string]interface{}{"fromBlock": ">0x100", "toBlock": "<=0x200"},
@@ -1535,7 +1538,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "GetLogsWithTopics",
 			config: &common.CachePolicyConfig{
-				Network: "evm:1",
+				Network: "evm:123",
 				Method:  "eth_getLogs",
 				Params: []interface{}{
 					map[string]interface{}{"topics": []interface{}{"0x*"}},
@@ -1555,7 +1558,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "EmptyParamMatch",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getTransactionByHash",
 				Params:   []interface{}{"*", "<empty>"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1567,7 +1570,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "MixedNumericAndWildcard",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">=0x100|latest", "*"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1581,7 +1584,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "NotEnoughParamsNonStar",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"0x1", "true", "extra"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1593,7 +1596,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "NotEnoughParamsStar",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{"0x1", "true", "*"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1605,7 +1608,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "NumericMismatch",
 			config: &common.CachePolicyConfig{
-				Network:  "evm:1",
+				Network:  "evm:123",
 				Method:   "eth_getBlockByNumber",
 				Params:   []interface{}{">0x100", "*"},
 				Finality: common.DataFinalityStateFinalized,
@@ -1617,7 +1620,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		{
 			name: "GetLogsRangeMismatch",
 			config: &common.CachePolicyConfig{
-				Network: "evm:1",
+				Network: "evm:123",
 				Method:  "eth_getLogs",
 				Params: []interface{}{
 					map[string]interface{}{"fromBlock": ">0x100", "toBlock": "<=0x200"},

@@ -106,7 +106,7 @@ failsafe:
 		yamlData := `
 architecture: "evm"
 evm:
-  chainId: 1
+  chainId: 123
 failsafe:
   circuitBreaker:
     failureThresholdCount: 5
@@ -129,7 +129,7 @@ failsafe:
 		yamlData := `
 architecture: "evm"
 evm:
-  chainId: 1
+  chainId: 123
 failsafe:
   - matchMethod: "eth_call"
     matchFinality: ["realtime", "unknown"]  # realtime and unknown finality states
@@ -198,7 +198,7 @@ failsafe:
 		yamlData := `
 architecture: "evm"
 evm:
-  chainId: 1
+  chainId: 123
 failsafe:
   - matchMethod: "eth_*"
     matchFinality: ["finalized", "unfinalized", "realtime", "unknown"]
@@ -223,7 +223,7 @@ failsafe:
 		yamlData := `
 architecture: "evm"
 evm:
-  chainId: 1
+  chainId: 123
 failsafe:
   - matchMethod: "eth_call"
     matchFinality: ["Finalized", "UNFINALIZED", "ReaLTime"]

@@ -182,7 +182,7 @@ func (s *HttpServer) handleHealthCheck(
 				upstreamsDetails[ups.Id()]["metrics"] = mts
 
 				// Add last evaluation time from selection policy evaluator
-				if network, err := project.GetNetwork(ups.NetworkId()); err == nil && network != nil {
+				if network, err := project.GetNetwork(ctx, ups.NetworkId()); err == nil && network != nil {
 					if network.selectionPolicyEvaluator != nil {
 						lastEvalTime := network.selectionPolicyEvaluator.GetLastEvalTime(ups.Id(), "*")
 						if !lastEvalTime.IsZero() {

@@ -77,6 +77,11 @@ func Init(
 		return err
 	}
 
+	// Bootstrap core before starting servers so routes are ready
+	if err := erpcInstance.Bootstrap(appCtx); err != nil {
+		return err
+	}
+
 	//
 	// 4) Expose Transports
 	//
@@ -128,11 +133,6 @@ func Init(
 				logger.Info().Msg("metrics server stopped")
 			}
 		}()
-	}
-
-	err = erpcInstance.Bootstrap(appCtx)
-	if err != nil {
-		return err
 	}
 
 	// Wait until the context is cancelled, then give the http server some time to finish draining.

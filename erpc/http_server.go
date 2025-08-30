@@ -290,7 +290,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		_, parseRequestsSpan := common.StartDetailSpan(httpCtx, "Http.ParseRequests")
-		lg.Info().RawJSON("body", body).Msgf("received http request")
+		if len(body) > 0 {
+			lg.Info().RawJSON("body", body).Msgf("received http request")
+		} else {
+			lg.Info().Msgf("received http request with empty body")
+		}
 
 		var requests []json.RawMessage
 		isBatch := len(body) > 0 && body[0] == '['
@@ -452,7 +456,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				nw, err := project.GetNetwork(networkId)
+				nw, err := project.GetNetwork(httpCtx, networkId)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)

@@ -166,6 +166,8 @@ type Initializer struct {
 	autoRetryWg     sync.WaitGroup
 
 	conf *InitializerConfig
+
+	StateUpdates chan InitializationState
 }
 
 func NewInitializer(appCtx context.Context, logger *zerolog.Logger, conf *InitializerConfig) *Initializer {

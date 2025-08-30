@@ -614,7 +614,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// Request block beyond latest - should increment upper bound metric
@@ -639,7 +639,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// Request block before available range - should increment lower bound metric
@@ -664,7 +664,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 			},
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
-			networkId:      util.AtomicValue("evm:1"),
+			networkId:      util.AtomicValue("evm:123"),
 		}
 
 		// Request block beyond latest with empty method - should not increment metrics

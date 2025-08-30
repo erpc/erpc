@@ -884,8 +884,8 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 		},
 	})
 	mockUpstream.On("Id").Return("rpc1")
-	mockUpstream.On("NetworkId").Return("evm:1").Maybe()
-	mockUpstream.On("NetworkLabel").Return("evm:1").Maybe()
+	mockUpstream.On("NetworkId").Return("evm:123").Maybe()
+	mockUpstream.On("NetworkLabel").Return("evm:123").Maybe()
 	mockUpstream.On("VendorName").Return("test")
 	mockUpstream.On("EvmStatePoller").Return(mockStatePoller)
 	mockStatePoller.On("LatestBlock").Return(int64(1000))

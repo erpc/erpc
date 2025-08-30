@@ -170,7 +170,7 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 
 	upstream.VendorName = v.Name()
 
-	log.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
+	logger.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
 		"recheckInterval": settings["recheckInterval"],
 	}).Msg("generated upstream from alchemy provider")
 
