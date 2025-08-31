@@ -1012,8 +1012,8 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 	)
 	require.NoError(t, err)
 
-	err = upstreamsRegistry.Bootstrap(ctx)
-	require.NoError(t, err)
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)

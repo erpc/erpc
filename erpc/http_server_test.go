@@ -75,7 +75,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -84,7 +84,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -107,7 +107,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
-		err = erpcInstance.Bootstrap(ctx)
+		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -135,7 +135,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			body := strings.NewReader(
 				fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["%d", false],"id":1}`, rand.Intn(100000000)),
 			)
-			req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", body)
+			req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", body)
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
 
@@ -219,7 +219,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -228,7 +228,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -251,7 +251,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
-		err = erpcInstance.Bootstrap(ctx)
+		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -279,7 +279,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			body := strings.NewReader(
 				fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["%d", false],"id":1}`, rand.Intn(100000000)),
 			)
-			req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", body)
+			req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", body)
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
 
@@ -365,7 +365,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -374,7 +374,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -397,7 +397,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
-		err = erpcInstance.Bootstrap(ctx)
+		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -425,7 +425,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			body := strings.NewReader(
 				fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["%d", false],"id":1}`, rand.Intn(100000000)),
 			)
-			req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", body)
+			req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", body)
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
 
@@ -491,7 +491,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -507,7 +507,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -564,7 +564,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -582,7 +582,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -646,7 +646,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -665,7 +665,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -727,7 +727,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -743,7 +743,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -804,7 +804,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -823,7 +823,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -885,7 +885,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -901,7 +901,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -963,7 +963,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -980,7 +980,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1041,7 +1041,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1060,7 +1060,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1130,7 +1130,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -1148,7 +1148,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1167,7 +1167,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -1311,7 +1311,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1320,7 +1320,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1467,7 +1467,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1476,7 +1476,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1528,7 +1528,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1537,7 +1537,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1601,7 +1601,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1610,7 +1610,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1674,7 +1674,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1683,7 +1683,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1709,7 +1709,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 	_, _, baseURL, shutdown, _ := createServerTestFixtures(cfg, t)
 			// 	defer shutdown()
 
-			// 	req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/1", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
+			// 	req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/123", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
 			// 	require.NoError(t, err)
 			// 	req.Header.Set("Content-Type", "application/json")
 
@@ -1745,7 +1745,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1754,7 +1754,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1816,7 +1816,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 								{
 									Architecture: common.ArchitectureEvm,
 									Evm: &common.EvmNetworkConfig{
-										ChainId: 1,
+										ChainId: 123,
 									},
 								},
 							},
@@ -1825,7 +1825,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 									Type:     common.UpstreamTypeEvm,
 									Endpoint: "http://rpc1.localhost",
 									Evm: &common.EvmUpstreamConfig{
-										ChainId: 1,
+										ChainId: 123,
 									},
 									VendorName: "llama",
 									JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1874,7 +1874,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1883,7 +1883,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1934,7 +1934,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -1943,7 +1943,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -2027,7 +2027,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 		})
 
 			// 	statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_traceDebug","params":[]}`, nil, nil)
-
 			// 	assert.Equal(t, http.StatusOK, statusCode)
 			// 	assert.Contains(t, body, "0x123456")
 			// })
@@ -2043,7 +2042,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -2052,7 +2051,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -2123,7 +2122,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -2132,7 +2131,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -2178,7 +2177,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 					{
 			// 						Architecture: common.ArchitectureEvm,
 			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 					},
 			// 				},
@@ -2187,7 +2186,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// 						Type:     common.UpstreamTypeEvm,
 			// 						Endpoint: "http://rpc1.localhost",
 			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
+			// 							ChainId: 123,
 			// 						},
 			// 						VendorName: "llama",
 			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -2273,7 +2272,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 					{
 	// 						Architecture: common.ArchitectureEvm,
 	// 						Evm: &common.EvmNetworkConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 						Failsafe: []*common.FailsafeConfig{
 	// 							{
@@ -2291,7 +2290,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 						Type:     common.UpstreamTypeEvm,
 	// 						Endpoint: "http://rpc1.localhost",
 	// 						Evm: &common.EvmUpstreamConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 						Failsafe: []*common.FailsafeConfig{
 	// 							{
@@ -2361,7 +2360,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 					{
 	// 						Architecture: common.ArchitectureEvm,
 	// 						Evm: &common.EvmNetworkConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 						Failsafe: []*common.FailsafeConfig{
 	// 							{
@@ -2381,7 +2380,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 						Type:     common.UpstreamTypeEvm,
 	// 						Endpoint: "http://rpc1.localhost",
 	// 						Evm: &common.EvmUpstreamConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 						JsonRpc: &common.JsonRpcUpstreamConfig{
 	// 							SupportsBatch: &common.FALSE,
@@ -2392,7 +2391,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 						Type:     common.UpstreamTypeEvm,
 	// 						Endpoint: "http://rpc2.localhost",
 	// 						Evm: &common.EvmUpstreamConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 						JsonRpc: &common.JsonRpcUpstreamConfig{
 	// 							SupportsBatch: &common.FALSE,
@@ -2449,7 +2448,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 					{
 	// 						Architecture: common.ArchitectureEvm,
 	// 						Evm: &common.EvmNetworkConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 					},
 	// 				},
@@ -2459,7 +2458,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 						Type:     common.UpstreamTypeEvm,
 	// 						Endpoint: "http://rpc1.localhost",
 	// 						Evm: &common.EvmUpstreamConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 						JsonRpc: &common.JsonRpcUpstreamConfig{
 	// 							SupportsBatch: &common.FALSE,
@@ -2532,7 +2531,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 					{
 	// 						Architecture: common.ArchitectureEvm,
 	// 						Evm: &common.EvmNetworkConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 					},
 	// 				},
@@ -2542,7 +2541,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// 						Type:     common.UpstreamTypeEvm,
 	// 						Endpoint: "http://rpc1.localhost",
 	// 						Evm: &common.EvmUpstreamConfig{
-	// 							ChainId: 1,
+	// 							ChainId: 123,
 	// 						},
 	// 						JsonRpc: &common.JsonRpcUpstreamConfig{
 	// 							SupportsBatch: &common.FALSE,
@@ -2605,7 +2604,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2623,7 +2622,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2639,7 +2638,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2678,8 +2677,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 				"result":  "0x2222222",
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode2, _, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, map[string]string{
 			"X-ERPC-Use-Upstream": "rpc2",
@@ -2706,7 +2709,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2724,7 +2727,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2740,7 +2743,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2760,10 +2763,14 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		defer util.AssertNoPendingMocks(t, 1)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -2772,6 +2779,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			})
 		gock.New("http://rpc2.localhost").
 			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -2782,17 +2793,12 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		statusCode2, _, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, map[string]string{
+		statusCode2, _, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1}`, nil, map[string]string{
 			"use-upstream": "rpc2",
 		})
 
 		assert.Equal(t, http.StatusOK, statusCode2)
 		assert.Contains(t, body2, "0x2222222")
-
-		statusCode1, _, body1 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
-
-		assert.Equal(t, http.StatusOK, statusCode1)
-		assert.Contains(t, body1, "0x1111111")
 	})
 
 	t.Run("ShouldReturnEmptyArrayWhenHedgeAndRetryDefinedOnBothNetworkAndUpstream", func(t *testing.T) {
@@ -2818,7 +2824,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2836,7 +2842,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2855,7 +2861,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.FALSE,
@@ -2959,7 +2965,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
-							Evm:          &common.EvmNetworkConfig{ChainId: 1},
+							Evm:          &common.EvmNetworkConfig{ChainId: 123},
 							Failsafe: []*common.FailsafeConfig{
 								{
 									Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
@@ -2972,7 +2978,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Id:       "rpc1",
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
-							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+							Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -2984,7 +2990,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Id:       "rpc2",
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc2.localhost",
-							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+							Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
 							Failsafe: []*common.FailsafeConfig{
 								{
@@ -3072,7 +3078,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3080,9 +3086,9 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 						{
 							Id:       "rpc1",
 							Type:     common.UpstreamTypeEvm,
-							Endpoint: "https://rpc1.localhost",
+							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3096,7 +3102,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		gock.New("https://rpc1.localhost").
+		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -3112,6 +3118,8 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		time.Sleep(3000 * time.Millisecond)
+
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","id":111}`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x1111111")
@@ -3125,15 +3133,11 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 			Projects: []*common.ProjectConfig{
 				{
 					Id: "test_project",
-					CORS: &common.CORSConfig{
-						AllowedOrigins: []string{"https://erpc.cloud"},
-						AllowedMethods: []string{"POST"},
-					},
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3141,10 +3145,11 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 						{
 							Id:       "drpc1",
 							Type:     common.UpstreamTypeEvm,
-							Endpoint: "https://lb.drpc.org/ogrpc?network=ethereum",
+							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
+							VendorName: thirdparty.CreateDrpcVendor().Name(),
 						},
 					},
 				},
@@ -3157,7 +3162,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		gock.New("https://lb.drpc.org").
+		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
@@ -3196,7 +3201,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3206,7 +3211,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "https://lb.drpc.org/ogrpc?network=ethereum",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3245,7 +3250,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3255,7 +3260,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3290,7 +3295,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3300,7 +3305,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -3337,11 +3342,11 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 	}{
 		{
 			name:        "Basic path with all segments",
-			path:        "/myproject/evm/1",
+			path:        "/myproject/evm/123",
 			method:      "POST",
 			wantProject: "myproject",
 			wantArch:    "evm",
-			wantChain:   "1",
+			wantChain:   "123",
 			wantAdmin:   false,
 			wantErr:     false,
 		},
@@ -3392,44 +3397,44 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			path:             "/myproject/healthcheck",
 			method:           "GET",
 			preSelectedArch:  "evm",
-			preSelectedChain: "1",
+			preSelectedChain: "123",
 			wantProject:      "myproject",
 			wantArch:         "evm",
-			wantChain:        "1",
+			wantChain:        "123",
 			wantAdmin:        false,
 			wantHealthcheck:  true,
 			wantErr:          false,
 		},
 		{
 			name:            "Full path healthcheck",
-			path:            "/myproject/evm/1/healthcheck",
+			path:            "/myproject/evm/123/healthcheck",
 			method:          "GET",
 			wantProject:     "myproject",
 			wantArch:        "evm",
-			wantChain:       "1",
+			wantChain:       "123",
 			wantAdmin:       false,
 			wantHealthcheck: true,
 			wantErr:         false,
 		},
 		{
 			name:               "Project preselected, valid path",
-			path:               "/evm/1",
+			path:               "/evm/123",
 			method:             "POST",
 			preSelectedProject: "myproject",
 			wantProject:        "myproject",
 			wantArch:           "evm",
-			wantChain:          "1",
+			wantChain:          "123",
 			wantErr:            false,
 		},
 		{
 			name:               "Project and arch preselected, valid path",
-			path:               "/1",
+			path:               "/123",
 			method:             "POST",
 			preSelectedProject: "myproject",
 			preSelectedArch:    "evm",
 			wantProject:        "myproject",
 			wantArch:           "evm",
-			wantChain:          "1",
+			wantChain:          "123",
 			wantErr:            false,
 		},
 		{
@@ -3438,10 +3443,10 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			method:             "POST",
 			preSelectedProject: "myproject",
 			preSelectedArch:    "evm",
-			preSelectedChain:   "1",
+			preSelectedChain:   "123",
 			wantProject:        "myproject",
 			wantArch:           "evm",
-			wantChain:          "1",
+			wantChain:          "123",
 			wantErr:            false,
 		},
 		{
@@ -3450,30 +3455,30 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			method:             "GET",
 			preSelectedProject: "myproject",
 			preSelectedArch:    "evm",
-			preSelectedChain:   "1",
+			preSelectedChain:   "123",
 			wantProject:        "myproject",
 			wantArch:           "evm",
-			wantChain:          "1",
+			wantChain:          "123",
 			wantHealthcheck:    true,
 			wantErr:            false,
 		},
 		{
 			name:        "Invalid path - too many segments",
-			path:        "/myproject/evm/1/extra",
+			path:        "/myproject/evm/123/extra",
 			method:      "POST",
 			wantErr:     true,
 			errContains: "must only provide",
 		},
 		{
 			name:        "Invalid path - wrong architecture",
-			path:        "/myproject/x/1",
+			path:        "/myproject/x/123",
 			method:      "POST",
 			wantErr:     true,
 			errContains: "architecture is not valid",
 		},
 		{
 			name:               "Invalid path - project preselected but missing arch",
-			path:               "/1",
+			path:               "/123",
 			method:             "POST",
 			preSelectedProject: "myproject",
 			wantErr:            true,
@@ -3484,13 +3489,13 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			path:               "/evm",
 			method:             "POST",
 			preSelectedProject: "myproject",
-			preSelectedChain:   "1",
+			preSelectedChain:   "123",
 			wantErr:            true,
 			errContains:        "it is not possible to alias for project and chain WITHOUT architecture",
 		},
 		{
 			name:        "Invalid path - empty architecture segment",
-			path:        "/myproject//1",
+			path:        "/myproject//123",
 			method:      "POST",
 			wantErr:     true,
 			errContains: "architecture is not valid",
@@ -3507,10 +3512,10 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			path:             "/myproject",
 			method:           "POST",
 			preSelectedArch:  "evm",
-			preSelectedChain: "1",
+			preSelectedChain: "123",
 			wantProject:      "myproject",
 			wantArch:         "evm",
-			wantChain:        "1",
+			wantChain:        "123",
 			wantErr:          false,
 		},
 		{
@@ -3518,10 +3523,10 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			path:             "/myproject/healthcheck",
 			method:           "GET",
 			preSelectedArch:  "evm",
-			preSelectedChain: "1",
+			preSelectedChain: "123",
 			wantProject:      "myproject",
 			wantArch:         "evm",
-			wantChain:        "1",
+			wantChain:        "123",
 			wantHealthcheck:  true,
 			wantErr:          false,
 		},
@@ -3542,10 +3547,10 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 		},
 		{
 			name:        "Project and chainId provided but not architecture",
-			path:        "/myproject/1",
+			path:        "/myproject/123",
 			method:      "POST",
 			wantProject: "myproject",
-			wantChain:   "1",
+			wantChain:   "123",
 			wantErr:     true,
 			errContains: "architecture is not valid",
 		},
@@ -3554,29 +3559,29 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			path:               "/evm",
 			method:             "POST",
 			preSelectedProject: "myproject",
-			preSelectedChain:   "1",
+			preSelectedChain:   "123",
 			wantErr:            true,
 			errContains:        "it is not possible",
 		},
 		{
 			name:               "Only chainId provided",
-			path:               "/1",
+			path:               "/123",
 			method:             "POST",
 			preSelectedProject: "myproject",
 			preSelectedArch:    "evm",
 			wantProject:        "myproject",
 			wantArch:           "evm",
-			wantChain:          "1",
+			wantChain:          "123",
 			wantErr:            false,
 		},
 		{
 			name:               "Architecture and chainId provided",
-			path:               "/evm/1",
+			path:               "/evm/123",
 			method:             "POST",
 			preSelectedProject: "myproject",
 			wantProject:        "myproject",
 			wantArch:           "evm",
-			wantChain:          "1",
+			wantChain:          "123",
 			wantErr:            false,
 		},
 		{
@@ -3587,7 +3592,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			preSelectedArch:    "evm",
 			wantProject:        "myproject",
 			wantArch:           "evm",
-			wantChain:          "42161",
+			wantChain:          "123",
 			wantErr:            false,
 		},
 	}
@@ -3601,10 +3606,11 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 						preparedProjects: map[string]*PreparedProject{
 							"myproject": {
 								networksRegistry: &NetworksRegistry{
+									aliasMu: &sync.RWMutex{},
 									aliasToNetworkId: map[string]aliasEntry{
 										"arbitrum": {
 											architecture: "evm",
-											chainID:      "42161",
+											chainID:      "123",
 										},
 									},
 								},
@@ -3639,6 +3645,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 		})
 	}
 }
+
 func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	testCtx, testCtxCancel := context.WithCancel(context.Background())
 	defer testCtxCancel()
@@ -3685,8 +3692,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3740,8 +3746,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3772,8 +3777,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3804,8 +3808,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3835,7 +3838,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				upNoChainId := &common.UpstreamConfig{
 					Id:       "test-upstream",
 					Type:     common.UpstreamTypeEvm,
-					Endpoint: "http://rpc1.localhost",
+					Endpoint: "http://rpc666.localhost",
 					// To force it fail init:
 					//
 					// Evm: &common.EvmUpstreamConfig{
@@ -3846,7 +3849,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3877,8 +3880,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				time.Sleep(1000 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
@@ -3914,8 +3919,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				time.Sleep(1000 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
@@ -3960,8 +3967,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, upBad}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, upBad}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				time.Sleep(1000 * time.Millisecond)
 
 				ups1 := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*")
@@ -3998,18 +4007,35 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		{
 			name: "Eval strategy - any:evm:eth_chainId with incorrect chain ID",
 			setupServer: func(ctx context.Context) *HttpServer {
+				util.ResetGock()
+				defer util.ResetGock()
+
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+
+				// Correct chain ID
+				gock.New("http://rpc1.localhost").
+					Post("/").
+					Filter(func(request *http.Request) bool {
+						body := util.SafeReadBody(request)
+						return strings.Contains(string(body), "eth_chainId")
+					}).
+					Reply(200).
+					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)
+
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				util.ResetGock()
-				defer util.ResetGock()
+				time.Sleep(1000 * time.Millisecond)
 
 				gock.New("http://rpc1.localhost").
-					Get("/").
+					Post("/").
+					Filter(func(request *http.Request) bool {
+						body := util.SafeReadBody(request)
+						return strings.Contains(string(body), "eth_chainId")
+					}).
 					Reply(200).
 					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x666"}`)
 
@@ -4042,7 +4068,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				authReg, _ := auth.NewAuthRegistry(ctx, logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
@@ -4086,7 +4112,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4118,7 +4144,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4150,7 +4176,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4183,8 +4209,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				time.Sleep(1000 * time.Millisecond)
 
 				return &HttpServer{
 					logger: logger,
@@ -4215,7 +4243,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{}, Providers: []*common.ProviderConfig{}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4246,14 +4274,14 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				upNoChainId := &common.UpstreamConfig{
 					Id:       "test-upstream",
 					Type:     common.UpstreamTypeEvm,
-					Endpoint: "http://rpc1.localhost",
+					Endpoint: "http://rpc666.localhost",
 					// Missing ChainId to force initialization failure
 				}
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4285,8 +4313,10 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
+
+				time.Sleep(1000 * time.Millisecond)
 
 				// Cordon the upstream
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
@@ -4321,7 +4351,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}, Providers: []*common.ProviderConfig{{Id: "test-provider", Vendor: "alchemy"}}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4371,7 +4401,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, up2}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, up2}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4399,10 +4429,15 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+
 			ctx, ctxCancel := context.WithCancel(testCtx)
 			defer ctxCancel()
 
 			s := tt.setupServer(ctx)
+			time.Sleep(100 * time.Millisecond)
 			w := httptest.NewRecorder()
 			startTime := time.Now()
 
@@ -4424,6 +4459,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		})
 	}
 }
+
 func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("SimpleCallExistingNetwork", func(t *testing.T) {
 		cfg := &common.Config{
@@ -4437,7 +4473,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 							},
 						},
 					},
@@ -4457,7 +4493,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
+			"chainId": "0x1",
+		})
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
@@ -4474,7 +4512,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
+			"chainId": "1",
+		})
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 	})
@@ -4503,7 +4543,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
+		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
+			"chainId": "0x1",
+		})
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
@@ -4520,7 +4562,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
+			"chainId": "1",
+		})
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 	})
@@ -4528,7 +4572,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("RespectsOnlyNetworksWhenNoMatch", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				MaxTimeout: common.Duration(6 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4550,14 +4594,17 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
+			"chainId": "0x1",
+		})
 
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		// This request calls evm:1, which is not in the OnlyNetworks list
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
+			"chainId": "1",
+		})
 		assert.Equal(t, http.StatusNotFound, statusCode)
 		assert.Contains(t, body, "no upstreams found",
 			"expected network evm:1 to not be recognized because only evm:5 and evm:10 are allowed")
@@ -4588,8 +4635,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
+			"chainId": "0x1",
+		})
 
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -4607,7 +4655,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			})
 
 		// This request calls evm:1, which is not in the OnlyNetworks list
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
+			"chainId": "1",
+		})
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 	})
@@ -4633,7 +4683,6 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
 
 		gock.New("https://12340001234.rpc.hypersync.xyz").
 			Post("/").
@@ -4652,6 +4701,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		gock.New("https://12340001234.rpc.hypersync.xyz").
 			Post("/").
+			Times(2).
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
 			}).
@@ -4697,7 +4747,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		assert.Equal(t, http.StatusInternalServerError, statusCode)
 		assert.Contains(t, body, "Internal bummer error")
 
-		time.Sleep((3 * time.Second) + (100 * time.Millisecond))
+		time.Sleep((2 * time.Second) + (100 * time.Millisecond))
 
 		statusCode, _, body = sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
 		assert.Equal(t, http.StatusOK, statusCode)
@@ -4741,10 +4791,10 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
+			Times(2).
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
 			}).
@@ -4789,7 +4839,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		time.Sleep(200 * time.Millisecond)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, nil)
+		statusCode, _, body := sendRequest(
+			`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`,
+			nil,
+			map[string]string{"chainId": "1"},
+		)
+
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 
@@ -4804,6 +4859,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
 		assert.Equalf(t, upsCfg.Failsafe[0].Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be set")
 	})
+
 	t.Run("InheritUpstreamsOverridesAfterUpstreamDefaultsConfig", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -4854,10 +4910,10 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
+			Times(2).
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
 			}).
@@ -4947,7 +5003,12 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 
 		time.Sleep(200 * time.Millisecond)
 
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, nil)
+		statusCode, _, body := sendRequest(
+			`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`,
+			nil,
+			map[string]string{"chainId": "1"},
+		)
+
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 
@@ -4963,6 +5024,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		assert.Nilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should not be set")
 	})
 }
+
 func TestHttpServer_EvmGetLogs(t *testing.T) {
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
@@ -4981,7 +5043,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceGetLogsBlockRange: util.BoolPtr(true),
 								},
@@ -4994,7 +5056,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:                            1,
+								ChainId:                            123,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
 							Failsafe: []*common.FailsafeConfig{
@@ -5167,7 +5229,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceGetLogsBlockRange: util.BoolPtr(true),
 								},
@@ -5180,7 +5242,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:                            1,
+								ChainId:                            123,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
 							Failsafe: []*common.FailsafeConfig{
@@ -5283,7 +5345,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceGetLogsBlockRange: util.BoolPtr(true),
 								},
@@ -5303,7 +5365,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:                            1,
+								ChainId:                            123,
 								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
 							Failsafe: []*common.FailsafeConfig{
@@ -5391,6 +5453,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, errorObj["message"].(string), "missing")
 	})
 }
+
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -5412,7 +5475,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -5425,7 +5488,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -5434,7 +5497,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -5442,6 +5505,21 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			},
 		}
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		// 3. Request: eth_getBlockByNumber("latest", true)
 		requestBody := `{
@@ -5526,15 +5604,19 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// 7. Spin up the test server, make the request, and check the final result
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode, "should return 200 OK body: %s", body)
 
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(body, &respObject)
+		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body")
 
 		// 8. Confirm "result.hash" is 0x123, the newer block
@@ -5561,7 +5643,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -5574,7 +5656,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -5582,6 +5664,21 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			},
 		}
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		requestBody := `{
 			"jsonrpc": "2.0",
@@ -5629,15 +5726,19 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server, make the request, and check final result.
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(body, &respObject)
+		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
 		// Confirm result.number is "0x123" — the upstream's newer block
@@ -5645,8 +5746,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.True(t, hasResult, "response should have a 'result' field")
 		assert.Equal(t, "0x123", result["number"], "upstream's newer block should be returned as-is")
 
-		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
+
 	t.Run("ReturnsHigherAvailableBlockIfNoUpstreamHasHighestBlock", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -5663,7 +5765,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -5676,7 +5778,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -5685,7 +5787,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -5693,6 +5795,21 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			},
 		}
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		requestBody := `{
 			"jsonrpc": "2.0",
@@ -5786,15 +5903,19 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server, make the request, and check final result.
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(body, &respObject)
+		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
 		assert.Contains(t, body, "0x123")
@@ -5820,7 +5941,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -5833,7 +5954,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -5842,7 +5963,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -5872,15 +5993,21 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server, make the request, and check final result.
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		time.Sleep(100 * time.Millisecond)
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(body, &respObject)
+		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
 		assert.Contains(t, body, "block not found")
@@ -5918,7 +6045,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -5931,7 +6058,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
@@ -5940,7 +6067,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
@@ -5948,6 +6075,21 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			},
 		}
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		requestBody := `{
 			"jsonrpc": "2.0",
@@ -6041,21 +6183,26 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server, make the request, and check final result.
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(body, &respObject)
+		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
 		assert.Contains(t, body, "0x123")
 
 		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
+
 	t.Run("FailFastIfSharedStateIsDown", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -6087,7 +6234,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -6100,7 +6247,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
@@ -6109,7 +6256,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
@@ -6117,6 +6264,21 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			},
 		}
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		requestBody := `{
 			"jsonrpc": "2.0",
@@ -6210,15 +6372,19 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server, make the request, and check final result.
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(body, &respObject)
+		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
 		assert.Contains(t, body, "0x123")
@@ -6242,7 +6408,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(false),
 								},
@@ -6255,7 +6421,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -6263,6 +6429,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			},
 		}
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		// We'll request the latest block from upstream, but the poller will internally store a higher block.
 		// Because enforceHighestBlock = false, we expect no override logic (the server should just return the direct result).
@@ -6314,14 +6489,18 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server and send the request
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, body := sendRequest(requestBody, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(body, &respObject)
+		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body")
 
 		// We expect the server to return block number "0x200" exactly as the upstream did,
@@ -6330,7 +6509,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.True(t, hasResult, "response should have a 'result' field")
 		assert.Equal(t, "0x200", result["number"], "server should skip highest-block override when disabled")
 
-		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
 
 	t.Run("ShouldReturnForwardErrorIfUpstreamFailsPreserveCodes", func(t *testing.T) {
@@ -6349,7 +6528,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -6362,7 +6541,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -6378,6 +6557,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"method":  "eth_getBlockByNumber",
 			"params": ["latest", true]
 		}`
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		// Mock poller calls: "eth_syncing" => false, then "eth_getBlockByNumber(latest)" => 0x100 so that
 		// the poller thinks the chain is at block 0x100
@@ -6425,15 +6613,19 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server and make the request
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, respBody := sendRequest(requestBody, nil, nil)
 		assert.Equal(t, 503, statusCode, "should reflect upstream's 500 error")
 
 		// Verify the server forwards the original error info
 		var respObject map[string]interface{}
-		err := sonic.UnmarshalString(respBody, &respObject)
+		err = sonic.UnmarshalString(respBody, &respObject)
 		assert.NoError(t, err, "should parse error response body")
 		assert.Contains(t, respObject, "error", "should contain error field")
 
@@ -6441,7 +6633,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, float64(-3212345), errorObj["code"].(float64), "error code should match upstream error")
 		assert.Contains(t, errorObj["message"].(string), "Upstream error", "error message should match upstream message")
 
-		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
 
 	t.Run("ShouldNoopIfParamIsDirectHex", func(t *testing.T) {
@@ -6461,7 +6653,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -6474,7 +6666,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -6484,6 +6676,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}
 
 		// Mock poller calls: "eth_syncing" => false, "latest" => 0x300
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Persist().
@@ -6533,21 +6734,28 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+
 		defer shutdown()
 
 		statusCode, _, respBody := sendRequest(userRequestBody, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObj map[string]interface{}
-		err := sonic.UnmarshalString(respBody, &respObj)
+		err = sonic.UnmarshalString(respBody, &respObj)
 		require.NoError(t, err, "should parse response body")
 
 		result := respObj["result"].(map[string]interface{})
 		assert.Equal(t, "0xabc_hex", result["hash"], "direct hex param should not be overridden")
 
-		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
+
 	t.Run("ShouldNoopIfParamIsEarliestOrPending", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -6565,7 +6773,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -6578,7 +6786,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -6588,6 +6796,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}
 
 		// Mock poller calls: "eth_syncing" => false, "latest" => 0x300
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Persist().
@@ -6610,8 +6827,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		// We'll test "earliest" -> returns 0x0
 		userRequestEarliest := `{
@@ -6683,8 +6904,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		resultPending := respObjPending["result"].(map[string]interface{})
 		assert.Equal(t, "0xpending", resultPending["hash"], "pending block should be returned unchanged")
 
-		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
+
 	t.Run("ShouldOverrideIfUpstreamReturnsOlderBlockOnFinalized", func(t *testing.T) {
 		// This test covers the scenario:
 		// - User calls eth_getBlockByNumber("finalized", true)
@@ -6708,7 +6930,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -6721,8 +6943,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								ChainId:             123,
+								StatePollerInterval: common.Duration(30 * time.Second),
+								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
 						{
@@ -6730,14 +6953,32 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
-								StatePollerInterval: common.Duration(10 * time.Second),
+								ChainId:             123,
+								StatePollerInterval: common.Duration(30 * time.Second),
+								StatePollerDebounce: common.Duration(10 * time.Second),
 							},
 						},
 					},
 				},
 			},
 		}
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
 
 		// Mock poller calls so that upstreams are recognized and we learn what the "finalized" block is on each:
 		// The poller loop typically calls:
@@ -6805,8 +7046,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
-					strings.Contains(util.SafeReadBody(r), `"finalized"`)
+				b := util.SafeReadBody(r)
+				return !strings.Contains(b, `"id":42`) &&
+					strings.Contains(b, "eth_getBlockByNumber") &&
+					strings.Contains(b, `"finalized"`)
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -6841,10 +7084,44 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 					"hash":   "0x111111bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",
 				},
 			})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":42`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      42,
+				"result": map[string]interface{}{
+					"number": "0x100",
+					"hash":   "0x111111bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",
+				},
+			})
 
 		// The server sees that the poller says the highest finalized is 0x105, so it triggers a second request
 		// to a different upstream ("!rpc1") for block 0x105.
 		// We mock that request:
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				// We expect a request for exactly block 0x105.
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBlockByNumber") &&
+					strings.Contains(body, "0x105")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      42,
+				"result": map[string]interface{}{
+					"number": "0x105",
+					"hash":   "0x222222bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",
+				},
+			})
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
@@ -6864,14 +7141,18 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// Spin up the test server, send the request, check final result is 0x105 from the second upstream.
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, respBody := sendRequest(userRequest, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode, "overall request should be 200")
 
 		var respObj map[string]interface{}
-		err := sonic.UnmarshalString(respBody, &respObj)
+		err = sonic.UnmarshalString(respBody, &respObj)
 		require.NoError(t, err, "should parse response body")
 
 		result, hasResult := respObj["result"].(map[string]interface{})
@@ -6880,8 +7161,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0x105", result["number"], "the server should override the older 0x100 with finalized 0x105")
 		assert.Equal(t, "0x222222bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624", result["hash"], "the final data should come from the second upstream")
 
-		assert.Equal(t, 4, len(gock.Pending()), "unexpected pending requests")
+		assert.Equal(t, 8, len(gock.Pending()), "unexpected pending requests")
 	})
+
 	t.Run("ShouldStickWithUpstreamBlockIfItMatchesHighestOnFinalized", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -6900,7 +7182,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: common.ArchitectureEvm,
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -6913,7 +7195,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -6922,7 +7204,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -6934,6 +7216,23 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// ----------------------------
 		// Poller Mock Setup
 		// ----------------------------
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": "0x7b"})
+
 		// Mark both upstreams as "not syncing."
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -7040,15 +7339,19 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// ----------------------------
 		// Spin up the test server, send request
 		// ----------------------------
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
 
 		statusCode, _, respBody := sendRequest(userRequest, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode, "overall request should be successful")
 
 		// Parse the response
 		var respObj map[string]interface{}
-		err := sonic.UnmarshalString(respBody, &respObj)
+		err = sonic.UnmarshalString(respBody, &respObj)
 		require.NoError(t, err, "should parse response body")
 
 		// Ensure that result is still 0x100 and the same hash, meaning we used the original upstream response
@@ -7058,7 +7361,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0x100", result["number"], "should match poller's highest finalized block with no override")
 		assert.Equal(t, "0x222222bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624", result["hash"], "should remain the same as upstream's response")
 
-		assert.True(t, len(gock.Pending()) == 2, "unexpected pending requests")
+		assert.True(t, len(gock.Pending()) == 4, "unexpected pending requests")
 	})
 
 	t.Run("ShouldHandleInvalidBlockTag", func(t *testing.T) {
@@ -7078,7 +7381,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -7091,7 +7394,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7103,6 +7406,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
 		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
 		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": "0x7b"})
+
 			gock.New(rpc.Endpoint).
 				Post("").
 				Persist().
@@ -7174,7 +7486,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0xhash_for_unknownTag", result["hash"], "the block hash should match upstream exactly")
 
 		// The 2 persistent poller mocks remain pending after use
-		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
+		assert.Equal(t, 3, len(gock.Pending()), "unexpected pending requests")
 	})
 
 	t.Run("ShouldHandleSuccessfulConsensus", func(t *testing.T) {
@@ -7192,7 +7504,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -7216,7 +7528,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7225,7 +7537,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7234,7 +7546,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc3.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7246,6 +7558,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
 		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
 		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": "0x7b"})
+
 			gock.New(rpc.Endpoint).
 				Post("").
 				Persist().
@@ -7270,8 +7591,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				})
 		}
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+
 		userRequest := `{
 			"jsonrpc": "2.0",
 			"id": 5010,
@@ -7302,7 +7627,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, http.StatusOK, statusCode, "status code should indicate success")
 
 		var respObj map[string]interface{}
-		err := sonic.UnmarshalString(respBody, &respObj)
+		err = sonic.UnmarshalString(respBody, &respObj)
 		require.NoError(t, err, "should parse response body")
 
 		result, ok := respObj["result"].(map[string]interface{})
@@ -7310,6 +7635,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0x300", result["number"], "the block number should match the upstream's response")
 		assert.Equal(t, "0xhash_for_consensus", result["hash"], "the block hash should match upstream exactly")
 	})
+
 	t.Run("ShouldHandleConsensusFailureDueToLowParticipants", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -7325,7 +7651,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -7349,7 +7675,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7361,6 +7687,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
 		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
 		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": "0x7b"})
+
 			gock.New(rpc.Endpoint).
 				Post("").
 				Persist().
@@ -7385,7 +7720,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				})
 		}
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+
 		defer shutdown()
 		userRequest := `{
 			"jsonrpc": "2.0",
@@ -7418,7 +7759,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, http.StatusPreconditionFailed, statusCode, "status code should indicate failure")
 
 		var respObj map[string]interface{}
-		err := sonic.UnmarshalString(respBody, &respObj)
+		err = sonic.UnmarshalString(respBody, &respObj)
 		require.NoError(t, err, "should parse response body")
 
 		errResp, ok := respObj["error"].(map[string]interface{})
@@ -7426,6 +7767,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, float64(-32603), errResp["code"], "error code should be -32603")
 		assert.Contains(t, errResp["message"], "not enough participants", "error message should be 'not enough participants'")
 	})
+
 	t.Run("ShouldHandleConsensusFailureDueToDispute", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -7441,7 +7783,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						{
 							Architecture: "evm",
 							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
+								ChainId: 123,
 								Integrity: &common.EvmIntegrityConfig{
 									EnforceHighestBlock: util.BoolPtr(true),
 								},
@@ -7465,7 +7807,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7474,7 +7816,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc2.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7483,7 +7825,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Endpoint: "http://rpc3.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:             1,
+								ChainId:             123,
 								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
@@ -7495,6 +7837,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
 		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
 		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": "0x7b"})
+
 			gock.New(rpc.Endpoint).
 				Post("").
 				Persist().
@@ -7519,8 +7870,13 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				})
 		}
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+
 		userRequest := `{
 			"jsonrpc": "2.0",
 			"id": 5010,
@@ -7551,7 +7907,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, http.StatusConflict, statusCode, "status code should indicate failure")
 
 		var respObj map[string]interface{}
-		err := sonic.UnmarshalString(respBody, &respObj)
+		err = sonic.UnmarshalString(respBody, &respObj)
 		require.NoError(t, err, "should parse response body")
 
 		errResp, ok := respObj["error"].(map[string]interface{})
@@ -7606,7 +7962,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 
 	// Callback now set at construction; do not mutate in tests
 
-	err = erpcInstance.Bootstrap(ctx)
+	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
 	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -7623,47 +7979,14 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		}
 	}()
 
-	// Wait for server and upstreams to be ready instead of fixed sleeps.
-	// 1) wait for HTTP server to accept connections by polling a harmless OPTIONS request
-	// 2) wait until at least one upstream is registered for the network, then reorder deterministically
-	{
-		// Step 1: poll OPTIONS
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			if time.Now().After(deadline) {
-				break
-			}
-			req, _ := http.NewRequestWithContext(ctx, "OPTIONS", "http://localhost:"+fmt.Sprint(port)+"/test_project/evm/1", nil)
-			resp, err := (&http.Client{Timeout: 500 * time.Millisecond}).Do(req)
-			if err == nil {
-				if resp != nil {
-					_ = resp.Body.Close()
-				}
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		// Step 2: ensure upstreams are present and reorder predictably
-		upr := erpcInstance.projectsRegistry.preparedProjects["test_project"].upstreamsRegistry
-		deadline = time.Now().Add(10 * time.Second)
-		for {
-			if time.Now().After(deadline) {
-				break
-			}
-			if len(upr.GetAllUpstreams()) > 0 {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		upstream.ReorderUpstreams(upr)
-	}
+	time.Sleep(500 * time.Millisecond)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
 	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, map[string]string, string) {
 		rctx, cancel := context.WithTimeout(ctx, 100*time.Second)
 		defer cancel()
-		chainId := "1"
+		chainId := "123"
 		if queryParams["chainId"] != "" {
 			chainId = queryParams["chainId"]
 		}
@@ -7700,7 +8023,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	}
 
 	sendOptionsRequest := func(host string) (int, map[string]string, string) {
-		req, err := http.NewRequestWithContext(ctx, "OPTIONS", baseURL+"/test_project/evm/1", nil)
+		req, err := http.NewRequestWithContext(ctx, "OPTIONS", baseURL+"/test_project/evm/123", nil)
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		if host != "" {
@@ -7739,10 +8062,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	}, erpcInstance
 }
 
-// ---
-// Memory profiling test for eth_getLogs path with production-like failsafe/consensus (Polygon 137)
-// ---
-func TestHttpServer_Evm_GetLogs_MemoryProfile_Polygon137(t *testing.T) {
+func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	gock.EnableNetworking()
@@ -7802,7 +8122,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile_Polygon137(t *testing.T) {
 				Networks: []*common.NetworkConfig{
 					{
 						Architecture:      common.ArchitectureEvm,
-						Evm:               &common.EvmNetworkConfig{ChainId: 137, Integrity: &common.EvmIntegrityConfig{EnforceGetLogsBlockRange: util.BoolPtr(true)}},
+						Evm:               &common.EvmNetworkConfig{ChainId: 123, Integrity: &common.EvmIntegrityConfig{EnforceGetLogsBlockRange: util.BoolPtr(true)}},
 						DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryPending: util.BoolPtr(false), RetryEmpty: util.BoolPtr(true)},
 						Failsafe: []*common.FailsafeConfig{
 							{
@@ -7822,7 +8142,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile_Polygon137(t *testing.T) {
 						},
 					},
 				},
-				Upstreams: []*common.UpstreamConfig{{Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 137}}, {Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 137}}, {Type: common.UpstreamTypeEvm, Endpoint: "http://rpc3.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 137}}, {Type: common.UpstreamTypeEvm, Endpoint: "http://rpc4.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 137}}},
+				Upstreams: []*common.UpstreamConfig{{Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}, {Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}, {Type: common.UpstreamTypeEvm, Endpoint: "http://rpc3.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}, {Type: common.UpstreamTypeEvm, Endpoint: "http://rpc4.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}},
 			},
 		},
 		RateLimiters: &common.RateLimiterConfig{},
@@ -7833,7 +8153,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile_Polygon137(t *testing.T) {
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 	require.NoError(t, err)
-	require.NoError(t, erpcInstance.Bootstrap(ctx))
+	erpcInstance.Bootstrap(ctx)
 
 	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
@@ -7848,7 +8168,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile_Polygon137(t *testing.T) {
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 	send := func() (*http.Response, string, error) {
 		payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0xfaeff2","toBlock":"0xfaeff8","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}],"id":12345}`
-		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/137", strings.NewReader(payload))
+		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/123", strings.NewReader(payload))
 		if err != nil {
 			return nil, "", err
 		}

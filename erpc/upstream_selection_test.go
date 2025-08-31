@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,6 +194,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 
 			// Setup network with the failsafe config
 			network := setupTestNetworkForTiming(t, ctx, tc.failsafeConfig)
+			upstream.ReorderUpstreams(network.upstreamsRegistry)
 
 			// Create request
 			req := common.NewNormalizedRequest([]byte(`{
@@ -387,6 +390,9 @@ func TestMixedResponseTypes(t *testing.T) {
 				// Upstream 1: Returns empty array
 				gock.New("http://rpc1.localhost").
 					Post("").
+					Filter(func(request *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(request), "eth_getTransactionReceipt")
+					}).
 					Times(1).
 					Reply(200).
 					JSON(map[string]interface{}{
@@ -398,6 +404,9 @@ func TestMixedResponseTypes(t *testing.T) {
 				// Upstream 2: Returns non-empty result
 				gock.New("http://rpc2.localhost").
 					Post("").
+					Filter(func(request *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(request), "eth_getTransactionReceipt")
+					}).
 					Times(1).
 					Reply(200).
 					JSON(map[string]interface{}{
@@ -416,6 +425,9 @@ func TestMixedResponseTypes(t *testing.T) {
 				// Only set up mock for rpc1 since execution errors don't retry
 				gock.New("http://rpc1.localhost").
 					Post("").
+					Filter(func(request *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(request), "eth_getTransactionReceipt")
+					}).
 					Times(1).
 					Reply(200).
 					JSON(map[string]interface{}{
@@ -437,6 +449,9 @@ func TestMixedResponseTypes(t *testing.T) {
 				// Upstream 1: Method not found
 				gock.New("http://rpc1.localhost").
 					Post("").
+					Filter(func(request *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(request), "eth_getTransactionReceipt")
+					}).
 					Times(1).
 					Reply(200).
 					JSON(map[string]interface{}{
@@ -451,6 +466,9 @@ func TestMixedResponseTypes(t *testing.T) {
 				// Upstream 2: Success
 				gock.New("http://rpc2.localhost").
 					Post("").
+					Filter(func(request *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(request), "eth_getTransactionReceipt")
+					}).
 					Times(1).
 					Reply(200).
 					JSON(map[string]interface{}{
@@ -482,6 +500,9 @@ func TestMixedResponseTypes(t *testing.T) {
 				},
 			}
 			network := setupTestNetworkForTiming(t, ctx, failsafeConfig)
+
+			time.Sleep(100 * time.Millisecond)
+			upstream.ReorderUpstreams(network.upstreamsRegistry)
 
 			// Create request with retryEmpty directive
 			req := common.NewNormalizedRequest([]byte(`{
@@ -599,6 +620,7 @@ func TestFourAttemptScenario(t *testing.T) {
 	}
 
 	network := setupTestNetworkWithFourUpstreams(t, ctx, failsafeConfig)
+	upstream.ReorderUpstreams(network.upstreamsRegistry)
 
 	// Create request
 	req := common.NewNormalizedRequest([]byte(`{
@@ -841,8 +863,8 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 	)
 	require.NoError(t, err)
 
-	err = upstreamsRegistry.Bootstrap(ctx)
-	require.NoError(t, err)
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)

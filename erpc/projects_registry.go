@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -63,24 +62,10 @@ func NewProjectsRegistry(
 	return reg, nil
 }
 
-func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) error {
-	wg := sync.WaitGroup{}
-	wg.Add(len(r.preparedProjects))
-	var errs []error
+func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) {
 	for _, prj := range r.preparedProjects {
-		go func(prj *PreparedProject) {
-			defer wg.Done()
-			err := prj.Bootstrap(appCtx)
-			if err != nil {
-				errs = append(errs, err)
-			}
-		}(prj)
+		prj.Bootstrap(appCtx)
 	}
-	wg.Wait()
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
 }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
@@ -139,7 +124,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			if ntwId == "" {
 				return fmt.Errorf("upstream %s has no network id set yet", ups.Id())
 			}
-			ntw, err := pp.networksRegistry.GetNetwork(ntwId)
+			ntw, err := pp.networksRegistry.GetNetwork(r.appCtx, ntwId)
 			if err != nil {
 				return err
 			}

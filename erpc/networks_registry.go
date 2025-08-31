@@ -27,6 +27,7 @@ type NetworksRegistry struct {
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     sync.Map // map[string]*Network
 	aliasToNetworkId     map[string]aliasEntry
+	aliasMu              *sync.RWMutex
 	initializer          *util.Initializer
 	logger               *zerolog.Logger
 }
@@ -55,8 +56,22 @@ func NewNetworksRegistry(
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     sync.Map{},
 		aliasToNetworkId:     map[string]aliasEntry{},
+		aliasMu:              &sync.RWMutex{},
 		initializer:          util.NewInitializer(appCtx, &lg, nil),
 		logger:               logger,
+	}
+	// Eagerly register aliases from statically defined networks so aliasing works immediately
+	if project != nil && project.Config != nil {
+		project.cfgMu.RLock()
+		for _, nwCfg := range project.Config.Networks {
+			if nwCfg != nil && nwCfg.Alias != "" {
+				parts := strings.Split(nwCfg.NetworkId(), ":")
+				if len(parts) == 2 {
+					r.registerAlias(nwCfg.Alias, parts[0], parts[1])
+				}
+			}
+		}
+		project.cfgMu.RUnlock()
 	}
 	return r
 }
@@ -147,40 +162,26 @@ func NewNetwork(
 	return network, nil
 }
 
-func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
-	// Auto register statically-defined networks
+func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) {
+	// Auto register statically-defined networks in background (non-blocking)
 	nr.project.cfgMu.RLock()
-	defer nr.project.cfgMu.RUnlock()
-
-	// Populate alias map for statically defined networks
-	for _, nwCfg := range nr.project.Config.Networks {
-		if nwCfg.Alias != "" {
-			parts := strings.Split(nwCfg.NetworkId(), ":")
-			if len(parts) == 2 {
-				if _, ok := nr.aliasToNetworkId[nwCfg.Alias]; ok {
-					return fmt.Errorf("alias %s already registered for network %s", nwCfg.Alias, nwCfg.NetworkId())
-				}
-				nr.aliasToNetworkId[nwCfg.Alias] = aliasEntry{
-					architecture: parts[0],
-					chainID:      parts[1],
-				}
-				nr.logger.Debug().Str("alias", nwCfg.Alias).Str("networkId", nwCfg.NetworkId()).Msg("registered network alias")
-			}
-		}
-	}
 	nl := nr.project.Config.Networks
+	nr.project.cfgMu.RUnlock()
+
 	tasks := []*util.BootstrapTask{}
 	for _, nwCfg := range nl {
 		tasks = append(tasks, nr.buildNetworkBootstrapTask(nwCfg.NetworkId()))
 	}
-	err := nr.initializer.ExecuteTasks(appCtx, tasks...)
-	if err != nil {
-		return err
-	}
-	return nil
+	go func() {
+		if err := nr.initializer.ExecuteTasks(appCtx, tasks...); err != nil {
+			nr.logger.Error().Err(err).Interface("status", nr.initializer.Status()).Msg("failed to bootstrap networks in background")
+		} else {
+			nr.logger.Info().Interface("status", nr.initializer.Status()).Msg("networks bootstrap completed")
+		}
+	}()
 }
 
-func (nr *NetworksRegistry) GetNetwork(networkId string) (*Network, error) {
+func (nr *NetworksRegistry) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
 	// If network already prepared, return it
 	if pn, ok := nr.preparedNetworks.Load(networkId); ok {
 		return pn.(*Network), nil
@@ -190,9 +191,8 @@ func (nr *NetworksRegistry) GetNetwork(networkId string) (*Network, error) {
 		return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid network id format: '%s' either use a network alias (/main/arbitrum) or a valid network id (/main/evm/42161)", networkId))
 	}
 
-	// Use appCtx because even if current request times out we still want to keep bootstrapping the network
-	err := nr.initializer.ExecuteTasks(nr.appCtx, nr.buildNetworkBootstrapTask(networkId))
-	if err != nil {
+	// Schedule tasks and wait using the caller's context; tasks run on appCtx internally
+	if err := nr.initializer.ExecuteTasks(ctx, nr.buildNetworkBootstrapTask(networkId)); err != nil {
 		return nil, err
 	}
 
@@ -215,7 +215,10 @@ func (nr *NetworksRegistry) GetNetworks() []*Network {
 }
 
 func (nr *NetworksRegistry) ResolveAlias(alias string) (string, string) {
-	if entry, ok := nr.aliasToNetworkId[alias]; ok {
+	nr.aliasMu.RLock()
+	entry, ok := nr.aliasToNetworkId[alias]
+	nr.aliasMu.RUnlock()
+	if ok {
 		return entry.architecture, entry.chainID
 	}
 	return "", ""
@@ -276,8 +279,32 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	default:
 		return nil, errors.New("unknown network architecture")
 	}
-
+	// Register alias for lazy-created networks to support alias-based routing
+	if nwCfg.Alias != "" {
+		parts := strings.Split(nwCfg.NetworkId(), ":")
+		if len(parts) == 2 {
+			nr.registerAlias(nwCfg.Alias, parts[0], parts[1])
+		}
+	}
 	return network, nil
+}
+
+// registerAlias safely registers an alias -> (architecture, chainID) mapping.
+// If the alias already exists with a different target, it logs and keeps the existing one.
+func (nr *NetworksRegistry) registerAlias(alias, arch, chain string) {
+	if alias == "" || arch == "" || chain == "" {
+		return
+	}
+	nr.aliasMu.Lock()
+	defer nr.aliasMu.Unlock()
+	if existing, ok := nr.aliasToNetworkId[alias]; ok {
+		if existing.architecture != arch || existing.chainID != chain {
+			nr.logger.Warn().Str("alias", alias).Str("existing", existing.architecture+":"+existing.chainID).Str("new", arch+":"+chain).Msg("skipping duplicate alias registration with different target")
+		}
+		return
+	}
+	nr.aliasToNetworkId[alias] = aliasEntry{architecture: arch, chainID: chain}
+	nr.logger.Debug().Str("alias", alias).Str("networkId", arch+":"+chain).Msg("registered network alias")
 }
 
 func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.NetworkConfig, error) {

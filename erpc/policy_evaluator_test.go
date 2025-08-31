@@ -210,6 +210,8 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer cancel()
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
+		upstream.ReorderUpstreams(ntw.upstreamsRegistry)
+
 		// Create eval function that marks all upstreams as inactive
 		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
@@ -1243,14 +1245,17 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		// Set error rate of 0.4 (should be active for method2, inactive for method3)
-		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamFailure(ups1, "method2", fmt.Errorf("test problem"))
-		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.RecordUpstreamRequest(ups1, "method3")
-		mt.RecordUpstreamFailure(ups1, "method3", fmt.Errorf("test problem"))
-		mt.RecordUpstreamRequest(ups1, "method3")
-		mt.RecordUpstreamDuration(ups1, "method3", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		for i := 0; i < 10; i++ {
+			mt.RecordUpstreamRequest(ups1, "method2")
+			mt.RecordUpstreamFailure(ups1, "method2", fmt.Errorf("test problem"))
+			mt.RecordUpstreamRequest(ups1, "method2")
+			mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+			mt.RecordUpstreamRequest(ups1, "method3")
+			mt.RecordUpstreamFailure(ups1, "method3", fmt.Errorf("test problem 1"))
+			mt.RecordUpstreamFailure(ups1, "method3", fmt.Errorf("test problem 2"))
+			mt.RecordUpstreamRequest(ups1, "method3")
+			mt.RecordUpstreamDuration(ups1, "method3", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		}
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1300,9 +1305,13 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set high error rate for method1
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 1"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 2"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 3"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 1"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 2"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 3"))
 
 		// Set low error rate for method2
 		mt.RecordUpstreamRequest(ups1, "method2")
@@ -1788,10 +1797,9 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		1*time.Second,
 		nil,
 	)
-	err = upr.Bootstrap(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
 	err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	if err != nil {
 		t.Fatal(err)

@@ -161,7 +161,7 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 	// Setup mocks - upstream1 returns small, upstream2 returns medium, upstream3 returns large
 	// All should be in the same consensus group since blockTimestamp is ignored
 	gock.New("http://rpc1.localhost").
-		Post("/").
+		Post("").
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
 			return strings.Contains(body, "eth_getTransactionReceipt")
@@ -171,7 +171,7 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 		JSON(smallReceipt)
 
 	gock.New("http://rpc2.localhost").
-		Post("/").
+		Post("").
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
 			return strings.Contains(body, "eth_getTransactionReceipt")
@@ -181,7 +181,7 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 		JSON(mediumReceipt)
 
 	gock.New("http://rpc3.localhost").
-		Post("/").
+		Post("").
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
 			return strings.Contains(body, "eth_getTransactionReceipt")

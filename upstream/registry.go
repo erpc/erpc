@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -91,13 +92,17 @@ func NewUpstreamsRegistry(
 	}
 }
 
-func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
-	err := u.scheduleScoreCalculationTimers(ctx)
-	if err != nil {
-		return err
-	}
+func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
+	u.scheduleScoreCalculationTimers(ctx)
 
-	return u.registerUpstream(u.appCtx, u.upsCfg...)
+	// Fire-and-forget: register upstreams in background to avoid blocking service startup
+	go func() {
+		if err := u.registerUpstreams(u.appCtx, u.upsCfg...); err != nil {
+			u.logger.Error().Err(err).Msg("failed to register upstreams in background")
+		} else {
+			u.logger.Info().Msg("upstreams registration completed")
+		}
+	}()
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
@@ -132,61 +137,85 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 	networkMu.Lock()
 	defer networkMu.Unlock()
 
-	allProviders := u.providersRegistry.GetAllProviders()
+	// 1) Static upstreams are expected to be registered via Bootstrap() already.
 
+	// 2) Start execution of provider-based upstreams tasks in background; errors are logged but do not fail the caller
+	allProviders := u.providersRegistry.GetAllProviders()
 	var tasks []*util.BootstrapTask
 	for _, p := range allProviders {
-		// Capture loop variable in local scope
 		provider := p
 		t := u.buildProviderBootstrapTask(provider, networkId)
 		tasks = append(tasks, t)
 	}
-	errCh := make(chan error, 1)
 	go func() {
 		if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
 			u.logger.Error().
 				Err(err).
 				Str("networkId", networkId).
+				Interface("status", u.initializer.Status()).
 				Msg("failed to execute provider bootstrap tasks")
-			errCh <- err
+		} else {
+			u.logger.Info().
+				Str("networkId", networkId).
+				Interface("status", u.initializer.Status()).
+				Msg("provider bootstrap tasks executed successfully")
 		}
-		close(errCh)
 	}()
 
-	// Wait for at least one upstream, completion, or error
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
+	// Require only one ready upstream to start handling requests, maximum 5 seconds
+	minReady := 1
+	waitTimeout := 5 * time.Second
 
+	// 3) Wait until either static upstreams or provider-based upstreams are ready, or timeout/context ends
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	timeoutCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-errCh:
-			return err
-		case <-ticker.C:
-			// check if the initializer has failed
-			status := u.initializer.Status()
+		case <-timeoutCtx.Done():
+			err := timeoutCtx.Err()
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				// Timeout reached, check if we have any upstreams ready
+				u.upstreamsMu.RLock()
+				upstreamsCount := len(u.networkUpstreams[networkId])
+				u.upstreamsMu.RUnlock()
 
-			if status.State == util.StateFailed {
-				return fmt.Errorf("initialization failed with state: %s", status.State.String())
+				if upstreamsCount > 0 {
+					u.logger.Info().
+						Str("networkId", networkId).
+						Int("upstreamsCount", upstreamsCount).
+						Int("minReady", minReady).
+						Dur("waitTimeout", waitTimeout).
+						Msg("timeout reached but some upstreams are ready for network initialization")
+					return nil
+				}
+				return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+			}
+			return timeoutCtx.Err()
+		case <-ticker.C:
+			state := u.initializer.State()
+			if state == util.StateFailed {
+				return u.initializer.Errors()
+			} else if state == util.StateReady {
+				return nil
 			}
 
-			// Check if we have at least one upstream for this network
+			// Check how many upstreams are ready for this network
 			u.upstreamsMu.RLock()
 			upstreamsCount := len(u.networkUpstreams[networkId])
 			u.upstreamsMu.RUnlock()
 
-			if upstreamsCount == 0 {
+			if upstreamsCount < minReady {
 				continue
 			}
 
-			if upstreamsCount > 0 {
-				u.logger.Info().
-					Str("networkId", networkId).
-					Int("upstreamsCount", upstreamsCount).
-					Msg("at least one upstream is available for network, continuing initialization")
-				return nil
-			}
+			u.logger.Info().
+				Str("networkId", networkId).
+				Int("upstreamsCount", upstreamsCount).
+				Int("minReady", minReady).
+				Msg("upstreams ready for network initialization")
+			return nil
 		}
 	}
 }
@@ -393,7 +422,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
+func (u *UpstreamsRegistry) registerUpstreams(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
 	tasks := make([]*util.BootstrapTask, 0)
 	for _, c := range upsCfgs {
 		upsCfg := c
@@ -484,12 +513,7 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 			} else {
 				lg.Info().Msgf("registering %d upstream(s) from provider", len(upsCfgs))
 			}
-			err = u.registerUpstream(ctx, upsCfgs...)
-			if err != nil {
-				lg.Error().Err(err).Msg("failed to bootstrap upstreams from provider")
-				return err
-			}
-			return nil
+			return u.registerUpstreams(ctx, upsCfgs...)
 		},
 	)
 }
@@ -621,9 +645,9 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		Msg("upstream registered and initialized in registry")
 }
 
-func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {
+func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) {
 	if u.scoreRefreshInterval == 0 {
-		return nil
+		return
 	}
 
 	go func() {
@@ -641,8 +665,6 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 			}
 		}
 	}()
-
-	return nil
 }
 
 func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, method string, upsList []*Upstream) {
@@ -721,6 +743,33 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 
 	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)
 	u.sortedUpstreams[networkId][method] = upsList
+
+	if method == "*" && u.logger.GetLevel() <= zerolog.DebugLevel {
+		scoresArr := make([]float64, len(upsList))
+		upstreamNames := make([]string, len(upsList))
+		for i, ups := range upsList {
+			upstreamNames[i] = ups.Id()
+			scoresArr[i] = u.upstreamScores[ups.Id()][networkId][method]
+		}
+		u.logger.Debug().
+			Str("networkId", networkId).
+			Floats64("scores", scoresArr).
+			Strs("orderedUpstreams", upstreamNames).
+			Msg("sorted upstreams for network")
+	} else if u.logger.GetLevel() <= zerolog.TraceLevel {
+		scoresArr := make([]float64, len(upsList))
+		upstreamNames := make([]string, len(upsList))
+		for i, ups := range upsList {
+			upstreamNames[i] = ups.Id()
+			scoresArr[i] = u.upstreamScores[ups.Id()][networkId][method]
+		}
+		u.logger.Trace().
+			Str("networkId", networkId).
+			Str("method", method).
+			Floats64("scores", scoresArr).
+			Strs("orderedUpstreams", upstreamNames).
+			Msg("sorted upstreams for method")
+	}
 }
 
 func (u *UpstreamsRegistry) calculateScore(

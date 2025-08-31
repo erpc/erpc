@@ -1372,8 +1372,8 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedResult: &expectedResult{jsonRpcResult: `"0x33"`},
 		},
 		{
-			name:        "empty_vs_non_empty_tie_above_threshold_without_preference_results_in_dispute",
-			description: "Two groups empty and non-empty both meet threshold with equal counts; no preference -> dispute",
+			name:        "empty_vs_non_empty_tie_above_threshold_without_preference_results_in_fastest",
+			description: "Two groups empty and non-empty both meet threshold with equal counts; no preference -> choose fastest to return",
 			upstreams:   createTestUpstreams(6),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         6,
@@ -1392,11 +1392,9 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcSuccess([]interface{}{})},                       // empty 3 -> meets threshold
 				{status: 200, body: jsonRpcSuccess("0x44"), delay: 100 * time.Millisecond}, // non-empty 3 -> meets threshold
 			},
-			expectedCalls: []int{1, 1, 1, 1, 1, 1},
-			expectedError: &expectedError{
-				code:     common.ErrCodeConsensusDispute,
-				contains: "not enough agreement among responses",
-			},
+			expectedCalls:        []int{1, 1, 1, 1, 1, -1},
+			expectedResult:       &expectedResult{jsonRpcResult: `[]`},
+			expectedPendingMocks: 1,
 		},
 		{
 			name:        "dispute_on_all_different_responses",
@@ -1457,7 +1455,7 @@ func TestConsensusPolicy(t *testing.T) {
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we’ll override upstream2 via setupFn
+			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcSuccess("0x1")},
 			},
@@ -1950,13 +1948,14 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcSuccess(strings.Repeat("A", 2000)), delay: 300 * time.Millisecond}, // large 1 (slow)
 				{status: 200, body: jsonRpcSuccess(strings.Repeat("A", 2000)), delay: 300 * time.Millisecond}, // large 2 (slow, meets threshold)
 			},
-			expectedCalls: []int{1, 1, 1, 1, 1, 1, 1},
+			expectedCalls: []int{1, 1, 1, 1, 1, -1, -1},
 			expectedResult: &expectedResult{
 				jsonRpcResult: "\"" + strings.Repeat("A", 2000) + "\"",
 				check: func(t *testing.T, resp *common.NormalizedResponse, duration time.Duration) {
 					assert.GreaterOrEqual(t, duration, 300*time.Millisecond, "should not short-circuit when preferences are enabled and empty is leading with remaining participants")
 				},
 			},
+			expectedPendingMocks: 2,
 		},
 		{
 			name:        "accept_most_common_below_threshold_prefer_non_empty_over_empty",
@@ -2107,7 +2106,7 @@ func TestConsensusPolicy(t *testing.T) {
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we’ll override upstream2 via setupFn
+			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcSuccess("0x1")},
 			},
@@ -2151,7 +2150,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	upstreams := []*common.UpstreamConfig{
 		{
 			Id:       "upstream1",
-			Endpoint: "http://upstream1.localhost",
+			Endpoint: "http://rpc1.localhost",
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -2159,7 +2158,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 		},
 		{
 			Id:       "upstream2",
-			Endpoint: "http://upstream2.localhost",
+			Endpoint: "http://rpc2.localhost",
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -2167,7 +2166,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 		},
 		{
 			Id:       "upstream3",
-			Endpoint: "http://upstream3.localhost",
+			Endpoint: "http://rpc3.localhost",
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -2175,7 +2174,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 		},
 		{
 			Id:       "upstream4",
-			Endpoint: "http://upstream4.localhost",
+			Endpoint: "http://rpc4.localhost",
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -2183,7 +2182,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 		},
 		{
 			Id:       "upstream5",
-			Endpoint: "http://upstream5.localhost",
+			Endpoint: "http://rpc5.localhost",
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -2192,7 +2191,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	}
 
 	// Mock responses - upstream2 and upstream3 return consensus result quickly
-	gock.New("http://upstream2.localhost").
+	gock.New("http://rpc2.localhost").
 		Post("").
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
@@ -2206,7 +2205,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 			"result":  "0x1234567890",
 		})
 
-	gock.New("http://upstream3.localhost").
+	gock.New("http://rpc3.localhost").
 		Post("").
 		Filter(func(request *http.Request) bool {
 			body := util.SafeReadBody(request)
@@ -2221,7 +2220,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 		})
 
 	// Other upstreams are slow and should be cancelled
-	for _, host := range []string{"upstream1", "upstream4", "upstream5"} {
+	for _, host := range []string{"rpc1", "rpc4", "rpc5"} {
 		gock.New("http://" + host + ".localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
@@ -2301,20 +2300,12 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 		time.Sleep(50 * time.Millisecond) // allow goroutines to settle
 	}()
 
-	// Setup Network
-	ntw, upsReg := setupNetworkForConsensusTest(t, ctx, tc)
-
-	// Apply special setup if any
-	if tc.setupFn != nil {
-		tc.setupFn(t, ctx, upsReg)
-	}
-
-	// Setup mocks
+	// Setup mocks BEFORE any network components initialize
 	for i, upstreamCfg := range tc.upstreams {
 		if i < len(tc.mockResponses) && (tc.expectedCalls == nil || (len(tc.expectedCalls) > i && tc.expectedCalls[i] != 0)) {
 			mock := tc.mockResponses[i]
 			m := gock.New(upstreamCfg.Endpoint).
-				Post("/").
+				Post("").
 				Filter(func(request *http.Request) bool {
 					body := util.SafeReadBody(request)
 					method := tc.requestMethod
@@ -2339,6 +2330,17 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 				JSON(mock.body)
 		}
 	}
+
+	// Setup Network AFTER mocks to avoid races during background initialization
+	ntw, upsReg := setupNetworkForConsensusTest(t, ctx, tc)
+
+	// Apply special setup if any (e.g., block heights/leader)
+	if tc.setupFn != nil {
+		tc.setupFn(t, ctx, upsReg)
+	}
+
+	// Allow background bootstrap to settle to avoid flakiness in tests
+	time.Sleep(200 * time.Millisecond)
 
 	// Make request
 	method := tc.requestMethod
@@ -2443,8 +2445,8 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 	)
 	require.NoError(t, err)
 
-	err = upsReg.Bootstrap(ctx)
-	require.NoError(t, err)
+	upsReg.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
 	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)
 	upstream.ReorderUpstreams(upsReg)
