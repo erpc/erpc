@@ -31,36 +31,9 @@ type ProjectHealthInfo struct {
 	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
 }
 
-func (p *PreparedProject) Bootstrap(appCtx context.Context) error {
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-	var errs []error
-	ermu := &sync.Mutex{}
-	go func() {
-		defer wg.Done()
-		err := p.upstreamsRegistry.Bootstrap(appCtx)
-		if err != nil {
-			ermu.Lock()
-			errs = append(errs, err)
-			ermu.Unlock()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		err := p.networksRegistry.Bootstrap(appCtx)
-		if err != nil {
-			ermu.Lock()
-			errs = append(errs, err)
-			ermu.Unlock()
-		}
-	}()
-	wg.Wait()
-	if len(errs) > 0 {
-		for _, err := range errs {
-			p.Logger.Warn().Err(err).Msgf("will continue with partial initialization")
-		}
-	}
-	return nil
+func (p *PreparedProject) Bootstrap(appCtx context.Context) {
+	p.upstreamsRegistry.Bootstrap(appCtx)
+	p.networksRegistry.Bootstrap(appCtx)
 }
 
 func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Network, error) {

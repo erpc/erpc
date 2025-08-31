@@ -134,10 +134,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upsReg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upsReg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -213,7 +211,10 @@ func TestNetwork_Forward(t *testing.T) {
 			panic(err)
 		}
 		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
-		if err := upr.Bootstrap(ctx); err != nil {
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
+		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 			t.Fatal(err)
 		}
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
@@ -315,9 +316,9 @@ func TestNetwork_Forward(t *testing.T) {
 			panic(err)
 		}
 		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2, up3}, ssr, rlr, vr, pr, nil, mt, 0, nil)
-		if err := upr.Bootstrap(ctx); err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 			t.Fatal(err)
 		}
@@ -414,9 +415,8 @@ func TestNetwork_Forward(t *testing.T) {
 			panic(err)
 		}
 		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
-		if err := upr.Bootstrap(ctx); err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 			t.Fatal(err)
 		}
@@ -494,9 +494,8 @@ func TestNetwork_Forward(t *testing.T) {
 			panic(err)
 		}
 		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
-		if err := upr.Bootstrap(ctx); err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 			t.Fatal(err)
 		}
@@ -566,9 +565,8 @@ func TestNetwork_Forward(t *testing.T) {
 			panic(err)
 		}
 		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
-		if err := upr.Bootstrap(ctx); err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 			t.Fatal(err)
 		}
@@ -696,10 +694,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upsReg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upsReg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -797,10 +793,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -919,10 +913,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -1070,10 +1062,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -1238,10 +1228,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -1397,10 +1385,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -1596,10 +1582,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -1808,10 +1792,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -2002,10 +1984,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -2194,7 +2174,8 @@ func TestNetwork_Forward(t *testing.T) {
 		})
 
 		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
-		_ = upr.Bootstrap(ctx)
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		_ = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 
 		// Create clients
@@ -2357,10 +2338,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -2567,10 +2546,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -2759,10 +2736,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -2945,10 +2920,8 @@ func TestNetwork_Forward(t *testing.T) {
 			0,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -3157,10 +3130,8 @@ func TestNetwork_Forward(t *testing.T) {
 			0,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -3380,9 +3351,8 @@ func TestNetwork_Forward(t *testing.T) {
 			0,
 			nil,
 		)
-		if err := upr.Bootstrap(ctx); err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 			t.Fatal(err)
 		}
@@ -3573,10 +3543,8 @@ func TestNetwork_Forward(t *testing.T) {
 			0,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -3763,10 +3731,8 @@ func TestNetwork_Forward(t *testing.T) {
 			0,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -3934,10 +3900,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -4068,10 +4032,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -4229,10 +4191,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -4383,10 +4343,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -4519,10 +4477,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -4647,10 +4603,8 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 		)
 
-		err = upsReg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upsReg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
@@ -4767,10 +4721,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -4900,10 +4852,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -5030,10 +4980,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -5165,10 +5113,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -5306,10 +5252,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -5461,10 +5405,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -5615,10 +5557,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -5768,10 +5708,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -5904,10 +5842,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Hour,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -6047,10 +5983,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		time.Sleep(50 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
@@ -6195,10 +6129,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -6343,10 +6275,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -6483,10 +6413,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -6619,10 +6547,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -6773,10 +6699,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -6930,10 +6854,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
@@ -7066,10 +6988,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
@@ -7190,10 +7110,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
@@ -7314,10 +7232,8 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
-		}
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
@@ -7426,8 +7342,8 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 		)
 
-		err = upstreamsRegistry.Bootstrap(ctx)
-		assert.NoError(t, err)
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
 		assert.NoError(t, err)
@@ -7630,8 +7546,9 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			nil,
 		)
-		err = upr.Bootstrap(ctx)
-		assert.NoError(t, err)
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
 		ntw, err := NewNetwork(
 			ctx,
 			&log.Logger,
@@ -8144,7 +8061,6 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			"Expected error rate below 70%% after successful requests, got %.2f%%",
 			metrics.ErrorRate()*100)
 	})
-
 }
 
 var testMu sync.Mutex
@@ -9974,6 +9890,16 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		const failAttempts = 2
 		const herd = 1000
 
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
 		// First eth_getBlockByNumber("latest") - Succeed
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -10084,7 +10010,8 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
 			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
 		)
-		require.NoError(t, upr.Bootstrap(ctx))
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		ntwCfg := &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
@@ -10149,7 +10076,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// No pending or unmatched mocks remain
 		assert.False(t, gock.HasUnmatchedRequest(), "Unexpected gock requests")
 		// finalized & syncing mocks are persistent, so they remain pending
-		require.Equal(t, 2, len(gock.Pending()), "expected only the 2 persistent mocks to remain")
+		require.Equal(t, 3, len(gock.Pending()), "expected only the 3 persistent mocks to remain")
 	})
 
 	t.Run("ForwardThunderingHerdGetLatestBlockWithoutErrors", func(t *testing.T) {
@@ -10160,6 +10087,16 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		//------------------------------------------------------------
 		// 1.  RPC stubs
 		//------------------------------------------------------------
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
 		const herd = 10_000
 		// First eth_getBlockByNumber("latest") during the herd – slow so the lock stays held
 		gock.New("http://rpc1.localhost").
@@ -10250,7 +10187,8 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
 			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
 		)
-		require.NoError(t, upr.Bootstrap(ctx))
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		ntwCfg := &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
@@ -10320,6 +10258,16 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		//------------------------------------------------------------
 
 		// eth_getBlockByNumber("latest") – fast, unlimited
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Persist().
@@ -10406,7 +10354,8 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		}
 		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
 
-		require.NoError(t, upr.Bootstrap(ctx))
+		upr.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, ntw.Bootstrap(ctx))
 
@@ -10633,8 +10582,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 	)
 	assert.NoError(t, err)
 
-	err = upstreamsRegistry.Bootstrap(ctx)
-	assert.NoError(t, err)
+	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
@@ -10666,6 +10614,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 
 	return network
 }
+
 func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 	t.Run("EvmHighestLatestBlockNumber_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
 		util.ResetGock()
@@ -10692,6 +10641,25 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+
+		gock.New("http://syncing.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+		gock.New("http://synced.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
 
 		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
@@ -10748,11 +10716,11 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = upstreamsRegistry.Bootstrap(ctx)
-		require.NoError(t, err)
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
-		err = upstreamsRegistry.Bootstrap(ctx)
-		require.NoError(t, err)
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
 		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
@@ -10831,6 +10799,25 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			},
 		}
 
+		gock.New("http://excluded.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+		gock.New("http://included.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
 		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
@@ -10887,8 +10874,8 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		err = upstreamsRegistry.Bootstrap(ctx)
-		require.NoError(t, err)
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
 		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")

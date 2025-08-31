@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -63,27 +62,10 @@ func NewProjectsRegistry(
 	return reg, nil
 }
 
-func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) error {
-	wg := sync.WaitGroup{}
-	wg.Add(len(r.preparedProjects))
-	var errs []error
-	var ermu sync.Mutex
+func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) {
 	for _, prj := range r.preparedProjects {
-		go func(prj *PreparedProject) {
-			defer wg.Done()
-			err := prj.Bootstrap(appCtx)
-			if err != nil {
-				ermu.Lock()
-				errs = append(errs, err)
-				ermu.Unlock()
-			}
-		}(prj)
+		prj.Bootstrap(appCtx)
 	}
-	wg.Wait()
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
 }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {

@@ -900,10 +900,8 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		nil,
 	)
 
-	err = registry.Bootstrap(ctx)
-	if err != nil {
-		panic(err)
-	}
+	registry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
 
 	err = registry.PrepareUpstreamsForNetwork(ctx, "evm:123")
 	if err != nil {

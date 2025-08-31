@@ -107,7 +107,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
-		err = erpcInstance.Bootstrap(ctx)
+		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -251,7 +251,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
-		err = erpcInstance.Bootstrap(ctx)
+		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -397,7 +397,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
-		err = erpcInstance.Bootstrap(ctx)
+		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -3692,8 +3692,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3747,8 +3746,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3779,8 +3777,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3811,8 +3808,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				err := pp.upstreamsRegistry.Bootstrap(ctx)
-				require.NoError(t, err)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3853,7 +3849,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 				return &HttpServer{
 					logger: logger,
@@ -3884,7 +3880,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
@@ -3923,7 +3919,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
@@ -3971,7 +3967,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, upBad}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, upBad}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
@@ -4029,7 +4025,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Reply(200).
 					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)
 
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
@@ -4072,7 +4068,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				authReg, _ := auth.NewAuthRegistry(ctx, logger, "test", &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{
@@ -4116,7 +4112,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4148,7 +4144,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4180,7 +4176,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4213,7 +4209,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
@@ -4247,7 +4243,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{}, Providers: []*common.ProviderConfig{}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4285,7 +4281,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{upNoChainId}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{upNoChainId}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4317,7 +4313,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				time.Sleep(1000 * time.Millisecond)
@@ -4355,7 +4351,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}, Providers: []*common.ProviderConfig{{Id: "test-provider", Vendor: "alchemy"}}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4405,7 +4401,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1, up2}},
 					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1, up2}, ssr, nil, vr, pr, nil, mtk, 0*time.Second, nil),
 				}
-				_ = pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
 				return &HttpServer{
@@ -4463,6 +4459,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		})
 	}
 }
+
 func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("SimpleCallExistingNetwork", func(t *testing.T) {
 		cfg := &common.Config{
@@ -5027,6 +5024,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		assert.Nilf(t, upsCfg.Failsafe[0].Hedge, "Hedge policy should not be set")
 	})
 }
+
 func TestHttpServer_EvmGetLogs(t *testing.T) {
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
@@ -5455,6 +5453,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, errorObj["message"].(string), "missing")
 	})
 }
+
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -7963,7 +7962,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 
 	// Callback now set at construction; do not mutate in tests
 
-	err = erpcInstance.Bootstrap(ctx)
+	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
 	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -8154,7 +8153,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 	require.NoError(t, err)
-	require.NoError(t, erpcInstance.Bootstrap(ctx))
+	erpcInstance.Bootstrap(ctx)
 
 	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)

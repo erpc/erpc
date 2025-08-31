@@ -78,9 +78,7 @@ func Init(
 	}
 
 	// Bootstrap core before starting servers so routes are ready
-	if err := erpcInstance.Bootstrap(appCtx); err != nil {
-		return err
-	}
+	erpcInstance.Bootstrap(appCtx)
 
 	//
 	// 4) Expose Transports

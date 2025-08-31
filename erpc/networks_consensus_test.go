@@ -2445,8 +2445,8 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 	)
 	require.NoError(t, err)
 
-	err = upsReg.Bootstrap(ctx)
-	require.NoError(t, err)
+	upsReg.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
 	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)
 	upstream.ReorderUpstreams(upsReg)

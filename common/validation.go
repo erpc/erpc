@@ -517,6 +517,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
+		existingAliases := make(map[string]bool)
 		for _, network := range p.Networks {
 			if err := network.Validate(c); err != nil {
 				return err
@@ -526,6 +527,12 @@ func (p *ProjectConfig) Validate(c *Config) error {
 				return fmt.Errorf("project.*.networks.*.id must be unique, '%s' is duplicated", ntwId)
 			}
 			existingIds[ntwId] = true
+			if network.Alias != "" {
+				if existingAliases[network.Alias] {
+					return fmt.Errorf("project.*.networks.*.alias must be unique, '%s' is duplicated", network.Alias)
+				}
+				existingAliases[network.Alias] = true
+			}
 		}
 	}
 	if p.Auth != nil {

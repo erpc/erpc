@@ -165,10 +165,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
-	err = erpcInstance.Bootstrap(ctx1)
-	if err != nil {
-		t.Errorf("expected nil, got %v", err)
-	}
+	erpcInstance.Bootstrap(ctx1)
 
 	nw, err := erpcInstance.GetNetwork(ctx1, "test", "evm:123")
 	if err != nil {

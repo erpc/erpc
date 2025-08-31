@@ -92,20 +92,17 @@ func NewUpstreamsRegistry(
 	}
 }
 
-func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
-	err := u.scheduleScoreCalculationTimers(ctx)
-	if err != nil {
-		return err
-	}
+func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
+	u.scheduleScoreCalculationTimers(ctx)
 
 	// Fire-and-forget: register upstreams in background to avoid blocking service startup
 	go func() {
 		if err := u.registerUpstreams(u.appCtx, u.upsCfg...); err != nil {
 			u.logger.Error().Err(err).Msg("failed to register upstreams in background")
+		} else {
+			u.logger.Info().Msg("upstreams registration completed")
 		}
 	}()
-
-	return nil
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
@@ -648,9 +645,9 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		Msg("upstream registered and initialized in registry")
 }
 
-func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {
+func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) {
 	if u.scoreRefreshInterval == 0 {
-		return nil
+		return
 	}
 
 	go func() {
@@ -668,8 +665,6 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 			}
 		}
 	}()
-
-	return nil
 }
 
 func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, method string, upsList []*Upstream) {

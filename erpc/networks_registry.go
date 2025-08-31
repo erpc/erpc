@@ -162,7 +162,7 @@ func NewNetwork(
 	return network, nil
 }
 
-func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
+func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) {
 	// Auto register statically-defined networks in background (non-blocking)
 	nr.project.cfgMu.RLock()
 	nl := nr.project.Config.Networks
@@ -174,10 +174,11 @@ func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
 	}
 	go func() {
 		if err := nr.initializer.ExecuteTasks(appCtx, tasks...); err != nil {
-			nr.logger.Error().Err(err).Msg("failed to bootstrap networks in background")
+			nr.logger.Error().Err(err).Interface("status", nr.initializer.Status()).Msg("failed to bootstrap networks in background")
+		} else {
+			nr.logger.Info().Interface("status", nr.initializer.Status()).Msg("networks bootstrap completed")
 		}
 	}()
-	return nil
 }
 
 func (nr *NetworksRegistry) GetNetwork(ctx context.Context, networkId string) (*Network, error) {

@@ -104,13 +104,8 @@ func NewERPC(
 	}, nil
 }
 
-func (e *ERPC) Bootstrap(ctx context.Context) error {
-	err := e.projectsRegistry.Bootstrap(ctx)
-	if err != nil {
-		e.logger.Warn().Err(err).Msg("could not bootstrap projects on first attempt (will keep retrying in the background)")
-	}
-
-	return nil
+func (e *ERPC) Bootstrap(ctx context.Context) {
+	e.projectsRegistry.Bootstrap(ctx)
 }
 
 func (e *ERPC) GetNetwork(ctx context.Context, projectId string, networkId string) (*Network, error) {

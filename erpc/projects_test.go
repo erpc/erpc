@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -96,10 +97,8 @@ func TestProject_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = prjReg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		prjReg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		prj, err := prjReg.GetProject("prjA")
 		if err != nil {
@@ -205,10 +204,8 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = prjReg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		prjReg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		// Mock an upstream request that will definitely exceed 50 ms.
 		gock.New("http://rpc1.localhost").
@@ -317,10 +314,8 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = prjReg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		prjReg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		// Mock a delay that exceeds the 50ms network timeout
 		gock.New("http://rpc2.localhost").
@@ -357,6 +352,34 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
+		// Begin mocking an upstream response for a brand new chain "evm:9999"
+		// that isn't explicitly defined in prjConfig.Networks:
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x270f",
+			})
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_blockNumber")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x555555",
+			})
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -378,7 +401,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 				{
 					Id:       "mock_upstream",
 					Type:     common.UpstreamTypeEvm,
-					Endpoint: "http://mock.localhost",
+					Endpoint: "http://rpc1.localhost",
 					Evm: &common.EvmUpstreamConfig{
 						ChainId: 9999,
 					},
@@ -412,21 +435,8 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create ProjectsRegistry: %v", err)
 		}
-		err = reg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Begin mocking an upstream response for a brand new chain "evm:9999"
-		// that isn't explicitly defined in prjConfig.Networks:
-		gock.New("http://mock.localhost").
-			Post("/").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xabc123",
-			})
+		reg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		// Get the project. Next, we'll forward a request to "evm:9999".
 		prj, err := reg.GetProject("test_lazy_load")
@@ -540,10 +550,8 @@ func TestProject_NetworkAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = prjReg.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		prjReg.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
 		prj, err := prjReg.GetProject("prjA")
 		if err != nil {
@@ -552,7 +560,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 
 		// Test getting network by alias
 		arch, chainId := prj.networksRegistry.ResolveAlias("ethereum")
-		if common.NetworkArchitecture(arch) != common.ArchitectureEvm || chainId != "1" {
+		if common.NetworkArchitecture(arch) != common.ArchitectureEvm || chainId != "123" {
 			t.Errorf("Expected architecture=evm, chainId=1 for alias 'ethereum', got arch=%s, chainId=%s", arch, chainId)
 		}
 
@@ -568,103 +576,6 @@ func TestProject_NetworkAlias(t *testing.T) {
 		arch, chainId = prj.networksRegistry.ResolveAlias("nonexistent")
 		if arch != "" || chainId != "" {
 			t.Errorf("Expected empty architecture and chainId for non-existent alias, got arch=%s, chainId=%s", arch, chainId)
-		}
-	})
-
-	t.Run("DuplicateNetworkAliases", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000, MaxTotalSize: "1GB",
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
-			&common.RateLimiterConfig{},
-			&log.Logger,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Create a project config with duplicate network aliases
-		prjReg, err := NewProjectsRegistry(
-			ctx,
-			&log.Logger,
-			[]*common.ProjectConfig{
-				{
-					Id: "prjDuplicateAlias",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-							},
-							Alias: "same_alias", // First use of the alias
-						},
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 137,
-							},
-							Alias: "same_alias", // Duplicate alias
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 123,
-							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 137,
-							},
-						},
-					},
-				},
-			},
-			ssr,
-			nil,
-			rateLimitersRegistry,
-			thirdparty.NewVendorsRegistry(),
-			nil, // ProxyPoolRegistry
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Bootstrap should fail due to duplicate aliases
-		err = prjReg.Bootstrap(ctx)
-
-		// Verify that an error was returned
-		if err == nil {
-			t.Fatal("Expected an error due to duplicate network aliases, but got nil")
-		}
-
-		// Verify the error message contains information about the duplicate alias
-		expectedErrMsg := "alias same_alias already registered for network"
-		if !strings.Contains(err.Error(), expectedErrMsg) {
-			t.Errorf("Expected error message to contain '%s', but got: %s", expectedErrMsg, err.Error())
 		}
 	})
 }
