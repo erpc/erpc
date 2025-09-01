@@ -690,13 +690,14 @@ type EvmUpstreamConfig struct {
 	StatePollerDebounce                Duration    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 	MaxAvailableRecentBlocks           int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
 	GetLogsAutoSplittingRangeThreshold int64       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
-	GetLogsMaxAllowedRange             int64       `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
-	GetLogsMaxAllowedAddresses         int64       `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
-	GetLogsMaxAllowedTopics            int64       `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
-	GetLogsSplitOnError                *bool       `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	SkipWhenSyncing                    *bool       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
-	GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxAllowedRange     int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"-"`
+	DeprecatedGetLogsMaxAllowedAddresses int64 `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"-"`
+	DeprecatedGetLogsMaxAllowedTopics    int64 `yaml:"getLogsMaxAllowedTopics,omitempty" json:"-"`
+	DeprecatedGetLogsSplitOnError        *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
+	DeprecatedGetLogsMaxBlockRange       int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 }
 
 func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
@@ -1021,14 +1022,11 @@ type EvmNetworkConfig struct {
 	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
 	FallbackStatePollerDebounce Duration            `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce" tstype:"Duration"`
 	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
-	// Network-level hard limits and behaviors for eth_getLogs
-	GetLogsMaxAllowedRange     int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
-	GetLogsMaxAllowedAddresses int64 `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
-	GetLogsMaxAllowedTopics    int64 `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
-	// Whether to split on upstream 413-like errors at network level
-	GetLogsSplitOnError *bool `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
-	// Concurrency for executing split sub-requests
-	GetLogsSplitConcurrency int `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	GetLogsMaxAllowedRange      int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
+	GetLogsMaxAllowedAddresses  int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
+	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
+	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
+	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 }
 
 type EvmIntegrityConfig struct {

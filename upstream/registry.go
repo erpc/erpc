@@ -108,12 +108,12 @@ func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
 	// Warn about deprecated upstream-level eth_getLogs hard limits that are ignored now
 	if cfg != nil && cfg.Evm != nil {
-		if cfg.Evm.GetLogsMaxAllowedRange > 0 || cfg.Evm.GetLogsMaxAllowedAddresses > 0 || cfg.Evm.GetLogsMaxAllowedTopics > 0 {
+		if cfg.Evm.DeprecatedGetLogsMaxAllowedRange > 0 || cfg.Evm.DeprecatedGetLogsMaxAllowedAddresses > 0 || cfg.Evm.DeprecatedGetLogsMaxAllowedTopics > 0 {
 			u.logger.Warn().
 				Str("upstreamId", cfg.Id).
 				Msg("deprecated upstream-level getLogs maxAllowed* configs detected; they are ignored. Configure limits at network-level evm.* instead")
 		}
-		if cfg.Evm.GetLogsSplitOnError != nil {
+		if cfg.Evm.DeprecatedGetLogsSplitOnError != nil {
 			u.logger.Warn().
 				Str("upstreamId", cfg.Id).
 				Msg("deprecated upstream-level getLogsSplitOnError detected; it is ignored. Configure at network-level evm.getLogsSplitOnError instead")

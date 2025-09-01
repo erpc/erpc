@@ -840,12 +840,16 @@ func TestNetwork_Forward(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		defer util.AssertNoPendingMocks(t, 1)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
-			Times(3).
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_traceTransaction")
+			}).
 			Post("").
 			Reply(503).
 			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32603,"message":"some random provider issue"}}`))
@@ -937,6 +941,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
+				Failsafe: []*common.FailsafeConfig{fsCfg},
 			},
 			rlr,
 			upr,
@@ -945,6 +950,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		time.Sleep(100 * time.Millisecond)
 		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -7277,7 +7283,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
 		}
 	})
-
 	t.Run("DynamicMethodSpecificLatencyPreference", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -7961,7 +7966,6 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_chainId")
@@ -7983,7 +7987,6 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		// Now mock successful responses
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
@@ -7992,7 +7995,6 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			JSON([]byte(`{"result":{"number":"0x11118888"}}`))
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
@@ -8001,7 +8003,6 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			JSON([]byte(`{"result":{"number":"0x11117777"}}`))
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
@@ -8060,6 +8061,8 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		assert.True(t, metrics.ErrorRate() < 0.7,
 			"Expected error rate below 70%% after successful requests, got %.2f%%",
 			metrics.ErrorRate()*100)
+
+		time.Sleep(500 * time.Millisecond)
 	})
 }
 
@@ -8665,6 +8668,19 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				"id":      1,
 				"result":  "0x7b",
 			})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x7b",
+			})
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
@@ -8701,6 +8717,17 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		// Avoid auto-splitting in this test by setting a very large upstream threshold
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+		for _, up := range upsList {
+			if up != nil && up.Config() != nil {
+				if up.Config().Evm == nil {
+					up.Config().Evm = &common.EvmUpstreamConfig{}
+				}
+				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+			}
+		}
+
+		// Avoid auto-splitting in this test by setting a very large upstream threshold
+		upsList = network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		for _, up := range upsList {
 			if up != nil && up.Config() != nil {
 				if up.Config().Evm == nil {
@@ -8747,7 +8774,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
 		}
 
-		assert.True(t, len(gock.Pending()) == 1, "Expected no pending mocks")
+		assert.True(t, len(gock.Pending()) == 3, "Expected no pending mocks")
 	})
 
 	t.Run("FailEvenAfterEnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
@@ -8792,6 +8819,17 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		// Disable auto-splitting by setting very large thresholds on all upstreams for this test
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+		for _, up := range upsList {
+			if up != nil && up.Config() != nil {
+				if up.Config().Evm == nil {
+					up.Config().Evm = &common.EvmUpstreamConfig{}
+				}
+				up.Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x7fffffff
+			}
 		}
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8864,7 +8902,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
 		}
 
-		assert.True(t, len(gock.Pending()) == 1, "Expected no pending mocks")
+		assert.Equal(t, len(gock.Pending()), 1, "Expected no pending mocks")
 	})
 
 	t.Run("SkipToUpstreamWithCorrectLatestBlockToCoverBlockRangeEnd", func(t *testing.T) {
@@ -8979,6 +9017,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getLogs")
@@ -9271,7 +9310,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Mock responses for the main request
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Persist(). // Not exact number because requests might be multiplexed
 			Filter(func(request *http.Request) bool {
 				body := strings.ToLower(util.SafeReadBody(request))
 				return strings.Contains(body, "eth_getlogs") &&
@@ -9292,7 +9330,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// First sub-request
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Persist(). // Not exact number because sub-requests might be multiplexed for a hedged splitted getLogs request
 			Filter(func(request *http.Request) bool {
 				body := strings.ToLower(util.SafeReadBody(request))
 				return strings.Contains(body, "eth_getlogs") &&
@@ -9312,7 +9349,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Second sub-request
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Persist(). // Not exact number because sub-requests might be multiplexed for a hedged splitted getLogs request
 			Filter(func(request *http.Request) bool {
 				body := strings.ToLower(util.SafeReadBody(request))
 				return strings.Contains(body, "eth_getlogs") &&
@@ -9724,8 +9760,6 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 						MemoryConnectorConfig: common.MemoryConnectorConfig{
 							MaxItems: 100_000, MaxTotalSize: "1GB",
 						},
-						// GetDelay: 10 * time.Second,
-						// SetDelay: 10 * time.Second,
 					},
 				},
 			},
@@ -10379,20 +10413,49 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			},
 		}
 		vr := thirdparty.NewVendorsRegistry()
-		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}},
 		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
-			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{upCfg},
+			ssr,
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			1*time.Second,
+			nil,
 		)
 
 		ntwCfg := &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		}
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		ntw, _ := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			ntwCfg,
+			rlr,
+			upr,
+			mt,
+		)
 
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -10654,7 +10717,6 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 
 	return network
 }
-
 func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 	t.Run("EvmHighestLatestBlockNumber_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
 		util.ResetGock()
@@ -10684,7 +10746,6 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		gock.New("http://syncing.localhost").
 			Post("").
-			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, `eth_chainId`)
@@ -10693,7 +10754,6 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			JSON([]byte(`{"result":"0x7b"}`))
 		gock.New("http://synced.localhost").
 			Post("").
-			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, `eth_chainId`)
@@ -10841,7 +10901,6 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		gock.New("http://excluded.localhost").
 			Post("").
-			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, `eth_chainId`)
@@ -10850,7 +10909,6 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			JSON([]byte(`{"result":"0x7b"}`))
 		gock.New("http://included.localhost").
 			Post("").
-			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, `eth_chainId`)

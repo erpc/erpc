@@ -688,7 +688,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		if cause == nil {
 			cause = ctx.Err()
 		}
-		c.logger.Debug().Err(err).AnErr("contextError", cause).Msg("transport failure while sending single request")
+		c.logger.Debug().Err(err).Object("request", req).AnErr("contextError", cause).Msg("transport failure while sending single request")
 		if cause != nil {
 			err = cause
 		}

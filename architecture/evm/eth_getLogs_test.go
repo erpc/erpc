@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -267,6 +268,32 @@ func TestSplitEthGetLogsRequest(t *testing.T) {
 			}),
 			expectError: true,
 		},
+		{
+			name: "split by topics0 OR list",
+			request: createTestRequest(map[string]interface{}{
+				"fromBlock": "0x1",
+				"toBlock":   "0x1",
+				"address":   "0x123",
+				"topics":    []interface{}{[]interface{}{"0xabc", "0xdef"}},
+			}),
+			expectedSplit: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xabc"}}},
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xdef"}}},
+			},
+		},
+		{
+			name: "split by topics0 OR list - odd count",
+			request: createTestRequest(map[string]interface{}{
+				"fromBlock": "0x1",
+				"toBlock":   "0x1",
+				"address":   "0x123",
+				"topics":    []interface{}{[]interface{}{"0xabc", "0xdef", "0xghi"}},
+			}),
+			expectedSplit: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xabc"}}},
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xdef", "0xghi"}}},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -298,6 +325,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				{fromBlock: 3, toBlock: 4},
 			},
 			mockSetup: func(n *mockNetwork, u *mockEvmUpstream) {
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 200}}).Maybe()
 				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
@@ -311,7 +339,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 					),
 					nil,
 				).Once()
-				u.On("Id").Return("rpc1")
+				u.On("Id").Return("rpc1").Maybe()
 				u.On("NetworkId").Return("evm:123").Maybe()
 				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test").Maybe()
@@ -325,6 +353,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 			},
 			mockSetup: func(n *mockNetwork, u *mockEvmUpstream) {
 				n.On("Id").Return("evm:123")
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 200}}).Maybe()
 				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).
 					Return(
@@ -336,7 +365,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 						nil,
 					).Times(1).
 					Return(nil, errors.New("failed")).Times(3)
-				u.On("Id").Return("rpc1")
+				u.On("Id").Return("rpc1").Maybe()
 				u.On("NetworkId").Return("evm:123").Maybe()
 				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test").Maybe()
@@ -515,7 +544,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				r := createTestRequest(map[string]interface{}{
 					"fromBlock": "0x1",
 					"toBlock":   "0x2",
-					"topics":    []interface{}{"0xAAA", "0xBBB", "0xCCC"},
+					// Only topic0 is counted for limit; use OR-list in position 0
+					"topics": []interface{}{[]interface{}{"0xAAA", "0xBBB", "0xCCC"}},
 				})
 
 				n.On("Id").Return("evm:123")
@@ -818,11 +848,91 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 	})
 }
 
+func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing.T) {
+	r1 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[1]`), nil)
+	r2 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[2,3]`), nil)
+	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{r1, r2})
+	sz1, err := writer.Size()
+	assert.NoError(t, err)
+	assert.Greater(t, sz1, 0)
+	writer.Release()
+	writer.Release() // idempotent
+	sz2, err := writer.Size()
+	assert.NoError(t, err)
+	assert.Equal(t, 0, sz2)
+}
+
+func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
+	n := new(mockNetwork)
+	r := createTestRequest(map[string]interface{}{
+		"fromBlock": "0x1",
+		"toBlock":   "0x2",
+	})
+	resp, err := networkPostForward_eth_getLogs(context.Background(), n, r, common.NewNormalizedResponse(), common.NewErrEndpointMissingData(errors.New("missing"), nil))
+	assert.Nil(t, resp)
+	assert.Error(t, err)
+}
+
+func TestNetworkPreForward_eth_getLogs_blockHash_with_filters(t *testing.T) {
+	n := new(mockNetwork)
+	r := createTestRequest(map[string]interface{}{
+		"fromBlock": "0x1",
+		"toBlock":   "0x5",
+		"blockHash": "0xabc",
+		"address":   []interface{}{"0xA"},
+		"topics":    []interface{}{[]interface{}{"0xT"}},
+	})
+	handled, resp, err := networkPreForward_eth_getLogs(context.Background(), n, nil, r)
+	assert.NoError(t, err)
+	assert.False(t, handled)
+	assert.Nil(t, resp)
+}
+
+func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
+	mockNetwork := new(mockNetwork)
+	mockUpstream := new(mockEvmUpstream)
+	mockNetwork.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 10}}).Maybe()
+	mockNetwork.On("ProjectId").Return("test")
+	// Return sub-responses with artificial delays to scramble completion order
+	mockNetwork.On("Forward", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			jreq, _ := r.JsonRpcRequest()
+			filter := jreq.Params[0].(map[string]interface{})
+			fb := filter["fromBlock"].(string)
+			if fb == "0x2" {
+				time.Sleep(30 * time.Millisecond)
+			} else if fb == "0x3" {
+				time.Sleep(10 * time.Millisecond)
+			}
+			body := []byte(fmt.Sprintf(`["log-%s"]`, fb))
+			return common.NewNormalizedResponse().WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), body, nil)), nil
+		},
+		nil,
+	).Times(3)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x3"}],"id":1}`))
+	subs := []ethGetLogsSubRequest{
+		{fromBlock: 0x1, toBlock: 0x1},
+		{fromBlock: 0x2, toBlock: 0x2},
+		{fromBlock: 0x3, toBlock: 0x3},
+	}
+	jrr, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, false)
+	assert.NoError(t, err)
+	var buf bytes.Buffer
+	_, _ = jrr.WriteTo(&buf)
+	var out map[string]interface{}
+	_ = json.Unmarshal(buf.Bytes(), &out)
+	arr := out["result"].([]interface{})
+	assert.Equal(t, []interface{}{"log-0x1", "log-0x2", "log-0x3"}, arr)
+
+	mockNetwork.AssertExpectations(t)
+	mockUpstream.AssertExpectations(t)
+}
+
 func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	// Setup mocks
 	mockNetwork := new(mockNetwork)
 	mockUpstream := new(mockEvmUpstream)
-	mockStatePoller := new(mockStatePoller)
 
 	// Configure upstream
 	mockUpstream.On("Config").Return(&common.UpstreamConfig{
@@ -830,12 +940,15 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 			GetLogsAutoSplittingRangeThreshold: 1,
 		},
 	})
-	mockUpstream.On("Id").Return("rpc1")
+	mockUpstream.On("Id").Return("rpc1").Maybe()
 	mockUpstream.On("NetworkId").Return("evm:123").Maybe()
 	mockUpstream.On("NetworkLabel").Return("evm:123").Maybe()
 	mockUpstream.On("VendorName").Return("test").Maybe()
-	mockUpstream.On("EvmStatePoller").Return(mockStatePoller)
-	mockStatePoller.On("LatestBlock").Return(int64(1000))
+	mockUpstream.On("Config").Return(&common.UpstreamConfig{
+		Evm: &common.EvmUpstreamConfig{
+			GetLogsAutoSplittingRangeThreshold: 1,
+		},
+	})
 
 	// Setup request that will trigger nested splits
 	req := createTestRequest(map[string]interface{}{
@@ -845,6 +958,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 		"topics":    []interface{}{"0xabc", "0xdef"}, // Will split by topics
 	})
 	mockNetwork.On("ProjectId").Return("test")
+	mockNetwork.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 200}}).Maybe()
 
 	// Mock network responses for the nested splits
 	// Each block range (0x1-0x2, 0x3-0x4) will be split by address (0x123, 0x456)
@@ -920,6 +1034,167 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 		assert.True(t, ok)
 		assert.Contains(t, logMap, "logIndex")
 	}
+}
+
+func TestNetworkPreForward_eth_getLogs(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("short_circuit_on_blockHash", func(t *testing.T) {
+		n := new(mockNetwork)
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x5",
+			"blockHash": "0xabc",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.NoError(t, err)
+		assert.False(t, handled)
+		assert.Nil(t, resp)
+	})
+
+	t.Run("range_validation_error_when_from_gt_to", func(t *testing.T) {
+		n := new(mockNetwork)
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x5",
+			"toBlock":   "0x1",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+	})
+
+	t.Run("enforce_max_allowed_range_hard_limit", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 3},
+		})
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x5", // 5 blocks > 3
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("enforce_max_allowed_addresses_hard_limit", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedAddresses: 2},
+		})
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x2",
+			"address":   []interface{}{"0xA", "0xB", "0xC"},
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedAddresses))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("enforce_max_allowed_topics_hard_limit", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedTopics: 2},
+		})
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x2",
+			"topics":    []interface{}{[]interface{}{"0xAAA", "0xBBB", "0xCCC"}},
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedTopics))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("proactive_split_by_block_range_and_merge", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("ProjectId").Return("test")
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{},
+		})
+
+		// Upstreams with thresholds: min is 2
+		u1 := new(mockEvmUpstream)
+		u2 := new(mockEvmUpstream)
+		u1.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 2}})
+		u2.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 4}})
+
+		// Expect 3 sub-requests for range 1..5 with threshold 2: [1-2],[3-4],[5-5]
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jrq, err := r.JsonRpcRequest()
+				assert.NoError(t, err)
+				filter := jrq.Params[0].(map[string]interface{})
+				fb := filter["fromBlock"].(string)
+				tb := filter["toBlock"].(string)
+				body := []byte(fmt.Sprintf(`[{"data":"%s-%s"}]`, fb, tb))
+				subJrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), body, nil)
+				return common.NewNormalizedResponse().WithJsonRpcResponse(subJrr), nil
+			},
+			nil,
+		).Times(3)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x5",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u1, u2}, r)
+		assert.True(t, handled)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse(ctx)
+		assert.NoError(t, err)
+		var buf bytes.Buffer
+		_, _ = jrr.WriteTo(&buf)
+		var out map[string]interface{}
+		err = json.Unmarshal(buf.Bytes(), &out)
+		assert.NoError(t, err)
+		res, ok := out["result"].([]interface{})
+		assert.True(t, ok)
+		assert.Equal(t, 3, len(res))
+
+		n.AssertExpectations(t)
+		u1.AssertExpectations(t)
+		u2.AssertExpectations(t)
+	})
+
+	t.Run("no_split_when_request_range_below_threshold", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}})
+		u := new(mockEvmUpstream)
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 10}})
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x5",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u}, r)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+
+		n.AssertExpectations(t)
+		u.AssertExpectations(t)
+	})
 }
 
 func createTestRequest(filter interface{}) *common.NormalizedRequest {
