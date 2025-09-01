@@ -399,11 +399,113 @@ export default createConfig({
   e.g. if a network only has "timeout" policy, it will **NOT** get hedge/retry from networkDefaults (those will be disabled).
 </Callout>
 
-## Architectures
-
-### `evm`
+## `evm` Networks
 
 This type of network are generic EVM-based chains that support JSON-RPC protocol.
+
+### `eth_getLogs`
+
+Network-level controls manage validation, proactive splitting, and error-driven splitting for eth_getLogs. Requests may be split into smaller sub-requests and merged transparently.
+
+- **Validation & availability**: `integrity.enforceGetLogsBlockRange` validates range and asserts the upstream has data for `fromBlock..toBlock`.
+- **Hard limits**: `getLogsMaxAllowedRange`, `getLogsMaxAllowedAddresses`, `getLogsMaxAllowedTopics` reject oversized requests early.
+- **Proactive splitting**: If requested range exceeds an effective threshold, the network splits the request into contiguous ranges. The effective threshold is the minimum positive `upstream.evm.getLogsAutoSplittingRangeThreshold` across selected upstreams, capped by `getLogsMaxAllowedRange`.
+- **Split on error**: If an upstream complains about large requests (including provider-specific 413-like errors), the network retries by splitting (first range, then addresses, then topics[0] OR-list) and merges results.
+- **Concurrency**: `getLogsSplitConcurrency` limits parallel sub-requests during splitting.
+
+Relationship to upstream config:
+
+- Upstream-level `evm.getLogsAutoSplittingRangeThreshold` is a hint used by the network to compute the effective proactive split size. All other getLogs controls are defined at the network level.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+
+          # Validate requested block range and ensure upstream has data for both ends.
+          # Enabled by default; set to false to skip availability checks.
+          integrity:
+            enforceGetLogsBlockRange: true
+
+          # Hard limits that reject the request up front (413-style errors):
+          getLogsMaxAllowedRange: 10000          # Max number of blocks (inclusive)
+          getLogsMaxAllowedAddresses: 10000      # Max length when 'address' is an array
+          getLogsMaxAllowedTopics: 10000         # Max OR-count when topics[0] is an array
+
+          # When providers return "too many results"/large-range errors, split and retry automatically.
+          getLogsSplitOnError: true
+
+          # Parallelism for split sub-requests (applies to proactive and error-driven splits).
+          getLogsSplitConcurrency: 16
+
+    # Upstream hint used to compute proactive split size (network takes the min positive across selected upstreams)
+    upstreams:
+      - id: my-upstream
+        endpoint: https://mainnet.example.com
+        evm:
+          # 0 or negative disables hint for this upstream
+          getLogsAutoSplittingRangeThreshold: 5000
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+
+            // Validate requested block range and ensure upstream has data for both ends.
+            integrity: {
+              enforceGetLogsBlockRange: true,
+            },
+
+            // Hard limits that reject the request up front (413-style errors):
+            getLogsMaxAllowedRange: 10000,          // Max number of blocks (inclusive)
+            getLogsMaxAllowedAddresses: 10000,      // Max length when 'address' is an array
+            getLogsMaxAllowedTopics: 10000,         // Max OR-count when topics[0] is an array
+
+            // When providers return "too many results"/large-range errors, split and retry automatically.
+            getLogsSplitOnError: true,
+
+            // Parallelism for split sub-requests (applies to proactive and error-driven splits).
+            getLogsSplitConcurrency: 16,
+          },
+        },
+      ],
+
+      // Upstream hint used to compute proactive split size (network takes the min positive across selected upstreams)
+      upstreams: [
+        {
+          id: "my-upstream",
+          endpoint: "https://mainnet.example.com",
+          evm: {
+            // 0 or negative disables hint for this upstream
+            getLogsAutoSplittingRangeThreshold: 5000,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  Splitting preserves order and merges results server-side. Address count is the length of the <code>address</code> array (if present). Topic count considers only <code>topics[0]</code> when it is an OR-list.
+</Callout>
 
 ## Name aliasing
 
