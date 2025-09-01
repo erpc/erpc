@@ -74,8 +74,18 @@ func (r *JsonRpcResponse) GetResultString() string {
 
 func (r *JsonRpcResponse) ResultLength() int {
 	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
-	return len(r.result)
+	ln := len(r.result)
+	rw := r.resultWriter
+	r.resultMu.RUnlock()
+	if ln > 0 {
+		return ln
+	}
+	if rw != nil {
+		if sz, err := rw.Size(); err == nil {
+			return sz
+		}
+	}
+	return 0
 }
 
 // Free releases heavy, memory-retaining fields so that upstream response buffers
@@ -490,6 +500,27 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 }
 
 func (r *JsonRpcResponse) ensureCachedNode() error {
+	r.resultMu.RLock()
+	needBuild := r.cachedNode == nil
+	emptyResult := len(r.result) == 0
+	rw := r.resultWriter
+	r.resultMu.RUnlock()
+	if needBuild && emptyResult && rw != nil {
+		// Materialize from writer for AST-based reads
+		r.resultMu.Lock()
+		if len(r.result) == 0 && r.resultWriter != nil {
+			var buf bytes.Buffer
+			if _, err := r.resultWriter.WriteTo(&buf, false); err != nil {
+				r.resultMu.Unlock()
+				return err
+			}
+			r.result = buf.Bytes()
+			// Drop writer after materialization
+			r.resultWriter = nil
+		}
+		r.resultMu.Unlock()
+	}
+
 	r.resultMu.RLock()
 	if r.cachedNode == nil {
 		srchr := ast.NewSearcher(util.B2Str(r.result))

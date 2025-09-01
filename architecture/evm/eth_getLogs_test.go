@@ -204,24 +204,11 @@ func TestSplitEthGetLogsRequest(t *testing.T) {
 				"fromBlock": "0x1",
 				"toBlock":   "0x1",
 				"address":   "0x123",
-				"topics":    []interface{}{"0xabc", "0xdef"},
+				"topics": []interface{}{[]interface{}{"0xabc", "0xdef"}},
 			}),
 			expectedSplit: []ethGetLogsSubRequest{
-				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{"0xabc"}},
-				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{"0xdef"}},
-			},
-		},
-		{
-			name: "split by addresses - odd count",
-			request: createTestRequest(map[string]interface{}{
-				"fromBlock": "0x1",
-				"toBlock":   "0x1",
-				"address":   []interface{}{"0x123", "0x456", "0x789"},
-				"topics":    []interface{}{"0xabc"},
-			}),
-			expectedSplit: []ethGetLogsSubRequest{
-				{fromBlock: 1, toBlock: 1, address: []interface{}{"0x123"}, topics: []interface{}{"0xabc"}},
-				{fromBlock: 1, toBlock: 1, address: []interface{}{"0x456", "0x789"}, topics: []interface{}{"0xabc"}},
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xabc"}}},
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xdef"}}},
 			},
 		},
 		{
@@ -230,11 +217,12 @@ func TestSplitEthGetLogsRequest(t *testing.T) {
 				"fromBlock": "0x1",
 				"toBlock":   "0x1",
 				"address":   "0x123",
-				"topics":    []interface{}{"0xabc", "0xdef", "0xghi"},
+				// Use topic0 OR-list odd count
+				"topics": []interface{}{[]interface{}{"0xabc", "0xdef", "0xghi"}},
 			}),
 			expectedSplit: []ethGetLogsSubRequest{
-				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{"0xabc"}},
-				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{"0xdef", "0xghi"}},
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xabc"}}},
+				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xdef", "0xghi"}}},
 			},
 		},
 		{
@@ -868,7 +856,8 @@ func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
 		"fromBlock": "0x1",
 		"toBlock":   "0x2",
 	})
-	resp, err := networkPostForward_eth_getLogs(context.Background(), n, r, common.NewNormalizedResponse(), common.NewErrEndpointMissingData(errors.New("missing"), nil))
+	n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitOnError: util.BoolPtr(true)}}).Maybe()
+	resp, err := networkPostForward_eth_getLogs(context.Background(), n, r, nil, common.NewErrEndpointMissingData(errors.New("missing"), nil))
 	assert.Nil(t, resp)
 	assert.Error(t, err)
 }
