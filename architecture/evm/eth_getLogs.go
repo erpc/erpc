@@ -347,8 +347,17 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 
 	// Only if upstream complained about large requests, split
 	// e.g. if our own eth_getLogs hook complained about large range, do NOT try to split
-	var tooLarge *common.ErrEndpointRequestTooLarge
-	if !errors.As(re, &tooLarge) {
+	isTooLarge := common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge)
+	if !isTooLarge {
+		// Also accept JsonRpcExceptionInternal with normalized code EvmLargeRange (-32012)
+		var jre *common.ErrJsonRpcExceptionInternal
+		if errors.As(re, &jre) {
+			if jre.NormalizedCode() == common.JsonRpcErrorEvmLargeRange {
+				isTooLarge = true
+			}
+		}
+	}
+	if !isTooLarge {
 		return rs, re
 	}
 

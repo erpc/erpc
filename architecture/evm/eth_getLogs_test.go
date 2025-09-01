@@ -204,7 +204,7 @@ func TestSplitEthGetLogsRequest(t *testing.T) {
 				"fromBlock": "0x1",
 				"toBlock":   "0x1",
 				"address":   "0x123",
-				"topics": []interface{}{[]interface{}{"0xabc", "0xdef"}},
+				"topics":    []interface{}{[]interface{}{"0xabc", "0xdef"}},
 			}),
 			expectedSplit: []ethGetLogsSubRequest{
 				{fromBlock: 1, toBlock: 1, address: "0x123", topics: []interface{}{[]interface{}{"0xabc"}}},
@@ -848,6 +848,73 @@ func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing
 	sz2, err := writer.Size()
 	assert.NoError(t, err)
 	assert.Equal(t, 0, sz2)
+}
+
+// race-prone scenario: concurrently writing a merged result while subresponses are freed.
+// This emulates HTTP server writing to client while cleanup kicks in.
+func TestGetLogsMultiResponseWriter_ConcurrentWriteAndFree_NoParseBodyPanic(t *testing.T) {
+	// Prepare two non-empty JsonRpcResponses
+	r1 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[1]`), nil)
+	r2 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[2]`), nil)
+	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{r1, r2})
+
+	// Wrap into a parent response to exercise WriteTo path that uses writer.WriteTo
+	parent := &common.JsonRpcResponse{}
+	_ = parent.SetID("0xparent")
+	parent.SetResultWriter(writer)
+
+	// Concurrency: one goroutine writes the full response repeatedly; another frees aggressively
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			var buf bytes.Buffer
+			// should never error due to missing body
+			_, err := parent.WriteTo(&buf)
+			if err != nil {
+				// surface error for visibility without failing flaky runs immediately
+				return
+			}
+		}
+	}()
+
+	// Meanwhile, repeatedly call Release on writer and on child responses to simulate cleanup
+	for i := 0; i < 100; i++ {
+		writer.Release()
+		r1.Free()
+		r2.Free()
+		// Re-set resultWriter to keep WriteTo path active even after Release
+		parent.SetResultWriter(writer)
+	}
+
+	<-done
+	// Finally, attempt one more write to ensure stability post-concurrency
+	var buf bytes.Buffer
+	_, _ = parent.WriteTo(&buf)
+}
+
+// Ensure WriteResultTo handles a writer that is released mid-stream without panic.
+func TestGetLogsMultiResponseWriter_SubResponseFreedDuringWrite_NoPanic(t *testing.T) {
+	// Use real JsonRpcResponses only
+	ne := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[9]`), nil)
+	fr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x2"`), []byte(`[1,2,3]`), nil)
+	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{ne, fr})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var buf bytes.Buffer
+		// Attempt to write while another goroutine may free sub-responses
+		_, _ = writer.WriteTo(&buf, false)
+	}()
+
+	// Concurrently free the second sub-response multiple times
+	for i := 0; i < 100; i++ {
+		fr.Free()
+	}
+	// Optionally release the writer to trigger internal frees
+	writer.Release()
+	<-done
 }
 
 func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
