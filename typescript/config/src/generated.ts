@@ -147,6 +147,7 @@ export interface CacheMethodConfig {
   respRefs: any[][];
   finalized: boolean;
   realtime: boolean;
+  stateful?: boolean;
 }
 export interface CachePolicyConfig {
   connector: string;
@@ -246,6 +247,7 @@ export interface ProjectConfig {
   networks?: (NetworkConfig | undefined)[];
   rateLimitBudget?: string;
   scoreMetricsWindowSize?: Duration;
+  scoreRefreshInterval?: Duration;
   healthCheck?: DeprecatedProjectHealthCheckConfig;
 }
 export interface NetworkDefaults {
@@ -255,6 +257,12 @@ export interface NetworkDefaults {
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -290,6 +298,12 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   ignoreFields?: { [key: string]: string[]};
@@ -308,6 +322,7 @@ export interface ScoreMultiplierConfig {
   throttledRate?: number /* float64 */;
   blockHeadLag?: number /* float64 */;
   finalizationLag?: number /* float64 */;
+  misbehaviors?: number /* float64 */;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -334,10 +349,6 @@ export interface EvmUpstreamConfig {
   statePollerDebounce?: Duration;
   maxAvailableRecentBlocks?: number /* int64 */;
   getLogsAutoSplittingRangeThreshold?: number /* int64 */;
-  getLogsMaxAllowedRange?: number /* int64 */;
-  getLogsMaxAllowedAddresses?: number /* int64 */;
-  getLogsMaxAllowedTopics?: number /* int64 */;
-  getLogsSplitOnError?: boolean;
   skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
@@ -439,6 +450,12 @@ export interface NetworkConfig {
   alias?: string;
   methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
@@ -450,6 +467,11 @@ export interface EvmNetworkConfig {
   fallbackFinalityDepth?: number /* int64 */;
   fallbackStatePollerDebounce?: Duration;
   integrity?: EvmIntegrityConfig;
+  getLogsMaxAllowedRange?: number /* int64 */;
+  getLogsMaxAllowedAddresses?: number /* int64 */;
+  getLogsMaxAllowedTopics?: number /* int64 */;
+  getLogsSplitOnError?: boolean;
+  getLogsSplitConcurrency?: number /* int */;
 }
 export interface EvmIntegrityConfig {
   enforceHighestBlock?: boolean;
@@ -581,6 +603,10 @@ export const ScopeNetwork: Scope = "network";
  */
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
+/**
+ * HealthTracker is an interface for tracking upstream health metrics
+ */
+export type HealthTracker = any;
 export type Upstream = any;
 
 //////////

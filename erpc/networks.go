@@ -367,6 +367,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
+	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
+	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
+		if err != nil {
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
+		if mlx != nil {
+			mlx.Close(ctx, resp, nil)
+		}
+		return resp, nil
+	}
+
 	// 3) Check if we should handle this method on this network
 	if err := n.shouldHandleMethod(req, method, upsList); err != nil {
 		if mlx != nil {

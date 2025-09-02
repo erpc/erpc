@@ -117,6 +117,8 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 							EnforceHighestBlock:      util.BoolPtr(true),
 							EnforceGetLogsBlockRange: util.BoolPtr(true),
 						},
+						GetLogsMaxAllowedRange: 30_000,
+						GetLogsSplitOnError:    util.BoolPtr(true),
 					},
 					Failsafe: []*FailsafeConfig{
 						{
@@ -171,7 +173,6 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 
 	return nil
 }
-
 
 var DefaultStatefulMethodNames = []string{
 	"eth_newFilter",
@@ -1329,15 +1330,6 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
 			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
 		}
-		if u.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
-			u.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
-		}
-		if u.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
-			u.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
-		}
-		if u.Evm.GetLogsMaxAllowedTopics == 0 && defaults.Evm.GetLogsMaxAllowedTopics != 0 {
-			u.Evm.GetLogsMaxAllowedTopics = defaults.Evm.GetLogsMaxAllowedTopics
-		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -1527,45 +1519,6 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	if e.GetLogsSplitOnError == nil {
-		if defaults != nil && defaults.GetLogsSplitOnError != nil {
-			e.GetLogsSplitOnError = defaults.GetLogsSplitOnError
-		} else {
-			e.GetLogsSplitOnError = util.BoolPtr(false)
-		}
-	}
-
-	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
-	if e.GetLogsAutoSplittingRangeThreshold == 0 {
-		if e.GetLogsMaxBlockRange > 0 {
-			e.GetLogsAutoSplittingRangeThreshold = e.GetLogsMaxBlockRange
-		} else if defaults != nil && defaults.GetLogsMaxBlockRange != 0 {
-			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsMaxBlockRange
-		} else if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
-			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
-		} else {
-			e.GetLogsAutoSplittingRangeThreshold = 10_000
-		}
-	}
-
-	if e.GetLogsMaxAllowedRange == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
-			e.GetLogsMaxAllowedRange = defaults.GetLogsMaxAllowedRange
-		}
-	}
-
-	if e.GetLogsMaxAllowedAddresses == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedAddresses != 0 {
-			e.GetLogsMaxAllowedAddresses = defaults.GetLogsMaxAllowedAddresses
-		}
-	}
-
-	if e.GetLogsMaxAllowedTopics == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedTopics != 0 {
-			e.GetLogsMaxAllowedTopics = defaults.GetLogsMaxAllowedTopics
-		}
-	}
-
 	if e.SkipWhenSyncing == nil {
 		if defaults != nil && defaults.SkipWhenSyncing != nil {
 			e.SkipWhenSyncing = defaults.SkipWhenSyncing
@@ -1647,6 +1600,21 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
 				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
 			}
+			if n.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
+				n.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
+			}
+			if n.Evm.GetLogsMaxAllowedTopics == 0 && defaults.Evm.GetLogsMaxAllowedTopics != 0 {
+				n.Evm.GetLogsMaxAllowedTopics = defaults.Evm.GetLogsMaxAllowedTopics
+			}
+			if n.Evm.GetLogsSplitOnError == nil && defaults.Evm.GetLogsSplitOnError != nil {
+				n.Evm.GetLogsSplitOnError = defaults.Evm.GetLogsSplitOnError
+			}
+			if n.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
+				n.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
+			}
+			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
+				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
+			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
@@ -1710,7 +1678,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		}
 	}
 
-
 	return nil
 }
 
@@ -1729,6 +1696,17 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if err := e.Integrity.SetDefaults(); err != nil {
 		return err
+	}
+
+	// Defaults for network-level getLogs controls
+	if e.GetLogsMaxAllowedRange == 0 {
+		e.GetLogsMaxAllowedRange = 30_000
+	}
+	if e.GetLogsSplitOnError == nil {
+		e.GetLogsSplitOnError = util.BoolPtr(true)
+	}
+	if e.GetLogsSplitConcurrency == 0 {
+		e.GetLogsSplitConcurrency = 10
 	}
 
 	return nil

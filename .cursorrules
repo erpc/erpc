@@ -38,7 +38,7 @@ This project hosts **eRPC**, a fault-tolerant EVM RPC proxy with built-in cachin
    util.SetupMocksForEvmStatePoller()
    
    // Set up your test-specific mocks here
-   gock.New("http://example.com")...
+   gock.New("http://rpc1.localhost")...
    
    // THEN initialize network/services
    network := setupTestNetwork(t, ctx, ...)

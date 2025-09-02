@@ -117,6 +117,7 @@ export interface CacheMethodConfig {
     respRefs: any[][];
     finalized: boolean;
     realtime: boolean;
+    stateful?: boolean;
 }
 export interface CachePolicyConfig {
     connector: string;
@@ -216,6 +217,7 @@ export interface ProjectConfig {
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
     scoreMetricsWindowSize?: Duration;
+    scoreRefreshInterval?: Duration;
     healthCheck?: DeprecatedProjectHealthCheckConfig;
 }
 export interface NetworkDefaults {
@@ -225,6 +227,12 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -264,6 +272,12 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -284,6 +298,7 @@ export interface ScoreMultiplierConfig {
     throttledRate?: number;
     blockHeadLag?: number;
     finalizationLag?: number;
+    misbehaviors?: number;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -312,10 +327,6 @@ export interface EvmUpstreamConfig {
     statePollerDebounce?: Duration;
     maxAvailableRecentBlocks?: number;
     getLogsAutoSplittingRangeThreshold?: number;
-    getLogsMaxAllowedRange?: number;
-    getLogsMaxAllowedAddresses?: number;
-    getLogsMaxAllowedTopics?: number;
-    getLogsSplitOnError?: boolean;
     skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
@@ -421,6 +432,12 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -432,6 +449,11 @@ export interface EvmNetworkConfig {
     fallbackFinalityDepth?: number;
     fallbackStatePollerDebounce?: Duration;
     integrity?: EvmIntegrityConfig;
+    getLogsMaxAllowedRange?: number;
+    getLogsMaxAllowedAddresses?: number;
+    getLogsMaxAllowedTopics?: number;
+    getLogsSplitOnError?: boolean;
+    getLogsSplitConcurrency?: number;
 }
 export interface EvmIntegrityConfig {
     enforceHighestBlock?: boolean;
@@ -553,6 +575,10 @@ export declare const ScopeNetwork: Scope;
  */
 export declare const ScopeUpstream: Scope;
 export type UpstreamType = string;
+/**
+ * HealthTracker is an interface for tracking upstream health metrics
+ */
+export type HealthTracker = any;
 export type Upstream = any;
 export interface User {
     id: string;
