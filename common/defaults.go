@@ -117,6 +117,8 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 							EnforceHighestBlock:      util.BoolPtr(true),
 							EnforceGetLogsBlockRange: util.BoolPtr(true),
 						},
+						GetLogsMaxAllowedRange: 30_000,
+						GetLogsSplitOnError:    util.BoolPtr(true),
 					},
 					Failsafe: []*FailsafeConfig{
 						{
@@ -1328,15 +1330,6 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
 			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
 		}
-		if u.Evm.DeprecatedGetLogsMaxAllowedRange == 0 && defaults.Evm.DeprecatedGetLogsMaxAllowedRange != 0 {
-			u.Evm.DeprecatedGetLogsMaxAllowedRange = defaults.Evm.DeprecatedGetLogsMaxAllowedRange
-		}
-		if u.Evm.DeprecatedGetLogsMaxAllowedAddresses == 0 && defaults.Evm.DeprecatedGetLogsMaxAllowedAddresses != 0 {
-			u.Evm.DeprecatedGetLogsMaxAllowedAddresses = defaults.Evm.DeprecatedGetLogsMaxAllowedAddresses
-		}
-		if u.Evm.DeprecatedGetLogsMaxAllowedTopics == 0 && defaults.Evm.DeprecatedGetLogsMaxAllowedTopics != 0 {
-			u.Evm.DeprecatedGetLogsMaxAllowedTopics = defaults.Evm.DeprecatedGetLogsMaxAllowedTopics
-		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -1526,31 +1519,6 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	// Deprecated upstream-level split-on-error; keep default to false but will be ignored at runtime
-	if e.DeprecatedGetLogsSplitOnError == nil {
-		if defaults != nil && defaults.DeprecatedGetLogsSplitOnError != nil {
-			e.DeprecatedGetLogsSplitOnError = defaults.DeprecatedGetLogsSplitOnError
-		} else {
-			e.DeprecatedGetLogsSplitOnError = util.BoolPtr(false)
-		}
-	}
-
-	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
-	if e.GetLogsAutoSplittingRangeThreshold == 0 {
-		if e.DeprecatedGetLogsMaxBlockRange > 0 {
-			e.GetLogsAutoSplittingRangeThreshold = e.DeprecatedGetLogsMaxBlockRange
-		} else if defaults != nil && defaults.DeprecatedGetLogsMaxBlockRange != 0 {
-			e.GetLogsAutoSplittingRangeThreshold = defaults.DeprecatedGetLogsMaxBlockRange
-		} else if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
-			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
-		} else {
-			// Legacy default was 10k; new upstream default for threshold is 2k (applied by network using min across upstreams)
-			e.GetLogsAutoSplittingRangeThreshold = 2_000
-		}
-	}
-
-	// Deprecated upstream-level hard limits retained for backward compatibility; network-level limits now used
-
 	if e.SkipWhenSyncing == nil {
 		if defaults != nil && defaults.SkipWhenSyncing != nil {
 			e.SkipWhenSyncing = defaults.SkipWhenSyncing
@@ -1631,6 +1599,21 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
 				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
+			}
+			if n.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
+				n.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
+			}
+			if n.Evm.GetLogsMaxAllowedTopics == 0 && defaults.Evm.GetLogsMaxAllowedTopics != 0 {
+				n.Evm.GetLogsMaxAllowedTopics = defaults.Evm.GetLogsMaxAllowedTopics
+			}
+			if n.Evm.GetLogsSplitOnError == nil && defaults.Evm.GetLogsSplitOnError != nil {
+				n.Evm.GetLogsSplitOnError = defaults.Evm.GetLogsSplitOnError
+			}
+			if n.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
+				n.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
+			}
+			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
+				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
@@ -1717,7 +1700,7 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 
 	// Defaults for network-level getLogs controls
 	if e.GetLogsMaxAllowedRange == 0 {
-		e.GetLogsMaxAllowedRange = 10_000
+		e.GetLogsMaxAllowedRange = 30_000
 	}
 	if e.GetLogsSplitOnError == nil {
 		e.GetLogsSplitOnError = util.BoolPtr(true)

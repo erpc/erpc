@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/h2non/gock"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
@@ -3203,6 +3205,14 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 		panic(err)
 	}
 	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
+
+	gock.New("http://rpc1.localhost").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b"}`))
 
 	for _, cfg := range upstreamConfigs {
 		mt := health.NewTracker(&logger, "prjA", 100*time.Second)

@@ -1017,6 +1017,9 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.FallbackStatePollerDebounce == 0 {
 		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")
 	}
+	if e.GetLogsMaxAllowedRange == 0 {
+		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
+	}
 	return nil
 }
 
