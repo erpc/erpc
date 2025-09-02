@@ -74,6 +74,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "exceeds the range") ||
 			strings.Contains(msg, "max block range") ||
 			strings.Contains(msg, "Max range") ||
+			strings.Contains(msg, "logs over more") ||
 			strings.Contains(msg, "response size should not") ||
 			strings.Contains(msg, "returned more than") ||
 			strings.Contains(msg, "exceeds max results") ||

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,40 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
+
+// isLocalEndpoint checks if the given endpoint URL points to a local or private network address
+func isLocalEndpoint(endpoint string) (bool, error) {
+	parsedURL, err := url.Parse(endpoint)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse endpoint URL: %w", err)
+	}
+
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		return false, nil
+	}
+
+	// Check for localhost variants
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
+		return true, nil
+	}
+
+	// Check for Kubernetes cluster-local domains
+	if strings.HasSuffix(hostname, ".cluster.local") {
+		return true, nil
+	}
+
+	// Parse IP address and check if it's in private ranges
+	ip := net.ParseIP(hostname)
+	if ip != nil {
+		// Check for private IP ranges
+		if ip.IsLoopback() || ip.IsPrivate() {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
 
 // Analyse a config object and print a few stats
 func AnalyseConfig(ctx context.Context, cfg *common.Config, logger zerolog.Logger) error {
@@ -594,6 +631,21 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 		for _, upsCfg := range project.Upstreams {
 			if upsCfg.Endpoint == "" {
 				return fmt.Errorf("upstream endpoint is empty for project: \"%s\" and upstream id: \"%s\"", project.Id, upsCfg.Id)
+			}
+			ignoreLocalEndpoints := os.Getenv("ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION") == "true"
+			if ignoreLocalEndpoints {
+				// Skip non-HTTP endpoints
+				if !strings.HasPrefix(upsCfg.Endpoint, "http://") && !strings.HasPrefix(upsCfg.Endpoint, "https://") {
+					continue
+				}
+				// Skip local endpoints using proper URL parsing
+				isLocal, err := isLocalEndpoint(upsCfg.Endpoint)
+				if err != nil {
+					return fmt.Errorf("invalid endpoint URL for project \"%s\" upstream \"%s\": %w", project.Id, upsCfg.Id, err)
+				}
+				if isLocal {
+					continue
+				}
 			}
 			if upsCfg.Evm == nil || upsCfg.Evm.ChainId == 0 {
 				logger.Warn().Str("project", project.Id).Str("upstream", upsCfg.Id).Msg("upstream has no chain id configured so will skip validation")
