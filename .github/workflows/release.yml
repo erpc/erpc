@@ -22,7 +22,7 @@ permissions:
 jobs:
   # Create Release PR - only on workflow_dispatch
   prepare-release:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     if: github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ github.event.inputs.version_tag }}
@@ -242,8 +242,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Set up Docker Buildx (single‑arch, no cross‑qemu needed)
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Set up Docker tags
         id: tag_param
@@ -284,7 +284,7 @@ jobs:
       # Build main image if this is a regular main push
       - name: Build and push Docker image for main
         if: github.event.inputs.version_tag == ''
-        uses: docker/build-push-action@v5
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           push: true
@@ -298,7 +298,7 @@ jobs:
       # Build release images if this is a release commit
       - name: Build and push Docker image for release
         if: "contains(github.event.head_commit.message, 'chore: release')"
-        uses: docker/build-push-action@v5
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           push: true
