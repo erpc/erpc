@@ -836,7 +836,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			Post("").
 			Persist().
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(500 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
