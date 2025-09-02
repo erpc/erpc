@@ -22,7 +22,7 @@ permissions:
 jobs:
   # Create Release PR - only on workflow_dispatch
   prepare-release:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     if: github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ github.event.inputs.version_tag }}
@@ -223,12 +223,15 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  # Always run on main push to update docker image
-  docker-image:
-    runs-on: large
+  # Native single-arch builds on matching runners; then compose a multi-arch manifest
+  docker-build-amd64:
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: [prepare-release, release]
     if: always() && github.ref == 'refs/heads/main'
     timeout-minutes: 35
+    outputs:
+      digest_main: ${{ steps.build_main.outputs.digest }}
+      digest_release: ${{ steps.build_release.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -241,71 +244,149 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Set up Docker Buildx (single‑arch, no cross‑qemu needed)
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
-      - name: Set up Docker tags
-        id: tag_param
+      - name: Compute repo and short SHA
+        id: meta
         run: |
           REPO="${{ github.repository }}"
           echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Generate short SHA
-        id: short_sha
-        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      # Setup pnpm + node and install dependencies
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'pnpm'
-
-      - name: Install dependencies without postinstall hooks
-        run: pnpm install --ignore-scripts
-        env:
-          CI: true
-
-      # Extract version from commit message if it's a release
-      - name: Extract version
+      - name: Extract version (release commits only)
         id: version
         if: "contains(github.event.head_commit.message, 'chore: release')"
         run: |
           VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      # Build main image if this is a regular main push
-      - name: Build and push Docker image for main
+      - name: Build+push by digest (main)
+        id: build_main
         if: github.event.inputs.version_tag == ''
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           build-args: |
             VERSION=main
-            COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
-          tags: |
-            ghcr.io/${{ steps.tag_param.outputs.repo }}:main
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
 
-      # Build release images if this is a release commit
-      - name: Build and push Docker image for release
+      - name: Build+push by digest (release)
+        id: build_release
         if: "contains(github.event.head_commit.message, 'chore: release')"
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           build-args: |
             VERSION=${{ steps.version.outputs.VERSION }}
-            COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
-          tags: |
-            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
+
+  docker-build-arm64:
+    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
+    needs: [prepare-release, release]
+    if: always() && github.ref == 'refs/heads/main'
+    timeout-minutes: 35
+    outputs:
+      digest_main: ${{ steps.build_main.outputs.digest }}
+      digest_release: ${{ steps.build_release.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
+
+      - name: Compute repo and short SHA
+        id: meta
+        run: |
+          REPO="${{ github.repository }}"
+          echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version (release commits only)
+        id: version
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        run: |
+          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build+push by digest (main)
+        id: build_main
+        if: github.event.inputs.version_tag == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          build-args: |
+            VERSION=main
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
+
+      - name: Build+push by digest (release)
+        id: build_release
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
+
+  docker-manifest:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: [docker-build-amd64, docker-build-arm64]
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute repo
+        id: meta
+        run: |
+          REPO="${{ github.repository }}"
+          echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version (release commits only)
+        id: version
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        run: |
+          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create multi-arch manifest for main
+        if: github.event.inputs.version_tag == ''
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ steps.meta.outputs.repo }}:main \
+            ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_main }} \
+            ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_main }}
+
+      - name: Create multi-arch manifests for release
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ steps.meta.outputs.repo }}:${{ steps.version.outputs.VERSION }} \
+            ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_release }} \
+            ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_release }}
+          docker buildx imagetools create \
+            -t ghcr.io/${{ steps.meta.outputs.repo }}:latest \
+            ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_release }} \
+            ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_release }}
