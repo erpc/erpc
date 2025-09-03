@@ -7751,6 +7751,82 @@ func TestNetwork_Forward(t *testing.T) {
 		wg.Wait()
 	})
 
+	t.Run("MultiplexerCloneUnderLock_PreventsNoBodyParse", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
+
+		// One upstream call per iteration; enforce using Times(rounds)
+		rounds := 50
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			// Times(rounds).
+			Persist().
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      0, // id is ignored by server; we'll overwrite per request downstream
+				"result":  "0xabcdef",
+			})
+
+		for i := 0; i < rounds; i++ {
+			// Two identical requests (different IDs); they should multiplex to a single upstream call
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x111","latest"],"id":1111}`))
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x111","latest"],"id":2222}`))
+			req1.SetNetwork(network)
+			req2.SetNetwork(network)
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			var errA error
+			var errB error
+
+			go func() {
+				defer wg.Done()
+				resp, e := network.Forward(ctx, req1)
+				if resp != nil {
+					_, _ = resp.JsonRpcResponse()
+					resp.Release()
+				}
+				errA = e
+			}()
+
+			go func() {
+				defer wg.Done()
+				resp, e := network.Forward(ctx, req2)
+				errB = e
+				if resp == nil {
+					return
+				}
+				jrr, e2 := resp.JsonRpcResponse()
+				if e2 != nil {
+					assert.FailNow(t, "unexpected parse error", e2.Error())
+				}
+				if jrr == nil {
+					assert.FailNow(t, "nil JsonRpcResponse returned from multiplexed wait")
+				}
+				if jrr != nil && jrr.Error != nil {
+					assert.NotContains(t, jrr.Error.Message, "no body available to parse JsonRpcResponse", "should never see empty-body parse error from multiplexed copy")
+				}
+				resp.Release()
+			}()
+
+			wg.Wait()
+			require.NoError(t, errA)
+			require.NoError(t, errB)
+		}
+	})
+
 	t.Run("BatchRequestValidationAndRetry", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

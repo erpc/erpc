@@ -571,6 +571,9 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 		return nil, nil
 	}
 
+	resp.RLockWithTrace(ctx)
+	defer resp.RUnlock()
+
 	r := NewNormalizedResponse()
 	r.WithRequest(req)
 	r.SetUpstream(resp.Upstream())
@@ -583,7 +586,6 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 
 	// Try to load the already–parsed JsonRpcResponse from the original response.
 	ejrr := resp.jsonRpcResponse.Load()
-
 	// If the original response has not yet been parsed (common with multiplexed
 	// requests), parse it now so that we can clone a *complete* JsonRpcResponse.
 	if ejrr == nil {
@@ -608,6 +610,14 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	}
 
 	jrq := req.jsonRpcRequest.Load()
+	if jrq == nil {
+		// Fallback to parsing the JSON-RPC request if atomic fast-path isn't populated
+		parsedReq, perr := req.JsonRpcRequest(ctx)
+		if perr != nil {
+			return nil, perr
+		}
+		jrq = parsedReq
+	}
 	if jrq == nil {
 		return nil, fmt.Errorf("request jsonRpcRequest is nil")
 	}

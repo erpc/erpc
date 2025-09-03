@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -593,4 +594,100 @@ func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testin
 	require.NoError(t, json.Unmarshal(b, &out))
 	arr, _ := out["result"].([]interface{})
 	require.Equal(t, 1, len(arr))
+}
+
+// Reproduces concurrent identical requests over HTTP to exercise multiplexer and response lifecycle.
+// Ensures no client ever receives a parse error like "no body available to parse JsonRpcResponse".
+func TestHttp_ConcurrentIdenticalRequests_NoEmptyBodyParse(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool { return strings.Split(req.URL.Host, ":")[0] == "localhost" })
+	util.SetupMocksForEvmStatePoller()
+	// 1 user mock kept Persist(), so expect 1 pending besides poller mocks
+	defer util.AssertNoPendingMocks(t, 1)
+
+	// Upstream mock for eth_getBalance (persist to allow many rounds)
+	gock.New("http://rpc1.localhost").
+		Post("/").
+		Persist().
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBalance") }).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      0,
+			"result":  "0xabcdef",
+		})
+
+	// --- Server setup ---
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
+		Projects: []*common.ProjectConfig{{
+			Id:        "test_project",
+			Networks:  []*common.NetworkConfig{{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}},
+			Upstreams: []*common.UpstreamConfig{{Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}}},
+		}},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+	require.NoError(t, err)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	require.NoError(t, err)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	go func() { _ = httpServer.serverV4.Serve(listener) }()
+	defer httpServer.serverV4.Shutdown(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+	mkReq := func(id int) *http.Request {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":%d}`, id)
+		req, e := http.NewRequest("POST", baseURL+"/test_project/evm/123", strings.NewReader(body))
+		require.NoError(t, e)
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}
+
+	rounds := 50
+	client := &http.Client{Timeout: 5 * time.Second}
+	for i := 0; i < rounds; i++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// First request
+		go func(iter int) {
+			defer wg.Done()
+			resp, e := client.Do(mkReq(100000 + iter*2))
+			require.NoError(t, e)
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			require.Equal(t, 200, resp.StatusCode, string(b))
+			// must not contain parse error
+			require.NotContains(t, string(b), "no body available to parse JsonRpcResponse")
+		}(i)
+
+		// Second, identical request (different id → multiplex eligible)
+		go func(iter int) {
+			defer wg.Done()
+			resp, e := client.Do(mkReq(100001 + iter*2))
+			require.NoError(t, e)
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			require.Equal(t, 200, resp.StatusCode, string(b))
+			require.NotContains(t, string(b), "no body available to parse JsonRpcResponse")
+		}(i)
+
+		wg.Wait()
+	}
 }
