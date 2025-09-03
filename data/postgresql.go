@@ -104,16 +104,8 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
 
-	listenerConfig, err := pgxpool.ParseConfig(cfg.ConnectionUri)
-	if err != nil {
-		return err
-	}
-	listenerConfig.MaxConns = cfg.MaxConns
-	listenerPool, err := pgxpool.ConnectConfig(ctx, listenerConfig)
-	if err != nil {
-		return err
-	}
-	p.listenerPool = listenerPool
+	// Defer creation of listener pool until it's actually needed by WatchCounterInt64
+	p.listenerPool = nil
 
 	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
 	if err != nil {
@@ -655,9 +647,30 @@ func (p *PostgreSQLConnector) connectListener(ctx context.Context, channel strin
 		}
 		p.logger.Trace().Str("channel", channel).Msg("attempting to connect to postgres channel")
 
-		p.connMu.RLock()
+		p.connMu.Lock()
+		// Lazily initialize listenerPool using the main pool's connection string
+		if p.listenerPool == nil {
+			if p.conn == nil {
+				p.connMu.Unlock()
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			cfg, err := pgxpool.ParseConfig(p.conn.Config().ConnString())
+			if err != nil {
+				p.connMu.Unlock()
+				return nil, err
+			}
+			cfg.MaxConns = p.maxConns
+			pool, err := pgxpool.ConnectConfig(ctx, cfg)
+			if err != nil {
+				p.connMu.Unlock()
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			p.listenerPool = pool
+		}
 		conn, err := p.listenerPool.Acquire(ctx)
-		p.connMu.RUnlock()
+		p.connMu.Unlock()
 
 		if err != nil {
 			p.logger.Trace().Err(err).Str("channel", channel).Msg("failed to acquire postgres listener connection, will retry")
