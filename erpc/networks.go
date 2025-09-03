@@ -976,31 +976,29 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	defer span.End()
 
 	// Check if result is already available
-	mlx.mu.RLock()
+	mlx.mu.Lock()
 	if mlx.resp != nil || mlx.err != nil {
-		mlx.mu.RUnlock()
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		// Clone the stored response while holding the lock to avoid races with cleanup
+		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		mlx.mu.Unlock()
+		return out, mlx.err
 	}
-	mlx.mu.RUnlock()
+	mlx.mu.Unlock()
 
 	// Wait for result
 	select {
 	case <-mlx.done:
 		// Need to lock when accessing mlx.resp to avoid race with cleanupMultiplexer
 		mlx.mu.Lock()
-		respToCopy := mlx.resp
-		mlxErr := mlx.err
-		mlx.mu.Unlock()
-
-		resp, err := common.CopyResponseForRequest(ctx, respToCopy, req)
+		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlxErr
+		mlx.mu.Unlock()
+		return out, mlx.err
 	case <-ctx.Done():
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()

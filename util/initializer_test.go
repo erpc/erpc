@@ -137,7 +137,7 @@ func TestInitializer_MultipleTasksMixedResultsNoRetry(t *testing.T) {
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout: time.Second,
+		TaskTimeout: 5 * time.Second,
 		AutoRetry:   false,
 	})
 

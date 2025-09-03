@@ -117,11 +117,30 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	shadowUpstreams := network.ShadowUpstreams()
 	if len(shadowUpstreams) > 0 {
-		cloneResp, err := common.CopyResponseForRequest(ctx, resp, nq)
-		if err != nil {
-			lg.Error().Err(err).Msgf("failed to copy response for shadow requests")
-		} else {
-			go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)
+		if resp != nil {
+			jrr, jerr := resp.JsonRpcResponse(ctx)
+			if jerr != nil || jrr == nil {
+				if jerr != nil {
+					lg.Error().Err(jerr).Msgf("failed to parse response for shadow requests")
+				} else {
+					lg.Error().Msgf("failed to parse response for shadow requests: nil jsonRpcResponse")
+				}
+			} else {
+				jrc, cerr := jrr.Clone()
+				if cerr != nil {
+					lg.Error().Err(cerr).Msgf("failed to clone json-rpc response for shadow requests")
+				} else {
+					cloneResp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrc)
+					cloneResp.SetUpstream(resp.Upstream())
+					cloneResp.SetFromCache(resp.FromCache())
+					cloneResp.SetAttempts(resp.Attempts())
+					cloneResp.SetRetries(resp.Retries())
+					cloneResp.SetHedges(resp.Hedges())
+					cloneResp.SetEvmBlockRef(resp.EvmBlockRef())
+					cloneResp.SetEvmBlockNumber(resp.EvmBlockNumber())
+					go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)
+				}
+			}
 		}
 	}
 
