@@ -900,10 +900,18 @@ func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 		}
 	}
 	if p.MinConns == 0 {
-		p.MinConns = 4
+		if scope == connectorScopeAuth {
+			p.MinConns = 1
+		} else {
+			p.MinConns = 4
+		}
 	}
 	if p.MaxConns == 0 {
-		p.MaxConns = 32
+		if scope == connectorScopeAuth {
+			p.MaxConns = 4
+		} else {
+			p.MaxConns = 32
+		}
 	}
 	if p.InitTimeout == 0 {
 		p.InitTimeout = Duration(5 * time.Second)
