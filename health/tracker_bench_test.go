@@ -28,14 +28,14 @@ type MockUpstream struct {
 	vendor  string
 }
 
-func (m *MockUpstream) Id() string                            { return m.id }
-func (m *MockUpstream) NetworkId() string                     { return m.network }
-func (m *MockUpstream) NetworkLabel() string                  { return m.network }
-func (m *MockUpstream) VendorName() string                    { return m.vendor }
-func (m *MockUpstream) Logger() *zerolog.Logger               { return &log.Logger }
-func (m *MockUpstream) Config() *common.UpstreamConfig        { return nil }
-func (m *MockUpstream) Vendor() common.Vendor                 { return nil }
-func (m *MockUpstream) Tracker() common.HealthTracker         { return nil }
+func (m *MockUpstream) Id() string                     { return m.id }
+func (m *MockUpstream) NetworkId() string              { return m.network }
+func (m *MockUpstream) NetworkLabel() string           { return m.network }
+func (m *MockUpstream) VendorName() string             { return m.vendor }
+func (m *MockUpstream) Logger() *zerolog.Logger        { return &log.Logger }
+func (m *MockUpstream) Config() *common.UpstreamConfig { return nil }
+func (m *MockUpstream) Vendor() common.Vendor          { return nil }
+func (m *MockUpstream) Tracker() common.HealthTracker  { return nil }
 func (m *MockUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
@@ -201,7 +201,7 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 		for pb.Next() {
 			upstream := upstreams[i%len(upstreams)]
 			method := methods[i%len(methods)]
-			
+
 			// Simulate a realistic mix of operations
 			switch i % 5 {
 			case 0, 1, 2: // 60% are regular requests
@@ -213,12 +213,12 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 			case 4: // 20% are rate limited
 				tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
 			}
-			
+
 			// Occasionally update block numbers
 			if i%100 == 0 {
 				tracker.SetLatestBlockNumber(upstream, int64(1000000+i))
 			}
-			
+
 			i++
 		}
 	})
@@ -248,16 +248,16 @@ func BenchmarkTrackerRecordUpstreamDurationWithTimer(b *testing.B) {
 		for pb.Next() {
 			upstream := upstreams[i%len(upstreams)]
 			method := methods[i%len(methods)]
-			
+
 			// Start timer
 			timer := tracker.RecordUpstreamDurationStart(upstream, method, "none", common.DataFinalityStateUnknown, "user-1")
-			
+
 			// Simulate some work
 			time.Sleep(1 * time.Nanosecond)
-			
+
 			// Record duration
 			timer.ObserveDuration(true)
-			
+
 			i++
 		}
 	})

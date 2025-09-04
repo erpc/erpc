@@ -165,9 +165,9 @@ type Tracker struct {
 // NewTracker constructs a new Tracker, using sync.Map for concurrency.
 func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Duration) *Tracker {
 	return &Tracker{
-		logger:     logger,
-		projectId:  projectId,
-		windowSize: windowSize,
+		logger:             logger,
+		projectId:          projectId,
+		windowSize:         windowSize,
 		upstreamsByNetwork: make(map[string][]upstreamKey),
 	}
 }
