@@ -807,7 +807,7 @@ func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expecte
 		reader = gr
 	}
 
-	return util.ReadAll(reader, 128*1024, expectedSize) // 128KB
+	return util.ReadAll(reader, expectedSize)
 }
 
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {

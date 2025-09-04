@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -265,7 +266,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		defer span.End()
 	}
 
-	data, err := util.ReadAll(reader, 16*1024, expectedSize)
+	data, err := util.ReadAll(reader, expectedSize)
 	if err != nil {
 		return err
 	}
@@ -781,13 +782,12 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 		return "", err
 	}
 
-	canonical, err := canonicalize(obj)
+	h := sha256.New()
+	_, err := canonicalizeTo(h, obj)
 	if err != nil {
 		return "", err
 	}
-
-	b := sha256.Sum256(canonical)
-	hash := fmt.Sprintf("%x", b)
+	hash := hex.EncodeToString(h.Sum(nil))
 
 	// Store the computed hash atomically
 	r.canonicalHashWithIgnored.Store(defaultCanonicalHashPlaceholder, hash)
@@ -831,18 +831,158 @@ func (r *JsonRpcResponse) CanonicalHashWithIgnoredFields(ignoreFields []string, 
 	// Remove ignored fields before canonicalization
 	obj = removeFieldsByPaths(obj, ignoreFields)
 
-	canonical, err := canonicalize(obj)
+	h := sha256.New()
+	_, err := canonicalizeTo(h, obj)
 	if err != nil {
 		return "", err
 	}
-
-	b := sha256.Sum256(canonical)
-	hash := fmt.Sprintf("%x", b)
+	hash := hex.EncodeToString(h.Sum(nil))
 
 	// Store in cache
 	r.canonicalHashWithIgnored.Store(cacheKey, hash)
 
 	return hash, nil
+}
+
+// canonicalizeTo writes the canonical JSON representation of v into w, applying
+// the same emptyish filtering semantics as canonicalize(). It returns true if
+// any bytes were written.
+func canonicalizeTo(w io.Writer, v interface{}) (bool, error) {
+	if isEmptyishValue(v) {
+		return false, nil
+	}
+
+	switch val := v.(type) {
+	case map[string]interface{}:
+		// Filter empties and precompute children
+		keys := make([]string, 0, len(val))
+		children := make(map[string]*bytes.Buffer, len(val))
+		for k, vv := range val {
+			if isEmptyishValue(vv) {
+				continue
+			}
+			buf := util.BorrowBuf()
+			wrote, err := canonicalizeTo(buf, vv)
+			if err != nil {
+				util.ReturnBuf(buf)
+				return false, err
+			}
+			if wrote {
+				children[k] = buf
+				keys = append(keys, k)
+			} else {
+				util.ReturnBuf(buf)
+			}
+		}
+		if len(keys) == 0 {
+			return false, nil
+		}
+		sort.Strings(keys)
+		// Ensure all borrowed child buffers are returned to the pool even if any write below errors.
+		defer func() {
+			for _, cb := range children {
+				if cb != nil {
+					util.ReturnBuf(cb)
+				}
+			}
+		}()
+		if _, err := w.Write([]byte{'{'}); err != nil {
+			return false, err
+		}
+		for i, k := range keys {
+			if i > 0 {
+				if _, err := w.Write([]byte{','}); err != nil {
+					return false, err
+				}
+			}
+			kj, _ := SonicCfg.Marshal(k)
+			if _, err := w.Write(kj); err != nil {
+				return false, err
+			}
+			if _, err := w.Write([]byte{':'}); err != nil {
+				return false, err
+			}
+			if _, err := w.Write(children[k].Bytes()); err != nil {
+				return false, err
+			}
+			// Return immediately and mark as nil so deferred cleanup skips it
+			util.ReturnBuf(children[k])
+			children[k] = nil
+		}
+		_, err := w.Write([]byte{'}'})
+		return true, err
+
+	case []interface{}:
+		// Filter empties and stream elements
+		if _, err := w.Write([]byte{'['}); err != nil {
+			return false, err
+		}
+		first := true
+		any := false
+		for _, item := range val {
+			if isEmptyishValue(item) {
+				continue
+			}
+			buf := util.BorrowBuf()
+			wrote, err := canonicalizeTo(buf, item)
+			if err != nil {
+				util.ReturnBuf(buf)
+				return false, err
+			}
+			if !wrote {
+				util.ReturnBuf(buf)
+				continue
+			}
+			if !first {
+				if _, err := w.Write([]byte{','}); err != nil {
+					util.ReturnBuf(buf)
+					return false, err
+				}
+			}
+			first = false
+			any = true
+			if _, err := w.Write(buf.Bytes()); err != nil {
+				util.ReturnBuf(buf)
+				return false, err
+			}
+			util.ReturnBuf(buf)
+		}
+		if _, err := w.Write([]byte{']'}); err != nil {
+			return false, err
+		}
+		if !any {
+			return false, nil
+		}
+		return true, nil
+
+	case string:
+		b := removeLeadingZeroes(util.S2Bytes(val))
+		if len(b) == 0 {
+			return false, nil
+		}
+		_, err := w.Write(b)
+		return true, err
+
+	case []byte:
+		b := removeLeadingZeroes(val)
+		if len(b) == 0 {
+			return false, nil
+		}
+		_, err := w.Write(b)
+		return true, err
+
+	default:
+		b, err := SonicCfg.Marshal(val)
+		if err != nil {
+			return false, err
+		}
+		if util.IsBytesEmptyish(b) {
+			return false, nil
+		}
+		b = removeLeadingZeroes(b)
+		_, err = w.Write(b)
+		return true, err
+	}
 }
 
 // removeFieldsByPaths removes fields from an object based on dot-separated paths
@@ -929,6 +1069,9 @@ func canonicalize(v interface{}) ([]byte, error) {
 		return nil, nil
 	}
 
+	buf := util.BorrowBuf()
+	defer util.ReturnBuf(buf)
+
 	switch val := v.(type) {
 	case map[string]interface{}:
 		// Filter out empty values from the map
@@ -950,7 +1093,6 @@ func canonicalize(v interface{}) ([]byte, error) {
 		}
 		sort.Strings(keys)
 
-		var buf bytes.Buffer
 		buf.WriteByte('{')
 		first := true
 		for _, k := range keys {
@@ -994,7 +1136,6 @@ func canonicalize(v interface{}) ([]byte, error) {
 			return nil, nil
 		}
 
-		var buf bytes.Buffer
 		buf.WriteByte('[')
 		first := true
 		for _, item := range filtered {
