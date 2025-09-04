@@ -6,6 +6,7 @@ vendor/
 *.txt
 *.test
 *.prof
+*.pb.gz
 *.pprof
 *.cover
 coverage.txt

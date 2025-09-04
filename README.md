@@ -12,8 +12,6 @@ eRPC is a fault-tolerant EVM RPC proxy and **re-org aware permanent caching solu
 
 <img src="./assets/hla-diagram.svg" alt="Architecture Diagram" width="70%" />
 
-> **⚠️ Note**: eRPC is still under development. We recommend using it for testnets or as a fallback provider for production RPC calls.
-
 ---
 
 ### Quick Start

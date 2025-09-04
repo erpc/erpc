@@ -99,7 +99,6 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 		return nil, common.NewErrAuthUnauthorized("database", "empty API key")
 	}
 
-
 	// Check positive cache first if available
 	if s.cache != nil {
 		if cachedUser, found := s.cache.Get(apiKey); found {

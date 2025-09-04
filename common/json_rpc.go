@@ -929,6 +929,9 @@ func canonicalize(v interface{}) ([]byte, error) {
 		return nil, nil
 	}
 
+	buf := util.BorrowBuf()
+	defer util.ReturnBuf(buf)
+
 	switch val := v.(type) {
 	case map[string]interface{}:
 		// Filter out empty values from the map
@@ -950,7 +953,6 @@ func canonicalize(v interface{}) ([]byte, error) {
 		}
 		sort.Strings(keys)
 
-		var buf bytes.Buffer
 		buf.WriteByte('{')
 		first := true
 		for _, k := range keys {
@@ -994,7 +996,6 @@ func canonicalize(v interface{}) ([]byte, error) {
 			return nil, nil
 		}
 
-		var buf bytes.Buffer
 		buf.WriteByte('[')
 		first := true
 		for _, item := range filtered {

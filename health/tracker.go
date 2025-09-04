@@ -157,6 +157,9 @@ type Tracker struct {
 	metadata   sync.Map // map[common.Upstream]*NetworkMetadata
 	upsMetrics sync.Map // map[upsKey]*TrackedMetrics
 	ntwMetrics sync.Map // map[ntwKey]*TrackedMetrics
+
+	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
+	mu                 sync.RWMutex             // Protect the map
 }
 
 // NewTracker constructs a new Tracker, using sync.Map for concurrency.
@@ -540,37 +543,38 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
 	if needsGlobalUpdate {
 		// Recompute for every upstream in the network
-		t.upsMetrics.Range(func(key, value any) bool {
-			k, ok := key.(upstreamKey)
-			if !ok {
-				return true
-			}
-			otherUps := k.ups
-			if otherUps == nil {
-				return true
-			}
-			otherNet := otherUps.NetworkId()
-			if otherNet == net {
-				tm := value.(*TrackedMetrics)
-				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-				otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
-				if otherVal <= 0 {
-					lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
-					return true
+		t.mu.RLock()
+		relevantKeys := t.upstreamsByNetwork[net]
+		t.mu.RUnlock()
+
+		for _, k := range relevantKeys {
+			if v, ok := t.upsMetrics.Load(k); ok {
+				tm := v.(*TrackedMetrics)
+				otherUps := k.ups
+				if otherUps == nil {
+					continue
 				}
-				otherLag := ntwBn - otherVal
-				tm.BlockHeadLag.Store(otherLag)
-				telemetry.MetricUpstreamBlockHeadLag.
-					WithLabelValues(
-						t.projectId,
-						otherUps.VendorName(),
-						otherUps.NetworkLabel(),
-						otherUps.Id(),
-					).
-					Set(float64(otherLag))
+				otherNet := otherUps.NetworkId()
+				if otherNet == net {
+					otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
+					otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
+					if otherVal <= 0 {
+						lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+						continue
+					}
+					otherLag := ntwBn - otherVal
+					tm.BlockHeadLag.Store(otherLag)
+					telemetry.MetricUpstreamBlockHeadLag.
+						WithLabelValues(
+							t.projectId,
+							otherUps.VendorName(),
+							otherUps.NetworkLabel(),
+							otherUps.Id(),
+						).
+						Set(float64(otherLag))
+				}
 			}
-			return true
-		})
+		}
 	} else {
 		// Only update items for this single upstream in this network
 		t.upsMetrics.Range(func(key, value any) bool {
