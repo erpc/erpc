@@ -265,7 +265,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		defer span.End()
 	}
 
-	data, err := util.ReadAll(reader, 16*1024, expectedSize)
+	data, err := util.ReadAll(reader, expectedSize)
 	if err != nil {
 		return err
 	}
