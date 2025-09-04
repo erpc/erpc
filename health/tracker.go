@@ -168,6 +168,7 @@ func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Durati
 		logger:     logger,
 		projectId:  projectId,
 		windowSize: windowSize,
+		upstreamsByNetwork: make(map[string][]upstreamKey),
 	}
 }
 
@@ -236,6 +237,24 @@ func (t *Tracker) getUpsMetrics(k upstreamKey) *TrackedMetrics {
 	}
 	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker()}
 	actual, _ := t.upsMetrics.LoadOrStore(k, tm)
+	// Track this upstreamKey under its network for efficient global updates
+	if k.ups != nil {
+		net := k.ups.NetworkId()
+		t.mu.Lock()
+		// Deduplicate entries for the same upstream and method
+		list := t.upstreamsByNetwork[net]
+		exists := false
+		for _, existing := range list {
+			if existing.method == k.method && existing.ups != nil && existing.ups.Id() == k.ups.Id() {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			t.upstreamsByNetwork[net] = append(list, k)
+		}
+		t.mu.Unlock()
+	}
 	return actual.(*TrackedMetrics)
 }
 
@@ -547,31 +566,67 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		relevantKeys := t.upstreamsByNetwork[net]
 		t.mu.RUnlock()
 
-		for _, k := range relevantKeys {
-			if v, ok := t.upsMetrics.Load(k); ok {
-				tm := v.(*TrackedMetrics)
+		if len(relevantKeys) == 0 {
+			// Fallback: if we have not yet registered upstream keys for this network,
+			// iterate over all known metrics to ensure correctness.
+			t.upsMetrics.Range(func(key, value any) bool {
+				k, ok := key.(upstreamKey)
+				if !ok {
+					return true
+				}
 				otherUps := k.ups
 				if otherUps == nil {
-					continue
+					return true
 				}
-				otherNet := otherUps.NetworkId()
-				if otherNet == net {
-					otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-					otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
-					if otherVal <= 0 {
-						lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+				if otherUps.NetworkId() != net {
+					return true
+				}
+				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
+				otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
+				if otherVal <= 0 {
+					lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+					return true
+				}
+				otherLag := ntwBn - otherVal
+				tm := value.(*TrackedMetrics)
+				tm.BlockHeadLag.Store(otherLag)
+				telemetry.MetricUpstreamBlockHeadLag.
+					WithLabelValues(
+						t.projectId,
+						otherUps.VendorName(),
+						otherUps.NetworkLabel(),
+						otherUps.Id(),
+					).
+					Set(float64(otherLag))
+				return true
+			})
+		} else {
+			for _, k := range relevantKeys {
+				if v, ok := t.upsMetrics.Load(k); ok {
+					tm := v.(*TrackedMetrics)
+					otherUps := k.ups
+					if otherUps == nil {
 						continue
 					}
-					otherLag := ntwBn - otherVal
-					tm.BlockHeadLag.Store(otherLag)
-					telemetry.MetricUpstreamBlockHeadLag.
-						WithLabelValues(
-							t.projectId,
-							otherUps.VendorName(),
-							otherUps.NetworkLabel(),
-							otherUps.Id(),
-						).
-						Set(float64(otherLag))
+					otherNet := otherUps.NetworkId()
+					if otherNet == net {
+						otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
+						otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
+						if otherVal <= 0 {
+							lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+							continue
+						}
+						otherLag := ntwBn - otherVal
+						tm.BlockHeadLag.Store(otherLag)
+						telemetry.MetricUpstreamBlockHeadLag.
+							WithLabelValues(
+								t.projectId,
+								otherUps.VendorName(),
+								otherUps.NetworkLabel(),
+								otherUps.Id(),
+							).
+							Set(float64(otherLag))
+					}
 				}
 			}
 		}
