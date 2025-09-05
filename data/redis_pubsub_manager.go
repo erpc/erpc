@@ -375,7 +375,7 @@ func (m *RedisPubSubManager) pollAllKeys() {
 
 // getCurrentValue fetches the current value of a counter
 func (m *RedisPubSubManager) getCurrentValue(ctx context.Context, key string) (int64, error) {
-	val, err := m.connector.Get(ctx, ConnectorMainIndex, key, "value")
+	val, err := m.connector.Get(ctx, ConnectorMainIndex, key, "value", nil)
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 			return 0, nil

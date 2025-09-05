@@ -676,9 +676,9 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 
 	var resultBytes []byte
 	if blockRef == "*" {
-		resultBytes, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
+		resultBytes, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey, req)
 	} else {
-		resultBytes, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
+		resultBytes, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey, req)
 	}
 	if err != nil {
 		return nil, err

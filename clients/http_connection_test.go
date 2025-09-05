@@ -420,7 +420,7 @@ func TestConnectionLimitsWithRealWorldScenario(t *testing.T) {
 		// Create client with current problematic configuration
 		ctx := context.Background()
 		ups := common.NewFakeUpstream("rpc1")
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", ups, parsedURL, nil, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", ups, parsedURL, nil, nil, nil)
 		assert.NoError(t, err)
 
 		// Simulate 100 RPS for 5 seconds (500 requests total)

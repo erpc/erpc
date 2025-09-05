@@ -308,7 +308,7 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey st
 	return err
 }
 
-func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
+func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Get")
 	defer span.End()
 
@@ -700,7 +700,7 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 	defer span.End()
 
 	p.logger.Trace().Str("key", key).Msg("proactively getting current value from postgres")
-	val, err := p.Get(ctx, ConnectorMainIndex, key, "value")
+	val, err := p.Get(ctx, ConnectorMainIndex, key, "value", nil)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {

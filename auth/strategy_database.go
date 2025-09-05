@@ -124,7 +124,7 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 	}
 	v, sfErr, _ := s.sf.Do(apiKey, func() (interface{}, error) {
 		rangeKey := "*"
-		valueBytes, err := s.connector.Get(ctx, data.ConnectorMainIndex, apiKey, rangeKey)
+		valueBytes, err := s.connector.Get(ctx, data.ConnectorMainIndex, apiKey, rangeKey, nil)
 		if err != nil {
 			if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 				return &authFetchResult{user: nil, err: common.NewErrAuthUnauthorized("database", "invalid API key"), neg: true}, nil

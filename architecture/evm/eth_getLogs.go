@@ -301,7 +301,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	return false, nil, nil
 }
 
-func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error, skipCacheRead bool) (*common.NormalizedResponse, error) {
+func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_getLogs", trace.WithAttributes(
 		attribute.String("request.id", fmt.Sprintf("%v", rq.ID())),
 		attribute.String("network.id", n.Id()),

@@ -132,7 +132,7 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	return nil
 }
 
-func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
+func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
 		fullKey, found := m.cache.Get(memoryReverseIndexPrefix + "#" + partitionKey + "#" + rangeKey)
 		// Replace wildcard partitionKey with the resolved concrete value if found

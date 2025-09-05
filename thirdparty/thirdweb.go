@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	archEvm "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -138,7 +139,7 @@ func (v *ThirdwebVendor) getOrCreateClient(ctx context.Context, logger *zerolog.
 
 	// Create a new client for this chain ID
 	u := &phonyUpstream{id: fmt.Sprintf("temp-thirdweb-%d", chainId)}
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", u, parsedURL, nil, nil)
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", u, parsedURL, nil, nil, archEvm.NewJsonRpcErrorExtractor())
 	if err != nil {
 		return nil, err
 	}

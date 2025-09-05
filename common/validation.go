@@ -351,7 +351,7 @@ func (c *ConnectorConfig) Validate() error {
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
 	}
-	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB}
+	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB, DriverGrpc}
 	if !slices.Contains(drivers, c.Driver) {
 		return fmt.Errorf("database.*.connector.driver '%s' is invalid must be one of: %v", c.Driver, drivers)
 	}

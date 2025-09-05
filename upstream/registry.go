@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -70,12 +71,17 @@ func NewUpstreamsRegistry(
 ) *UpstreamsRegistry {
 	lg := logger.With().Str("component", "upstreams").Logger()
 	return &UpstreamsRegistry{
-		appCtx:                 appCtx,
-		prjId:                  prjId,
-		scoreRefreshInterval:   scoreRefreshInterval,
-		logger:                 logger,
-		sharedStateRegistry:    ssr,
-		clientRegistry:         clients.NewClientRegistry(logger, prjId, ppr),
+		appCtx:               appCtx,
+		prjId:                prjId,
+		scoreRefreshInterval: scoreRefreshInterval,
+		logger:               logger,
+		sharedStateRegistry:  ssr,
+		clientRegistry: clients.NewClientRegistry(
+			logger,
+			prjId,
+			ppr,
+			evm.NewJsonRpcErrorExtractor(),
+		),
 		rateLimitersRegistry:   rr,
 		vendorsRegistry:        vr,
 		providersRegistry:      pr,

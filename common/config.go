@@ -213,6 +213,7 @@ const (
 	DriverRedis      ConnectorDriverType = "redis"
 	DriverPostgreSQL ConnectorDriverType = "postgresql"
 	DriverDynamoDB   ConnectorDriverType = "dynamodb"
+	DriverGrpc       ConnectorDriverType = "grpc"
 )
 
 type ConnectorConfig struct {
@@ -222,7 +223,14 @@ type ConnectorConfig struct {
 	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
 	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
+	Grpc       *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
 	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
+}
+
+type GrpcConnectorConfig struct {
+	Bootstrap string            `yaml:"bootstrap,omitempty" json:"bootstrap"`
+	Servers   []string          `yaml:"servers,omitempty" json:"servers"`
+	Headers   map[string]string `yaml:"headers,omitempty" json:"headers"`
 }
 
 type MemoryConnectorConfig struct {

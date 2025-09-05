@@ -408,7 +408,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey stri
 	return err
 }
 
-func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
+func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Get")
 	defer span.End()
 

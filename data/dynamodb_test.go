@@ -77,7 +77,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-dynamo"), nil)
 		require.NoError(t, err, "Set should succeed after successful initialization")
 
-		val, err := connector.Get(ctx, "", "testPK", "testRK")
+		val, err := connector.Get(ctx, "", "testPK", "testRK", nil)
 		require.NoError(t, err, "Get should succeed for existing key")
 		require.Equal(t, []byte("hello-dynamo"), val)
 	})
@@ -119,7 +119,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
 		require.Error(t, err, "Set should fail because DynamoDB is not connected (invalid endpoint)")
 
-		_, err = connector.Get(ctx, "", "testPK", "testRK")
+		_, err = connector.Get(ctx, "", "testPK", "testRK", nil)
 		require.Error(t, err, "Get should fail because DynamoDB is not connected (invalid endpoint)")
 	})
 }
@@ -232,7 +232,7 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			value, err := connector.Get(ctx, ConnectorReverseIndex, tc.partitionKey, tc.rangeKey)
+			value, err := connector.Get(ctx, ConnectorReverseIndex, tc.partitionKey, tc.rangeKey, nil)
 
 			if tc.expectedError {
 				require.Error(t, err, "expected error but got none")

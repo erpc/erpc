@@ -9,10 +9,11 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
 	_ "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
-	evmArch "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -21,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -32,6 +34,7 @@ import (
 type GrpcBdsClient interface {
 	GetType() ClientType
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+	SetHeaders(h map[string]string)
 }
 
 type GenericGrpcBdsClient struct {
@@ -110,7 +113,18 @@ func NewGrpcBdsClient(
 	// Create gRPC connection
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(transportCredentials),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)), // 100MB max message size
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(100*1024*1024), // 100MB max recv
+			grpc.MaxCallSendMsgSize(100*1024*1024), // 100MB max send
+		),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                30 * time.Second, // send pings every 30s if no activity
+			Timeout:             10 * time.Second, // wait 10s for ping ack
+			PermitWithoutStream: true,             // send pings even with no active streams
+		}),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			MinConnectTimeout: 5 * time.Second,
+		}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to gRPC server at %s: %w", target, err)
@@ -775,7 +789,7 @@ func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 	}
 
 	// Pass to the EVM error normalizer
-	return evmArch.ExtractGrpcError(st, c.upstream)
+	return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
 }
 
 func (c *GenericGrpcBdsClient) shutdown() {
@@ -784,6 +798,15 @@ func (c *GenericGrpcBdsClient) shutdown() {
 		if err != nil {
 			c.logger.Error().Err(err).Msg("failed to close gRPC connection")
 		}
+	}
+}
+
+func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
+	if c == nil || h == nil {
+		return
+	}
+	for k, v := range h {
+		c.headers[k] = v
 	}
 }
 

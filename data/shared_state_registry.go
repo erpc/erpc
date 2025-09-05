@@ -173,7 +173,7 @@ func (r *sharedStateRegistry) getInitialValueTaskName(counter *counterInt64) str
 }
 
 func (r *sharedStateRegistry) fetchValue(ctx context.Context, key string) (int64, error) {
-	remoteVal, err := r.connector.Get(ctx, ConnectorMainIndex, key, "value")
+	remoteVal, err := r.connector.Get(ctx, ConnectorMainIndex, key, "value", nil)
 	if err != nil {
 		return 0, err
 	}
