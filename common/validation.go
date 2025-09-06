@@ -341,6 +341,14 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 		}
 	}
 
+	// Validate appliesTo
+	switch p.AppliesTo {
+	case "", CachePolicyAppliesToBoth, CachePolicyAppliesToGet, CachePolicyAppliesToSet:
+		// ok (empty will be defaulted to both by SetDefaults)
+	default:
+		return fmt.Errorf("cache.*.policies.*.appliesTo must be one of: get, set, both")
+	}
+
 	return nil
 }
 
@@ -351,7 +359,7 @@ func (c *ConnectorConfig) Validate() error {
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
 	}
-	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB}
+	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB, DriverGrpc}
 	if !slices.Contains(drivers, c.Driver) {
 		return fmt.Errorf("database.*.connector.driver '%s' is invalid must be one of: %v", c.Driver, drivers)
 	}

@@ -195,15 +195,16 @@ type CacheMethodConfig struct {
 }
 
 type CachePolicyConfig struct {
-	Connector   string             `yaml:"connector" json:"connector"`
-	Network     string             `yaml:"network,omitempty" json:"network"`
-	Method      string             `yaml:"method,omitempty" json:"method"`
-	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
-	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
-	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
-	TTL         Duration           `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+	Connector   string               `yaml:"connector" json:"connector"`
+	Network     string               `yaml:"network,omitempty" json:"network"`
+	Method      string               `yaml:"method,omitempty" json:"method"`
+	Params      []interface{}        `yaml:"params,omitempty" json:"params"`
+	Finality    DataFinalityState    `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty       CacheEmptyBehavior   `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	AppliesTo   CachePolicyAppliesTo `yaml:"appliesTo,omitempty" json:"appliesTo" tstype:"'get' | 'set' | 'both'"`
+	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
+	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
+	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
 }
 
 type ConnectorDriverType string
@@ -213,6 +214,7 @@ const (
 	DriverRedis      ConnectorDriverType = "redis"
 	DriverPostgreSQL ConnectorDriverType = "postgresql"
 	DriverDynamoDB   ConnectorDriverType = "dynamodb"
+	DriverGrpc       ConnectorDriverType = "grpc"
 )
 
 type ConnectorConfig struct {
@@ -222,7 +224,14 @@ type ConnectorConfig struct {
 	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
 	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
+	Grpc       *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
 	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
+}
+
+type GrpcConnectorConfig struct {
+	Bootstrap string            `yaml:"bootstrap,omitempty" json:"bootstrap"`
+	Servers   []string          `yaml:"servers,omitempty" json:"servers"`
+	Headers   map[string]string `yaml:"headers,omitempty" json:"headers"`
 }
 
 type MemoryConnectorConfig struct {

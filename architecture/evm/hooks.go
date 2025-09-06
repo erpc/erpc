@@ -99,7 +99,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
-		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re, skipCacheRead)
+		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
 	case // Block lookups
 		"eth_getblockbynumber",
 		"eth_getblockbyhash",
@@ -116,7 +116,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		"trace_transaction",
 		"trace_block",
 		"trace_get":
-		return upstreamPostForward_markUnexpectedEmpty(ctx, n, u, rq, rs, re)
+		return upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
 	}
 
 	return rs, re

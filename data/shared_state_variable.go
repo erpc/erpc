@@ -349,7 +349,7 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 }
 
 func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
-	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value")
+	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value", nil)
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 			c.registry.logger.Debug().Err(err).Str("key", c.key).Msg("remote counter value not found, will initialize it")

@@ -113,6 +113,12 @@ func (u *phonyUpstream) Id() string {
 	return "phony-upstream"
 }
 
+type noopErrorExtractor struct{}
+
+func (e *noopErrorExtractor) Extract(resp *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
+	return nil
+}
+
 // TestHTTPConnectionReuseUnderLoad tests connection behavior under high load with latency
 func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 	// Test parameters simulating the user's scenario
@@ -161,6 +167,7 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			upstream:        &phonyUpstream{},
 			gzipPool:        util.NewGzipReaderPool(),
 			gzipWriterPool:  util.NewGzipWriterPool(),
+			errorExtractor:  &noopErrorExtractor{},
 		}
 
 		// Send requests concurrently to simulate load
@@ -257,6 +264,7 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			upstream:        &phonyUpstream{},
 			gzipPool:        util.NewGzipReaderPool(),
 			gzipWriterPool:  util.NewGzipWriterPool(),
+			errorExtractor:  &noopErrorExtractor{},
 		}
 
 		// Send the same load pattern as before
@@ -346,6 +354,7 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			upstream:        &phonyUpstream{},
 			gzipPool:        util.NewGzipReaderPool(),
 			gzipWriterPool:  util.NewGzipWriterPool(),
+			errorExtractor:  &noopErrorExtractor{},
 		}
 
 		// Send the same load pattern
@@ -420,7 +429,7 @@ func TestConnectionLimitsWithRealWorldScenario(t *testing.T) {
 		// Create client with current problematic configuration
 		ctx := context.Background()
 		ups := common.NewFakeUpstream("rpc1")
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", ups, parsedURL, nil, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", ups, parsedURL, nil, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		// Simulate 100 RPS for 5 seconds (500 requests total)

@@ -25,8 +25,8 @@ func (m *MockConnector) Id() string {
 }
 
 // Get mocks the Get method of the Connector interface
-func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
-	args := m.Called(ctx, index, partitionKey, rangeKey)
+func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error) {
+	args := m.Called(ctx, index, partitionKey, rangeKey, metadata)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -123,7 +123,7 @@ func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey st
 }
 
 // Get overrides the base Get method to include a fake delay
-func (m *MockMemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
+func (m *MockMemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -132,5 +132,5 @@ func (m *MockMemoryConnector) Get(ctx context.Context, index, partitionKey, rang
 	if rand.Float64() < m.getErrorRate || m.getErrorRate == 1 {
 		return nil, errors.New("fake random GET error")
 	}
-	return m.MemoryConnector.Get(ctx, index, partitionKey, rangeKey)
+	return m.MemoryConnector.Get(ctx, index, partitionKey, rangeKey, nil)
 }

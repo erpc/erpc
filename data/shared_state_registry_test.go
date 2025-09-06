@@ -46,7 +46,7 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return([]byte("5"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("10"), mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
 
@@ -92,7 +92,7 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
 		Return([]byte(""), errors.New("get failed"))
 	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
@@ -118,7 +118,7 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return([]byte("5"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("10"), mock.Anything).
 		Return(errors.New("set failed"))
 
@@ -145,7 +145,7 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return([]byte("5"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("10"), mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).
 		Return(errors.New("publish failed"))
@@ -173,7 +173,7 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return([]byte("15"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("15"), nil)
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -196,7 +196,7 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil).Times(10)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil).Times(10)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return([]byte("5"), nil).Times(10)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil).Times(10)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil).Times(10)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil).Times(10)
 
@@ -226,7 +226,7 @@ func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {
 
 	updates := make(chan int64, 1)
 	connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").Return(updates, func() {}, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return([]byte("5"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
 
 	counter := registry.GetCounterInt64("test", 1024)
 	assert.NotNil(t, counter)
@@ -247,7 +247,7 @@ func TestSharedStateRegistry_GetCounterInt64_WatchFailure(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil).Times(1)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return([]byte("5"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 

@@ -303,7 +303,7 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*")
+	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current API key data: %w", err)
 	}
@@ -386,7 +386,7 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 	}
 
 	// Get current data to find the userId (range key) for deletion
-	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*")
+	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current API key data: %w", err)
 	}

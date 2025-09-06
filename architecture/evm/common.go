@@ -10,7 +10,6 @@ import (
 // (blocks, transactions, receipts, traces, etc.) to missing-data so network retry can rotate.
 func upstreamPostForward_markUnexpectedEmpty(
 	ctx context.Context,
-	n common.Network,
 	u common.Upstream,
 	rq *common.NormalizedRequest,
 	rs *common.NormalizedResponse,

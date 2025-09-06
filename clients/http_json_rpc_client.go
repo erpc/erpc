@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic/ast"
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -53,6 +52,9 @@ type GenericHttpJsonRpcClient struct {
 	gzipPool *util.GzipReaderPool
 	// gzip writer pool to reduce allocations when compressing requests
 	gzipWriterPool *util.GzipWriterPool
+
+	// Extractor for architecture-specific error normalization
+	errorExtractor common.JsonRpcErrorExtractor
 }
 
 type batchRequest struct {
@@ -72,6 +74,7 @@ func NewGenericHttpJsonRpcClient(
 	parsedUrl *url.URL,
 	jsonRpcCfg *common.JsonRpcUpstreamConfig,
 	proxyPool *ProxyPool,
+	extractor common.JsonRpcErrorExtractor,
 ) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
 		Url:             parsedUrl,
@@ -83,6 +86,7 @@ func NewGenericHttpJsonRpcClient(
 		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
 		gzipPool:        util.NewGzipReaderPool(),
 		gzipWriterPool:  util.NewGzipWriterPool(),
+		errorExtractor:  extractor,
 	}
 
 	// Default fallback transport (no proxy)
@@ -852,13 +856,11 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		return e
 	}
 
-	// TODO Distinguish between different architectures as a property on GenericHttpJsonRpcClient during initialization
-	// TODO Move the logic to evm package as a post-response hook?
-	if e := evm.ExtractJsonRpcError(r, nr, jr, c.upstream); e != nil {
+	if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {
 		return e
 	}
 
-	if jr.Error == nil {
+	if jr == nil || jr.Error == nil {
 		return nil
 	}
 

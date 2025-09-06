@@ -569,6 +569,9 @@ func (c *CachePolicyConfig) SetDefaults() error {
 	if c.Network == "" {
 		c.Network = "*"
 	}
+	if c.AppliesTo == "" {
+		c.AppliesTo = CachePolicyAppliesToBoth
+	}
 
 	return nil
 }

@@ -65,7 +65,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-world"), nil)
 		require.NoError(t, err, "Set should succeed after successful initialization")
 
-		val, err := connector.Get(ctx, "", "testPK", "testRK")
+		val, err := connector.Get(ctx, "", "testPK", "testRK", nil)
 		require.NoError(t, err, "Get should succeed for existing key")
 		require.Equal(t, []byte("hello-world"), val)
 	})
@@ -100,7 +100,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
 		require.Error(t, err, "should fail because Postgres is not connected")
 
-		_, err = connector.Get(ctx, "", "testPK", "testRK")
+		_, err = connector.Get(ctx, "", "testPK", "testRK", nil)
 		require.Error(t, err, "should fail because Postgres is not connected")
 	})
 }

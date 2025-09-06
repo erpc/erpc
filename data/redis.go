@@ -337,7 +337,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 }
 
 // Get retrieves a value from Redis. If wildcard, retrieves the first matching key. Returns early if not ready.
-func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
+func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Get",
 		trace.WithAttributes(
 			attribute.String("index", index),
