@@ -341,6 +341,14 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 		}
 	}
 
+	// Validate appliesTo
+	switch p.AppliesTo {
+	case "", CachePolicyAppliesToBoth, CachePolicyAppliesToGet, CachePolicyAppliesToSet:
+		// ok (empty will be defaulted to both by SetDefaults)
+	default:
+		return fmt.Errorf("cache.*.policies.*.appliesTo must be one of: get, set, both")
+	}
+
 	return nil
 }
 

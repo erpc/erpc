@@ -311,26 +311,28 @@ func fetchGrpcServers(ctx context.Context, logger *zerolog.Logger, endpoint stri
 
 func (g *GrpcConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	// no-op for read-only connector
-	return nil
+	return fmt.Errorf("grpc connector is read-only")
 }
 
-func (g *GrpcConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error { return nil }
+func (g *GrpcConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
+	return fmt.Errorf("grpc connector is read-only")
+}
 
 func (g *GrpcConnector) List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error) {
-	return nil, "", nil
+	return nil, "", fmt.Errorf("grpc connector is does not support List")
 }
 
 func (g *GrpcConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
-	return nil, nil
+	return nil, fmt.Errorf("grpc connector is read-only")
 }
 
 func (g *GrpcConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
 	ch := make(chan int64)
-	return ch, func() {}, nil
+	return ch, func() {}, fmt.Errorf("grpc connector does not support WatchCounterInt64")
 }
 
 func (g *GrpcConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
-	return nil
+	return fmt.Errorf("grpc connector does not support PublishCounterInt64")
 }
 
 func (g *GrpcConnector) checkReady() error {

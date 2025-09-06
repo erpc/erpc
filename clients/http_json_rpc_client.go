@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -88,46 +87,6 @@ func NewGenericHttpJsonRpcClient(
 		gzipPool:        util.NewGzipReaderPool(),
 		gzipWriterPool:  util.NewGzipWriterPool(),
 		errorExtractor:  extractor,
-	}
-
-	// Minimal default: if no extractor provided, map common HTTP statuses to standard errors
-	if client.errorExtractor == nil {
-		client.errorExtractor = common.JsonRpcErrorExtractorFunc(func(resp *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
-			var msg string
-			var code int
-			if jr != nil && jr.Error != nil {
-				msg = jr.Error.Message
-				code = jr.Error.Code
-			}
-			// Unauthorized
-			if resp.StatusCode == 401 || resp.StatusCode == 403 {
-				if msg == "" {
-					msg = "unauthorized"
-				}
-				return common.NewErrEndpointUnauthorized(
-					common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorUnauthorized, msg, nil, map[string]interface{}{"statusCode": resp.StatusCode}),
-				)
-			}
-			// Unsupported
-			if resp.StatusCode == 415 || resp.StatusCode == 405 || code == -32601 || strings.Contains(strings.ToLower(msg), "not supported") || strings.Contains(strings.ToLower(msg), "method not found") {
-				if msg == "" {
-					msg = "unsupported"
-				}
-				return common.NewErrEndpointUnsupported(
-					common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorUnsupportedException, msg, nil, map[string]interface{}{"statusCode": resp.StatusCode, "normalizedCode": code}),
-				)
-			}
-			// Capacity exceeded
-			if resp.StatusCode == 429 || strings.Contains(strings.ToLower(msg), "rate limit") || strings.Contains(strings.ToLower(msg), "exceeded the quota") || strings.Contains(strings.ToLower(msg), "quota") || strings.Contains(strings.ToLower(msg), "too many requests") {
-				if msg == "" {
-					msg = "capacity exceeded"
-				}
-				return common.NewErrEndpointCapacityExceeded(
-					common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorCapacityExceeded, msg, nil, map[string]interface{}{"statusCode": resp.StatusCode, "normalizedCode": code}),
-				)
-			}
-			return nil
-		})
 	}
 
 	// Default fallback transport (no proxy)
@@ -897,40 +856,11 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		return e
 	}
 
-	if c.errorExtractor != nil {
-		if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {
-			return e
-		}
+	if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {
+		return e
 	}
 
-	// Fallback: handle trace/debug execution timeouts from result content when no extractor is provided
-	if jr != nil && jr.Error == nil {
-		if req := nr.Request(); req != nil {
-			method, _ := req.Method()
-			if strings.HasPrefix(method, "trace_") || strings.HasPrefix(method, "debug_") || strings.HasPrefix(method, "eth_trace") {
-				if jr.ResultLength() > 0 {
-					res := jr.GetResultString()
-					if strings.Contains(res, "execution timeout") {
-						return common.NewErrEndpointServerSideException(
-							common.NewErrJsonRpcExceptionInternal(
-								0,
-								common.JsonRpcErrorNodeTimeout,
-								"execution timeout",
-								nil,
-								map[string]interface{}{
-									"statusCode": r.StatusCode,
-								},
-							),
-							nil,
-							r.StatusCode,
-						)
-					}
-				}
-			}
-		}
-	}
-
-	if jr.Error == nil {
+	if jr == nil || jr.Error == nil {
 		return nil
 	}
 

@@ -195,15 +195,16 @@ type CacheMethodConfig struct {
 }
 
 type CachePolicyConfig struct {
-	Connector   string             `yaml:"connector" json:"connector"`
-	Network     string             `yaml:"network,omitempty" json:"network"`
-	Method      string             `yaml:"method,omitempty" json:"method"`
-	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
-	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
-	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
-	TTL         Duration           `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+	Connector   string               `yaml:"connector" json:"connector"`
+	Network     string               `yaml:"network,omitempty" json:"network"`
+	Method      string               `yaml:"method,omitempty" json:"method"`
+	Params      []interface{}        `yaml:"params,omitempty" json:"params"`
+	Finality    DataFinalityState    `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty       CacheEmptyBehavior   `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	AppliesTo   CachePolicyAppliesTo `yaml:"appliesTo,omitempty" json:"appliesTo" tstype:"'get' | 'set' | 'both'"`
+	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
+	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
+	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
 }
 
 type ConnectorDriverType string
