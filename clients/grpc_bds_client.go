@@ -533,11 +533,15 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
 
-	resultBytes, err := sonic.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	if len(result) == 0 {
+		jsonRpcResp.SetResult([]byte("[]"))
+	} else {
+		resultBytes, err := sonic.Marshal(result)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+		jsonRpcResp.SetResult(resultBytes)
 	}
-	jsonRpcResp.SetResult(resultBytes)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -761,14 +765,14 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
 
-	if result != nil {
+	if len(result) > 0 {
 		resultBytes, err := sonic.Marshal(result)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
 		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.SetResult([]byte("null"))
+		jsonRpcResp.SetResult([]byte("[]"))
 	}
 
 	return common.NewNormalizedResponse().

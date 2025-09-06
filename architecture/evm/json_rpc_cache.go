@@ -683,6 +683,9 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	if err != nil {
 		return nil, err
 	}
+	if len(resultBytes) == 0 {
+		return nil, nil
+	}
 
 	// Check if it's compressed data
 	if c.compressionEnabled && c.isCompressed(resultBytes) {

@@ -212,10 +212,6 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 	if err != nil || jrr == nil {
 		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 	}
-	// Return only the result bytes to be compatible with cache value format
-	if jrr.IsResultEmptyish() {
-		return nil, nil
-	}
 	return jrr.GetResultBytes(), nil
 }
 
