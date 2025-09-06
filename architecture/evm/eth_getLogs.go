@@ -45,6 +45,60 @@ func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics i
 	return jrq, nil
 }
 
+// projectPreForward_eth_getLogs records requested block-range size distribution
+// at the project level before cache and upstream selection.
+// It does not modify the request or short-circuit; always returns (false, nil, nil).
+func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	if nq == nil || n == nil {
+		return false, nil, nil
+	}
+	jrq, err := nq.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false, nil, nil
+	}
+	jrq.RLockWithTrace(ctx)
+	if len(jrq.Params) < 1 {
+		jrq.RUnlock()
+		return false, nil, nil
+	}
+	filter, ok := jrq.Params[0].(map[string]interface{})
+	if !ok {
+		jrq.RUnlock()
+		return false, nil, nil
+	}
+	// EIP-234 short-circuit (blockHash): no range size applicable
+	if _, ok := filter["blockHash"].(string); ok {
+		jrq.RUnlock()
+		return false, nil, nil
+	}
+	// Extract numeric range if hex numbers
+	var fromBlock, toBlock int64
+	if v, ok := filter["fromBlock"].(string); ok && strings.HasPrefix(v, "0x") {
+		if bn, e := strconv.ParseInt(v, 0, 64); e == nil {
+			fromBlock = bn
+		}
+	}
+	if v, ok := filter["toBlock"].(string); ok && strings.HasPrefix(v, "0x") {
+		if bn, e := strconv.ParseInt(v, 0, 64); e == nil {
+			toBlock = bn
+		}
+	}
+	jrq.RUnlock()
+
+	if fromBlock > 0 && toBlock >= fromBlock {
+		rangeSize := float64(toBlock - fromBlock + 1)
+		telemetry.MetricNetworkEvmGetLogsRangeRequested.
+			WithLabelValues(
+				n.ProjectId(),
+				n.Label(),
+				"eth_getLogs",
+				nq.UserId(),
+			).
+			Observe(rangeSize)
+	}
+	return false, nil, nil
+}
+
 // networkPreForward_eth_getLogs performs network-level validation and proactive splitting
 // It must be called after upstreams have been selected for the request.
 // It returns (handled=true) when it produced a merged response without contacting an upstream

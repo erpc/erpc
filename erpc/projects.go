@@ -165,6 +165,24 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			vendor = upstream.VendorName()
 			upstreamId = upstream.Id()
 		}
+
+		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
+			size := telemetry.EvmBlockRangeBucketSize
+			if size <= 0 {
+				size = 100000
+			}
+			bucketStart := (bn / size) * size
+			telemetry.MetricNetworkEvmBlockRangeRequested.
+				WithLabelValues(
+					p.Config.Id,
+					network.Label(),
+					method,
+					nq.UserId(),
+					fmt.Sprintf("%d", bucketStart),
+					fmt.Sprintf("%d", size),
+				).
+				Inc()
+		}
 		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
 			p.Config.Id,
 			network.Label(),

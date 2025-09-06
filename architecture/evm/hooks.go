@@ -26,6 +26,8 @@ func HandleProjectPreForward(ctx context.Context, network common.Network, nq *co
 		return projectPreForward_eth_call(ctx, network, nq)
 	case "eth_chainid":
 		return projectPreForward_eth_chainId(ctx, network, nq)
+	case "eth_getlogs":
+		return projectPreForward_eth_getLogs(ctx, network, nq)
 	default:
 		return false, nil, nil
 	}
