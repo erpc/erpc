@@ -172,12 +172,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				size = 100000
 			}
 			bucketStart := (bn / size) * size
+			finalityStr := resp.Finality(ctx).String()
 			telemetry.MetricNetworkEvmBlockRangeRequested.
 				WithLabelValues(
 					p.Config.Id,
 					network.Label(),
 					method,
 					nq.UserId(),
+					finalityStr,
 					fmt.Sprintf("%d", bucketStart),
 					fmt.Sprintf("%d", size),
 				).

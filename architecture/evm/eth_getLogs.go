@@ -87,12 +87,14 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 
 	if fromBlock > 0 && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
+		finalityStr := nq.Finality(ctx).String()
 		telemetry.MetricNetworkEvmGetLogsRangeRequested.
 			WithLabelValues(
 				n.ProjectId(),
 				n.Label(),
 				"eth_getLogs",
 				nq.UserId(),
+				finalityStr,
 			).
 			Observe(rangeSize)
 	}

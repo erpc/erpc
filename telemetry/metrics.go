@@ -388,14 +388,14 @@ var (
 		Namespace: "erpc",
 		Name:      "network_evm_block_range_requested_total",
 		Help:      "Total requests observed by block-number buckets for heatmap.",
-	}, []string{"project", "network", "category", "user", "bucket", "size"})
+	}, []string{"project", "network", "category", "user", "finality", "bucket", "size"})
 
 	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_range_requested",
 		Help:      "eth_getLogs requested block-range sizes.",
 		Buckets:   EvmGetLogsRangeHistogramBuckets,
-	}, []string{"project", "network", "category", "user"})
+	}, []string{"project", "network", "category", "user", "finality"})
 )
 
 var DefaultHistogramBuckets = []float64{
