@@ -167,23 +167,8 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		}
 
 		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
-			size := telemetry.EvmBlockRangeBucketSize
-			if size <= 0 {
-				size = 100000
-			}
-			bucketStart := (bn / size) * size
-			finalityStr := resp.Finality(ctx).String()
-			telemetry.MetricNetworkEvmBlockRangeRequested.
-				WithLabelValues(
-					p.Config.Id,
-					network.Label(),
-					method,
-					nq.UserId(),
-					finalityStr,
-					fmt.Sprintf("%d", bucketStart),
-					fmt.Sprintf("%d", size),
-				).
-				Inc()
+			// Record block-range heatmap using dynamic buckets and human-readable labels
+			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
 		}
 		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
 			p.Config.Id,

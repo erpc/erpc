@@ -520,7 +520,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					if misbehavingParticipants == "" {
 						misbehavingParticipants = upstreamId
 					} else {
-						misbehavingParticipants += fmt.Sprintf("%s, ", upstreamId)
+						misbehavingParticipants += fmt.Sprintf(",%s", upstreamId)
 					}
 				}
 			}
