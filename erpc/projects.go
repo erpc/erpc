@@ -165,6 +165,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			vendor = upstream.VendorName()
 			upstreamId = upstream.Id()
 		}
+
+		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
+			// Record block-range heatmap using dynamic buckets and human-readable labels
+			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+		}
 		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
 			p.Config.Id,
 			network.Label(),

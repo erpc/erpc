@@ -383,6 +383,19 @@ var (
 		Name:      "consensus_cancellations_total",
 		Help:      "Total number of context cancellations during consensus.",
 	}, []string{"project", "network", "category", "phase", "finality"}) // phase: before_execution, after_execution, collection
+
+	MetricNetworkEvmBlockRangeRequested = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_block_range_requested_total",
+		Help:      "Total requests observed by block-number buckets for heatmap.",
+	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
+
+	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_get_logs_range_requested",
+		Help:      "eth_getLogs requested block-range sizes.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "category", "user", "finality"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -391,6 +404,13 @@ var DefaultHistogramBuckets = []float64{
 	5,    // 5 s
 	30,   // 30 s
 }
+
+// Default bucket size for EVM block-range heatmap metrics.
+// Can be tuned to 50000 or 100000 to control series cardinality.
+var EvmBlockRangeBucketSize int64 = 100000
+
+// Histogram buckets for eth_getLogs requested block-range sizes
+var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 10000, 30000}
 
 var (
 	MetricUpstreamRequestDuration,
