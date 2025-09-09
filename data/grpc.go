@@ -6,11 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
@@ -144,7 +144,8 @@ func NewGrpcConnector(
 					return fmt.Errorf("invalid chainId")
 				}
 				// normalize to network id
-				val, _ := strconv.ParseInt(strings.TrimPrefix(chainHex, "0x"), 16, 64)
+				uval, _ := evm.HexToUint64(chainHex)
+				val := int64(uval) // #nosec G115
 				networkId := util.EvmNetworkId(val)
 				gc.mu.Lock()
 				defer gc.mu.Unlock()
@@ -255,7 +256,7 @@ func (g *GrpcConnector) pollEarliestOnce(ctx context.Context) {
 		if num == "" {
 			continue
 		}
-		u, err := strconv.ParseUint(strings.TrimPrefix(num, "0x"), 16, 64)
+		u, err := evm.HexToUint64(num)
 		if err != nil {
 			continue
 		}

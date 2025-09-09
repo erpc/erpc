@@ -424,21 +424,21 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 	var fromBlock, toBlock *uint64
 	if fromStr, ok := filterParams["fromBlock"].(string); ok {
 		if fromStr != "latest" && fromStr != "pending" && fromStr != "earliest" {
-			from, err := parseHexUint64(strings.TrimPrefix(fromStr, "0x"))
+			fromParsed, err := evm.HexToUint64(fromStr)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse fromBlock: %w", err)
 			}
-			fromBlock = &from
+			fromBlock = &fromParsed
 		}
 	}
 
 	if toStr, ok := filterParams["toBlock"].(string); ok {
 		if toStr != "latest" && toStr != "pending" && toStr != "earliest" {
-			to, err := parseHexUint64(strings.TrimPrefix(toStr, "0x"))
+			toParsed, err := evm.HexToUint64(toStr)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse toBlock: %w", err)
 			}
-			toBlock = &to
+			toBlock = &toParsed
 		}
 	}
 
@@ -816,14 +816,6 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 
 // Helper functions for conversion
 
-func parseHexUint64(hexStr string) (uint64, error) {
-	hexStr = strings.TrimPrefix(hexStr, "0x")
-	var value uint64
-	_, err := fmt.Sscanf(hexStr, "%x", &value)
-	return value, err
-}
-
 func parseHexBytes(hexStr string) ([]byte, error) {
-	hexStr = strings.TrimPrefix(hexStr, "0x")
-	return hex.DecodeString(hexStr)
+	return evm.HexToBytes(hexStr)
 }
