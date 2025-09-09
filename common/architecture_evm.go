@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 const (
@@ -17,6 +19,7 @@ type EvmUpstream interface {
 	EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error)
 	EvmSyncingState() EvmSyncingState
 	EvmStatePoller() EvmStatePoller
+	EvmGetTransactionByHash(ctx context.Context, txHash string) (*types.Transaction, error)
 }
 
 type AvailbilityConfidence int

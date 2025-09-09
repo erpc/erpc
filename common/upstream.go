@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 )
 
@@ -44,6 +45,7 @@ type Upstream interface {
 	Cordon(method string, reason string)
 	Uncordon(method string, reason string)
 	IgnoreMethod(method string)
+	EvmGetTransactionByHash(ctx context.Context, txHash string) (*types.Transaction, error)
 }
 
 // UniqueUpstreamKey returns a unique hash for an upstream.
