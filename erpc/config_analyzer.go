@@ -221,6 +221,16 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 			}
 		}
 
+		for _, provider := range p.Providers {
+			if len(provider.Overrides) > 0 {
+				for _, override := range provider.Overrides {
+					if override.RateLimitBudget != "" {
+						usedBudgets[override.RateLimitBudget] = struct{}{}
+					}
+				}
+			}
+		}
+
 		// Auth strategies rate limit usage
 		if p.Auth != nil {
 			for _, s := range p.Auth.Strategies {
@@ -387,19 +397,23 @@ func RenderValidationReportMarkdown(r *ValidationReport) string {
 	}
 	if len(r.Warnings) > 0 {
 		sb.WriteString("\n### Warnings\n")
+		sb.WriteString("\n```\n")
 		for _, w := range r.Warnings {
 			sb.WriteString("- ⚠️ ")
 			sb.WriteString(w)
 			sb.WriteString("\n")
 		}
+		sb.WriteString("\n```\n")
 	}
 	if len(r.Notices) > 0 {
 		sb.WriteString("\n### Notices\n")
+		sb.WriteString("\n```\n")
 		for _, n := range r.Notices {
 			sb.WriteString("- 💡 ")
 			sb.WriteString(n)
 			sb.WriteString("\n")
 		}
+		sb.WriteString("\n```\n")
 	}
 	sb.WriteString("\n### Resources\n")
 	sb.WriteString(fmt.Sprintf("- projectsTotal: %d\n", r.Resources.Totals.ProjectsTotal))
