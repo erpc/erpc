@@ -18,42 +18,57 @@ func recordEvmBlockRangeHeatmap(ctx context.Context, projectId string, network *
 		return
 	}
 
-	// First try to extract both blockRef and blockNumber from request
-	var blockRef string
-	var blockNumber int64
-	if req != nil {
-		blockRef, blockNumber, _ = evm.ExtractBlockReferenceFromRequest(ctx, req)
-	}
-
-	// Only if blockNumber is not available from request, try to get it from response
-	if blockNumber <= 0 {
-		_, blockNumber, _ = evm.ExtractBlockReferenceFromResponse(ctx, resp)
-		if blockNumber <= 0 {
-			return
-		}
-	}
-
-	tip := network.EvmHighestLatestBlockNumber(ctx)
-	finalityStr := resp.Finality(ctx).String()
-
-	start, end, size, label := ComputeBlockHeatmapBucket(blockNumber, tip, blockRef)
-	if size <= 0 {
-		// Fallback: tip unknown or sizing failure, use default sizing
-		size = telemetry.EvmBlockRangeBucketSize
-		if size <= 0 {
-			size = 100000
-		}
-		start = (blockNumber / size) * size
-		end = start + size
-		label = formatAbsoluteBucketLabel(start, end, size)
-	}
-
 	vendor := "n/a"
 	upstreamId := "n/a"
+	label := "n/a"
+	finalityStr := "n/a"
+	userId := "n/a"
+	size := int64(0)
+
 	if resp.Upstream() != nil {
 		u := resp.Upstream()
 		vendor = u.VendorName()
 		upstreamId = u.Id()
+	}
+	if req != nil {
+		userId = req.UserId()
+	}
+
+	if method == "eth_blockNumber" {
+		// Special case we should consider TIP
+		finalityStr = common.DataFinalityStateRealtime.String()
+		label = "TIP"
+	} else {
+		// First try to extract both blockRef and blockNumber from request
+		var blockRef string
+		var blockNumber int64
+		if req != nil {
+			blockRef, blockNumber, _ = evm.ExtractBlockReferenceFromRequest(ctx, req)
+		}
+
+		// Only if blockNumber is not available from request, try to get it from response
+		if blockNumber <= 0 {
+			_, blockNumber, _ = evm.ExtractBlockReferenceFromResponse(ctx, resp)
+			if blockNumber <= 0 {
+				return
+			}
+		}
+
+		tip := network.EvmHighestLatestBlockNumber(ctx)
+		finalityStr = resp.Finality(ctx).String()
+
+		var start, end int64
+		start, end, size, label = ComputeBlockHeatmapBucket(blockNumber, tip, blockRef)
+		if size <= 0 {
+			// Fallback: tip unknown or sizing failure, use default sizing
+			size = telemetry.EvmBlockRangeBucketSize
+			if size <= 0 {
+				size = 100000
+			}
+			start = (blockNumber / size) * size
+			end = start + size
+			label = formatAbsoluteBucketLabel(start, end, size)
+		}
 	}
 
 	telemetry.MetricNetworkEvmBlockRangeRequested.
@@ -63,7 +78,7 @@ func recordEvmBlockRangeHeatmap(ctx context.Context, projectId string, network *
 			vendor,
 			upstreamId,
 			method,
-			req.UserId(),
+			userId,
 			finalityStr,
 			label,
 			fmt.Sprintf("%d", size),
