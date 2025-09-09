@@ -21,14 +21,13 @@ func upstreamPostForward_eth_sendRawTransaction(ctx context.Context, n common.Ne
 	defer span.End()
 
 	if re != nil {
-		err, ok := re.(common.StandardError)
+		se, ok := re.(common.StandardError)
 		if !ok {
 			return rs, re
 		}
-		deepestMessage := err.DeepestMessage()
 
 		// Check if this is a duplicate nonce error (transaction already in mempool or nonce too low)
-		if _, isDuplicateNonce := err.(*common.ErrEndpointDuplicateNonce); isDuplicateNonce {
+		if _, isDuplicateNonce := se.(*common.ErrEndpointDuplicateNonce); isDuplicateNonce {
 			txn, err := getTransactionFromRequest(ctx, rq)
 			if err != nil {
 				return rs, err
@@ -36,8 +35,8 @@ func upstreamPostForward_eth_sendRawTransaction(ctx context.Context, n common.Ne
 
 			txnHash := "0x" + hex.EncodeToString(txn.Hash().Bytes())
 
-			// For nonce too low, verify the transaction exists on-chain and is exactly the same
-			if strings.Contains(deepestMessage, "nonce too low") {
+			// For nonce-too-low, verify the transaction exists on-chain and is exactly the same
+			if reason, _ := se.DeepSearch("duplicateNonceReason").(string); reason == "nonce_too_low" {
 				evmUpstream, ok := u.(common.EvmUpstream)
 				if !ok {
 					return rs, fmt.Errorf("upstream is not an evm upstream")

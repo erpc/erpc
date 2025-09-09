@@ -283,7 +283,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(ml, "known transaction") ||
 			strings.Contains(ml, "already have transaction") ||
 			strings.Contains(msg, "AlreadyKnownTx") {
-			return common.NewErrEndpointDuplicateNonce(
+			isNonceTooLow := strings.Contains(ml, "nonce too low")
+			errDup := common.NewErrEndpointDuplicateNonce(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorDuplicateNonce,
@@ -292,6 +293,17 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+			if de, ok := errDup.(*common.ErrEndpointDuplicateNonce); ok {
+				if de.Details == nil {
+					de.Details = make(map[string]interface{})
+				}
+				if isNonceTooLow {
+					de.Details["duplicateNonceReason"] = "nonce_too_low"
+				} else {
+					de.Details["duplicateNonceReason"] = "already_known"
+				}
+			}
+			return errDup
 		}
 
 		//----------------------------------------------------------------
