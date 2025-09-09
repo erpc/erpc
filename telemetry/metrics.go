@@ -333,7 +333,7 @@ var (
 		Name:      "consensus_responses_collected",
 		Help:      "Number of responses collected before consensus decision.",
 		Buckets:   prometheus.LinearBuckets(1, 1, 10), // 1 to 10 participants
-	}, []string{"project", "network", "category", "short_circuited", "finality"})
+	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality"})
 
 	MetricConsensusAgreementCount = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",

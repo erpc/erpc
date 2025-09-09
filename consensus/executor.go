@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -250,9 +251,25 @@ collectLoop:
 		attribute.Bool("short_circuited", shortCircuited),
 		attribute.Int("responses.collected", len(responses)),
 	)
+
+	vendorNames := []string{}
+	for _, response := range responses {
+		if response != nil && response.Upstream != nil {
+			vendorNames = append(vendorNames, response.Upstream.VendorName())
+		}
+	}
+	sort.Strings(vendorNames)
+
 	// Record how many responses were collected and whether we short-circuited
 	telemetry.MetricConsensusResponsesCollected.
-		WithLabelValues(labels.projectId, labels.networkId, labels.category, strconv.FormatBool(shortCircuited), labels.finalityStr).
+		WithLabelValues(
+			labels.projectId,
+			labels.networkId,
+			labels.category,
+			strings.Join(vendorNames, ","),
+			strconv.FormatBool(shortCircuited),
+			labels.finalityStr,
+		).
 		Observe(float64(len(responses)))
 	if shortCircuited {
 		reason := shortCircuitReason
