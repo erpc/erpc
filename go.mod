@@ -44,7 +44,7 @@ require (
 
 replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250821184139-92189beaba9b
 
-replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250811111520-9af9700f4b44
+replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250909093951-3f769f9aec11
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
