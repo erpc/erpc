@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -349,7 +350,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 					appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned an empty chain ID from eth_chainId.", prj, uc.Id))
 					return
 				}
-				chain, err := common.HexToInt64(chainStr)
+				chain, err := strconv.ParseInt(chainStr, 0, 0)
 				if err != nil {
 					appendWarn(fmt.Sprintf("In project '%s', upstream '%s' returned an invalid chain ID '%s' (parse error: %s).", prj, uc.Id, chainStr, common.ErrorFingerprint(err)))
 					return
