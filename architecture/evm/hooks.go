@@ -119,6 +119,8 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		"trace_block",
 		"trace_get":
 		return upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+	case "eth_sendrawtransaction":
+		return upstreamPostForward_eth_sendRawTransaction(ctx, n, u, rq, rs, re, skipCacheRead)
 	}
 
 	return rs, re
