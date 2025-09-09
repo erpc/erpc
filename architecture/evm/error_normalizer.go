@@ -275,7 +275,14 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Transaction mempool and nonce" errors
 		//----------------------------------------------------------------
 
-		if strings.Contains(msg, "transaction already in mempool") || strings.Contains(msg, "nonce too low") {
+		ml := strings.ToLower(msg)
+		if strings.Contains(ml, "transaction already in mempool") ||
+			strings.Contains(ml, "nonce too low") ||
+			strings.Contains(ml, "already known") ||
+			strings.Contains(ml, "already imported") ||
+			strings.Contains(ml, "known transaction") ||
+			strings.Contains(ml, "already have transaction") ||
+			strings.Contains(msg, "AlreadyKnownTx") {
 			return common.NewErrEndpointDuplicateNonce(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
