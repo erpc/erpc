@@ -340,10 +340,6 @@ func (g *GrpcConnector) checkReady() error {
 	if g.initializer == nil {
 		return fmt.Errorf("initializer not set")
 	}
-	state := g.initializer.State()
-	if state != util.StateReady {
-		return fmt.Errorf("grpc connector is not ready (state: %s), errors: %v", state.String(), g.initializer.Errors())
-	}
 	g.mu.RLock()
 	empty := len(g.clientByNetwork) == 0
 	g.mu.RUnlock()
