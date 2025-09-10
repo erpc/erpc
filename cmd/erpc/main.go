@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/signal"
@@ -18,9 +19,12 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 	"github.com/urfave/cli/v3"
+	"google.golang.org/grpc/grpclog"
 )
 
 func init() {
+	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, os.Stderr))
+
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
 		if !os.IsNotExist(err) {

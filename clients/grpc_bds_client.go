@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -114,16 +115,22 @@ func NewGrpcBdsClient(
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(100*1024*1024), // 100MB max recv
-			grpc.MaxCallSendMsgSize(100*1024*1024), // 100MB max send
+			grpc.MaxCallRecvMsgSize(100*1024*1024),
+			grpc.MaxCallSendMsgSize(100*1024*1024),
 		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second, // send pings every 30s if no activity
-			Timeout:             10 * time.Second, // wait 10s for ping ack
-			PermitWithoutStream: true,             // send pings even with no active streams
+			Time:                2 * time.Minute,
+			Timeout:             20 * time.Second,
+			PermitWithoutStream: false,
 		}),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			MinConnectTimeout: 5 * time.Second,
+			Backoff: backoff.Config{
+				BaseDelay:  1 * time.Second,
+				Multiplier: 1.6,
+				Jitter:     0.2,
+				MaxDelay:   30 * time.Second,
+			},
 		}),
 	)
 	if err != nil {
