@@ -156,6 +156,7 @@ export interface CachePolicyConfig {
   params?: any[];
   finality?: DataFinalityState;
   empty?: CacheEmptyBehavior;
+  appliesTo?: 'get' | 'set' | 'both';
   minItemSize?: ByteSize;
   maxItemSize?: ByteSize;
   ttl?: Duration;
@@ -165,6 +166,7 @@ export const DriverMemory: ConnectorDriverType = "memory";
 export const DriverRedis: ConnectorDriverType = "redis";
 export const DriverPostgreSQL: ConnectorDriverType = "postgresql";
 export const DriverDynamoDB: ConnectorDriverType = "dynamodb";
+export const DriverGrpc: ConnectorDriverType = "grpc";
 export interface ConnectorConfig {
   id?: string;
   driver: TsConnectorDriverType;
@@ -172,6 +174,12 @@ export interface ConnectorConfig {
   redis?: RedisConnectorConfig;
   dynamodb?: DynamoDBConnectorConfig;
   postgresql?: PostgreSQLConnectorConfig;
+  grpc?: GrpcConnectorConfig;
+}
+export interface GrpcConnectorConfig {
+  bootstrap?: string;
+  servers?: string[];
+  headers?: { [key: string]: string};
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
@@ -560,6 +568,29 @@ export type CacheEmptyBehavior = number /* int */;
 export const CacheEmptyBehaviorIgnore: CacheEmptyBehavior = 0;
 export const CacheEmptyBehaviorAllow: CacheEmptyBehavior = 1;
 export const CacheEmptyBehaviorOnly: CacheEmptyBehavior = 2;
+/**
+ * CachePolicyAppliesTo controls whether a cache policy applies to get, set, or both operations.
+ */
+export type CachePolicyAppliesTo = string;
+export const CachePolicyAppliesToBoth: CachePolicyAppliesTo = "both";
+export const CachePolicyAppliesToGet: CachePolicyAppliesTo = "get";
+export const CachePolicyAppliesToSet: CachePolicyAppliesTo = "set";
+
+//////////
+// source: error_extractor.go
+
+/**
+ * JsonRpcErrorExtractor allows callers to inject architecture-specific
+ * JSON-RPC error normalization logic into HTTP clients without creating
+ * package import cycles.
+ */
+export type JsonRpcErrorExtractor = any;
+/**
+ * JsonRpcErrorExtractorFunc is an adapter to allow normal functions to be used
+ * as JsonRpcErrorExtractor implementations.
+ * Similar to http.HandlerFunc style adapters.
+ */
+export type JsonRpcErrorExtractorFunc = any;
 
 //////////
 // source: network.go
