@@ -126,6 +126,7 @@ export interface CachePolicyConfig {
     params?: any[];
     finality?: DataFinalityState;
     empty?: CacheEmptyBehavior;
+    appliesTo?: 'get' | 'set' | 'both';
     minItemSize?: ByteSize;
     maxItemSize?: ByteSize;
     ttl?: Duration;
@@ -135,6 +136,7 @@ export declare const DriverMemory: ConnectorDriverType;
 export declare const DriverRedis: ConnectorDriverType;
 export declare const DriverPostgreSQL: ConnectorDriverType;
 export declare const DriverDynamoDB: ConnectorDriverType;
+export declare const DriverGrpc: ConnectorDriverType;
 export interface ConnectorConfig {
     id?: string;
     driver: TsConnectorDriverType;
@@ -142,6 +144,14 @@ export interface ConnectorConfig {
     redis?: RedisConnectorConfig;
     dynamodb?: DynamoDBConnectorConfig;
     postgresql?: PostgreSQLConnectorConfig;
+    grpc?: GrpcConnectorConfig;
+}
+export interface GrpcConnectorConfig {
+    bootstrap?: string;
+    servers?: string[];
+    headers?: {
+        [key: string]: string;
+    };
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
@@ -540,6 +550,25 @@ export type CacheEmptyBehavior = number;
 export declare const CacheEmptyBehaviorIgnore: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorAllow: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorOnly: CacheEmptyBehavior;
+/**
+ * CachePolicyAppliesTo controls whether a cache policy applies to get, set, or both operations.
+ */
+export type CachePolicyAppliesTo = string;
+export declare const CachePolicyAppliesToBoth: CachePolicyAppliesTo;
+export declare const CachePolicyAppliesToGet: CachePolicyAppliesTo;
+export declare const CachePolicyAppliesToSet: CachePolicyAppliesTo;
+/**
+ * JsonRpcErrorExtractor allows callers to inject architecture-specific
+ * JSON-RPC error normalization logic into HTTP clients without creating
+ * package import cycles.
+ */
+export type JsonRpcErrorExtractor = any;
+/**
+ * JsonRpcErrorExtractorFunc is an adapter to allow normal functions to be used
+ * as JsonRpcErrorExtractor implementations.
+ * Similar to http.HandlerFunc style adapters.
+ */
+export type JsonRpcErrorExtractorFunc = any;
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
 export type Network = any;
