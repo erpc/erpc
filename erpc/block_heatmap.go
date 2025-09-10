@@ -71,19 +71,17 @@ func recordEvmBlockRangeHeatmap(ctx context.Context, projectId string, network *
 		}
 	}
 
-	telemetry.MetricNetworkEvmBlockRangeRequested.
-		WithLabelValues(
-			projectId,
-			network.Label(),
-			vendor,
-			upstreamId,
-			method,
-			userId,
-			finalityStr,
-			label,
-			fmt.Sprintf("%d", size),
-		).
-		Inc()
+	telemetry.CounterHandle(telemetry.MetricNetworkEvmBlockRangeRequested,
+		projectId,
+		network.Label(),
+		vendor,
+		upstreamId,
+		method,
+		userId,
+		finalityStr,
+		label,
+		fmt.Sprintf("%d", size),
+	).Inc()
 }
 
 // ComputeBlockHeatmapBucket computes the bucket [start,end] (inclusive end snapped to tip),

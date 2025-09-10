@@ -703,7 +703,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 
 			if err != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
@@ -728,7 +728,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			rs, re := n.Forward(ctx, sbnrq)
 			if re != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
@@ -742,7 +742,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			jrr, err := rs.JsonRpcResponse(ctx)
 			if err != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
@@ -756,7 +756,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 
 			if jrr == nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
@@ -770,7 +770,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 
 			if jrr.Error != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
@@ -783,7 +783,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			}
 
 			mu.Lock()
-			telemetry.MetricNetworkEvmGetLogsSplitSuccess.WithLabelValues(
+			telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitSuccess,
 				n.ProjectId(),
 				n.Label(),
 				r.UserId(),

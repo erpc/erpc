@@ -495,6 +495,9 @@ func SetHistogramBuckets(bucketsStr string) error {
 		Buckets:   buckets,
 	}, []string{"project", "network", "category", "outcome", "finality"})
 
+	// Clear cached handles since the Vecs were re-created.
+	ResetHandleCache()
+
 	return nil
 }
 
