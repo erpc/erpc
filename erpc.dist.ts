@@ -1,7 +1,7 @@
 /**
  * Example config in TypeScript, copy and create erpc.ts so the binary automatically imports it.
  */
-import { createConfig, DataFinalityStateFinalized, DataFinalityStateUnfinalized } from "@erpc-cloud/config";
+import { createConfig, DataFinalityStateFinalized, DataFinalityStateRealtime, DataFinalityStateUnfinalized } from "@erpc-cloud/config";
 
 export default createConfig({
     logLevel: "trace",
@@ -17,7 +17,8 @@ export default createConfig({
                     id: "default-memory",
                     driver: "memory",
                     memory: {
-                        maxItems: 100000
+                        maxItems: 100000,
+                        maxTotalSize: "1GB"
                     }
                 }
             ],
@@ -42,6 +43,45 @@ export default createConfig({
     projects: [
         {
             id: "main",
+            networks: [
+                {
+                    architecture: "evm",
+                    evm: {
+                        chainId: 1
+                    },
+                    failsafe: [
+                        {
+                            matchMethod: "*",
+                            matchFinality: [DataFinalityStateRealtime],
+                            timeout: {
+                                duration: "3s"
+                            },
+                            retry: {
+                                maxAttempts: 2
+                            }
+                        },
+                        {
+                            matchMethod: "eth_getLogs",
+                            timeout: {
+                                duration: "5s"
+                            },
+                            retry: {
+                                maxAttempts: 5,
+
+                            }
+                        },
+                        {
+                            matchMethod: "*",
+                            timeout: {
+                                duration: "10s"
+                            },
+                            retry: {
+                                maxAttempts: 3
+                            }
+                        }
+                    ]
+                }
+            ],
             upstreams: [
                 {
                     endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`
