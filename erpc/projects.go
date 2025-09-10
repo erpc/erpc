@@ -103,7 +103,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	// Get initial finality from request
 	reqFinality := nq.Finality(ctx)
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(), nq.AgentVersion()).Inc()
+	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName()).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
@@ -181,7 +181,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			strconv.FormatBool(resp.IsResultEmptyish(ctx)),
 			nq.UserId(),
 			nq.AgentName(),
-			nq.AgentVersion(),
 		).Inc()
 		dur := time.Since(start)
 		resp.SetDuration(dur)
@@ -220,7 +219,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			finality.String(),
 			nq.UserId(),
 			nq.AgentName(),
-			nq.AgentVersion(),
 		).Inc()
 		telemetry.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,

@@ -443,7 +443,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				finality.String(),
 				nrq.UserId(),
 				nrq.AgentName(),
-				nrq.AgentVersion(),
 			).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
@@ -482,7 +481,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						finality.String(),
 						nrq.UserId(),
 						nrq.AgentName(),
-						nrq.AgentVersion(),
 					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
 					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(
@@ -494,7 +492,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						finality.String(),
 						nrq.UserId(),
 						nrq.AgentName(),
-						nrq.AgentVersion(),
 					).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
@@ -518,7 +515,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						finality.String(),
 						nrq.UserId(),
 						nrq.AgentName(),
-						nrq.AgentVersion(),
 					).Inc()
 				}
 
@@ -562,7 +558,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						finality.String(),
 						nrq.UserId(),
 						nrq.AgentName(),
-						nrq.AgentVersion(),
 					).Inc()
 				}
 			}

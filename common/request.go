@@ -684,21 +684,6 @@ func (r *NormalizedRequest) AgentName() string {
 	return "unknown"
 }
 
-// AgentVersion returns the cached agent version. The agent version should be populated via EnrichFromHttp().
-func (r *NormalizedRequest) AgentVersion() string {
-	if r == nil {
-		return "unknown"
-	}
-
-	// Check if cached agent version is available
-	if cachedAgentVersion := r.agentVersion.Load(); cachedAgentVersion != nil {
-		return cachedAgentVersion.(string)
-	}
-
-	// If not cached, return unknown (EnrichFromHttp should be called to populate this)
-	return "unknown"
-}
-
 // getUserAgent returns the user agent string, with query parameter taking precedence over header
 func (r *NormalizedRequest) getUserAgent(headers http.Header, queryArgs url.Values) string {
 	// Query parameter takes precedence
