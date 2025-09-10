@@ -103,7 +103,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	// Get initial finality from request
 	reqFinality := nq.Finality(ctx)
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(), nq.AgentVersion()).Inc()
+	telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
+		p.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(),
+	).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
@@ -170,7 +172,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			// Record block-range heatmap using dynamic buckets and human-readable labels
 			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
 		}
-		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
+		telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
 			p.Config.Id,
 			network.Label(),
 			vendor,
@@ -181,7 +183,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			strconv.FormatBool(resp.IsResultEmptyish(ctx)),
 			nq.UserId(),
 			nq.AgentName(),
-			nq.AgentVersion(),
 		).Inc()
 		dur := time.Since(start)
 		resp.SetDuration(dur)
@@ -190,7 +191,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		} else {
 			lg.Info().Dur("durationMs", dur).Msgf("successfully forwarded request for network")
 		}
-		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+		telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
 			p.Config.Id,
 			network.Label(),
 			vendor,
@@ -210,7 +211,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				lg.Info().Err(err).Msgf("failed to forward request for network")
 			}
 		}
-		telemetry.MetricNetworkFailedRequests.WithLabelValues(
+		telemetry.CounterHandle(telemetry.MetricNetworkFailedRequests,
 			network.projectId,
 			network.Label(),
 			method,
@@ -220,9 +221,8 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			finality.String(),
 			nq.UserId(),
 			nq.AgentName(),
-			nq.AgentVersion(),
 		).Inc()
-		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+		telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
 			p.Config.Id,
 			network.Label(),
 			"<error>",

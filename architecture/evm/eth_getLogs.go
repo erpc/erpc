@@ -591,7 +591,6 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 				"block_range",
 				r.UserId(),
 				r.AgentName(),
-				r.AgentVersion(),
 			).Inc()
 		}
 		mid := fb + (blockRange / 2)
@@ -612,7 +611,6 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 				"addresses",
 				r.UserId(),
 				r.AgentName(),
-				r.AgentVersion(),
 			).Inc()
 		}
 		return []ethGetLogsSubRequest{
@@ -632,7 +630,6 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 					"topics0",
 					r.UserId(),
 					r.AgentName(),
-					r.AgentVersion(),
 				).Inc()
 			}
 			leftTopics := make([]interface{}, len(topics))
@@ -706,12 +703,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 
 			if err != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
 					r.AgentName(),
-					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -732,12 +728,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			rs, re := n.Forward(ctx, sbnrq)
 			if re != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
 					r.AgentName(),
-					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, re)
 				mu.Unlock()
@@ -747,12 +742,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			jrr, err := rs.JsonRpcResponse(ctx)
 			if err != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
 					r.AgentName(),
-					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -762,12 +756,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 
 			if jrr == nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
 					r.AgentName(),
-					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, fmt.Errorf("unexpected empty json-rpc response %v", rs))
 				mu.Unlock()
@@ -777,12 +770,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 
 			if jrr.Error != nil {
 				mu.Lock()
-				telemetry.MetricNetworkEvmGetLogsSplitFailure.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
 					n.Label(),
 					r.UserId(),
 					r.AgentName(),
-					r.AgentVersion(),
 				).Inc()
 				errs = append(errs, jrr.Error)
 				mu.Unlock()
@@ -791,12 +783,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			}
 
 			mu.Lock()
-			telemetry.MetricNetworkEvmGetLogsSplitSuccess.WithLabelValues(
+			telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitSuccess,
 				n.ProjectId(),
 				n.Label(),
 				r.UserId(),
 				r.AgentName(),
-				r.AgentVersion(),
 			).Inc()
 			jrrc, err := jrr.Clone()
 			if err != nil {
