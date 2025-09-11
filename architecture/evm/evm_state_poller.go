@@ -31,12 +31,13 @@ var _ common.EvmStatePoller = &EvmStatePoller{}
 type EvmStatePoller struct {
 	Enabled bool
 
-	projectId string
-	appCtx    context.Context
-	logger    *zerolog.Logger
-	upstream  common.Upstream
-	cfg       *common.EvmNetworkConfig
-	tracker   *health.Tracker
+	projectId    string
+	appCtx       context.Context
+	logger       *zerolog.Logger
+	upstream     common.Upstream
+	cfg          *common.EvmNetworkConfig
+	tracker      *health.Tracker
+	networkLabel string
 
 	// When node is fully synced we don't need to query syncing state anymore.
 	// A number is used so that at least X times the upstream tells us it's synced.
@@ -107,6 +108,7 @@ func NewEvmStatePoller(
 		latestBlockShared:    lbs,
 		finalizedBlockShared: fbs,
 		sharedStateRegistry:  sharedState,
+		networkLabel:         "n/a",
 	}
 
 	lbs.OnValue(func(value int64) {
@@ -196,19 +198,29 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	return err
 }
 
-func (e *EvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {
+func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
-	e.cfg = cfg
+	if cfg == nil || cfg.Evm == nil {
+		e.logger.Warn().Msg("skipping evm state poller network config as it is nil")
+		return
+	}
+
+	e.cfg = cfg.Evm
+	if cfg.Alias != "" {
+		e.networkLabel = cfg.Alias
+	} else {
+		e.networkLabel = cfg.NetworkId()
+	}
 
 	if e.debounceInterval == 0 {
-		if cfg.FallbackStatePollerDebounce != 0 {
-			e.debounceInterval = cfg.FallbackStatePollerDebounce.Duration()
+		if cfg.Evm.FallbackStatePollerDebounce != 0 {
+			e.debounceInterval = cfg.Evm.FallbackStatePollerDebounce.Duration()
 		}
 	}
 	if e.debounceInterval == 0 {
-		if cfg.ChainId > 0 {
-			e.inferDebounceIntervalFromBlockTime(cfg.ChainId)
+		if cfg.Evm.ChainId > 0 {
+			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
 		}
 	}
 }
@@ -352,11 +364,13 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	)
 	defer span.End()
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
-		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
+		if e.logger.GetLevel() <= zerolog.TraceLevel {
+			e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
+		}
 		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.upstream.NetworkId(),
+			e.networkLabel,
 			e.upstream.Id(),
 		).Inc()
 		blockNum, err := e.fetchBlock(ctx, "latest")
@@ -431,7 +445,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.upstream.NetworkId(),
+			e.networkLabel,
 			e.upstream.Id(),
 		).Inc()
 
@@ -574,6 +588,9 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
 	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -585,7 +602,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		return 0, jrr.Error
 	}
 
-	if util.IsBytesEmptyish(jrr.Result) {
+	if jrr.IsResultEmptyish(ctx) {
 		return 0, nil
 	}
 
@@ -596,10 +613,12 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
 				"blockTag": blockTag,
-				"result":   jrr.Result,
+				"result":   jrr.GetResultString(),
 			},
 		}
 	}
+	// Force-copy the small string to avoid any potential reference to backing buffers
+	numberStr = string(append([]byte(nil), numberStr...))
 	blockNum, err := common.HexToInt64(numberStr)
 	if err != nil {
 		return 0, err
@@ -610,9 +629,11 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
-	// pr.SetNetwork(e.network)
 
 	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		if common.HasErrorCode(err,
 			common.ErrCodeUpstreamRequestSkipped,
@@ -635,14 +656,16 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, jrr.Error
 	}
 
+	result := jrr.GetResultBytes()
+
 	var syncing interface{}
-	err = common.SonicCfg.Unmarshal(jrr.Result, &syncing)
+	err = common.SonicCfg.Unmarshal(result, &syncing)
 	if err != nil {
 		return false, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot parse syncing state result (must be boolean or object)",
 			Details: map[string]interface{}{
-				"result": util.B2Str(jrr.Result),
+				"result": result,
 			},
 		}
 	}
@@ -679,7 +702,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		Code:    "ErrEvmStatePoller",
 		Message: "cannot parse syncing state result (must be boolean or object)",
 		Details: map[string]interface{}{
-			"result": util.B2Str(jrr.Result),
+			"result": result,
 		},
 	}
 }

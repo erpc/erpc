@@ -68,7 +68,9 @@ export interface ServerConfig {
   httpHostV4?: string;
   listenV6?: boolean;
   httpHostV6?: string;
-  httpPort?: number /* int */;
+  httpPort?: number /* int */; // Deprecated: use HttpPortV4
+  httpPortV4?: number /* int */;
+  httpPortV6?: number /* int */;
   maxTimeout?: Duration;
   readTimeout?: Duration;
   writeTimeout?: Duration;
@@ -145,6 +147,7 @@ export interface CacheMethodConfig {
   respRefs: any[][];
   finalized: boolean;
   realtime: boolean;
+  stateful?: boolean;
 }
 export interface CachePolicyConfig {
   connector: string;
@@ -153,6 +156,7 @@ export interface CachePolicyConfig {
   params?: any[];
   finality?: DataFinalityState;
   empty?: CacheEmptyBehavior;
+  appliesTo?: 'get' | 'set' | 'both';
   minItemSize?: ByteSize;
   maxItemSize?: ByteSize;
   ttl?: Duration;
@@ -162,6 +166,7 @@ export const DriverMemory: ConnectorDriverType = "memory";
 export const DriverRedis: ConnectorDriverType = "redis";
 export const DriverPostgreSQL: ConnectorDriverType = "postgresql";
 export const DriverDynamoDB: ConnectorDriverType = "dynamodb";
+export const DriverGrpc: ConnectorDriverType = "grpc";
 export interface ConnectorConfig {
   id?: string;
   driver: TsConnectorDriverType;
@@ -169,6 +174,12 @@ export interface ConnectorConfig {
   redis?: RedisConnectorConfig;
   dynamodb?: DynamoDBConnectorConfig;
   postgresql?: PostgreSQLConnectorConfig;
+  grpc?: GrpcConnectorConfig;
+}
+export interface GrpcConnectorConfig {
+  bootstrap?: string;
+  servers?: string[];
+  headers?: { [key: string]: string};
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
@@ -244,6 +255,7 @@ export interface ProjectConfig {
   networks?: (NetworkConfig | undefined)[];
   rateLimitBudget?: string;
   scoreMetricsWindowSize?: Duration;
+  scoreRefreshInterval?: Duration;
   healthCheck?: DeprecatedProjectHealthCheckConfig;
 }
 export interface NetworkDefaults {
@@ -253,12 +265,6 @@ export interface NetworkDefaults {
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -294,12 +300,6 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   ignoreFields?: { [key: string]: string[]};
@@ -318,6 +318,7 @@ export interface ScoreMultiplierConfig {
   throttledRate?: number /* float64 */;
   blockHeadLag?: number /* float64 */;
   finalizationLag?: number /* float64 */;
+  misbehaviors?: number /* float64 */;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -344,10 +345,6 @@ export interface EvmUpstreamConfig {
   statePollerDebounce?: Duration;
   maxAvailableRecentBlocks?: number /* int64 */;
   getLogsAutoSplittingRangeThreshold?: number /* int64 */;
-  getLogsMaxAllowedRange?: number /* int64 */;
-  getLogsMaxAllowedAddresses?: number /* int64 */;
-  getLogsMaxAllowedTopics?: number /* int64 */;
-  getLogsSplitOnError?: boolean;
   skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
@@ -367,6 +364,10 @@ export interface RetryPolicyConfig {
   jitter?: Duration;
   emptyResultConfidence?: AvailbilityConfidence;
   emptyResultIgnore?: string[];
+  /**
+   * EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
+   */
+  emptyResultMaxAttempts?: number /* int */;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
@@ -403,6 +404,8 @@ export interface ConsensusPolicyConfig {
   punishMisbehavior?: PunishMisbehaviorConfig;
   disputeLogLevel?: string; // "trace", "debug", "info", "warn", "error"
   ignoreFields?: { [key: string]: string[]};
+  preferNonEmpty?: boolean;
+  preferLargerResponses?: boolean;
 }
 export interface PunishMisbehaviorConfig {
   disputeThreshold: number /* uint */;
@@ -443,12 +446,6 @@ export interface NetworkConfig {
   alias?: string;
   methods?: MethodsConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
@@ -460,6 +457,11 @@ export interface EvmNetworkConfig {
   fallbackFinalityDepth?: number /* int64 */;
   fallbackStatePollerDebounce?: Duration;
   integrity?: EvmIntegrityConfig;
+  getLogsMaxAllowedRange?: number /* int64 */;
+  getLogsMaxAllowedAddresses?: number /* int64 */;
+  getLogsMaxAllowedTopics?: number /* int64 */;
+  getLogsSplitOnError?: boolean;
+  getLogsSplitConcurrency?: number /* int */;
 }
 export interface EvmIntegrityConfig {
   enforceHighestBlock?: boolean;
@@ -566,6 +568,29 @@ export type CacheEmptyBehavior = number /* int */;
 export const CacheEmptyBehaviorIgnore: CacheEmptyBehavior = 0;
 export const CacheEmptyBehaviorAllow: CacheEmptyBehavior = 1;
 export const CacheEmptyBehaviorOnly: CacheEmptyBehavior = 2;
+/**
+ * CachePolicyAppliesTo controls whether a cache policy applies to get, set, or both operations.
+ */
+export type CachePolicyAppliesTo = string;
+export const CachePolicyAppliesToBoth: CachePolicyAppliesTo = "both";
+export const CachePolicyAppliesToGet: CachePolicyAppliesTo = "get";
+export const CachePolicyAppliesToSet: CachePolicyAppliesTo = "set";
+
+//////////
+// source: error_extractor.go
+
+/**
+ * JsonRpcErrorExtractor allows callers to inject architecture-specific
+ * JSON-RPC error normalization logic into HTTP clients without creating
+ * package import cycles.
+ */
+export type JsonRpcErrorExtractor = any;
+/**
+ * JsonRpcErrorExtractorFunc is an adapter to allow normal functions to be used
+ * as JsonRpcErrorExtractor implementations.
+ * Similar to http.HandlerFunc style adapters.
+ */
+export type JsonRpcErrorExtractorFunc = any;
 
 //////////
 // source: network.go
@@ -591,6 +616,10 @@ export const ScopeNetwork: Scope = "network";
  */
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
+/**
+ * HealthTracker is an interface for tracking upstream health metrics
+ */
+export type HealthTracker = any;
 export type Upstream = any;
 
 //////////

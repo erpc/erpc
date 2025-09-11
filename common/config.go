@@ -191,21 +191,24 @@ type CacheMethodConfig struct {
 	RespRefs  [][]interface{} `yaml:"respRefs" json:"respRefs"`
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
+	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
 }
 
 type CachePolicyConfig struct {
-	Matchers    []*MatcherConfig `yaml:"matchers,omitempty" json:"matchers"`
-	Connector   string           `yaml:"connector" json:"connector"`
-	MinItemSize *string          `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
-	MaxItemSize *string          `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
-	TTL         Duration         `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+	// New matcher-based configuration
+	Matchers    []*MatcherConfig     `yaml:"matchers,omitempty" json:"matchers"`
+	Connector   string               `yaml:"connector" json:"connector"`
 
-	// Deprecated fields (kept for backward compatibility)
-	Network  string             `yaml:"network,omitempty" json:"network"`
-	Method   string             `yaml:"method,omitempty" json:"method"`
-	Params   []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty    CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	// Legacy fields (kept for backward compatibility and converted into matchers)
+	Network     string               `yaml:"network,omitempty" json:"network"`
+	Method      string               `yaml:"method,omitempty" json:"method"`
+	Params      []interface{}        `yaml:"params,omitempty" json:"params"`
+	Finality    DataFinalityState    `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty       CacheEmptyBehavior   `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	AppliesTo   CachePolicyAppliesTo `yaml:"appliesTo,omitempty" json:"appliesTo" tstype:"'get' | 'set' | 'both'"`
+	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
+	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
+	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
 }
 
 type ConnectorDriverType string
@@ -215,6 +218,7 @@ const (
 	DriverRedis      ConnectorDriverType = "redis"
 	DriverPostgreSQL ConnectorDriverType = "postgresql"
 	DriverDynamoDB   ConnectorDriverType = "dynamodb"
+	DriverGrpc       ConnectorDriverType = "grpc"
 )
 
 type ConnectorConfig struct {
@@ -224,7 +228,14 @@ type ConnectorConfig struct {
 	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
 	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
+	Grpc       *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
 	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
+}
+
+type GrpcConnectorConfig struct {
+	Bootstrap string            `yaml:"bootstrap,omitempty" json:"bootstrap"`
+	Servers   []string          `yaml:"servers,omitempty" json:"servers"`
+	Headers   map[string]string `yaml:"headers,omitempty" json:"headers"`
 }
 
 type MemoryConnectorConfig struct {
@@ -346,6 +357,7 @@ type ProjectConfig struct {
 	Networks               []*NetworkConfig                    `yaml:"networks,omitempty" json:"networks"`
 	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
+	ScoreRefreshInterval   Duration                            `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
 	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 }
 
@@ -616,6 +628,7 @@ type ScoreMultiplierConfig struct {
 	ThrottledRate   *float64 `yaml:"throttledRate" json:"throttledRate"`
 	BlockHeadLag    *float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
 	FinalizationLag *float64 `yaml:"finalizationLag" json:"finalizationLag"`
+	Misbehaviors    *float64 `yaml:"misbehaviors" json:"misbehaviors"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
@@ -690,13 +703,14 @@ type EvmUpstreamConfig struct {
 	StatePollerDebounce                Duration    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 	MaxAvailableRecentBlocks           int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
 	GetLogsAutoSplittingRangeThreshold int64       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
-	GetLogsMaxAllowedRange             int64       `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
-	GetLogsMaxAllowedAddresses         int64       `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
-	GetLogsMaxAllowedTopics            int64       `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
-	GetLogsSplitOnError                *bool       `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	SkipWhenSyncing                    *bool       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
-	GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxAllowedRange     int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"-"`
+	DeprecatedGetLogsMaxAllowedAddresses int64 `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"-"`
+	DeprecatedGetLogsMaxAllowedTopics    int64 `yaml:"getLogsMaxAllowedTopics,omitempty" json:"-"`
+	DeprecatedGetLogsSplitOnError        *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
+	DeprecatedGetLogsMaxBlockRange       int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 }
 
 func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
@@ -806,6 +820,8 @@ type RetryPolicyConfig struct {
 	Jitter                Duration              `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence"`
 	EmptyResultIgnore     []string              `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
+	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
+	EmptyResultMaxAttempts int `yaml:"emptyResultMaxAttempts,omitempty" json:"emptyResultMaxAttempts"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
@@ -869,7 +885,6 @@ type ConsensusLowParticipantsBehavior string
 const (
 	ConsensusLowParticipantsBehaviorReturnError                 ConsensusLowParticipantsBehavior = "returnError"
 	ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult ConsensusLowParticipantsBehavior = "acceptMostCommonValidResult"
-	ConsensusLowParticipantsBehaviorAcceptAnyValidResult        ConsensusLowParticipantsBehavior = "acceptAnyValidResult"
 	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader       ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
 	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader         ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
 )
@@ -879,7 +894,6 @@ type ConsensusDisputeBehavior string
 const (
 	ConsensusDisputeBehaviorReturnError                 ConsensusDisputeBehavior = "returnError"
 	ConsensusDisputeBehaviorAcceptMostCommonValidResult ConsensusDisputeBehavior = "acceptMostCommonValidResult"
-	ConsensusDisputeBehaviorAcceptAnyValidResult        ConsensusDisputeBehavior = "acceptAnyValidResult"
 	ConsensusDisputeBehaviorPreferBlockHeadLeader       ConsensusDisputeBehavior = "preferBlockHeadLeader"
 	ConsensusDisputeBehaviorOnlyBlockHeadLeader         ConsensusDisputeBehavior = "onlyBlockHeadLeader"
 )
@@ -894,6 +908,8 @@ type ConsensusPolicyConfig struct {
 	PunishMisbehavior       *PunishMisbehaviorConfig         `yaml:"punishMisbehavior,omitempty" json:"punishMisbehavior"`
 	DisputeLogLevel         string                           `yaml:"disputeLogLevel,omitempty" json:"disputeLogLevel"` // "trace", "debug", "info", "warn", "error"
 	IgnoreFields            map[string][]string              `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
+	PreferNonEmpty          *bool                            `yaml:"preferNonEmpty,omitempty" json:"preferNonEmpty"`
+	PreferLargerResponses   *bool                            `yaml:"preferLargerResponses,omitempty" json:"preferLargerResponses"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1060,6 +1076,11 @@ type EvmNetworkConfig struct {
 	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
 	FallbackStatePollerDebounce Duration            `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce" tstype:"Duration"`
 	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	GetLogsMaxAllowedRange      int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
+	GetLogsMaxAllowedAddresses  int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
+	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
+	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
+	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 }
 
 type EvmIntegrityConfig struct {

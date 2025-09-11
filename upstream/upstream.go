@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -47,7 +48,8 @@ type Upstream struct {
 	cfgMu  sync.RWMutex
 	vendor common.Vendor
 
-	networkId            string
+	networkId            atomic.Value
+	networkLabel         atomic.Value
 	supportedMethods     sync.Map
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
@@ -121,7 +123,9 @@ func NewUpstream(
 		failsafeExecutors:    failsafeExecutors,
 		rateLimitersRegistry: rlr,
 		supportedMethods:     sync.Map{},
+		networkLabel:         atomic.Value{},
 	}
+	pup.networkLabel.Store("n/a")
 
 	pup.initRateLimitAutoTuner()
 
@@ -189,9 +193,24 @@ func (u *Upstream) Id() string {
 
 func (u *Upstream) NetworkId() string {
 	if u == nil {
-		return ""
+		return "n/a"
 	}
-	return u.networkId
+	id, ok := u.networkId.Load().(string)
+	if !ok {
+		return "n/a"
+	}
+	return id
+}
+
+func (u *Upstream) NetworkLabel() string {
+	if u == nil {
+		return "n/a"
+	}
+	lbl, ok := u.networkLabel.Load().(string)
+	if !ok {
+		return u.NetworkId()
+	}
+	return lbl
 }
 
 func (u *Upstream) VendorName() string {
@@ -221,6 +240,13 @@ func (u *Upstream) MetricsTracker() *health.Tracker {
 	return u.metricsTracker
 }
 
+func (u *Upstream) Tracker() common.HealthTracker {
+	if u == nil {
+		return nil
+	}
+	return u.metricsTracker
+}
+
 func (u *Upstream) Logger() *zerolog.Logger {
 	return u.logger
 }
@@ -233,8 +259,28 @@ func (u *Upstream) Vendor() common.Vendor {
 }
 
 func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
-	if cfg != nil && cfg.Evm != nil && u.evmStatePoller != nil {
-		u.evmStatePoller.SetNetworkConfig(cfg.Evm)
+	// TODO Can we eliminate this circular dependency of upstream state poller <> network? e.g. by requiring network ID everywhere?
+	if cfg == nil {
+		u.logger.Warn().Msg("unexpectedly received nil network config")
+		return
+	}
+	if cfg.Evm != nil && u.evmStatePoller != nil {
+		// propagate alias and evm config so the poller can use it without a direct network reference
+		u.evmStatePoller.SetNetworkConfig(cfg)
+	}
+	// Always set networkId from the provided config
+	nid := cfg.NetworkId()
+	if nid != "" {
+		u.networkId.Store(nid)
+	}
+
+	// Prefer alias as label when provided; otherwise default to networkId if label is empty or "n/a"
+	if cfg.Alias != "" {
+		u.networkLabel.Store(cfg.Alias)
+	} else {
+		if lbl, ok := u.networkLabel.Load().(string); !ok || lbl == "" || lbl == "n/a" {
+			u.networkLabel.Store(nid)
+		}
 	}
 }
 
@@ -261,7 +307,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	method, err := nrq.Method()
 	ctx, span := common.StartSpan(ctx, "Upstream.Forward",
 		trace.WithAttributes(
-			attribute.String("network.id", u.networkId),
+			attribute.String("network.id", u.NetworkId()),
 			attribute.String("upstream.id", cfg.Id),
 			attribute.String("request.method", method),
 		),
@@ -278,8 +324,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			cfg.Id,
-			u.networkId,
+			u,
+			u.NetworkId(),
 			method,
 			time.Since(startTime),
 			0,
@@ -310,7 +356,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		}
 	}
 
-	lg := u.logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", nrq.ID()).Logger()
+	lg := u.logger.With().Str("method", method).Str("networkId", u.NetworkId()).Interface("id", nrq.ID()).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -361,12 +407,23 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				method,
 			)
 			finality := nrq.Finality(ctx)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType(), finality.String(), nrq.UserId(), nrq.AgentName(), nrq.AgentVersion()).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality)
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkLabel(),
+				cfg.Id,
+				method,
+				strconv.Itoa(exec.Attempts()),
+				nrq.CompositeType(),
+				finality.String(),
+				nrq.UserId(),
+				nrq.AgentName(),
+			).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
 			isSuccess := false
-			if nrs != nil {
+			if errCall == nil && nrs != nil {
 				nrs.SetUpstream(u)
 				jrr, _ := nrs.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
@@ -390,32 +447,63 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			if errCall != nil {
 				isSuccess = false
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String(), nrq.UserId(), nrq.AgentName(), nrq.AgentVersion()).Inc()
+					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(
+						u.ProjectId,
+						u.VendorName(),
+						u.NetworkLabel(),
+						cfg.Id,
+						method,
+						finality.String(),
+						nrq.UserId(),
+						nrq.AgentName(),
+					).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String(), nrq.UserId(), nrq.AgentName(), nrq.AgentVersion()).Inc()
+					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(
+						u.ProjectId,
+						u.VendorName(),
+						u.NetworkLabel(),
+						cfg.Id,
+						method,
+						finality.String(),
+						nrq.UserId(),
+						nrq.AgentName(),
+					).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(method, nrq)
 					}
-					severity := common.ClassifySeverity(errCall)
-					// if severity == common.SeverityCritical {
-					// We only consider a subset of errors in metrics tracker (which is used for score calculation)
-					// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
 					u.metricsTracker.RecordUpstreamFailure(
 						u,
 						method,
 						errCall,
 					)
-					// }
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType(), finality.String(), nrq.UserId(), nrq.AgentName(), nrq.AgentVersion()).Inc()
+					severity := common.ClassifySeverity(errCall)
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+						u.ProjectId,
+						u.VendorName(),
+						u.NetworkLabel(),
+						cfg.Id,
+						method,
+						common.ErrorFingerprint(errCall),
+						string(severity),
+						nrq.CompositeType(),
+						finality.String(),
+						nrq.UserId(),
+						nrq.AgentName(),
+					).Inc()
 				}
 
 				timer.ObserveDuration(false)
+				// We're converting a response+error into a pure error. Release the response to avoid retention.
+				if nrs != nil {
+					nrs.Release()
+					nrs = nil
+				}
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						cfg.Id,
-						u.networkId,
+						u,
+						u.NetworkId(),
 						method,
 						time.Since(startTime),
 						exec.Attempts(),
@@ -425,8 +513,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				} else {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						cfg.Id,
-						u.networkId,
+						u,
+						u.NetworkId(),
 						method,
 						time.Since(startTime),
 						1,
@@ -436,7 +524,16 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				}
 			} else {
 				if nrs.IsResultEmptyish() {
-					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, finality.String(), nrq.UserId(), nrq.AgentName(), nrq.AgentVersion()).Inc()
+					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(
+						u.ProjectId,
+						u.VendorName(),
+						u.NetworkLabel(),
+						cfg.Id,
+						method,
+						finality.String(),
+						nrq.UserId(),
+						nrq.AgentName(),
+					).Inc()
 				}
 			}
 
@@ -458,7 +555,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 				ectx, execSpan := common.StartSpan(exec.Context(), "Upstream.forwardAttempt",
 					trace.WithAttributes(
-						attribute.String("network.id", u.networkId),
+						attribute.String("network.id", u.NetworkId()),
 						attribute.String("upstream.id", cfg.Id),
 						attribute.Int("execution.attempt", exec.Attempts()),
 						attribute.Int("execution.retry", exec.Retries()),
@@ -524,7 +621,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	default:
 		err := common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type during forward: %s", clientType),
-			cfg.Id,
+			u,
 		)
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -556,6 +653,9 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
 	resp, err := u.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		return "", err
 	}
@@ -568,7 +668,7 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", jrr.Error
 	}
 	var chainId string
-	err = common.SonicCfg.Unmarshal(jrr.Result, &chainId)
+	err = common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &chainId)
 	if err != nil {
 		return "", err
 	}
@@ -666,7 +766,7 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
-				u.NetworkId(),
+				u.NetworkLabel(),
 				u.Id(),
 				forMethod,
 				confidence.String(),
@@ -710,7 +810,7 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 				u.ProjectId,
 				u.VendorName(),
-				u.NetworkId(),
+				u.NetworkLabel(),
 				u.Id(),
 				forMethod,
 				confidence.String(),
@@ -749,7 +849,7 @@ func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller com
 		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
 			u.ProjectId,
 			u.VendorName(),
-			u.NetworkId(),
+			u.NetworkLabel(),
 			u.Id(),
 			forMethod,
 			confidence.String(),
@@ -776,7 +876,7 @@ func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller com
 		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
 			u.ProjectId,
 			u.VendorName(),
-			u.NetworkId(),
+			u.NetworkLabel(),
 			u.Id(),
 			forMethod,
 			confidence.String(),
@@ -896,29 +996,37 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		if cfg.Evm == nil {
 			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
-		if cfg.Evm.ChainId == 0 {
-			nid, err := u.EvmGetChainId(ctx)
-			if err != nil {
-				return common.NewErrUpstreamClientInitialization(
-					&common.BaseError{
-						Code:  "ErrUpstreamChainIdDetectionFailed",
-						Cause: err,
-					},
-					cfg.Id,
-				)
-			}
-			cfg.Evm.ChainId, err = strconv.ParseInt(nid, 10, 64)
-			if err != nil {
-				return common.NewErrUpstreamClientInitialization(
-					&common.BaseError{
-						Code:  "ErrUpstreamChainIdDetectionFailed",
-						Cause: err,
-					},
-					cfg.Id,
-				)
-			}
+		nid, err := u.EvmGetChainId(ctx)
+		if err != nil {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrUpstreamChainIdDetectionFailed",
+					Cause: err,
+				},
+				u,
+			)
 		}
-		u.networkId = util.EvmNetworkId(cfg.Evm.ChainId)
+		realChainID, err := strconv.ParseInt(nid, 0, 64)
+		if err != nil {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrUpstreamChainIdDetectionFailed",
+					Cause: err,
+				},
+				u,
+			)
+		}
+		if cfg.Evm.ChainId > 0 && cfg.Evm.ChainId != realChainID {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrUpstreamChainIdMismatch",
+					Cause: fmt.Errorf("chainId mismatch: configured %d, detected %d", cfg.Evm.ChainId, realChainID),
+				},
+				u,
+			)
+		}
+		cfg.Evm.ChainId = realChainID
+		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
 
 		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {
 			cfg.Evm.MaxAvailableRecentBlocks = 128
@@ -949,22 +1057,22 @@ func (u *Upstream) guessVendorName() string {
 
 	// If the host is an IP address, return it as-is (no root domain concept).
 	if ip := net.ParseIP(host); ip != nil {
-		return host
+		return "unknown-" + host
 	}
 
 	parts := strings.Split(host, ".")
 	if len(parts) <= 2 {
-		return host
+		return "unknown-" + host
 	}
 
 	// Return last two segments as a naive root domain (example.com).
 	rooDomain := strings.Join(parts[len(parts)-2:], ".")
 	if len(rooDomain) < 5 {
 		// Above is a simple heuristic and might not work for multi-level TLDs like co.uk.
-		return strings.Join(parts[len(parts)-3:], ".")
+		return "unknown-" + strings.Join(parts[len(parts)-3:], ".")
 	}
 
-	return rooDomain
+	return "unknown-" + rooDomain
 }
 
 func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest) (reason error, skip bool) {
@@ -1063,6 +1171,6 @@ func (u *Upstream) Cordon(method string, reason string) {
 	u.metricsTracker.Cordon(u, method, reason)
 }
 
-func (u *Upstream) Uncordon(method string) {
-	u.metricsTracker.Uncordon(u, method)
+func (u *Upstream) Uncordon(method string, reason string) {
+	u.metricsTracker.Uncordon(u, method, reason)
 }

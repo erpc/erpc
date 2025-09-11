@@ -39,6 +39,8 @@ export interface ServerConfig {
     listenV6?: boolean;
     httpHostV6?: string;
     httpPort?: number;
+    httpPortV4?: number;
+    httpPortV6?: number;
     maxTimeout?: Duration;
     readTimeout?: Duration;
     writeTimeout?: Duration;
@@ -115,6 +117,7 @@ export interface CacheMethodConfig {
     respRefs: any[][];
     finalized: boolean;
     realtime: boolean;
+    stateful?: boolean;
 }
 export interface CachePolicyConfig {
     connector: string;
@@ -123,6 +126,7 @@ export interface CachePolicyConfig {
     params?: any[];
     finality?: DataFinalityState;
     empty?: CacheEmptyBehavior;
+    appliesTo?: 'get' | 'set' | 'both';
     minItemSize?: ByteSize;
     maxItemSize?: ByteSize;
     ttl?: Duration;
@@ -132,6 +136,7 @@ export declare const DriverMemory: ConnectorDriverType;
 export declare const DriverRedis: ConnectorDriverType;
 export declare const DriverPostgreSQL: ConnectorDriverType;
 export declare const DriverDynamoDB: ConnectorDriverType;
+export declare const DriverGrpc: ConnectorDriverType;
 export interface ConnectorConfig {
     id?: string;
     driver: TsConnectorDriverType;
@@ -139,6 +144,14 @@ export interface ConnectorConfig {
     redis?: RedisConnectorConfig;
     dynamodb?: DynamoDBConnectorConfig;
     postgresql?: PostgreSQLConnectorConfig;
+    grpc?: GrpcConnectorConfig;
+}
+export interface GrpcConnectorConfig {
+    bootstrap?: string;
+    servers?: string[];
+    headers?: {
+        [key: string]: string;
+    };
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
@@ -214,6 +227,7 @@ export interface ProjectConfig {
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
     scoreMetricsWindowSize?: Duration;
+    scoreRefreshInterval?: Duration;
     healthCheck?: DeprecatedProjectHealthCheckConfig;
 }
 export interface NetworkDefaults {
@@ -223,12 +237,6 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -268,12 +276,6 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -294,6 +296,7 @@ export interface ScoreMultiplierConfig {
     throttledRate?: number;
     blockHeadLag?: number;
     finalizationLag?: number;
+    misbehaviors?: number;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -322,10 +325,6 @@ export interface EvmUpstreamConfig {
     statePollerDebounce?: Duration;
     maxAvailableRecentBlocks?: number;
     getLogsAutoSplittingRangeThreshold?: number;
-    getLogsMaxAllowedRange?: number;
-    getLogsMaxAllowedAddresses?: number;
-    getLogsMaxAllowedTopics?: number;
-    getLogsSplitOnError?: boolean;
     skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
@@ -345,6 +344,10 @@ export interface RetryPolicyConfig {
     jitter?: Duration;
     emptyResultConfidence?: AvailbilityConfidence;
     emptyResultIgnore?: string[];
+    /**
+     * EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
+     */
+    emptyResultMaxAttempts?: number;
 }
 export interface CircuitBreakerPolicyConfig {
     failureThresholdCount: number;
@@ -383,6 +386,8 @@ export interface ConsensusPolicyConfig {
     ignoreFields?: {
         [key: string]: string[];
     };
+    preferNonEmpty?: boolean;
+    preferLargerResponses?: boolean;
 }
 export interface PunishMisbehaviorConfig {
     disputeThreshold: number;
@@ -425,12 +430,6 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -442,6 +441,11 @@ export interface EvmNetworkConfig {
     fallbackFinalityDepth?: number;
     fallbackStatePollerDebounce?: Duration;
     integrity?: EvmIntegrityConfig;
+    getLogsMaxAllowedRange?: number;
+    getLogsMaxAllowedAddresses?: number;
+    getLogsMaxAllowedTopics?: number;
+    getLogsSplitOnError?: boolean;
+    getLogsSplitConcurrency?: number;
 }
 export interface EvmIntegrityConfig {
     enforceHighestBlock?: boolean;
@@ -546,6 +550,25 @@ export type CacheEmptyBehavior = number;
 export declare const CacheEmptyBehaviorIgnore: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorAllow: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorOnly: CacheEmptyBehavior;
+/**
+ * CachePolicyAppliesTo controls whether a cache policy applies to get, set, or both operations.
+ */
+export type CachePolicyAppliesTo = string;
+export declare const CachePolicyAppliesToBoth: CachePolicyAppliesTo;
+export declare const CachePolicyAppliesToGet: CachePolicyAppliesTo;
+export declare const CachePolicyAppliesToSet: CachePolicyAppliesTo;
+/**
+ * JsonRpcErrorExtractor allows callers to inject architecture-specific
+ * JSON-RPC error normalization logic into HTTP clients without creating
+ * package import cycles.
+ */
+export type JsonRpcErrorExtractor = any;
+/**
+ * JsonRpcErrorExtractorFunc is an adapter to allow normal functions to be used
+ * as JsonRpcErrorExtractor implementations.
+ * Similar to http.HandlerFunc style adapters.
+ */
+export type JsonRpcErrorExtractorFunc = any;
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
 export type Network = any;
@@ -563,6 +586,10 @@ export declare const ScopeNetwork: Scope;
  */
 export declare const ScopeUpstream: Scope;
 export type UpstreamType = string;
+/**
+ * HealthTracker is an interface for tracking upstream health metrics
+ */
+export type HealthTracker = any;
 export type Upstream = any;
 export interface User {
     id: string;

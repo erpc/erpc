@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -32,38 +31,13 @@ type ProjectHealthInfo struct {
 	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
 }
 
-func (p *PreparedProject) Bootstrap(appCtx context.Context) error {
-	wg := sync.WaitGroup{}
-	wg.Add(2)
-	var errs []error
-	ermu := &sync.Mutex{}
-	go func() {
-		defer wg.Done()
-		err := p.upstreamsRegistry.Bootstrap(appCtx)
-		if err != nil {
-			ermu.Lock()
-			errs = append(errs, err)
-			ermu.Unlock()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		err := p.networksRegistry.Bootstrap(appCtx)
-		if err != nil {
-			ermu.Lock()
-			errs = append(errs, err)
-			ermu.Unlock()
-		}
-	}()
-	wg.Wait()
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+func (p *PreparedProject) Bootstrap(appCtx context.Context) {
+	p.upstreamsRegistry.Bootstrap(appCtx)
+	p.networksRegistry.Bootstrap(appCtx)
 }
 
-func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
-	return p.networksRegistry.GetNetwork(networkId)
+func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
+	return p.networksRegistry.GetNetwork(ctx, networkId)
 }
 
 // ExposeNetworkConfig is used to add lazy-loaded network configs to the project
@@ -114,7 +88,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	ctx, span := common.StartDetailSpan(ctx, "Project.Forward")
 	defer span.End()
 
-	network, err := p.networksRegistry.GetNetwork(networkId)
+	network, err := p.networksRegistry.GetNetwork(ctx, networkId)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -129,11 +103,13 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	// Get initial finality from request
 	reqFinality := nq.Finality(ctx)
 
-	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method, reqFinality.String(), nq.UserId(), nq.AgentName(), nq.AgentVersion()).Inc()
+	telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
+		p.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(),
+	).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
-		Str("networkId", network.networkId).
+		Str("networkId", network.Id()).
 		Str("method", method).
 		Interface("id", nq.ID()).
 		Str("ptr", fmt.Sprintf("%p", nq)).
@@ -143,11 +119,30 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	shadowUpstreams := network.ShadowUpstreams()
 	if len(shadowUpstreams) > 0 {
-		cloneResp, err := common.CopyResponseForRequest(ctx, resp, nq)
-		if err != nil {
-			lg.Error().Err(err).Msgf("failed to copy response for shadow requests")
-		} else {
-			go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)
+		if resp != nil {
+			jrr, jerr := resp.JsonRpcResponse(ctx)
+			if jerr != nil || jrr == nil {
+				if jerr != nil {
+					lg.Error().Err(jerr).Msgf("failed to parse response for shadow requests")
+				} else {
+					lg.Error().Msgf("failed to parse response for shadow requests: nil jsonRpcResponse")
+				}
+			} else {
+				jrc, cerr := jrr.Clone()
+				if cerr != nil {
+					lg.Error().Err(cerr).Msgf("failed to clone json-rpc response for shadow requests")
+				} else {
+					cloneResp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrc)
+					cloneResp.SetUpstream(resp.Upstream())
+					cloneResp.SetFromCache(resp.FromCache())
+					cloneResp.SetAttempts(resp.Attempts())
+					cloneResp.SetRetries(resp.Retries())
+					cloneResp.SetHedges(resp.Hedges())
+					cloneResp.SetEvmBlockRef(resp.EvmBlockRef())
+					cloneResp.SetEvmBlockNumber(resp.EvmBlockNumber())
+					go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)
+				}
+			}
 		}
 	}
 
@@ -172,9 +167,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			vendor = upstream.VendorName()
 			upstreamId = upstream.Id()
 		}
-		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
+
+		if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {
+			// Record block-range heatmap using dynamic buckets and human-readable labels
+			recordEvmBlockRangeHeatmap(ctx, p.Config.Id, network, method, nq, resp)
+		}
+		telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
 			p.Config.Id,
-			network.networkId,
+			network.Label(),
 			vendor,
 			upstreamId,
 			method,
@@ -183,21 +183,23 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			strconv.FormatBool(resp.IsResultEmptyish(ctx)),
 			nq.UserId(),
 			nq.AgentName(),
-			nq.AgentVersion(),
 		).Inc()
+		dur := time.Since(start)
+		resp.SetDuration(dur)
 		if lg.GetLevel() == zerolog.TraceLevel {
-			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
+			lg.Info().Dur("durationMs", dur).Object("response", resp).Msgf("successfully forwarded request for network")
 		} else {
-			lg.Info().Msgf("successfully forwarded request for network")
+			lg.Info().Dur("durationMs", dur).Msgf("successfully forwarded request for network")
 		}
-		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+		telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
 			p.Config.Id,
-			network.networkId,
+			network.Label(),
 			vendor,
 			upstreamId,
 			method,
 			finality.String(),
-		).Observe(time.Since(start).Seconds())
+			nq.UserId(),
+		).Observe(dur.Seconds())
 		return resp, err
 	} else {
 		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
@@ -209,9 +211,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				lg.Info().Err(err).Msgf("failed to forward request for network")
 			}
 		}
-		telemetry.MetricNetworkFailedRequests.WithLabelValues(
+		telemetry.CounterHandle(telemetry.MetricNetworkFailedRequests,
 			network.projectId,
-			network.networkId,
+			network.Label(),
 			method,
 			strconv.FormatInt(int64(resp.Attempts()), 10),
 			common.ErrorFingerprint(err),
@@ -219,15 +221,15 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			finality.String(),
 			nq.UserId(),
 			nq.AgentName(),
-			nq.AgentVersion(),
 		).Inc()
-		telemetry.MetricNetworkRequestDuration.WithLabelValues(
+		telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
 			p.Config.Id,
-			network.networkId,
+			network.Label(),
 			"<error>",
 			"<error>",
 			method,
 			finality.String(),
+			nq.UserId(),
 		).Observe(time.Since(start).Seconds())
 	}
 
@@ -237,7 +239,8 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	switch network.cfg.Architecture {
 	case common.ArchitectureEvm:
-		if handled, resp, err := evm.HandleNetworkPreForward(ctx, network, nq); handled {
+		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
+		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
 			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
 		}
 	}

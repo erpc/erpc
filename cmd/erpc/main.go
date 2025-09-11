@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/signal"
@@ -18,9 +19,12 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 	"github.com/urfave/cli/v3"
+	"google.golang.org/grpc/grpclog"
 )
 
 func init() {
+	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, os.Stderr))
+
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
 		if !os.IsNotExist(err) {
@@ -51,7 +55,6 @@ func init() {
 
 func main() {
 	logger := log.With().Logger()
-
 	// Create a context that is cancelled on SIGINT/SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -81,9 +84,48 @@ func main() {
 	validateCmd := &cli.Command{
 		Name:  "validate",
 		Usage: "Validate the eRPC configuration",
-		Action: baseCliAction(logger, func(ctx context.Context, cfg *common.Config) error {
-			return erpc.AnalyseConfig(cfg, logger)
-		}),
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "format",
+				Usage: "Output format: json|md",
+				Value: "json",
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			// Suppress all logs
+			zerolog.SetGlobalLevel(zerolog.Disabled)
+
+			cfg, err := getConfig(logger, cmd)
+			if err != nil {
+				// Config load errors should be included as Errors in output, not printed
+				report := &erpc.ValidationReport{Errors: []string{fmt.Sprintf("config load error: %v", err)}}
+				format := cmd.String("format")
+				if format == "md" {
+					out := erpc.RenderValidationReportMarkdown(report)
+					fmt.Println(out)
+				} else {
+					out, _ := erpc.RenderValidationReportJSON(report, true)
+					fmt.Println(out)
+				}
+				util.OsExit(1)
+				return nil
+			}
+
+			report := erpc.GenerateValidationReport(ctx, cfg)
+			format := cmd.String("format")
+			if format == "md" {
+				out := erpc.RenderValidationReportMarkdown(report)
+				fmt.Println(out)
+			} else {
+				out, _ := erpc.RenderValidationReportJSON(report, true)
+				fmt.Println(out)
+			}
+
+			if len(report.Errors) > 0 {
+				util.OsExit(1)
+			}
+			return nil
+		},
 	}
 
 	// Define the start command

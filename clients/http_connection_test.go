@@ -103,6 +103,22 @@ func (cts *ConnectionTrackingServer) ResetStats() {
 	cts.mu.Unlock()
 }
 
+type phonyUpstream struct {
+	common.Upstream
+}
+
+var _ common.Upstream = (*phonyUpstream)(nil)
+
+func (u *phonyUpstream) Id() string {
+	return "phony-upstream"
+}
+
+type noopErrorExtractor struct{}
+
+func (e *noopErrorExtractor) Extract(resp *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
+	return nil
+}
+
 // TestHTTPConnectionReuseUnderLoad tests connection behavior under high load with latency
 func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 	// Test parameters simulating the user's scenario
@@ -148,6 +164,10 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			projectId:       "test-project",
 			httpClient:      oldHttpClient,
 			isLogLevelTrace: false,
+			upstream:        &phonyUpstream{},
+			gzipPool:        util.NewGzipReaderPool(),
+			gzipWriterPool:  util.NewGzipWriterPool(),
+			errorExtractor:  &noopErrorExtractor{},
 		}
 
 		// Send requests concurrently to simulate load
@@ -163,9 +183,13 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 				for j := 0; j < requestsPerWorker; j++ {
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%d}`, workerID*requestsPerWorker+j)))
 
-					_, err := client.SendRequest(ctx, req)
+					resp, err := client.SendRequest(ctx, req)
 					if err != nil {
 						t.Logf("Request failed: %v", err)
+					} else if resp != nil {
+						// Consume the response to enable connection reuse
+						_, _ = resp.JsonRpcResponse()
+						resp.Release()
 					}
 
 					// Small delay to simulate realistic request pacing
@@ -237,6 +261,10 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			projectId:       "test-project",
 			httpClient:      fixedHttpClient,
 			isLogLevelTrace: false,
+			upstream:        &phonyUpstream{},
+			gzipPool:        util.NewGzipReaderPool(),
+			gzipWriterPool:  util.NewGzipWriterPool(),
+			errorExtractor:  &noopErrorExtractor{},
 		}
 
 		// Send the same load pattern as before
@@ -252,9 +280,13 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 				for j := 0; j < requestsPerWorker; j++ {
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%d}`, workerID*requestsPerWorker+j)))
 
-					_, err := client.SendRequest(ctx, req)
+					resp, err := client.SendRequest(ctx, req)
 					if err != nil {
 						t.Logf("Request failed: %v", err)
+					} else if resp != nil {
+						// Consume the response to enable connection reuse
+						_, _ = resp.JsonRpcResponse()
+						resp.Release()
 					}
 
 					// Small delay to simulate realistic request pacing
@@ -319,6 +351,10 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 			projectId:       "test-project",
 			httpClient:      httpClient,
 			isLogLevelTrace: false,
+			upstream:        &phonyUpstream{},
+			gzipPool:        util.NewGzipReaderPool(),
+			gzipWriterPool:  util.NewGzipWriterPool(),
+			errorExtractor:  &noopErrorExtractor{},
 		}
 
 		// Send the same load pattern
@@ -334,9 +370,13 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 				for j := 0; j < requestsPerWorker; j++ {
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":%d}`, workerID*requestsPerWorker+j)))
 
-					_, err := client.SendRequest(ctx, req)
+					resp, err := client.SendRequest(ctx, req)
 					if err != nil {
 						t.Logf("Request failed: %v", err)
+					} else if resp != nil {
+						// Consume the response to enable connection reuse
+						_, _ = resp.JsonRpcResponse()
+						resp.Release()
 					}
 
 					// Small delay to simulate realistic request pacing
@@ -388,7 +428,8 @@ func TestConnectionLimitsWithRealWorldScenario(t *testing.T) {
 	t.Run("Simulate_User_Reported_Issue", func(t *testing.T) {
 		// Create client with current problematic configuration
 		ctx := context.Background()
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", nil, parsedURL, nil, nil)
+		ups := common.NewFakeUpstream("rpc1")
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "test-project", ups, parsedURL, nil, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		// Simulate 100 RPS for 5 seconds (500 requests total)

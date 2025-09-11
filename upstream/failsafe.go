@@ -338,19 +338,13 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		return true
 	})
 
-	// We will only cancel other hedged requests if we have non-error response, otherwise we'll wait for other in-flight requests to complete.
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
-		if err != nil || result == nil || result.IsObjectNull() {
+		// Don't cancel on ErrUpstreamsExhausted
+		if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
 			return false
 		}
-		jrr, err := result.JsonRpcResponse()
-		if jrr == nil || err != nil {
-			return false
-		}
-		if jrr.Error != nil {
-			return false
-		}
-		return true
+
+		return result != nil || err != nil
 	})
 
 	return builder.Build(), nil
@@ -480,7 +474,22 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 					attribute.Bool("directive.retry_empty", true),
 					attribute.Bool("response.is_empty", isEmpty),
 				)
+				// Respect empty-result max attempts
 				if isEmpty {
+					if cfg.EmptyResultMaxAttempts > 0 {
+						span.SetAttributes(
+							attribute.Int("empty_result.max_attempts", cfg.EmptyResultMaxAttempts),
+							attribute.Int("execution.attempts", exec.Attempts()),
+						)
+						if exec.Attempts() >= cfg.EmptyResultMaxAttempts {
+							span.SetAttributes(
+								attribute.Bool("retry", false),
+								attribute.String("reason", "empty_result_max_attempts_reached"),
+							)
+							return false
+						}
+					}
+
 					method, _ := req.Method()
 					span.SetAttributes(
 						attribute.String("method", method),
@@ -605,7 +614,7 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 		return nil, nil
 	}
 
-	builder := consensus.NewConsensusPolicyBuilder[*common.NormalizedResponse]()
+	builder := consensus.NewConsensusPolicyBuilder()
 	builder = builder.WithMaxParticipants(cfg.MaxParticipants)
 	builder = builder.WithAgreementThreshold(cfg.AgreementThreshold)
 	builder = builder.WithDisputeBehavior(cfg.DisputeBehavior)
@@ -616,6 +625,14 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	// Set ignore fields if configured
 	if cfg.IgnoreFields != nil {
 		builder = builder.WithIgnoreFields(cfg.IgnoreFields)
+	}
+
+	// Set preference flags (defaults are handled in config.SetDefaults())
+	if cfg.PreferNonEmpty != nil {
+		builder = builder.WithPreferNonEmpty(*cfg.PreferNonEmpty)
+	}
+	if cfg.PreferLargerResponses != nil {
+		builder = builder.WithPreferLargerResponses(*cfg.PreferLargerResponses)
 	}
 
 	// Parse dispute log level if specified

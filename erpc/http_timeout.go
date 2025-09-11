@@ -1,7 +1,6 @@
 package erpc
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,8 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"bytes"
+
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
 
@@ -37,9 +39,10 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 	done := make(chan struct{})
 	tw := &timeoutWriter{
-		w:   w,
-		h:   make(http.Header),
-		req: r,
+		w:    w,
+		h:    make(http.Header),
+		req:  r,
+		wbuf: util.BorrowBuf(),
 	}
 	panicChan := make(chan any, 1)
 	go func() {
@@ -75,8 +78,14 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(tw.code)
 		_, err := w.Write(tw.wbuf.Bytes())
+		util.ReturnBuf(tw.wbuf)
+		tw.wbuf = nil
 		if err != nil {
-			log.Warn().Err(err).Msg("failed to write response")
+			if common.IsClientDisconnect(err) {
+				log.Debug().Err(err).Msg("client disconnected while writing response")
+			} else {
+				log.Warn().Err(err).Msg("failed to write response")
+			}
 		}
 	case <-ctx.Done():
 		tw.mu.Lock()
@@ -94,6 +103,9 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Error().Err(err).Msg("failed to write error response")
 			}
 			tw.err = ErrHandlerTimeout
+			// Drop any buffered response data to avoid retaining large allocations
+			util.ReturnBuf(tw.wbuf)
+			tw.wbuf = nil
 		default:
 			w.WriteHeader(http.StatusServiceUnavailable)
 			tw.err = err
@@ -104,7 +116,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type timeoutWriter struct {
 	w    http.ResponseWriter
 	h    http.Header
-	wbuf bytes.Buffer
+	wbuf *bytes.Buffer
 	req  *http.Request
 
 	mu          sync.Mutex

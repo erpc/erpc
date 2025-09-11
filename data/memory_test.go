@@ -32,7 +32,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 
 		// Verify item exists immediately
-		val, err := connector.Get(ctx, "", "pk1", "rk1")
+		val, err := connector.Get(ctx, "", "pk1", "rk1", nil)
 		require.NoError(t, err)
 		require.Equal(t, []byte("value1"), val)
 
@@ -40,7 +40,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 
 		// Verify item is gone
-		_, err = connector.Get(ctx, "", "pk1", "rk1")
+		_, err = connector.Get(ctx, "", "pk1", "rk1", nil)
 		require.Error(t, err)
 		require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
 	})
@@ -54,7 +54,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Verify item still exists
-		val, err := connector.Get(ctx, "", "pk3", "rk1")
+		val, err := connector.Get(ctx, "", "pk3", "rk1", nil)
 		require.NoError(t, err)
 		require.Equal(t, []byte("value1"), val)
 	})
@@ -103,12 +103,12 @@ func TestMemoryConnector_Metrics(t *testing.T) {
 		// Wait for Ristretto's eventual consistency
 		connector.cache.Wait()
 
-		val, err := connector.Get(ctx, "", "pk1", "rk1")
+		val, err := connector.Get(ctx, "", "pk1", "rk1", nil)
 		require.NoError(t, err)
 		require.Equal(t, []byte("value1"), val)
 
 		// Try to get a non-existent key to generate a miss
-		_, err = connector.Get(ctx, "", "pk1", "nonexistent")
+		_, err = connector.Get(ctx, "", "pk1", "nonexistent", nil)
 		require.Error(t, err)
 
 		// Force metrics collection
@@ -159,7 +159,7 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	defer connector.Close()
 
 	// Define test data for two different chains
-	chainA := "evm:1"   // Ethereum mainnet
+	chainA := "evm:123" // Ethereum mainnet
 	chainB := "evm:137" // Polygon
 	method := "eth_blockNumber"
 	blockNumberA := []byte("0x1234567")
@@ -183,19 +183,19 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	connector.cache.Wait()
 
 	// Verify chain A can read its own data
-	valueA, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyA, rangeKey)
+	valueA, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyA, rangeKey, nil)
 	require.NoError(t, err, "failed to get block number for chain A")
 	require.Equal(t, blockNumberA, valueA, "chain A should get its own block number")
 
 	// Verify chain B can read its own data
-	valueB, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyB, rangeKey)
+	valueB, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyB, rangeKey, nil)
 	require.NoError(t, err, "failed to get block number for chain B")
 	require.Equal(t, blockNumberB, valueB, "chain B should get its own block number")
 
 	// Verify chain A cannot read chain B's data by trying to get a non-existent key
 	// The key format ensures isolation: each chain has its own partition key
 	wrongKey := fmt.Sprintf("%s:%s", chainA, "wrong_method")
-	_, err = connector.Get(ctx, ConnectorMainIndex, wrongKey, rangeKey)
+	_, err = connector.Get(ctx, ConnectorMainIndex, wrongKey, rangeKey, nil)
 	require.Error(t, err, "should not find data for non-existent key")
 	require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
 
@@ -208,14 +208,14 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	wildcardPartitionKeyB := fmt.Sprintf("%s:*", chainB)
 
 	// Try to get data using wildcard for chain A
-	valueWildcardA, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKeyA, rangeKey)
+	valueWildcardA, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKeyA, rangeKey, nil)
 	if err == nil {
 		// If reverse index exists, it should return chain A's data
 		require.Equal(t, blockNumberA, valueWildcardA, "wildcard lookup for chain A should return chain A's data")
 	}
 
 	// Try to get data using wildcard for chain B
-	valueWildcardB, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKeyB, rangeKey)
+	valueWildcardB, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKeyB, rangeKey, nil)
 	if err == nil {
 		// If reverse index exists, it should return chain B's data
 		require.Equal(t, blockNumberB, valueWildcardB, "wildcard lookup for chain B should return chain B's data")
@@ -236,11 +236,11 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	connector.cache.Wait()
 
 	// Verify both values exist independently
-	gotA, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyA, testRangeKey)
+	gotA, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyA, testRangeKey, nil)
 	require.NoError(t, err)
 	require.Equal(t, testValueA, gotA)
 
-	gotB, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyB, testRangeKey)
+	gotB, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyB, testRangeKey, nil)
 	require.NoError(t, err)
 	require.Equal(t, testValueB, gotB)
 }

@@ -337,7 +337,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 }
 
 // Get retrieves a value from Redis. If wildcard, retrieves the first matching key. Returns early if not ready.
-func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
+func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Get",
 		trace.WithAttributes(
 			attribute.String("index", index),
@@ -554,7 +554,7 @@ func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, va
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
-	r.logger.Info().Str("key", key).Int64("value", value).Msg("published counter int64 update to redis")
+	r.logger.Debug().Str("key", key).Int64("value", value).Msg("published counter int64 update to redis")
 	return err
 }
 

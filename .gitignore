@@ -2,8 +2,11 @@
 vendor/
 *.log
 *.out
+*.pb
+*.txt
 *.test
 *.prof
+*.pb.gz
 *.pprof
 *.cover
 coverage.txt
@@ -17,3 +20,4 @@ node_modules
 .next
 .env
 bin/**
+temp/**

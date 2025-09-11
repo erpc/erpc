@@ -89,3 +89,61 @@ func (b *CacheEmptyBehavior) UnmarshalYAML(unmarshal func(interface{}) error) er
 
 	return fmt.Errorf("invalid cache empty behavior: %s", s)
 }
+
+// CachePolicyAppliesTo controls whether a cache policy applies to get, set, or both operations.
+type CachePolicyAppliesTo string
+
+const (
+	CachePolicyAppliesToBoth CachePolicyAppliesTo = "both"
+	CachePolicyAppliesToGet  CachePolicyAppliesTo = "get"
+	CachePolicyAppliesToSet  CachePolicyAppliesTo = "set"
+)
+
+func (a CachePolicyAppliesTo) String() string {
+	if a == "" {
+		return string(CachePolicyAppliesToBoth)
+	}
+	return string(a)
+}
+
+func (a CachePolicyAppliesTo) MarshalJSON() ([]byte, error) {
+	return SonicCfg.Marshal(a.String())
+}
+
+func (a *CachePolicyAppliesTo) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := SonicCfg.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "both":
+		*a = CachePolicyAppliesToBoth
+		return nil
+	case "get":
+		*a = CachePolicyAppliesToGet
+		return nil
+	case "set":
+		*a = CachePolicyAppliesToSet
+		return nil
+	}
+	return fmt.Errorf("invalid cache policy appliesTo: %s", s)
+}
+
+func (a *CachePolicyAppliesTo) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "both":
+		*a = CachePolicyAppliesToBoth
+		return nil
+	case "get":
+		*a = CachePolicyAppliesToGet
+		return nil
+	case "set":
+		*a = CachePolicyAppliesToSet
+		return nil
+	}
+	return fmt.Errorf("invalid cache policy appliesTo: %s", s)
+}

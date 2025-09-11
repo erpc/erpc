@@ -54,7 +54,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamDuration(ups2, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups2, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
@@ -210,6 +210,8 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer cancel()
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
+		upstream.ReorderUpstreams(ntw.upstreamsRegistry)
+
 		// Create eval function that marks all upstreams as inactive
 		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
@@ -320,11 +322,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Record successful requests to improve error rate
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 12*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 12*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for next evaluation cycle plus a small buffer
 		time.Sleep(75 * time.Millisecond)
@@ -480,9 +482,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Add good metrics
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -504,13 +506,13 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Improve metrics again
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 25*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 25*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for evaluation and sampling period
 		time.Sleep(200 * time.Millisecond)
@@ -586,7 +588,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Transition: Sampling -> Active (improve metrics during sampling)
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 
 		// Wait for next evaluation after sampling
@@ -667,7 +669,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Verify upstream is cordoned for method1
 		metrics = mt.GetUpstreamMethodMetrics(ups1, "method1")
 		assert.True(t, metrics.Cordoned.Load(), "Upstream should be cordoned for method1")
-		reason, ok := metrics.CordonedReason.Load().(string)
+		reason, ok := metrics.LastCordonedReason.Load().(string)
 		assert.True(t, ok, "Cordon reason should be a string")
 		assert.Contains(t, reason, "excluded by selection policy", "Cordon reason should indicate policy exclusion")
 
@@ -677,11 +679,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Improve metrics to trigger uncordoning
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for evaluation and sampling period
 		time.Sleep(200 * time.Millisecond)
@@ -1086,7 +1088,7 @@ func TestPolicyEvaluator(t *testing.T) {
 						mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 						mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
 					} else {
-						mt.RecordUpstreamDuration(ups1, "method1", time.Duration(rand.Intn(100))*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+						mt.RecordUpstreamDuration(ups1, "method1", time.Duration(rand.Intn(100))*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 					}
 				}
 			}
@@ -1129,7 +1131,7 @@ func TestPolicyEvaluator(t *testing.T) {
 				case <-ticker.C:
 					methodName := fmt.Sprintf("method%d", methodCounter)
 					mt.RecordUpstreamRequest(ups1, methodName)
-					mt.RecordUpstreamDuration(ups1, methodName, 50*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+					mt.RecordUpstreamDuration(ups1, methodName, 50*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 					methodCounter++
 				}
 			}
@@ -1243,14 +1245,17 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		// Set error rate of 0.4 (should be active for method2, inactive for method3)
-		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamFailure(ups1, "method2", fmt.Errorf("test problem"))
-		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
-		mt.RecordUpstreamRequest(ups1, "method3")
-		mt.RecordUpstreamFailure(ups1, "method3", fmt.Errorf("test problem"))
-		mt.RecordUpstreamRequest(ups1, "method3")
-		mt.RecordUpstreamDuration(ups1, "method3", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		for i := 0; i < 10; i++ {
+			mt.RecordUpstreamRequest(ups1, "method2")
+			mt.RecordUpstreamFailure(ups1, "method2", fmt.Errorf("test problem"))
+			mt.RecordUpstreamRequest(ups1, "method2")
+			mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+			mt.RecordUpstreamRequest(ups1, "method3")
+			mt.RecordUpstreamFailure(ups1, "method3", fmt.Errorf("test problem 1"))
+			mt.RecordUpstreamFailure(ups1, "method3", fmt.Errorf("test problem 2"))
+			mt.RecordUpstreamRequest(ups1, "method3")
+			mt.RecordUpstreamDuration(ups1, "method3", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		}
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1300,15 +1305,19 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set high error rate for method1
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 1"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 2"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 3"))
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 1"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 2"))
+		mt.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test problem 3"))
 
 		// Set low error rate for method2
 		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method2", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.RecordUpstreamRequest(ups1, "method2")
-		mt.RecordUpstreamDuration(ups1, "method2", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method2", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1361,7 +1370,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set good metrics for global (*) method
 		mt.RecordUpstreamRequest(ups1, "*")
-		mt.RecordUpstreamDuration(ups1, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "*", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1404,11 +1413,11 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.SetLatestBlockNumberForNetwork("evm:123", 105) // Network head
 
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.SetLatestBlockNumber(ups1, 100)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.SetLatestBlockNumber(ups2, 102)
 
 		time.Sleep(75 * time.Millisecond)
@@ -1469,16 +1478,16 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.SetLatestBlockNumberForNetwork("evm:123", 105) // Network head
 
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.SetLatestBlockNumber(ups1, 100)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
-		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.SetLatestBlockNumber(ups2, 102)
 
 		// Set healthy metrics for fallback upstream
 		mt.RecordUpstreamRequest(ups3, "method1")
-		mt.RecordUpstreamDuration(ups3, "method1", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups3, "method1", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.SetLatestBlockNumber(ups3, 103)
 
 		time.Sleep(75 * time.Millisecond)
@@ -1547,7 +1556,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.SetLatestBlockNumberForNetwork("evm:123", 102) // Network head
 
 		mt.RecordUpstreamRequest(ups1, "method1")
-		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.SetLatestBlockNumber(ups1, 100)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
@@ -1556,7 +1565,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set good metrics for fallback
 		mt.RecordUpstreamRequest(ups3, "method1")
-		mt.RecordUpstreamDuration(ups3, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+		mt.RecordUpstreamDuration(ups3, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		mt.SetLatestBlockNumber(ups3, 101)
 
 		time.Sleep(75 * time.Millisecond)
@@ -1572,7 +1581,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Test Case 2: Both defaults become healthy (should disable fallbacks)
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest(ups2, "method1")
-			mt.RecordUpstreamDuration(ups2, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+			mt.RecordUpstreamDuration(ups2, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 		mt.SetLatestBlockNumber(ups2, 101)
 
@@ -1684,7 +1693,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// rpc1: 20% error rate (below threshold)
 		for i := 0; i < 8; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
-			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+			mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 		for i := 0; i < 2; i++ {
 			mt.RecordUpstreamRequest(ups1, "method1")
@@ -1694,7 +1703,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// rpc2: 30% error rate (above threshold)
 		for i := 0; i < 7; i++ {
 			mt.RecordUpstreamRequest(ups2, "method1")
-			mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+			mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 		for i := 0; i < 3; i++ {
 			mt.RecordUpstreamRequest(ups2, "method1")
@@ -1717,7 +1726,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Set good metrics for fallback
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest(ups3, "method1")
-			mt.RecordUpstreamDuration(ups3, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
+			mt.RecordUpstreamDuration(ups3, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
 
 		time.Sleep(75 * time.Millisecond)
@@ -1801,11 +1810,11 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 	)
-	err = upr.Bootstrap(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
 	err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	if err != nil {
 		t.Fatal(err)
@@ -1924,7 +1933,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		metrics2 = mt.GetUpstreamMethodMetrics(ups2, "*")
 		assert.False(t, metrics1.Cordoned.Load(), "ups1 should not be cordoned")
 		assert.True(t, metrics2.Cordoned.Load(), "ups2 should be cordoned")
-		assert.Equal(t, "excluded by selection policy", metrics2.CordonedReason.Load(), "ups2 should be cordoned due to selection policy")
+		assert.Equal(t, "excluded by selection policy", metrics2.LastCordonedReason.Load(), "ups2 should be cordoned due to selection policy")
 
 		// Phase 3: ups2 catches up (block head lag improves)
 		mt.SetLatestBlockNumber(ups2, 125) // ups2 catches up and becomes leader

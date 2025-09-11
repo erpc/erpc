@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -63,24 +62,10 @@ func NewProjectsRegistry(
 	return reg, nil
 }
 
-func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) error {
-	wg := sync.WaitGroup{}
-	wg.Add(len(r.preparedProjects))
-	var errs []error
+func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) {
 	for _, prj := range r.preparedProjects {
-		go func(prj *PreparedProject) {
-			defer wg.Done()
-			err := prj.Bootstrap(appCtx)
-			if err != nil {
-				errs = append(errs, err)
-			}
-		}(prj)
+		prj.Bootstrap(appCtx)
 	}
-	wg.Wait()
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
 }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
@@ -112,6 +97,16 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	if err != nil {
 		return nil, err
 	}
+	pp := &PreparedProject{
+		Config:               prjCfg,
+		Logger:               &lg,
+		rateLimitersRegistry: r.rateLimitersRegistry,
+		cfgMu:                sync.RWMutex{},
+	}
+	scoreRefreshInterval := prjCfg.ScoreRefreshInterval.Duration()
+	if scoreRefreshInterval == 0 {
+		scoreRefreshInterval = 10 * time.Second
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		r.appCtx,
 		&lg,
@@ -123,25 +118,30 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		providersRegistry,
 		r.proxyPoolRegistry,
 		metricsTracker,
-		1*time.Second,
+		scoreRefreshInterval,
+		func(ups *upstream.Upstream) error {
+			ntwId := ups.NetworkId()
+			if ntwId == "" {
+				return fmt.Errorf("upstream %s has no network id set yet", ups.Id())
+			}
+			ntw, err := pp.networksRegistry.GetNetwork(r.appCtx, ntwId)
+			if err != nil {
+				return err
+			}
+			ups.SetNetworkConfig(ntw.cfg)
+			return nil
+		},
 	)
 
-	var consumerAuthRegistry *auth.AuthRegistry
 	if prjCfg.Auth != nil {
-		consumerAuthRegistry, err = auth.NewAuthRegistry(r.appCtx, &lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
+		consumerAuthRegistry, err := auth.NewAuthRegistry(r.appCtx, &lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
 		if err != nil {
 			return nil, err
 		}
+		pp.consumerAuthRegistry = consumerAuthRegistry
 	}
 
-	pp := &PreparedProject{
-		Config:               prjCfg,
-		Logger:               &lg,
-		upstreamsRegistry:    upstreamsRegistry,
-		consumerAuthRegistry: consumerAuthRegistry,
-		rateLimitersRegistry: r.rateLimitersRegistry,
-		cfgMu:                sync.RWMutex{},
-	}
+	pp.upstreamsRegistry = upstreamsRegistry
 	pp.networksRegistry = NewNetworksRegistry(
 		pp,
 		r.appCtx,
@@ -152,22 +152,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		&lg,
 	)
 	r.preparedProjects[prjCfg.Id] = pp
-
-	// TODO can we refactor the architecture so this relation is more straightforward?
-	// The main challenge is for some upstreams we are detecting network (chainId) lazily therefore we can't set it before initializing the upstream.
-	// Should we eliminate chainid lazy detection (that would be a bummer and a breaking change :D)?
-	upstreamsRegistry.OnUpstreamRegistered(func(ups *upstream.Upstream) error {
-		ntwId := ups.NetworkId()
-		if ntwId == "" {
-			return fmt.Errorf("upstream %s has no network id set yet", ups.Id())
-		}
-		ntw, err := pp.networksRegistry.GetNetwork(ntwId)
-		if err != nil {
-			return err
-		}
-		ups.SetNetworkConfig(ntw.cfg)
-		return nil
-	})
 
 	r.logger.Info().Msgf("registered project %s", prjCfg.Id)
 

@@ -117,6 +117,8 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 							EnforceHighestBlock:      util.BoolPtr(true),
 							EnforceGetLogsBlockRange: util.BoolPtr(true),
 						},
+						GetLogsMaxAllowedRange: 30_000,
+						GetLogsSplitOnError:    util.BoolPtr(true),
 					},
 					Failsafe: []*FailsafeConfig{
 						{
@@ -170,6 +172,15 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 	}
 
 	return nil
+}
+
+var DefaultStatefulMethodNames = []string{
+	"eth_newFilter",
+	"eth_newBlockFilter",
+	"eth_newPendingTransactionFilter",
+	"eth_getFilterChanges",
+	"eth_getFilterLogs",
+	"eth_uninstallFilter",
 }
 
 // These methods return a fixed value that does not change over time
@@ -459,6 +470,15 @@ func (m *MethodsConfig) SetDefaults() error {
 			mergedMethods[name] = method
 		}
 
+		// Mark default stateful methods
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := mergedMethods[mn]; ok {
+				cm.Stateful = true
+			} else {
+				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
+
 		if m.PreserveDefaultMethods && m.Definitions != nil {
 			// Merge user definitions on top of defaults
 			for name, method := range m.Definitions {
@@ -484,14 +504,34 @@ func (m *MethodsConfig) SetDefaults() error {
 			mergedMethods[name] = method
 		}
 
+		// Mark default stateful methods
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := mergedMethods[mn]; ok {
+				cm.Stateful = true
+			} else {
+				mergedMethods[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
+
 		// Then override with user definitions
 		for name, method := range m.Definitions {
 			mergedMethods[name] = method
 		}
 
 		m.Definitions = mergedMethods
+	} else {
+		// User provided definitions and doesn't want defaults
+		// Still need to ensure stateful methods are marked correctly
+		for _, mn := range DefaultStatefulMethodNames {
+			if cm, ok := m.Definitions[mn]; ok {
+				// Method exists in user definitions, ensure it's marked as stateful
+				cm.Stateful = true
+			} else {
+				// Method not in user definitions, add it as stateful
+				m.Definitions[mn] = &CacheMethodConfig{Stateful: true}
+			}
+		}
 	}
-	// else: User provided definitions and doesn't want defaults, keep as is
 
 	return nil
 }
@@ -523,6 +563,17 @@ func (c *CompressionConfig) SetDefaults() error {
 }
 
 func (c *CachePolicyConfig) SetDefaults() error {
+	// Keep main's new field defaults
+	if c.Method == "" {
+		c.Method = "*"
+	}
+	if c.Network == "" {
+		c.Network = "*"
+	}
+	if c.AppliesTo == "" {
+		c.AppliesTo = CachePolicyAppliesToBoth
+	}
+	// And convert legacy fields to matcher-based config while preserving explicit matchers
 	c.convertLegacyMatchers()
 
 	return nil
@@ -689,7 +740,7 @@ func (m *MetricsConfig) SetDefaults() error {
 		m.Port = util.IntPtr(4001)
 	}
 	if m.ErrorLabelMode == "" {
-		m.ErrorLabelMode = ErrorLabelModeVerbose
+		m.ErrorLabelMode = ErrorLabelModeCompact
 	}
 
 	return nil
@@ -913,10 +964,18 @@ func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 		}
 	}
 	if p.MinConns == 0 {
-		p.MinConns = 4
+		if scope == connectorScopeAuth {
+			p.MinConns = 1
+		} else {
+			p.MinConns = 4
+		}
 	}
 	if p.MaxConns == 0 {
-		p.MaxConns = 32
+		if scope == connectorScopeAuth {
+			p.MaxConns = 4
+		} else {
+			p.MaxConns = 32
+		}
 	}
 	if p.InitTimeout == 0 {
 		p.InitTimeout = Duration(5 * time.Second)
@@ -1343,15 +1402,6 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
 			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
 		}
-		if u.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
-			u.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
-		}
-		if u.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
-			u.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
-		}
-		if u.Evm.GetLogsMaxAllowedTopics == 0 && defaults.Evm.GetLogsMaxAllowedTopics != 0 {
-			u.Evm.GetLogsMaxAllowedTopics = defaults.Evm.GetLogsMaxAllowedTopics
-		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -1541,45 +1591,6 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	if e.GetLogsSplitOnError == nil {
-		if defaults != nil && defaults.GetLogsSplitOnError != nil {
-			e.GetLogsSplitOnError = defaults.GetLogsSplitOnError
-		} else {
-			e.GetLogsSplitOnError = util.BoolPtr(false)
-		}
-	}
-
-	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
-	if e.GetLogsAutoSplittingRangeThreshold == 0 {
-		if e.GetLogsMaxBlockRange > 0 {
-			e.GetLogsAutoSplittingRangeThreshold = e.GetLogsMaxBlockRange
-		} else if defaults != nil && defaults.GetLogsMaxBlockRange != 0 {
-			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsMaxBlockRange
-		} else if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
-			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
-		} else {
-			e.GetLogsAutoSplittingRangeThreshold = 10_000
-		}
-	}
-
-	if e.GetLogsMaxAllowedRange == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
-			e.GetLogsMaxAllowedRange = defaults.GetLogsMaxAllowedRange
-		}
-	}
-
-	if e.GetLogsMaxAllowedAddresses == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedAddresses != 0 {
-			e.GetLogsMaxAllowedAddresses = defaults.GetLogsMaxAllowedAddresses
-		}
-	}
-
-	if e.GetLogsMaxAllowedTopics == 0 {
-		if defaults != nil && defaults.GetLogsMaxAllowedTopics != 0 {
-			e.GetLogsMaxAllowedTopics = defaults.GetLogsMaxAllowedTopics
-		}
-	}
-
 	if e.SkipWhenSyncing == nil {
 		if defaults != nil && defaults.SkipWhenSyncing != nil {
 			e.SkipWhenSyncing = defaults.SkipWhenSyncing
@@ -1660,6 +1671,21 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
 				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
+			}
+			if n.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
+				n.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
+			}
+			if n.Evm.GetLogsMaxAllowedTopics == 0 && defaults.Evm.GetLogsMaxAllowedTopics != 0 {
+				n.Evm.GetLogsMaxAllowedTopics = defaults.Evm.GetLogsMaxAllowedTopics
+			}
+			if n.Evm.GetLogsSplitOnError == nil && defaults.Evm.GetLogsSplitOnError != nil {
+				n.Evm.GetLogsSplitOnError = defaults.Evm.GetLogsSplitOnError
+			}
+			if n.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
+				n.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
+			}
+			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
+				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
@@ -1744,6 +1770,17 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		return err
 	}
 
+	// Defaults for network-level getLogs controls
+	if e.GetLogsMaxAllowedRange == 0 {
+		e.GetLogsMaxAllowedRange = 30_000
+	}
+	if e.GetLogsSplitOnError == nil {
+		e.GetLogsSplitOnError = util.BoolPtr(true)
+	}
+	if e.GetLogsSplitConcurrency == 0 {
+		e.GetLogsSplitConcurrency = 10
+	}
+
 	return nil
 }
 
@@ -1822,6 +1859,11 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 		f.CircuitBreaker = &CircuitBreakerPolicyConfig{}
 		if err := f.CircuitBreaker.SetDefaults(defaults.CircuitBreaker); err != nil {
 			return fmt.Errorf("failed to set defaults for circuit breaker: %w", err)
+		}
+	}
+	if f.Consensus != nil {
+		if err := f.Consensus.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for consensus: %w", err)
 		}
 	}
 
@@ -1922,6 +1964,13 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	// Only set EmptyResultIgnore if provided through defaults
 	if r.EmptyResultIgnore == nil && defaults != nil && defaults.EmptyResultIgnore != nil {
 		r.EmptyResultIgnore = defaults.EmptyResultIgnore
+	}
+
+	// Default EmptyResultMaxAttempts to MaxAttempts if not set
+	if r.EmptyResultMaxAttempts == 0 {
+		if defaults != nil && defaults.EmptyResultMaxAttempts != 0 {
+			r.EmptyResultMaxAttempts = defaults.EmptyResultMaxAttempts
+		}
 	}
 
 	return nil
@@ -2048,6 +2097,12 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 			},
 		}
 	}
+	if c.PreferNonEmpty == nil {
+		c.PreferNonEmpty = util.BoolPtr(true)
+	}
+	if c.PreferLargerResponses == nil {
+		c.PreferLargerResponses = util.BoolPtr(true)
+	}
 
 	return nil
 }
@@ -2100,6 +2155,7 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	ThrottledRate:   util.Float64Ptr(3.0),
 	BlockHeadLag:    util.Float64Ptr(2.0),
 	FinalizationLag: util.Float64Ptr(1.0),
+	Misbehaviors:    util.Float64Ptr(5.0),
 
 	Overall: util.Float64Ptr(1.0),
 }
@@ -2128,6 +2184,9 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	}
 	if s.FinalizationLag == nil {
 		s.FinalizationLag = DefaultScoreMultiplier.FinalizationLag
+	}
+	if s.Misbehaviors == nil {
+		s.Misbehaviors = DefaultScoreMultiplier.Misbehaviors
 	}
 	if s.Overall == nil {
 		s.Overall = DefaultScoreMultiplier.Overall

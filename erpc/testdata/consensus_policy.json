@@ -1,0 +1,69 @@
+{
+  "hash": "7a5f620ef5606beef4b62a0c62366fa0b5c1e153964f19d9caef4101ebc784dd",
+  "items": [
+    {
+      "nl": "dispute_behavior_is_acceptmostcommon_andpreferlargerresponses_is_enabled_and_one_group_returns_larger_response_but_not_meet_threshold_and_another_group_smaller_response_but_meets_threshold_it_returns_the_larger_response",
+      "dsl": "MXP:5 ATSH:3 DBAMC PLR U1:RS200A U2:RS200A U3:RS100A U4:RS100A U5:RS100A =\u003e RS200A"
+    },
+    {
+      "nl": "above_threshold_both_error_and_non_empty_groups_error_has_higher_count_acceptmostcommon_+_prefernonempty_still_selects_the_non_empty",
+      "dsl": "MXP:5 ATSH:2 DBAMC PNE U1:RSJR3 U2:RSJR3 U3:RSJR3 U4:RS100A U5:RS100A =\u003e RS100A"
+    },
+    {
+      "nl": "above_threshold_empty_has_higher_count_and_no_non_empty_preference_select_empty",
+      "dsl": "MXP:5 ATSH:2 DBAMC U1:RSEM U2:RSEM U3:RSEM U4:RS100A U5:RS100A =\u003e RSEM"
+    },
+    {
+      "nl": "above_threshold_error_vs_non_empty_counts_tie_with_prefernonempty_choose_the_non_empty",
+      "dsl": "MXP:4 ATSH:2 DBAMC PNE U1:RSJR3 U2:RSJR3 U3:RS100A U4:RS100A =\u003e RS100A"
+    },
+    {
+      "nl": "2_3_agree_with_preferlargerresponses_disabled_short_circuit_return_the_agreed_non_empty",
+      "dsl": "MXP:3 ATSH:2 U1:RS100A U2:RS100A U3:!RS200A =\u003e RS100A"
+    },
+    {
+      "nl": "accept_most_common_by_count_regardless_of_size:_two_smaller_non_empty_agree_vs_one_larger_different_non_empty_expect_smaller_value",
+      "dsl": "MXP:3 ATSH:2 DBAMC U1:RS50A U2:RS50A U3:RS200B =\u003e RS50A"
+    },
+    {
+      "nl": "accept_most_common_on_dispute_when_two_match_and_one_differs_expect_the_matching_value",
+      "dsl": "MXP:3 ATSH:2 DBAMC U1:RS100A U2:RS100A U3:RS100B =\u003e RS100A"
+    },
+    {
+      "nl": "all_non_empty_results_different_under_returnerror_expect_dispute",
+      "dsl": "MXP:3 ATSH:2 DBRE U1:RS100A U2:RS100B U3:RS100C =\u003e DISPUTE"
+    },
+    {
+      "nl": "all_participants_return_execution_reverted_code_3_and_it_returns_same_execution_reverted_error",
+      "dsl": "MXP:3 ATSH:2 DBAMC U1:RSJR3 U2:RSJR3 U3:RSJR3 =\u003e RSJR3"
+    },
+    {
+      "nl": "all_participants_return_method_not_found_and_it_returns_method_not_found_error",
+      "dsl": "MXP:3 ATSH:2 DBAMC U1:RSJR-32601 U2:RSJR-32601 U3:RSJR-32601 =\u003e RSJR-32601"
+    },
+    {
+      "nl": "all_participants_return_missing_data_32014_and_it_returns_missing_data_error",
+      "dsl": "MXP:3 ATSH:2 U1:RSJR-32014 U2:RSJR-32014 U3:RSJR-32014 =\u003e RSJR-32014"
+    },
+    {
+      "nl": "all_participants_return_null_it_returns_null",
+      "dsl": "MXP:3 ATSH:2 U1:RSEM U2:RSEM U3:RSEM =\u003e RSEM"
+    },
+    {
+      "nl": "all_participants_return_the_same_invalid_params_error_and_it_returns_invalid_params_error",
+      "dsl": "MXP:3 ATSH:2 U1:RSJR-32602 U2:RSJR-32602 U3:RSJR-32602 =\u003e RSJR-32602"
+    },
+    {
+      "nl": "all_participants_return_the_same_unknown_error_and_it_returns_unknown_error",
+      "dsl": "MXP:3 ATSH:2 U1:RSJR-32000 U2:RSJR-32000 U3:RSJR-32000 =\u003e RSJR-32000"
+    },
+    {
+      "nl": "at_threshold_two_identical_errors_vs_one_success_expect_the_successful_response",
+      "dsl": "MXP:3 ATSH:3 DBAMC U1:RS100A U2:RSJR-32000 U3:RSJR-32000 =\u003e RS100A"
+    },
+    {
+      "nl": "below_threshold_acceptmostcommon_with_tie_between_different_non_empty_results_expect_dispute",
+      "dsl": "MXP:3 ATSH:3 LPAMC U1:RS100A U2:RS100B U3:RSNE =\u003e DISPUTE"
+    }
+  ]
+}

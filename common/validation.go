@@ -335,9 +335,6 @@ func (s *SharedStateConfig) Validate() error {
 }
 
 func (c *CacheConfig) Validate() error {
-	if len(c.Connectors) == 0 {
-		return fmt.Errorf("cache.*.connectors is required, add at least one connector")
-	}
 	existingIds := make(map[string]bool)
 	for _, connector := range c.Connectors {
 		if err := connector.Validate(); err != nil {
@@ -347,9 +344,6 @@ func (c *CacheConfig) Validate() error {
 			return fmt.Errorf("cache.*.connectors.*.id must be unique, '%s' is duplicated", connector.Id)
 		}
 		existingIds[connector.Id] = true
-	}
-	if len(c.Policies) == 0 {
-		return fmt.Errorf("cache.*.policies is required, add at least one policy")
 	}
 	for _, policy := range c.Policies {
 		if err := policy.Validate(c); err != nil {
@@ -436,6 +430,14 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 		}
 	}
 
+	// Validate appliesTo
+	switch p.AppliesTo {
+	case "", CachePolicyAppliesToBoth, CachePolicyAppliesToGet, CachePolicyAppliesToSet:
+		// ok (empty will be defaulted to both by SetDefaults)
+	default:
+		return fmt.Errorf("cache.*.policies.*.appliesTo must be one of: get, set, both")
+	}
+
 	return nil
 }
 
@@ -446,7 +448,7 @@ func (c *ConnectorConfig) Validate() error {
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
 	}
-	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB}
+	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB, DriverGrpc}
 	if !slices.Contains(drivers, c.Driver) {
 		return fmt.Errorf("database.*.connector.driver '%s' is invalid must be one of: %v", c.Driver, drivers)
 	}
@@ -612,6 +614,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
+		existingAliases := make(map[string]bool)
 		for _, network := range p.Networks {
 			if err := network.Validate(c); err != nil {
 				return err
@@ -621,6 +624,12 @@ func (p *ProjectConfig) Validate(c *Config) error {
 				return fmt.Errorf("project.*.networks.*.id must be unique, '%s' is duplicated", ntwId)
 			}
 			existingIds[ntwId] = true
+			if network.Alias != "" {
+				if existingAliases[network.Alias] {
+					return fmt.Errorf("project.*.networks.*.alias must be unique, '%s' is duplicated", network.Alias)
+				}
+				existingAliases[network.Alias] = true
+			}
 		}
 	}
 	if p.Auth != nil {
@@ -1107,6 +1116,9 @@ func (e *EvmNetworkConfig) Validate() error {
 	}
 	if e.FallbackStatePollerDebounce == 0 {
 		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")
+	}
+	if e.GetLogsMaxAllowedRange == 0 {
+		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
 	return nil
 }

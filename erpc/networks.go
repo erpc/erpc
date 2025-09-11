@@ -24,15 +24,17 @@ import (
 )
 
 type FailsafeExecutor struct {
-	config     *common.FailsafeConfig     // Store the original config for matching
-	method     string                     // Legacy field for backward compatibility
-	finalities []common.DataFinalityState // Legacy field for backward compatibility
-	executor   failsafe.Executor[*common.NormalizedResponse]
-	timeout    *time.Duration
+	config                 *common.FailsafeConfig
+	method                 string
+	finalities             []common.DataFinalityState
+	executor               failsafe.Executor[*common.NormalizedResponse]
+	timeout                *time.Duration
+	consensusPolicyEnabled bool
 }
 
 type Network struct {
 	networkId                string
+	networkLabel             string
 	projectId                string
 	logger                   *zerolog.Logger
 	bootstrapOnce            sync.Once
@@ -65,6 +67,16 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 }
 
 func (n *Network) Id() string {
+	return n.networkId
+}
+
+func (n *Network) Label() string {
+	if n == nil {
+		return ""
+	}
+	if n.networkLabel != "" {
+		return n.networkLabel
+	}
 	return n.networkId
 }
 
@@ -328,8 +340,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
+	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
+	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
+		if err != nil {
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
+		if mlx != nil {
+			mlx.Close(ctx, resp, nil)
+		}
+		return resp, nil
+	}
+
 	// 3) Check if we should handle this method on this network
-	if err := n.shouldHandleMethod(method, upsList); err != nil {
+	if err := n.shouldHandleMethod(req, method, upsList); err != nil {
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)
 		}
@@ -415,12 +441,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			)
 			defer execSpan.End()
 
-			overridenReq := execSpanCtx.Value(common.RequestContextKey)
 			// Use a local variable to avoid overwriting the captured req variable
 			// which can cause issues when multiple executions run concurrently (e.g., consensus)
+			// Be defensive about the type assertion to avoid panics if the context value was not set properly.
 			var effectiveReq *common.NormalizedRequest
-			if overridenReq != nil {
-				effectiveReq = overridenReq.(*common.NormalizedRequest)
+			if or := execSpanCtx.Value(common.RequestContextKey); or != nil {
+				if r, ok := or.(*common.NormalizedRequest); ok && r != nil {
+					effectiveReq = r
+				} else {
+					effectiveReq = req
+				}
 			} else {
 				effectiveReq = req
 			}
@@ -495,7 +525,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				attempts := exec.Attempts()
 				if hedges > 0 {
 					finality := effectiveReq.Finality(loopCtx)
-					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
+					telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
+						n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
+					).Inc()
 				}
 
 				var r *common.NormalizedResponse
@@ -512,7 +544,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					finality := effectiveReq.Finality(loopCtx)
-					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(), effectiveReq.AgentVersion()).Inc()
+					telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardsTotal,
+						n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
+					).Inc()
+					// Release any response associated with the discarded hedge to avoid retaining buffers
+					if r != nil {
+						r.Release()
+						r = nil
+					}
 					err := common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 					common.SetTraceSpanError(loopSpan, err)
 					return nil, err
@@ -535,13 +574,25 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						common.SetTraceSpanError(loopSpan, err)
 					}
 					if r != nil {
-						// Store execution metadata inside the response for later use.
-						r.SetAttempts(exec.Attempts())
-						r.SetRetries(exec.Retries())
-						r.SetHedges(exec.Hedges())
+						if err == nil {
+							// Store execution metadata only for winning attempts
+							r.SetAttempts(exec.Attempts())
+							r.SetRetries(exec.Retries())
+							r.SetHedges(exec.Hedges())
+						} else {
+							// On error, release non-winning responses
+							r.Release()
+							r = nil
+						}
 					}
 					loopSpan.End()
 					return r, err
+				}
+
+				// For skipped requests, ensure any response is not retained before continuing
+				if r != nil {
+					r.Release()
+					r = nil
 				}
 
 				loopSpan.End()
@@ -568,10 +619,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if execErr != nil {
 		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
-		// Don't override consensus errors with last valid response
-		if common.HasErrorCode(translatedErr, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants) {
+		// Don't override consensus results with last valid response from individual upstreams
+		// For example if 1 upstream gives empty response another 3 give "reverted" error,
+		// we should still return reverted error, even though there was an empty response before.
+		if failsafeExecutor.consensusPolicyEnabled {
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
+			}
+			// Ensure any lastValidResponse kept on the request is released and cleared
+			if lvr := req.LastValidResponse(); lvr != nil {
+				lvr.Release()
+				req.ClearLastValidResponse()
 			}
 			return nil, translatedErr
 		}
@@ -601,6 +659,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if resp != nil {
 		if n.cacheDal != nil {
 			resp.RLockWithTrace(ctx)
+			// Hold a reference so Release waits for cache-set to complete
+			resp.AddRef()
 
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
 				defer (func() {
@@ -617,6 +677,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				})()
 				defer resp.RUnlock()
+				defer resp.DoneRef()
 
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
 				defer timeoutCtxCancel()
@@ -651,13 +712,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			telemetry.MetricUpstreamWrongEmptyResponseTotal.WithLabelValues(
 				n.projectId,
 				upstream.VendorName(),
-				n.networkId,
+				n.Label(),
 				upstream.Id(),
 				method,
 				finality.String(),
 				req.UserId(),
 				req.AgentName(),
-				req.AgentVersion(),
 			).Inc()
 			if upstream != nil {
 				if mt := upstream.MetricsTracker(); mt != nil {
@@ -676,6 +736,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if mlx != nil {
 		mlx.Close(ctx, resp, nil)
+	}
+
+	// After consensus success, ensure we don't keep a loser in req.LastValidResponse
+	if failsafeExecutor.consensusPolicyEnabled {
+		if lvr := req.LastValidResponse(); lvr != nil && lvr != resp {
+			lvr.Release()
+			req.ClearLastValidResponse()
+		}
 	}
 
 	return resp, nil
@@ -857,7 +925,9 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		inf := vinf.(*Multiplexer)
 		method, _ := req.Method()
 		finality := req.Finality(ctx)
-		telemetry.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method, finality.String(), req.UserId(), req.AgentName(), req.AgentVersion()).Inc()
+		telemetry.CounterHandle(telemetry.MetricNetworkMultiplexedRequests,
+			n.projectId, n.Label(), method, finality.String(), req.UserId(), req.AgentName(),
+		).Inc()
 
 		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
 
@@ -884,25 +954,29 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	defer span.End()
 
 	// Check if result is already available
-	mlx.mu.RLock()
+	mlx.mu.Lock()
 	if mlx.resp != nil || mlx.err != nil {
-		mlx.mu.RUnlock()
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		// Clone the stored response while holding the lock to avoid races with cleanup
+		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		mlx.mu.Unlock()
+		return out, mlx.err
 	}
-	mlx.mu.RUnlock()
+	mlx.mu.Unlock()
 
 	// Wait for result
 	select {
 	case <-mlx.done:
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		// Need to lock when accessing mlx.resp to avoid race with cleanupMultiplexer
+		mlx.mu.Lock()
+		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+		mlx.mu.Unlock()
+		return out, mlx.err
 	case <-ctx.Done():
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
@@ -916,18 +990,41 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	mlx.mu.Lock()
 	defer mlx.mu.Unlock()
+
+	if mlx.resp != nil {
+		mlx.resp.Release()
+		mlx.resp = nil
+	}
+
 	n.inFlightRequests.Delete(mlx.hash)
 }
 
-func (n *Network) shouldHandleMethod(method string, upsList []common.Upstream) error {
-	// TODO Move the logic to evm package?
-	if method == "eth_newFilter" ||
-		method == "eth_newBlockFilter" ||
-		method == "eth_newPendingTransactionFilter" {
-		if len(upsList) > 1 {
-			return common.NewErrNotImplemented("eth_newFilter, eth_newBlockFilter and eth_newPendingTransactionFilter are not supported yet when there are more than 1 upstream defined")
+func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method string, upsList []common.Upstream) error {
+	// Check stateful methods policy
+	// Methods.Definitions is guaranteed to be populated by SetDefaults() with all necessary stateful methods
+	isStateful := false
+	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
+		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil {
+			isStateful = mc.Stateful
 		}
 	}
+	if isStateful {
+		// Determine targeted upstream count
+		targeted := 0
+		if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
+			for _, u := range upsList {
+				if match, _ := common.WildcardMatch(dr.UseUpstream, u.Id()); match {
+					targeted++
+				}
+			}
+		} else {
+			targeted = len(upsList)
+		}
+		if targeted > 1 {
+			return common.NewErrNotImplemented("stateful method requires a single targeted upstream; either configure only 1 upstream or set Use-Upstream to a single upstream id")
+		}
+	}
+
 	if method == "eth_accounts" || method == "eth_sign" {
 		return common.NewErrNotImplemented("eth_accounts and eth_sign are not supported")
 	}
@@ -997,13 +1094,12 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 		if resp != nil {
 			// This ensures that even if upstream gives us wrong/missing ID we'll
 			// use correct one from original incoming request.
-			if jrr, err := resp.JsonRpcResponse(ctx); err == nil {
+			if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
 				jrq, err := req.JsonRpcRequest(ctx)
 				if err != nil {
 					return err
 				}
-				err = jrr.SetID(jrq.ID)
-				if err != nil {
+				if err := jrr.SetID(jrq.ID); err != nil {
 					return err
 				}
 			}
@@ -1043,14 +1139,13 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 			permit := rule.Limiter.TryAcquirePermit()
 			if !permit {
 				finality := req.Finality(context.Background())
-				telemetry.MetricNetworkRequestSelfRateLimited.WithLabelValues(
+				telemetry.CounterHandle(telemetry.MetricNetworkRequestSelfRateLimited,
 					n.projectId,
-					n.networkId,
+					n.Label(),
 					method,
 					finality.String(),
 					req.UserId(),
 					req.AgentName(),
-					req.AgentVersion(),
 				).Inc()
 				return common.NewErrNetworkRateLimitRuleExceeded(
 					n.projectId,

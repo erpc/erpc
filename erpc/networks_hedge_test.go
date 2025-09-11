@@ -86,7 +86,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc2 (hedged request)
-		assert.Contains(t, string(jrr.Result), "0x2222")
+		assert.Contains(t, jrr.GetResultString(), "0x2222")
 	})
 
 	t.Run("FixedDelayHedge_FirstRequestFastNoHedge", func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc1 (no hedge triggered)
-		assert.Contains(t, string(jrr.Result), "0x1111")
+		assert.Contains(t, jrr.GetResultString(), "0x1111")
 	})
 
 	t.Run("QuantileBasedHedge_DynamicDelay", func(t *testing.T) {
@@ -238,7 +238,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from hedged request
-		assert.Contains(t, string(jrr.Result), "0x2222")
+		assert.Contains(t, jrr.GetResultString(), "0x2222")
 	})
 
 	t.Run("QuantileBasedHedge_MinDelayBoundary", func(t *testing.T) {
@@ -330,9 +330,10 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-		// Verify hedge delay was at least MinDelay
+		// Verify hedge delay was at least MinDelay (allow tiny scheduling tolerance)
 		hedgeDelay := hedgeTime.Sub(primaryTime)
-		assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond, "Hedge delay should respect MinDelay boundary")
+		tolerance := 2 * time.Millisecond
+		assert.GreaterOrEqual(t, hedgeDelay, 100*time.Millisecond-tolerance, "Hedge delay should respect MinDelay boundary")
 	})
 
 	t.Run("QuantileBasedHedge_MaxDelayBoundary", func(t *testing.T) {
@@ -494,7 +495,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should only get response from primary
-		assert.Contains(t, string(jrr.Result), "0x1234567890abcdef")
+		assert.Contains(t, jrr.GetResultString(), "0x1234567890abcdef")
 	})
 
 	t.Run("HedgePolicy_MaxCountLimit", func(t *testing.T) {
@@ -550,7 +551,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc3 (second hedge, fastest to complete)
-		assert.Contains(t, string(jrr.Result), "rpc3")
+		assert.Contains(t, jrr.GetResultString(), "rpc3")
 	})
 
 	t.Run("HedgePolicy_AllRequestsFail", func(t *testing.T) {
@@ -747,7 +748,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should get response from rpc3 (fastest)
-		assert.Contains(t, string(jrr.Result), "rpc3")
+		assert.Contains(t, jrr.GetResultString(), "rpc3")
 	})
 
 	t.Run("QuantileBasedHedge_NoMetricsAvailable", func(t *testing.T) {
@@ -835,7 +836,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			Post("").
 			Persist().
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(500 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -877,7 +878,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 					return
 				}
 				jrr, _ := resp.JsonRpcResponse()
-				results <- string(jrr.Result)
+				results <- jrr.GetResultString()
 			}()
 		}
 
@@ -1009,6 +1010,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		nil,
 		metricsTracker,
 		1*time.Second,
+		nil,
 	)
 
 	network, err := NewNetwork(
@@ -1022,8 +1024,8 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 	)
 	require.NoError(t, err)
 
-	err = upstreamsRegistry.Bootstrap(ctx)
-	require.NoError(t, err)
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)

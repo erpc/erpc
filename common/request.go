@@ -11,7 +11,6 @@ import (
 	"unicode"
 
 	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -78,7 +77,7 @@ type NormalizedRequest struct {
 	ErrorsByUpstream sync.Map
 	EmptyResponses   sync.Map // TODO we can potentially remove this map entirely, only use is to report "wrong empty responses"
 
-	// New fields for centralized upstream management
+	// Fields for centralized upstream management
 	upstreamList      []Upstream // Available upstreams for this request
 	ConsumedUpstreams *sync.Map  // Tracks upstreams that provided valid responses
 
@@ -183,6 +182,14 @@ func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
 	return r.lastValidResponse.Load()
 }
 
+// ClearLastValidResponse clears the stored last valid response pointer.
+func (r *NormalizedRequest) ClearLastValidResponse() {
+	if r == nil {
+		return
+	}
+	r.lastValidResponse.Store(nil)
+}
+
 func (r *NormalizedRequest) Network() Network {
 	if r == nil {
 		return nil
@@ -203,18 +210,45 @@ func (r *NormalizedRequest) ID() interface{} {
 }
 
 func (r *NormalizedRequest) NetworkId() string {
-	if r == nil || r.network == nil {
+	if r == nil {
 		// For certain requests such as internal eth_chainId requests, network might not be available yet.
+		return "n/a"
+	}
+	r.RLock()
+	defer r.RUnlock()
+	if r.network == nil {
 		return "n/a"
 	}
 	return r.network.Id()
 }
 
+// NetworkLabel returns a user-friendly label for the network suitable for metrics.
+// It prefers the network alias when available, otherwise falls back to the canonical ID.
+func (r *NormalizedRequest) NetworkLabel() string {
+	if r == nil {
+		return "n/a"
+	}
+	r.RLock()
+	defer r.RUnlock()
+	if r.network == nil {
+		return "n/a"
+	}
+	lbl := r.network.Label()
+	if lbl != "" {
+		return lbl
+	}
+	return r.network.Id()
+}
+
 func (r *NormalizedRequest) SetNetwork(network Network) {
+	r.Lock()
+	defer r.Unlock()
 	r.network = network
 }
 
 func (r *NormalizedRequest) SetCacheDal(cacheDal CacheDAL) {
+	r.Lock()
+	defer r.Unlock()
 	r.cacheDal = cacheDal
 }
 
@@ -222,6 +256,8 @@ func (r *NormalizedRequest) CacheDal() CacheDAL {
 	if r == nil {
 		return nil
 	}
+	r.RLock()
+	defer r.RUnlock()
 	return r.cacheDal
 }
 
@@ -229,6 +265,8 @@ func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
 	if r == nil {
 		return
 	}
+	r.Lock()
+	defer r.Unlock()
 	r.directives = directives
 }
 
@@ -361,6 +399,8 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 	}
 
 	r.jsonRpcRequest.Store(rpcReq)
+	// Safe to drop the raw body after successful parse to reduce retention of ReadAll buffers.
+	r.body = nil
 
 	return rpcReq, nil
 }
@@ -425,7 +465,7 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		if IsSemiValidJson(r.body) {
 			e.RawJSON("body", r.body)
 		} else {
-			e.Str("body", util.B2Str(r.body))
+			e.Str("body", string(r.body))
 		}
 	}
 }
@@ -644,21 +684,6 @@ func (r *NormalizedRequest) AgentName() string {
 	return "unknown"
 }
 
-// AgentVersion returns the cached agent version. The agent version should be populated via EnrichFromHttp().
-func (r *NormalizedRequest) AgentVersion() string {
-	if r == nil {
-		return "unknown"
-	}
-
-	// Check if cached agent version is available
-	if cachedAgentVersion := r.agentVersion.Load(); cachedAgentVersion != nil {
-		return cachedAgentVersion.(string)
-	}
-
-	// If not cached, return unknown (EnrichFromHttp should be called to populate this)
-	return "unknown"
-}
-
 // getUserAgent returns the user agent string, with query parameter taking precedence over header
 func (r *NormalizedRequest) getUserAgent(headers http.Header, queryArgs url.Values) string {
 	// Query parameter takes precedence
@@ -837,7 +862,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	defer r.upstreamMutex.Unlock()
 
 	if len(r.upstreamList) == 0 {
-		return nil, fmt.Errorf("no upstreams available for this request")
+		return nil, NewErrNoUpstreamsLeftToSelect(
+			r,
+			"no upstreams are set for this request",
+		)
 	}
 
 	// Check if UseUpstream directive is set
@@ -856,7 +884,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			}
 		}
 		// If no matching upstream found or all consumed, return error
-		return nil, fmt.Errorf("no more non-consumed matching upstreams left")
+		return nil, NewErrNoUpstreamsLeftToSelect(
+			r,
+			"no more non-consumed matching upstreams",
+		)
 	}
 
 	upstreamCount := len(r.upstreamList)
@@ -895,8 +926,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		// If we reach here, another goroutine reserved this upstream, continue to next
 	}
 
-	// All upstreams exhausted
-	return nil, fmt.Errorf("no more good upstreams left")
+	return nil, NewErrNoUpstreamsLeftToSelect(
+		r,
+		"no more non-consumed or working upstreams left",
+	)
 }
 
 func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream Upstream, resp *NormalizedResponse, err error) {
@@ -904,6 +937,14 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 	defer r.upstreamMutex.Unlock()
 
 	hasResponse := resp != nil && !resp.IsObjectNull(ctx)
+
+	// Check if this is a cancelled hedge - if so, just release and return
+	if err != nil && HasErrorCode(err, ErrCodeEndpointRequestCanceled) {
+		r.ConsumedUpstreams.Delete(upstream)
+		// Don't store the error - this upstream wasn't really "tried"
+		return
+	}
+
 	// We can re-use the same upstream on next rotation if there's no response or the error is retryable towards the upstream
 	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
 
@@ -914,7 +955,7 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 		if jr == nil {
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", err), upstream))
 		} else {
-			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.Result), upstream))
+			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.GetResultString()), upstream))
 		}
 		r.EmptyResponses.Store(upstream, true)
 	}

@@ -3,6 +3,8 @@ package erpc
 import (
 	"context"
 	"math/rand"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +25,10 @@ func init() {
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
+
+	// Set up required chainId/latest/finalized/syncing mocks BEFORE any components start
+	// so upstream detectFeatures and state pollers don't hang or steal test mocks.
+	util.SetupMocksForEvmStatePoller()
 
 	port := rand.Intn(1000) + 2000
 	cfg := &common.Config{
@@ -109,24 +115,36 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		},
 	}
 
-	for i := 0; i < 1000; i++ {
+	// rpc1: introduce some failures for eth_getTransactionReceipt only
+	for i := 0; i < 30; i++ {
 		gock.New("http://rpc1.localhost").
 			Post("").
-			ReplyFunc(func(r *gock.Response) {
-				// 30% chance of failure
-				if rand.Intn(100) < 30 {
-					r.Status(500)
-					r.JSON([]byte(`{"error":{"code":-32000,"message":"internal server error"}}`))
-				} else {
-					r.Status(200)
-					r.JSON([]byte(`{"result":{"hash":"0x123456789","fromHost":"rpc1"}}`))
-				}
-			})
+			Filter(func(req *http.Request) bool {
+				body := util.SafeReadBody(req)
+				return strings.Contains(body, "eth_getTransactionReceipt")
+			}).
+			Times(1).
+			Reply(500).
+			JSON([]byte(`{"error":{"code":-32000,"message":"internal server error"}}`))
 	}
+	// Remaining calls succeed
+	gock.New("http://rpc1.localhost").
+		Persist().
+		Post("").
+		Filter(func(req *http.Request) bool {
+			body := util.SafeReadBody(req)
+			return strings.Contains(body, "eth_getTransactionReceipt")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":{"hash":"0x123456789","fromHost":"rpc1"}}`))
 
 	gock.New("http://rpc2.localhost").
 		Persist().
 		Post("").
+		Filter(func(req *http.Request) bool {
+			body := util.SafeReadBody(req)
+			return strings.Contains(body, "eth_getTransactionReceipt")
+		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"hash":"0x123456789","fromHost":"rpc2"}}`))
 
@@ -147,10 +165,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
-	err = erpcInstance.Bootstrap(ctx1)
-	if err != nil {
-		t.Errorf("expected nil, got %v", err)
-	}
+	erpcInstance.Bootstrap(ctx1)
 
 	nw, err := erpcInstance.GetNetwork(ctx1, "test", "evm:123")
 	if err != nil {
@@ -174,6 +189,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	wg.Wait()
+
+	// Recalculate scores after the workload so ordering reflects latest metrics
+	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 
 	// wait until scores are calculated and erpc is shutdown down properly
 	time.Sleep(1 * time.Second)

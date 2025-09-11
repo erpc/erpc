@@ -34,7 +34,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 
 		// Verify value is stored and retrieved correctly
-		retrieved, err := connector.Get(ctx, "", "test", "small")
+		retrieved, err := connector.Get(ctx, "", "test", "small", nil)
 		require.NoError(t, err)
 		require.Equal(t, []byte(smallValue), retrieved)
 	})
@@ -51,7 +51,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 
 		// Verify value is stored and retrieved correctly (compression is transparent)
-		retrieved, err := connector.Get(ctx, "", "test", "large")
+		retrieved, err := connector.Get(ctx, "", "test", "large", nil)
 		require.NoError(t, err)
 		require.Equal(t, []byte(largeValue), retrieved)
 	})
@@ -79,7 +79,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 
 		// Retrieve and verify all values
 		for _, tc := range testCases {
-			retrieved, err := connector.Get(ctx, "", "mixed", tc.key)
+			retrieved, err := connector.Get(ctx, "", "mixed", tc.key, nil)
 			require.NoError(t, err)
 			require.Equal(t, []byte(tc.value), retrieved, "Value mismatch for key: %s", tc.key)
 		}
@@ -96,7 +96,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 
 		// Verify value is stored and retrieved correctly
-		retrieved, err := connector.Get(ctx, "", "test", "ttl")
+		retrieved, err := connector.Get(ctx, "", "test", "ttl", nil)
 		require.NoError(t, err)
 		require.Equal(t, []byte(largeValue), retrieved)
 	})
@@ -126,7 +126,7 @@ func TestMemoryConnector_CompressionBenefits(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Retrieve and verify
-	retrieved, err := connector.Get(ctx, "", "evm", "block")
+	retrieved, err := connector.Get(ctx, "", "evm", "block", nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte(evmResponse), retrieved)
 
@@ -209,7 +209,7 @@ func TestMemoryConnector_ConcurrentCompression(t *testing.T) {
 					key := fmt.Sprintf("%s_w%d_op%d", testCase.key, workerID, j)
 
 					// Get operation
-					retrieved, err := connector.Get(ctx, "", "concurrent", key)
+					retrieved, err := connector.Get(ctx, "", "concurrent", key, nil)
 					if err != nil {
 						errChan <- fmt.Errorf("worker %d operation %d get failed: %w", workerID, j, err)
 						continue

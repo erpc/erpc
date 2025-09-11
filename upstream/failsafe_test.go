@@ -40,7 +40,7 @@ func (m *mockUpstreamForRetry) Id() string {
 }
 
 func (m *mockUpstreamForRetry) NetworkId() string {
-	return "evm:1"
+	return "evm:123"
 }
 
 func (m *mockUpstreamForRetry) VendorName() string {
@@ -98,14 +98,10 @@ func createMockResponse(isEmpty bool, request *common.NormalizedRequest, upstrea
 
 	if isEmpty {
 		// Set empty result
-		resp = resp.WithJsonRpcResponse(&common.JsonRpcResponse{
-			Result: []byte(`[]`),
-		})
+		resp = resp.WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil))
 	} else {
 		// Set non-empty result
-		resp = resp.WithJsonRpcResponse(&common.JsonRpcResponse{
-			Result: []byte(`[{"data": "0x123"}]`),
-		})
+		resp = resp.WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[{"data": "0x123"}]`), nil))
 	}
 
 	return resp

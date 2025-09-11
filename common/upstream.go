@@ -22,16 +22,27 @@ const (
 
 type UpstreamType string
 
+// HealthTracker is an interface for tracking upstream health metrics
+type HealthTracker interface {
+	RecordUpstreamMisbehavior(up Upstream, method string)
+	RecordUpstreamRequest(up Upstream, method string)
+	RecordUpstreamFailure(up Upstream, method string, err error)
+	Cordon(upstream Upstream, method string, reason string)
+	Uncordon(upstream Upstream, method string, reason string)
+}
+
 type Upstream interface {
 	Id() string
 	VendorName() string
 	NetworkId() string
+	NetworkLabel() string
 	Config() *UpstreamConfig
 	Logger() *zerolog.Logger
 	Vendor() Vendor
+	Tracker() HealthTracker
 	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion bool) (*NormalizedResponse, error)
 	Cordon(method string, reason string)
-	Uncordon(method string)
+	Uncordon(method string, reason string)
 	IgnoreMethod(method string)
 }
 

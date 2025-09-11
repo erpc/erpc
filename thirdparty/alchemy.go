@@ -38,6 +38,7 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	42161:     "arb-mainnet",
 	421614:    "arb-sepolia",
 	42170:     "arbnova-mainnet",
+    42220:     "celo-mainnet",
 	43113:     "avax-fuji",
 	43114:     "avax-mainnet",
 	5000:      "mantle-mainnet",
@@ -170,7 +171,7 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 
 	upstream.VendorName = v.Name()
 
-	log.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
+	logger.Debug().Int64("chainId", upstream.Evm.ChainId).Interface("upstream", upstream).Interface("settings", map[string]interface{}{
 		"recheckInterval": settings["recheckInterval"],
 	}).Msg("generated upstream from alchemy provider")
 

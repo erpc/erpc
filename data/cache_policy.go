@@ -79,6 +79,11 @@ func (p *CachePolicy) MarshalJSON() ([]byte, error) {
 }
 
 func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) (bool, error) {
+	// Respect appliesTo directive for set
+	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToSet {
+		return false, nil
+	}
+
 	// Check each matcher from last to first (last takes precedence)
 	for i := len(p.config.Matchers) - 1; i >= 0; i-- {
 		matcher := p.config.Matchers[i]
@@ -92,6 +97,11 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface
 }
 
 func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, error) {
+	// Respect appliesTo directive for get
+	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToGet {
+		return false, nil
+	}
+
 	// For GET operations, we need special handling of finality
 	// to be more flexible in finding cached data
 

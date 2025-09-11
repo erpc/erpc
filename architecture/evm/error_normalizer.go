@@ -74,6 +74,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "exceeds the range") ||
 			strings.Contains(msg, "max block range") ||
 			strings.Contains(msg, "Max range") ||
+			strings.Contains(msg, "logs over more") ||
 			strings.Contains(msg, "response size should not") ||
 			strings.Contains(msg, "returned more than") ||
 			strings.Contains(msg, "exceeds max results") ||
@@ -453,8 +454,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	// Special-case check for reverts: Some clients return a normal 200 status,
 	// but an EVM revert payload in jr.Result.
 	// -----------------------------------------------------------------------
-	if jr != nil && jr.Result != nil && len(jr.Result) > 0 {
-		dt := util.B2Str(jr.Result)
+	if jr != nil && jr.ResultLength() > 0 {
+		result := jr.GetResultString()
+		dt := result
 		// keccak256("Error(string)")
 		if len(dt) > 11 && dt[1:11] == "0x08c379a0" {
 			return common.NewErrEndpointExecutionException(
@@ -464,7 +466,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					"transaction reverted",
 					nil,
 					map[string]interface{}{
-						"data": json.RawMessage(jr.Result),
+						"data": json.RawMessage(result),
 					},
 				),
 			)
@@ -487,7 +489,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 								"execution timeout",
 								nil,
 								map[string]interface{}{
-									"data": json.RawMessage(jr.Result),
+									"data": json.RawMessage(result),
 								},
 							),
 							nil,

@@ -58,7 +58,7 @@ func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
 }
 
-func (c *counterInt64) processNewValue(newVal int64) bool {
+func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	// This function is designed to be called from within c.updateMu.Lock().
 	// It returns true if the local value was actually updated.
 	currentValue := c.value.Load()
@@ -66,12 +66,12 @@ func (c *counterInt64) processNewValue(newVal int64) bool {
 	if newVal > currentValue {
 		c.value.Store(newVal)
 		updated = true
-		c.registry.logger.Info().Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
+		c.registry.logger.Debug().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
 		c.triggerValueCallback(newVal)
 	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {
 		c.value.Store(newVal)
 		updated = true
-		c.registry.logger.Info().Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Int64("rollback", currentValue-newVal).Msg("counter value rolled back")
+		c.registry.logger.Warn().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Int64("rollback", currentValue-newVal).Msg("counter value rolled back")
 		c.triggerValueCallback(newVal)
 		c.callbackMu.RLock()
 		callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
@@ -91,7 +91,7 @@ func (c *counterInt64) processNewValue(newVal int64) bool {
 	c.lastProcessed = time.Now()
 	c.lastProcessedMu.Unlock()
 
-	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("currentValue", currentValue).Int64("newVal", newVal).Bool("updated", updated).Msg("processed new value")
+	c.registry.logger.Trace().Str("source", source).Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("currentValue", currentValue).Int64("newVal", newVal).Bool("updated", updated).Msg("processed new value")
 	return updated
 }
 
@@ -175,12 +175,12 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		remoteVal := c.tryGetRemoteValue(getCtx)
 		if remoteVal > 0 {
 			// Use highest value local vs remote if applicable
-			c.processNewValue(remoteVal)
+			c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
 		}
 	}
 
 	// Compare local vs new value
-	if c.processNewValue(newValue) && unlock != nil {
+	if c.processNewValue(UpdateSourceTryUpdate, newValue) && unlock != nil {
 		// Only update remote if local value was updated AND remote lock was acquired.
 		// Use fresh context for Redis operations to avoid parent context deadline inheritance
 		pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
@@ -265,7 +265,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
 		defer getCancel()
 		if val := c.tryGetRemoteValue(getCtx); val > 0 {
-			if c.processNewValue(val) {
+			if c.processNewValue(UpdateSourceRemoteCheck, val) {
 				return c.value.Load(), nil
 			}
 		}
@@ -289,7 +289,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Bool("unlockable", unlock != nil).Int64("newValue", newValue).Msg("received new value from user-defined func")
 
 	// Process the new value locally
-	if c.processNewValue(newValue) && unlock != nil {
+	if c.processNewValue(UpdateSourceTryUpdateIfStale, newValue) && unlock != nil {
 		// Only update remote if local value was updated AND remote lock was acquired.
 		// Use fresh context for Redis operations to avoid parent context deadline inheritance
 		pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
@@ -329,7 +329,7 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 		}
 	}
 	if lock != nil && !lock.IsNil() {
-		c.registry.logger.Info().Str("key", c.key).Msg("acquired remote lock for counter")
+		c.registry.logger.Debug().Str("key", c.key).Msg("acquired remote lock for counter")
 		return func() {
 			unlockCtx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.lockTtl)
 			defer cancel()
@@ -341,7 +341,7 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 					c.registry.logger.Debug().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).Msg("failed to unlock counter, so it will be expired after ttl")
 				}
 			} else {
-				c.registry.logger.Info().Str("key", c.key).Msg("released remote lock for counter")
+				c.registry.logger.Debug().Str("key", c.key).Msg("released remote lock for counter")
 			}
 		}
 	}
@@ -349,7 +349,7 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 }
 
 func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
-	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value")
+	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value", nil)
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 			c.registry.logger.Debug().Err(err).Str("key", c.key).Msg("remote counter value not found, will initialize it")
@@ -378,6 +378,6 @@ func (c *counterInt64) updateRemoteUpdate(ctx context.Context, newValue int64) {
 			Int64("value", newValue).
 			Msg("failed to update remote counter value")
 	} else {
-		c.registry.logger.Info().Str("key", c.key).Int64("value", newValue).Msg("published counter value to remote")
+		c.registry.logger.Debug().Str("key", c.key).Int64("value", newValue).Msg("published counter value to remote")
 	}
 }

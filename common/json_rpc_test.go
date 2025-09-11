@@ -30,7 +30,7 @@ func init() {
 func TestEnsureCachedNode_HeapAllocation(t *testing.T) {
 	// Create a JsonRpcResponse
 	r := &JsonRpcResponse{
-		Result: []byte(`{"id":1,"error":null,"result":"value"}`),
+		result: []byte(`{"id":1,"error":null,"result":"value"}`),
 	}
 
 	// First call to ensure we have a cached node
@@ -135,7 +135,7 @@ func TestJsonRpcResponse_Hash(t *testing.T) {
 
 			// Create a JsonRpcResponse
 			r := &JsonRpcResponse{
-				Result: []byte(result),
+				result: []byte(result),
 			}
 
 			hash, err := r.CanonicalHash()
@@ -586,7 +586,7 @@ func TestJsonRpcResponse_CanonicalHash_EmptyishNormalization(t *testing.T) {
 			var hashes []string
 			for i, variant := range group.variants {
 				resp := &JsonRpcResponse{
-					Result: []byte(variant),
+					result: []byte(variant),
 				}
 				hash, err := resp.CanonicalHash()
 				assert.NoError(t, err, "variant %d: %s", i, variant)
@@ -613,7 +613,7 @@ func TestJsonRpcResponse_CanonicalHash_EmptyishNormalization(t *testing.T) {
 
 		hashes := make(map[string]bool)
 		for _, c := range cases {
-			resp := &JsonRpcResponse{Result: []byte(c)}
+			resp := &JsonRpcResponse{result: []byte(c)}
 			hash, err := resp.CanonicalHash()
 			assert.NoError(t, err)
 			assert.False(t, hashes[hash], "Duplicate hash found for: %s", c)
@@ -647,8 +647,8 @@ func TestJsonRpcResponse_CanonicalHash_EmptyishNormalization(t *testing.T) {
 			}
 		}`
 
-		resp1 := &JsonRpcResponse{Result: []byte(original)}
-		resp2 := &JsonRpcResponse{Result: []byte(shadow)}
+		resp1 := &JsonRpcResponse{result: []byte(original)}
+		resp2 := &JsonRpcResponse{result: []byte(shadow)}
 
 		hash1, err1 := resp1.CanonicalHash()
 		hash2, err2 := resp2.CanonicalHash()

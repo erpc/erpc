@@ -1,11 +1,12 @@
 package util
 
 import (
-	"encoding/hex"
 	"fmt"
 	"math"
 	"math/rand"
 	"strings"
+
+	"github.com/blockchain-data-standards/manifesto/evm"
 )
 
 // RandomID returns a value appropriate for a JSON-RPC ID field (i.e int64 type but with 32 bit range) to avoid overflow during conversions and reading/sending to upstreams
@@ -58,7 +59,7 @@ func ParseBlockParameter(param interface{}) (blockNumber string, blockHash []byt
 				blockNumber = bt
 			}
 		}
-		if blockNumber == "" && blockHash == nil {
+		if blockNumber == "" {
 			return "", nil, fmt.Errorf("block parameter object must contain blockHash, blockNumber, or blockTag")
 		}
 	default:
@@ -70,6 +71,5 @@ func ParseBlockParameter(param interface{}) (blockNumber string, blockHash []byt
 
 // parseHexBytes helper function to parse hex strings to bytes
 func parseHexBytes(hexStr string) ([]byte, error) {
-	hexStr = strings.TrimPrefix(hexStr, "0x")
-	return hex.DecodeString(hexStr)
+	return evm.HexToBytes(hexStr)
 }

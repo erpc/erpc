@@ -156,7 +156,7 @@ func EndRequestSpan(ctx context.Context, resp *NormalizedResponse, err interface
 		}
 		if IsTracingDetailed {
 			if jrpcResp, err := resp.JsonRpcResponse(); err == nil && jrpcResp != nil {
-				span.SetAttributes(attribute.Int("response.result_size", len(jrpcResp.Result)))
+				span.SetAttributes(attribute.Int("response.result_size", jrpcResp.ResultLength()))
 			}
 		}
 	}

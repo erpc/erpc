@@ -8,6 +8,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -55,11 +56,12 @@ type Timer struct {
 	compositeType string
 	tracker       *Tracker
 	finality      common.DataFinalityState
+	userId        string
 }
 
 func (t *Timer) ObserveDuration(isSuccess bool) {
 	duration := time.Since(t.start)
-	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality)
+	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality, t.userId)
 }
 
 // ------------------------------------
@@ -72,10 +74,11 @@ type TrackedMetrics struct {
 	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
 	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
 	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
+	MisbehaviorsTotal      atomic.Int64     `json:"misbehaviorsTotal"`
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
 	Cordoned               atomic.Bool      `json:"cordoned"`
-	CordonedReason         atomic.Value     `json:"cordonedReason"`
+	LastCordonedReason     atomic.Value     `json:"lastCordonedReason"`
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
@@ -99,6 +102,14 @@ func (m *TrackedMetrics) ThrottledRate() float64 {
 	return throttled / float64(reqs)
 }
 
+func (m *TrackedMetrics) MisbehaviorRate() float64 {
+	reqs := m.RequestsTotal.Load()
+	if reqs == 0 {
+		return 0
+	}
+	return float64(m.MisbehaviorsTotal.Load()) / float64(reqs)
+}
+
 func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 	return common.SonicCfg.Marshal(map[string]interface{}{
 		"responseQuantiles":      m.ResponseQuantiles,
@@ -106,12 +117,14 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 		"selfRateLimitedTotal":   m.SelfRateLimitedTotal.Load(),
 		"remoteRateLimitedTotal": m.RemoteRateLimitedTotal.Load(),
 		"requestsTotal":          m.RequestsTotal.Load(),
+		"misbehaviorsTotal":      m.MisbehaviorsTotal.Load(),
 		"blockHeadLag":           m.BlockHeadLag.Load(),
 		"finalizationLag":        m.FinalizationLag.Load(),
 		"cordoned":               m.Cordoned.Load(),
-		"cordonedReason":         m.CordonedReason.Load(),
+		"lastCordonedReason":     m.LastCordonedReason.Load(),
 		"errorRate":              m.ErrorRate(),
 		"throttledRate":          m.ThrottledRate(),
+		"misbehaviorRate":        m.MisbehaviorRate(),
 	})
 }
 
@@ -123,13 +136,14 @@ func (m *TrackedMetrics) Reset() {
 	m.RequestsTotal.Store(0)
 	m.SelfRateLimitedTotal.Store(0)
 	m.RemoteRateLimitedTotal.Store(0)
+	m.MisbehaviorsTotal.Store(0)
 	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
 	// DO NOT reset m.FinalizationLag - it's a state metric, not cumulative
 	m.ResponseQuantiles.Reset()
 
 	// Optionally uncordon
 	m.Cordoned.Store(false)
-	m.CordonedReason.Store("")
+	m.LastCordonedReason.Store("")
 }
 
 // ------------------------------------
@@ -144,14 +158,181 @@ type Tracker struct {
 	metadata   sync.Map // map[common.Upstream]*NetworkMetadata
 	upsMetrics sync.Map // map[upsKey]*TrackedMetrics
 	ntwMetrics sync.Map // map[ntwKey]*TrackedMetrics
+
+	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
+	mu                 sync.RWMutex             // Protect the map
+
+	// Cache of pre-bound Prometheus observers for upstream request duration
+	// Keyed by the full label set to avoid per-request MetricVec map lookups.
+	urdObsCache sync.Map // map[urdoKey]prometheus.Observer
+
+	// Caches for other hot-path metrics
+	selfRateLimitedCounterCache   sync.Map // map[srltKey]prometheus.Counter
+	remoteRateLimitedCounterCache sync.Map // map[rrltKey]prometheus.Counter
+	latestBlockGaugeCache         sync.Map // map[ubKey]prometheus.Gauge
+	finalizedBlockGaugeCache      sync.Map // map[ubKey]prometheus.Gauge
+	headLagGaugeCache             sync.Map // map[ubKey]prometheus.Gauge
+	finalizationLagGaugeCache     sync.Map // map[ubKey]prometheus.Gauge
+	cordonedGaugeCache            sync.Map // map[cordKey]prometheus.Gauge
+	rollbackGaugeCache            sync.Map // map[ubKey]prometheus.Gauge
+}
+
+// urdoKey uniquely identifies a MetricUpstreamRequestDuration time series.
+type urdoKey struct {
+	project   string
+	vendor    string
+	network   string
+	upstream  string
+	category  string
+	composite string
+	finality  string
+	user      string
+}
+
+func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method, composite string, finality common.DataFinalityState, userId string) prometheus.Observer {
+	key := urdoKey{
+		project:   t.projectId,
+		vendor:    up.VendorName(),
+		network:   up.NetworkLabel(),
+		upstream:  up.Id(),
+		category:  method,
+		composite: composite,
+		finality:  finality.String(),
+		user:      userId,
+	}
+	if v, ok := t.urdObsCache.Load(key); ok {
+		return v.(prometheus.Observer)
+	}
+	obs := telemetry.MetricUpstreamRequestDuration.WithLabelValues(
+		key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
+	)
+	actual, _ := t.urdObsCache.LoadOrStore(key, obs)
+	return actual.(prometheus.Observer)
+}
+
+type srltKey struct {
+	project   string
+	vendor    string
+	network   string
+	upstream  string
+	category  string
+	user      string
+	agentName string
+}
+
+func (t *Tracker) getSelfRateLimitedCounter(up common.Upstream, method, userId, agentName string) prometheus.Counter {
+	key := srltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName}
+	if v, ok := t.selfRateLimitedCounterCache.Load(key); ok {
+		return v.(prometheus.Counter)
+	}
+	c := telemetry.MetricUpstreamSelfRateLimitedTotal.WithLabelValues(
+		key.project, key.vendor, key.network, key.upstream, key.category, key.user, key.agentName,
+	)
+	actual, _ := t.selfRateLimitedCounterCache.LoadOrStore(key, c)
+	return actual.(prometheus.Counter)
+}
+
+type rrltKey = srltKey
+
+func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName string) prometheus.Counter {
+	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName}
+	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
+		return v.(prometheus.Counter)
+	}
+	c := telemetry.MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(
+		key.project, key.vendor, key.network, key.upstream, key.category, key.user, key.agentName,
+	)
+	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, c)
+	return actual.(prometheus.Counter)
+}
+
+type ubKey struct {
+	project  string
+	vendor   string
+	network  string
+	upstream string
+}
+
+func (t *Tracker) getLatestBlockGauge(project, vendor, networkLabel, upstreamId string) prometheus.Gauge {
+	key := ubKey{project, vendor, networkLabel, upstreamId}
+	if v, ok := t.latestBlockGaugeCache.Load(key); ok {
+		return v.(prometheus.Gauge)
+	}
+	g := telemetry.MetricUpstreamLatestBlockNumber.WithLabelValues(project, vendor, networkLabel, upstreamId)
+	actual, _ := t.latestBlockGaugeCache.LoadOrStore(key, g)
+	return actual.(prometheus.Gauge)
+}
+
+func (t *Tracker) getFinalizedBlockGauge(project, vendor, networkLabel, upstreamId string) prometheus.Gauge {
+	key := ubKey{project, vendor, networkLabel, upstreamId}
+	if v, ok := t.finalizedBlockGaugeCache.Load(key); ok {
+		return v.(prometheus.Gauge)
+	}
+	g := telemetry.MetricUpstreamFinalizedBlockNumber.WithLabelValues(project, vendor, networkLabel, upstreamId)
+	actual, _ := t.finalizedBlockGaugeCache.LoadOrStore(key, g)
+	return actual.(prometheus.Gauge)
+}
+
+func (t *Tracker) getHeadLagGauge(project, vendor, networkLabel, upstreamId string) prometheus.Gauge {
+	key := ubKey{project, vendor, networkLabel, upstreamId}
+	if v, ok := t.headLagGaugeCache.Load(key); ok {
+		return v.(prometheus.Gauge)
+	}
+	g := telemetry.MetricUpstreamBlockHeadLag.WithLabelValues(project, vendor, networkLabel, upstreamId)
+	actual, _ := t.headLagGaugeCache.LoadOrStore(key, g)
+	return actual.(prometheus.Gauge)
+}
+
+func (t *Tracker) getFinalizationLagGauge(project, vendor, networkLabel, upstreamId string) prometheus.Gauge {
+	key := ubKey{project, vendor, networkLabel, upstreamId}
+	if v, ok := t.finalizationLagGaugeCache.Load(key); ok {
+		return v.(prometheus.Gauge)
+	}
+	g := telemetry.MetricUpstreamFinalizationLag.WithLabelValues(project, vendor, networkLabel, upstreamId)
+	actual, _ := t.finalizationLagGaugeCache.LoadOrStore(key, g)
+	return actual.(prometheus.Gauge)
+}
+
+type cordKey struct {
+	project  string
+	vendor   string
+	network  string
+	upstream string
+	category string
+	reason   string
+}
+
+func (t *Tracker) getCordonedGauge(up common.Upstream, method, reason string) prometheus.Gauge {
+	key := cordKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, reason}
+	if v, ok := t.cordonedGaugeCache.Load(key); ok {
+		return v.(prometheus.Gauge)
+	}
+	g := telemetry.MetricUpstreamCordoned.WithLabelValues(
+		key.project, key.vendor, key.network, key.upstream, key.category, key.reason,
+	)
+	actual, _ := t.cordonedGaugeCache.LoadOrStore(key, g)
+	return actual.(prometheus.Gauge)
+}
+
+func (t *Tracker) getRollbackGauge(up common.Upstream) prometheus.Gauge {
+	key := ubKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id()}
+	if v, ok := t.rollbackGaugeCache.Load(key); ok {
+		return v.(prometheus.Gauge)
+	}
+	g := telemetry.MetricUpstreamBlockHeadLargeRollback.WithLabelValues(
+		t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(),
+	)
+	actual, _ := t.rollbackGaugeCache.LoadOrStore(key, g)
+	return actual.(prometheus.Gauge)
 }
 
 // NewTracker constructs a new Tracker, using sync.Map for concurrency.
 func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Duration) *Tracker {
 	return &Tracker{
-		logger:     logger,
-		projectId:  projectId,
-		windowSize: windowSize,
+		logger:             logger,
+		projectId:          projectId,
+		windowSize:         windowSize,
+		upstreamsByNetwork: make(map[string][]upstreamKey),
 	}
 }
 
@@ -220,6 +401,24 @@ func (t *Tracker) getUpsMetrics(k upstreamKey) *TrackedMetrics {
 	}
 	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker()}
 	actual, _ := t.upsMetrics.LoadOrStore(k, tm)
+	// Track this upstreamKey under its network for efficient global updates
+	if k.ups != nil {
+		net := k.ups.NetworkId()
+		t.mu.Lock()
+		// Deduplicate entries for the same upstream and method
+		list := t.upstreamsByNetwork[net]
+		exists := false
+		for _, existing := range list {
+			if existing.method == k.method && existing.ups != nil && existing.ups.Id() == k.ups.Id() {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			t.upstreamsByNetwork[net] = append(list, k)
+		}
+		t.mu.Unlock()
+	}
 	return actual.(*TrackedMetrics)
 }
 
@@ -245,14 +444,12 @@ func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
 
 	tm := t.getUpsMetrics(upstreamKey{upstream, method})
 	tm.Cordoned.Store(true)
-	tm.CordonedReason.Store(reason)
+	tm.LastCordonedReason.Store(reason)
 
-	telemetry.MetricUpstreamCordoned.
-		WithLabelValues(t.projectId, upstream.VendorName(), upstream.NetworkId(), upstream.Id(), method).
-		Set(1)
+	t.getCordonedGauge(upstream, method, reason).Set(1)
 }
 
-func (t *Tracker) Uncordon(upstream common.Upstream, method string) {
+func (t *Tracker) Uncordon(upstream common.Upstream, method string, reason string) {
 	lg := upstream.Logger()
 	lg.Debug().
 		Str("method", method).
@@ -260,11 +457,9 @@ func (t *Tracker) Uncordon(upstream common.Upstream, method string) {
 
 	tm := t.getUpsMetrics(upstreamKey{upstream, method})
 	tm.Cordoned.Store(false)
-	tm.CordonedReason.Store("")
+	tm.LastCordonedReason.Store("")
 
-	telemetry.MetricUpstreamCordoned.
-		WithLabelValues(t.projectId, upstream.VendorName(), upstream.NetworkId(), upstream.Id(), method).
-		Set(0)
+	t.getCordonedGauge(upstream, method, reason).Set(0)
 }
 
 // IsCordoned checks if (ups, network, method) or (ups, network, "*") is cordoned.
@@ -293,7 +488,7 @@ func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState) *Timer {
+func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState, userId string) *Timer {
 	if compositeType == "" {
 		compositeType = "none"
 	}
@@ -304,10 +499,11 @@ func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method s
 		compositeType: compositeType,
 		finality:      finality,
 		tracker:       t,
+		userId:        userId,
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState) {
+func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState, userId string) {
 	if comp == "" {
 		comp = "none"
 	}
@@ -322,9 +518,9 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 			t.getNtwMetrics(nk).ResponseQuantiles.Add(sec)
 		}
 	}
-	telemetry.MetricUpstreamRequestDuration.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, comp, finality.String()).
-		Observe(sec)
+	// Use cached observer to avoid per-request MetricVec lookups/locks.
+	obs := t.getUpstreamRequestDurationObserver(up, method, comp, finality, userId)
+	obs.Observe(sec)
 }
 
 func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
@@ -347,6 +543,15 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 	}
 }
 
+func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
+	for _, k := range t.getUpsKeys(up, method) {
+		t.getUpsMetrics(k).MisbehaviorsTotal.Add(1)
+	}
+	for _, nk := range t.getNtwKeys(up, method) {
+		t.getNtwMetrics(nk).MisbehaviorsTotal.Add(1)
+	}
+}
+
 func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).SelfRateLimitedTotal.Add(1)
@@ -355,20 +560,16 @@ func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method strin
 		t.getNtwMetrics(nk).SelfRateLimitedTotal.Add(1)
 	}
 
-	var userId, agentName, agentVersion string
+	var userId, agentName string
 	if req != nil {
 		userId = req.UserId()
 		agentName = req.AgentName()
-		agentVersion = req.AgentVersion()
 	} else {
 		userId = "n/a"
 		agentName = "unknown"
-		agentVersion = "unknown"
 	}
 
-	telemetry.MetricUpstreamSelfRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId, agentName, agentVersion).
-		Inc()
+	t.getSelfRateLimitedCounter(up, method, userId, agentName).Inc()
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
@@ -379,20 +580,16 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method str
 		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
 	}
 
-	var userId, agentName, agentVersion string
+	var userId, agentName string
 	if req != nil {
 		userId = req.UserId()
 		agentName = req.AgentName()
-		agentVersion = req.AgentVersion()
 	} else {
 		userId = "n/a"
 		agentName = "unknown"
-		agentVersion = "unknown"
 	}
 
-	telemetry.MetricUpstreamRemoteRateLimitedTotal.
-		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, userId, agentName, agentVersion).
-		Inc()
+	t.getRemoteRateLimitedCounter(up, method, userId, agentName).Inc()
 }
 
 // --------------------------------------------
@@ -426,6 +623,7 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
+	netLabel := upstream.NetworkLabel()
 	vendor := upstream.VendorName()
 	lg := upstream.Logger().With().Str("networkId", net).Logger()
 
@@ -444,9 +642,8 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	needsGlobalUpdate := false
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
-		telemetry.MetricUpstreamLatestBlockNumber.
-			WithLabelValues(t.projectId, "*", net, "*").
-			Set(float64(blockNumber))
+		g := t.getLatestBlockGauge(t.projectId, "*", netLabel, "*")
+		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
 	}
 
@@ -455,9 +652,8 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	oldUpsVal := upsMeta.evmLatestBlockNumber.Load()
 	if blockNumber > oldUpsVal {
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
-		telemetry.MetricUpstreamLatestBlockNumber.
-			WithLabelValues(t.projectId, vendor, net, id).
-			Set(float64(blockNumber))
+		g := t.getLatestBlockGauge(t.projectId, vendor, netLabel, id)
+		g.Set(float64(blockNumber))
 	}
 
 	// 3) Recompute block head lag for this upstream
@@ -468,25 +664,31 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	}
 
 	upsLag := ntwBn - upsMeta.evmLatestBlockNumber.Load()
-	telemetry.MetricUpstreamBlockHeadLag.
-		WithLabelValues(t.projectId, vendor, net, id).
-		Set(float64(upsLag))
+	gLag := t.getHeadLagGauge(t.projectId, vendor, netLabel, id)
+	gLag.Set(float64(upsLag))
 
 	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
 	if needsGlobalUpdate {
 		// Recompute for every upstream in the network
-		t.upsMetrics.Range(func(key, value any) bool {
-			k, ok := key.(upstreamKey)
-			if !ok {
-				return true
-			}
-			otherUps := k.ups
-			if otherUps == nil {
-				return true
-			}
-			otherNet := otherUps.NetworkId()
-			if otherNet == net {
-				tm := value.(*TrackedMetrics)
+		t.mu.RLock()
+		relevantKeys := t.upstreamsByNetwork[net]
+		t.mu.RUnlock()
+
+		if len(relevantKeys) == 0 {
+			// Fallback: if we have not yet registered upstream keys for this network,
+			// iterate over all known metrics to ensure correctness.
+			t.upsMetrics.Range(func(key, value any) bool {
+				k, ok := key.(upstreamKey)
+				if !ok {
+					return true
+				}
+				otherUps := k.ups
+				if otherUps == nil {
+					return true
+				}
+				if otherUps.NetworkId() != net {
+					return true
+				}
 				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
 				otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
 				if otherVal <= 0 {
@@ -494,13 +696,36 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 					return true
 				}
 				otherLag := ntwBn - otherVal
+				tm := value.(*TrackedMetrics)
 				tm.BlockHeadLag.Store(otherLag)
-				telemetry.MetricUpstreamBlockHeadLag.
-					WithLabelValues(t.projectId, otherUps.VendorName(), net, otherUps.Id()).
-					Set(float64(otherLag))
+				gOtherLag := t.getHeadLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
+				gOtherLag.Set(float64(otherLag))
+				return true
+			})
+		} else {
+			for _, k := range relevantKeys {
+				if v, ok := t.upsMetrics.Load(k); ok {
+					tm := v.(*TrackedMetrics)
+					otherUps := k.ups
+					if otherUps == nil {
+						continue
+					}
+					otherNet := otherUps.NetworkId()
+					if otherNet == net {
+						otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
+						otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
+						if otherVal <= 0 {
+							lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+							continue
+						}
+						otherLag := ntwBn - otherVal
+						tm.BlockHeadLag.Store(otherLag)
+						gOtherLag := t.getHeadLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
+						gOtherLag.Set(float64(otherLag))
+					}
+				}
 			}
-			return true
-		})
+		}
 	} else {
 		// Only update items for this single upstream in this network
 		t.upsMetrics.Range(func(key, value any) bool {
@@ -523,7 +748,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int64) {
 	ntwMeta := t.getMetadata(metadataKey{nil, network})
 	ntwMeta.evmLatestBlockNumber.Store(blockNumber)
-	telemetry.MetricUpstreamLatestBlockNumber.WithLabelValues(t.projectId, "*", network, "*").Set(float64(blockNumber))
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
@@ -538,6 +762,7 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 
 	id := upstream.Id()
 	net := upstream.NetworkId()
+	netLabel := upstream.NetworkLabel()
 	vendor := upstream.VendorName()
 
 	mdKey := metadataKey{upstream, net}
@@ -551,9 +776,8 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	needsGlobalUpdate := false
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		telemetry.MetricUpstreamFinalizedBlockNumber.
-			WithLabelValues(t.projectId, "*", net, "*").
-			Set(float64(blockNumber))
+		g := t.getFinalizedBlockGauge(t.projectId, "*", netLabel, "*")
+		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
 	}
 
@@ -561,9 +785,8 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	oldUpsVal := upsMeta.evmFinalizedBlockNumber.Load()
 	if blockNumber > oldUpsVal {
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		telemetry.MetricUpstreamFinalizedBlockNumber.
-			WithLabelValues(t.projectId, vendor, net, id).
-			Set(float64(blockNumber))
+		g := t.getFinalizedBlockGauge(t.projectId, vendor, netLabel, id)
+		g.Set(float64(blockNumber))
 	}
 
 	// Recompute finalization lag for this upstream
@@ -577,9 +800,8 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	upsLag := ntwVal - upsVal
 
 	// Update Prometheus for this upstream
-	telemetry.MetricUpstreamFinalizationLag.
-		WithLabelValues(t.projectId, vendor, net, id).
-		Set(float64(upsLag))
+	gLag := t.getFinalizationLagGauge(t.projectId, vendor, netLabel, id)
+	gLag.Set(float64(upsLag))
 
 	// Update the finalization lag across the network if needed
 	if needsGlobalUpdate {
@@ -603,9 +825,8 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 				}
 				otherLag := ntwVal - otherVal
 				tm.FinalizationLag.Store(otherLag)
-				telemetry.MetricUpstreamFinalizationLag.
-					WithLabelValues(t.projectId, otherUps.VendorName(), net, otherUps.Id()).
-					Set(float64(otherLag))
+				gOtherLag := t.getFinalizationLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
+				gOtherLag.Set(float64(otherLag))
 			}
 			return true
 		})
@@ -628,19 +849,10 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 	}
 }
 
-func (t *Tracker) SetFinalizedBlockNumberForNetwork(network string, blockNumber int64) {
-	ntwMeta := t.getMetadata(metadataKey{nil, network})
-	ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
-	telemetry.MetricUpstreamFinalizedBlockNumber.WithLabelValues(t.projectId, "*", network, "*").Set(float64(blockNumber))
-}
-
 func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finality string, currentVal, newVal int64) {
 	rollback := currentVal - newVal
 
-	id := upstream.Id()
 	net := upstream.NetworkId()
-	vendor := upstream.VendorName()
-
 	lg := upstream.Logger().With().Str("networkId", net).Logger()
 	lg.Debug().
 		Int64("currentValue", currentVal).
@@ -648,7 +860,5 @@ func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finalit
 		Int64("rollback", rollback).
 		Msgf("recording block rollback in tracker")
 
-	telemetry.MetricUpstreamBlockHeadLargeRollback.
-		WithLabelValues(t.projectId, vendor, net, id).
-		Set(float64(rollback))
+	t.getRollbackGauge(upstream).Set(float64(rollback))
 }

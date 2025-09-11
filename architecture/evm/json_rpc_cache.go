@@ -188,7 +188,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	if len(policies) == 0 {
 		telemetry.MetricCacheGetSkippedTotal.WithLabelValues(
 			c.projectId,
-			req.NetworkId(),
+			req.NetworkLabel(),
 			rpcReq.Method,
 		).Inc()
 		span.SetAttributes(attribute.Bool("cache.hit", false))
@@ -212,7 +212,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			common.SetTraceSpanError(policySpan, err)
 			telemetry.MetricCacheGetErrorTotal.WithLabelValues(
 				c.projectId,
-				req.NetworkId(),
+				req.NetworkLabel(),
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
@@ -221,7 +221,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			).Inc()
 			telemetry.MetricCacheGetErrorDuration.WithLabelValues(
 				c.projectId,
-				req.NetworkId(),
+				req.NetworkLabel(),
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
@@ -243,7 +243,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	if jrr == nil {
 		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
-			req.NetworkId(),
+			req.NetworkLabel(),
 			rpcReq.Method,
 			connector.Id(),
 			policy.String(),
@@ -251,7 +251,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		).Inc()
 		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
-			req.NetworkId(),
+			req.NetworkLabel(),
 			rpcReq.Method,
 			connector.Id(),
 			policy.String(),
@@ -267,7 +267,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			// Treat as cache miss - return nil to indicate no cached data
 			telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 				c.projectId,
-				req.NetworkId(),
+				req.NetworkLabel(),
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
@@ -275,7 +275,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			).Inc()
 			telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 				c.projectId,
-				req.NetworkId(),
+				req.NetworkLabel(),
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
@@ -296,7 +296,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	telemetry.MetricCacheGetSuccessHitTotal.WithLabelValues(
 		c.projectId,
-		req.NetworkId(),
+		req.NetworkLabel(),
 		rpcReq.Method,
 		connector.Id(),
 		policy.String(),
@@ -304,7 +304,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	).Inc()
 	telemetry.MetricCacheGetSuccessHitDuration.WithLabelValues(
 		c.projectId,
-		req.NetworkId(),
+		req.NetworkLabel(),
 		rpcReq.Method,
 		connector.Id(),
 		policy.String(),
@@ -312,7 +312,12 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	).Observe(time.Since(start).Seconds())
 	span.SetAttributes(attribute.Bool("cache.hit", true))
 	if c.logger.GetLevel() <= zerolog.DebugLevel {
-		c.logger.Trace().Str("method", rpcReq.Method).Interface("id", req.ID()).RawJSON("result", jrr.Result).Msg("returning cached response")
+		result := jrr.GetResultBytes()
+		if common.IsSemiValidJson(result) {
+			c.logger.Trace().Str("method", rpcReq.Method).Interface("id", req.ID()).RawJSON("result", result).Msg("returning cached response")
+		} else {
+			c.logger.Trace().Str("method", rpcReq.Method).Interface("id", req.ID()).Str("result", jrr.GetResultString()).Msg("returning cached response")
+		}
 	} else {
 		c.logger.Debug().Str("method", rpcReq.Method).Interface("id", req.ID()).Msg("returning cached response")
 	}
@@ -426,7 +431,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			Str("rangeKey", rk).
 			Int64("blockNumber", blockNumber).
 			Interface("policies", policies).
-			RawJSON("result", rpcResp.Result).
+			RawJSON("result", rpcResp.GetResultBytes()).
 			Str("finalityState", finState.String()).
 			Msg("caching the response")
 	} else {
@@ -455,7 +460,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				if err != nil {
 					telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 						c.projectId,
-						req.NetworkId(),
+						req.NetworkLabel(),
 						rpcReq.Method,
 						connector.Id(),
 						policy.String(),
@@ -464,7 +469,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					).Inc()
 					telemetry.MetricCacheSetErrorDuration.WithLabelValues(
 						c.projectId,
-						req.NetworkId(),
+						req.NetworkLabel(),
 						rpcReq.Method,
 						connector.Id(),
 						policy.String(),
@@ -477,7 +482,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				} else {
 					telemetry.MetricCacheSetSkippedTotal.WithLabelValues(
 						c.projectId,
-						req.NetworkId(),
+						req.NetworkLabel(),
 						rpcReq.Method,
 						connector.Id(),
 						policy.String(),
@@ -488,10 +493,10 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			}
 
 			// Compress the value before storing if compression is enabled
-			valueToStore := rpcResp.Result // Already []byte
+			valueToStore := rpcResp.GetResultBytes()
 			telemetry.MetricCacheSetOriginalBytes.WithLabelValues(
 				c.projectId,
-				req.NetworkId(),
+				req.NetworkLabel(),
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
@@ -511,7 +516,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						Msg("compressed cache value")
 					telemetry.MetricCacheSetCompressedBytes.WithLabelValues(
 						c.projectId,
-						req.NetworkId(),
+						req.NetworkLabel(),
 						rpcReq.Method,
 						connector.Id(),
 						policy.String(),
@@ -530,7 +535,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				errsMu.Unlock()
 				telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 					c.projectId,
-					req.NetworkId(),
+					req.NetworkLabel(),
 					rpcReq.Method,
 					connector.Id(),
 					policy.String(),
@@ -539,7 +544,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				).Inc()
 				telemetry.MetricCacheSetErrorDuration.WithLabelValues(
 					c.projectId,
-					req.NetworkId(),
+					req.NetworkLabel(),
 					rpcReq.Method,
 					connector.Id(),
 					policy.String(),
@@ -549,7 +554,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			} else {
 				telemetry.MetricCacheSetSuccessTotal.WithLabelValues(
 					c.projectId,
-					req.NetworkId(),
+					req.NetworkLabel(),
 					rpcReq.Method,
 					connector.Id(),
 					policy.String(),
@@ -557,7 +562,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				).Inc()
 				telemetry.MetricCacheSetSuccessDuration.WithLabelValues(
 					c.projectId,
-					req.NetworkId(),
+					req.NetworkLabel(),
 					rpcReq.Method,
 					connector.Id(),
 					policy.String(),
@@ -671,12 +676,15 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 
 	var resultBytes []byte
 	if blockRef == "*" {
-		resultBytes, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
+		resultBytes, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey, req)
 	} else {
-		resultBytes, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
+		resultBytes, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey, req)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(resultBytes) == 0 {
+		return nil, nil
 	}
 
 	// Check if it's compressed data
@@ -693,13 +701,11 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		resultBytes = decompressed
 	}
 
-	jrr := &common.JsonRpcResponse{
-		Result: resultBytes,
-	}
-	err = jrr.SetID(rpcReq.ID)
+	jrr, err := common.NewJsonRpcResponseFromBytes(nil, resultBytes, nil)
 	if err != nil {
 		return nil, err
 	}
+	_ = jrr.SetID(rpcReq.ID)
 
 	return jrr, nil
 }
@@ -716,14 +722,15 @@ func shouldCacheResponse(
 		return false, nil
 	}
 
+	size := rpcResp.ResultLength()
 	// Check if the response size is within the limits
-	if !policy.MatchesSizeLimits(len(rpcResp.Result)) {
-		lg.Debug().Int("size", len(rpcResp.Result)).Msg("skip caching because response size does not match policy limits")
+	if !policy.MatchesSizeLimits(size) {
+		lg.Debug().Int("size", size).Msg("skip caching because response size does not match policy limits")
 		return false, nil
 	}
-
+	result := rpcResp.GetResultBytes()
 	// Check if we should cache empty results
-	isEmpty := resp == nil || rpcResp == nil || rpcResp.Result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
+	isEmpty := resp == nil || rpcResp == nil || result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
 	switch policy.EmptyState() {
 	case common.CacheEmptyBehaviorIgnore:
 		return !isEmpty, nil

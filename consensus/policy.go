@@ -14,30 +14,32 @@ import (
 // contexts are canceled when the ConsensusPolicy is finished.
 //
 // R is the execution result type. This type is concurrency safe.
-type ConsensusPolicy[R any] interface {
-	failsafe.Policy[R]
+type ConsensusPolicy interface {
+	failsafe.Policy[*common.NormalizedResponse]
 }
 
 // R is the execution result type. This type is not concurrency safe.
-type ConsensusPolicyBuilder[R any] interface {
-	WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder[R]
-	WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder[R]
-	WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder[R]
-	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder[R]
-	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder[R]
-	WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder[R]
-	OnAgreement(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
-	OnDispute(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
-	OnLowParticipants(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
-	WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R]
-	WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R]
+type ConsensusPolicyBuilder interface {
+	WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder
+	WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder
+	WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder
+	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder
+	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder
+	WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder
+	OnAgreement(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
+	OnDispute(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
+	OnLowParticipants(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
+	WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder
+	WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder
+	WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder
+	WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder
 
 	// Build returns a new ConsensusPolicy using the builder's configuration.
-	Build() ConsensusPolicy[R]
+	Build() ConsensusPolicy
 }
 
-type config[R any] struct {
-	*policy.BaseAbortablePolicy[R]
+type config struct {
+	*policy.BaseAbortablePolicy[*common.NormalizedResponse]
 
 	maxParticipants         int
 	agreementThreshold      int
@@ -48,89 +50,101 @@ type config[R any] struct {
 	logger                  *zerolog.Logger
 	disputeLogLevel         zerolog.Level
 	ignoreFields            map[string][]string
+	preferNonEmpty          bool
+	preferLargerResponses   bool
 
-	onAgreement       func(event failsafe.ExecutionEvent[R])
-	onDispute         func(event failsafe.ExecutionEvent[R])
-	onLowParticipants func(event failsafe.ExecutionEvent[R])
+	onAgreement       func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
+	onDispute         func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
+	onLowParticipants func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
 }
 
-var _ ConsensusPolicyBuilder[any] = &config[any]{}
+var _ ConsensusPolicyBuilder = &config{}
 
-func NewConsensusPolicyBuilder[R any]() ConsensusPolicyBuilder[R] {
-	return &config[R]{
-		BaseAbortablePolicy: &policy.BaseAbortablePolicy[R]{},
+func NewConsensusPolicyBuilder() ConsensusPolicyBuilder {
+	return &config{
+		BaseAbortablePolicy: &policy.BaseAbortablePolicy[*common.NormalizedResponse]{},
 	}
 }
 
-type consensusPolicy[R any] struct {
-	*config[R]
+type consensusPolicy struct {
+	*config
 	logger                          *zerolog.Logger
 	misbehavingUpstreamsLimiter     *sync.Map // [string, *ratelimiter.Limiter]
 	misbehavingUpstreamsSitoutTimer *sync.Map // [string, *time.Timer]
 	disputeLogLevel                 zerolog.Level
 }
 
-var _ ConsensusPolicy[any] = &consensusPolicy[any]{}
+var _ ConsensusPolicy = &consensusPolicy{}
 
-func (c *config[R]) WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder[R] {
+func (c *config) WithMaxParticipants(maxParticipants int) ConsensusPolicyBuilder {
 	c.maxParticipants = maxParticipants
 	return c
 }
 
-func (c *config[R]) WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder[R] {
+func (c *config) WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder {
 	c.agreementThreshold = agreementThreshold
 	return c
 }
 
-func (c *config[R]) WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder[R] {
+func (c *config) WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder {
 	c.disputeBehavior = disputeBehavior
 	return c
 }
 
-func (c *config[R]) WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder[R] {
+func (c *config) WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder {
 	c.punishMisbehavior = cfg
 	return c
 }
 
-func (c *config[R]) WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder[R] {
+func (c *config) WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder {
 	c.lowParticipantsBehavior = lowParticipantsBehavior
 	return c
 }
 
-func (c *config[R]) WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder[R] {
+func (c *config) WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder {
 	c.logger = logger
 	return c
 }
 
-func (c *config[R]) OnAgreement(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R] {
+func (c *config) OnAgreement(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder {
 	c.onAgreement = listener
 	return c
 }
 
-func (c *config[R]) OnDispute(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R] {
+func (c *config) OnDispute(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder {
 	c.onDispute = listener
 	return c
 }
 
-func (c *config[R]) OnLowParticipants(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R] {
+func (c *config) OnLowParticipants(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder {
 	c.onLowParticipants = listener
 	return c
 }
 
-func (c *config[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder[R] {
+func (c *config) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicyBuilder {
 	c.disputeLogLevel = level
 	return c
 }
 
-func (c *config[R]) WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder[R] {
+func (c *config) WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder {
 	c.ignoreFields = ignoreFields
 	return c
 }
 
-func (c *config[R]) Build() ConsensusPolicy[R] {
+func (c *config) WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder {
+	c.preferNonEmpty = preferNonEmpty
+	return c
+}
+
+func (c *config) WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder {
+	c.preferLargerResponses = preferLargerResponses
+	return c
+}
+
+func (c *config) Build() ConsensusPolicy {
 	hCopy := *c
 	if !c.BaseAbortablePolicy.IsConfigured() {
-		c.AbortIf(func(exec failsafe.ExecutionAttempt[R], r R, err error) bool {
+		c.AbortIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], r *common.NormalizedResponse, err error) bool {
 			// We'll let the executor handle the actual consensus check
 			return false
 		})
@@ -144,7 +158,7 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 		disputeLevel = zerolog.WarnLevel
 	}
 
-	return &consensusPolicy[R]{
+	return &consensusPolicy{
 		config:                          &hCopy,
 		logger:                          &log,
 		misbehavingUpstreamsLimiter:     &sync.Map{},
@@ -153,57 +167,45 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 	}
 }
 
-func (p *consensusPolicy[R]) WithMaxParticipants(required int) ConsensusPolicy[R] {
+func (p *consensusPolicy) WithMaxParticipants(required int) ConsensusPolicy {
 	pCopy := *p
 	pCopy.maxParticipants = required
 	return &pCopy
 }
 
-func (p *consensusPolicy[R]) WithAgreementThreshold(threshold int) ConsensusPolicy[R] {
+func (p *consensusPolicy) WithAgreementThreshold(threshold int) ConsensusPolicy {
 	pCopy := *p
 	pCopy.agreementThreshold = threshold
 	return &pCopy
 }
 
-func (p *consensusPolicy[R]) WithTimeout(timeout time.Duration) ConsensusPolicy[R] {
+func (p *consensusPolicy) WithTimeout(timeout time.Duration) ConsensusPolicy {
 	pCopy := *p
 	pCopy.timeout = timeout
 	return &pCopy
 }
 
-func (p *consensusPolicy[R]) WithLogger(logger *zerolog.Logger) ConsensusPolicy[R] {
+func (p *consensusPolicy) WithLogger(logger *zerolog.Logger) ConsensusPolicy {
 	pCopy := *p
 	lg := logger.With().Str("component", "consensus").Logger()
 	pCopy.logger = &lg
 	return &pCopy
 }
 
-func (p *consensusPolicy[R]) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicy[R] {
+func (p *consensusPolicy) WithDisputeLogLevel(level zerolog.Level) ConsensusPolicy {
 	pCopy := *p
 	pCopy.disputeLogLevel = level
 	return &pCopy
 }
 
-func (p *consensusPolicy[R]) ToExecutor(_ R) any {
+func (p *consensusPolicy) ToExecutor(_ *common.NormalizedResponse) any {
 	return p.Build()
 }
 
-func (p *consensusPolicy[R]) Build() policy.Executor[R] {
-	return &executor[R]{
-		BaseExecutor:    &policy.BaseExecutor[R]{},
+func (p *consensusPolicy) Build() policy.Executor[*common.NormalizedResponse] {
+	e := &executor{
+		BaseExecutor:    &policy.BaseExecutor[*common.NormalizedResponse]{},
 		consensusPolicy: p,
-
-		// Initialize sync pools for hot path map allocations
-		simpleMapsPool: sync.Pool{
-			New: func() interface{} {
-				// Return nil by default, getter methods will create appropriate map types
-				return nil
-			},
-		},
-		resultsByHashPool: sync.Pool{
-			New: func() interface{} {
-				return make(map[string]R, 16)
-			},
-		},
 	}
+	return e
 }

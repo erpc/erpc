@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	archEvm "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -131,6 +132,9 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	defer cancel()
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		// Consider "failed to verify certificate" as unsupported due to how Envios load-balancing in their K8S works
 		if strings.Contains(err.Error(), "failed to verify certificate") {
@@ -242,7 +246,8 @@ func (v *EnvioVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Log
 	}
 
 	// Create a new client for this chain ID
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", nil, parsedURL, nil, nil)
+	u := &phonyUpstream{id: fmt.Sprintf("temp-envio-%d", chainId)}
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", u, parsedURL, nil, nil, archEvm.NewJsonRpcErrorExtractor())
 	if err != nil {
 		return nil, err
 	}

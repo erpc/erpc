@@ -9,18 +9,21 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
 	_ "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
-	evmArch "github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -32,6 +35,7 @@ import (
 type GrpcBdsClient interface {
 	GetType() ClientType
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+	SetHeaders(h map[string]string)
 }
 
 type GenericGrpcBdsClient struct {
@@ -110,7 +114,24 @@ func NewGrpcBdsClient(
 	// Create gRPC connection
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(transportCredentials),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)), // 100MB max message size
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(100*1024*1024),
+			grpc.MaxCallSendMsgSize(100*1024*1024),
+		),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                2 * time.Minute,
+			Timeout:             20 * time.Second,
+			PermitWithoutStream: false,
+		}),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			MinConnectTimeout: 5 * time.Second,
+			Backoff: backoff.Config{
+				BaseDelay:  1 * time.Second,
+				Multiplier: 1.6,
+				Jitter:     0.2,
+				MaxDelay:   30 * time.Second,
+			},
+		}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to gRPC server at %s: %w", target, err)
@@ -154,7 +175,7 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstreamId,
+			c.upstream,
 			req.NetworkId(),
 			"",
 			0, 0, 0, 0,
@@ -264,9 +285,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal result: %w", err)
 			}
-			jsonRpcResp.Result = resultBytes
+			jsonRpcResp.SetResult(resultBytes)
 		} else {
-			jsonRpcResp.Result = []byte("null")
+			jsonRpcResp.SetResult([]byte("null"))
 		}
 
 		return common.NewNormalizedResponse().
@@ -307,9 +328,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -379,9 +400,9 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -410,21 +431,21 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 	var fromBlock, toBlock *uint64
 	if fromStr, ok := filterParams["fromBlock"].(string); ok {
 		if fromStr != "latest" && fromStr != "pending" && fromStr != "earliest" {
-			from, err := parseHexUint64(strings.TrimPrefix(fromStr, "0x"))
+			fromParsed, err := evm.HexToUint64(fromStr)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse fromBlock: %w", err)
 			}
-			fromBlock = &from
+			fromBlock = &fromParsed
 		}
 	}
 
 	if toStr, ok := filterParams["toBlock"].(string); ok {
 		if toStr != "latest" && toStr != "pending" && toStr != "earliest" {
-			to, err := parseHexUint64(strings.TrimPrefix(toStr, "0x"))
+			toParsed, err := evm.HexToUint64(toStr)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse toBlock: %w", err)
 			}
-			toBlock = &to
+			toBlock = &toParsed
 		}
 	}
 
@@ -519,11 +540,15 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
 
-	resultBytes, err := sonic.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	if len(result) == 0 {
+		jsonRpcResp.SetResult([]byte("[]"))
+	} else {
+		resultBytes, err := sonic.Marshal(result)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+		jsonRpcResp.SetResult(resultBytes)
 	}
-	jsonRpcResp.Result = resultBytes
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -585,9 +610,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, r
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -650,9 +675,9 @@ func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, 
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("null"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -684,7 +709,7 @@ func (c *GenericGrpcBdsClient) handleChainId(ctx context.Context, req *common.No
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
-	jsonRpcResp.Result = resultBytes
+	jsonRpcResp.SetResult(resultBytes)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -747,14 +772,14 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, req *
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
 
-	if result != nil {
+	if len(result) > 0 {
 		resultBytes, err := sonic.Marshal(result)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
-		jsonRpcResp.Result = resultBytes
+		jsonRpcResp.SetResult(resultBytes)
 	} else {
-		jsonRpcResp.Result = []byte("null")
+		jsonRpcResp.SetResult([]byte("[]"))
 	}
 
 	return common.NewNormalizedResponse().
@@ -775,7 +800,7 @@ func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 	}
 
 	// Pass to the EVM error normalizer
-	return evmArch.ExtractGrpcError(st, c.upstream)
+	return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
 }
 
 func (c *GenericGrpcBdsClient) shutdown() {
@@ -787,16 +812,17 @@ func (c *GenericGrpcBdsClient) shutdown() {
 	}
 }
 
-// Helper functions for conversion
-
-func parseHexUint64(hexStr string) (uint64, error) {
-	hexStr = strings.TrimPrefix(hexStr, "0x")
-	var value uint64
-	_, err := fmt.Sscanf(hexStr, "%x", &value)
-	return value, err
+func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
+	if c == nil || h == nil {
+		return
+	}
+	for k, v := range h {
+		c.headers[k] = v
+	}
 }
 
+// Helper functions for conversion
+
 func parseHexBytes(hexStr string) ([]byte, error) {
-	hexStr = strings.TrimPrefix(hexStr, "0x")
-	return hex.DecodeString(hexStr)
+	return evm.HexToBytes(hexStr)
 }

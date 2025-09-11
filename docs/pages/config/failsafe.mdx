@@ -283,13 +283,13 @@ export default createConfig({
 
 Automatically retries failed requests with configurable backoff strategies.
 
-### Retryable Errors
+#### Retryable Errors
 - `5xx` server errors (intermittent issues)
 - `408` request timeout
 - `429` rate limit exceeded
 - Empty responses for certain methods (e.g., `eth_getLogs` when node is lagging)
 
-### Non-Retryable Errors
+#### Non-Retryable Errors
 - `4xx` client errors (invalid requests)
 - Unsupported method errors
 
@@ -331,6 +331,72 @@ export default createConfig({
           backoffMaxDelay: "10s", // Maximum delay after backoff
           backoffFactor: 0.3,    // Exponential backoff multiplier
           jitter: "500ms"        // Random jitter (0-500ms) to prevent thundering herd
+        }
+      }]
+    }]
+  }]
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+### Empty responses
+
+Retry feature is useful to handle empty responses when a node is lagging behind or for some other reason returns an unexpected empty response.
+
+- **What counts as empty**: Results like `null`, `[]`, `""`, `{}`, `0x`, `"0x"`, hex strings that are all zeros (e.g., `0x000...0`), and method-specific empties (e.g., empty logs). Internally we detect these directly from response bytes.
+- **Where retries apply**: Only at the **network level** when the request has `retryEmpty` enabled (via directive defaults or request headers/params). Upstream-level retry does not retry on empties.
+- **Default ignore list (`retry.emptyResultIgnore`)**: Methods to NEVER retry when the response is empty (e.g., `eth_getLogs`, `eth_call`). Configure to override defaults.
+- **Block availability check**: For EVM, when empty and the upstream is not syncing, we try to extract the block number and check upstream availability. If the upstream can serve that block but still returned empty, we do not retry.
+- **Availability confidence (`retry.emptyResultConfidence`)**:
+  - `finalizedBlock`: If the target block is finalized (at or below finalized), empty responses are treated as valid (no retry). If the target block is after finalized, we will retry.
+  - `blockHead`: If the target block is at or below the node's latest head, empty responses are treated as valid (no retry). If the target block is ahead of the head, we will retry.
+- **Syncing nodes**: If an upstream is syncing and returns empty, it is treated unfavorably and skipped for the remainder of the request.
+- **Per-request de-dup**: Upstreams that returned empty for a request are skipped on subsequent rotations for that same request.
+- **Cap empty retries**: `retry.emptyResultMaxAttempts` caps total attempts specifically for empty-result retries (default equals `retry.maxAttempts`).
+- **Non-empty wins**: If any non-empty response was seen, it is preserved and can be returned even if later attempts fail. In consensus, when configured, non-empty results are preferred.
+- **Writes are never retried**: Write methods (e.g., `eth_send*`) are not retried.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="EmptyRetryConfigTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        directiveDefaults:
+          retryEmpty: true # enable empty-result retries at network level
+        failsafe:
+          - matchMethod: "*"
+            retry:
+              maxAttempts: 4 # total attempts (initial + retries)
+              emptyResultIgnore: ["eth_getLogs", "eth_call"] # Never retry these methods when result is empty
+              emptyResultConfidence: finalizedBlock # treat finalized empties as valid
+              emptyResultMaxAttempts: 2 # cap attempts for empty-result retries only
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      directiveDefaults: {
+        retryEmpty: true                // enable empty-result retries at network level
+      },
+      failsafe: [{
+        matchMethod: "*",
+        retry: {
+          maxAttempts: 4,
+          // emptyResultIgnore: ["eth_getLogs", "eth_call"], // NEVER retry these when empty
+          // emptyResultConfidence: "finalized",              // treat finalized empties as valid
+          emptyResultMaxAttempts: 2      // cap attempts for empty-result retries only
         }
       }]
     }]

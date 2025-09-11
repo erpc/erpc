@@ -10,15 +10,17 @@ import (
 var _ EvmStatePoller = &FakeEvmStatePoller{}
 var _ Upstream = &FakeUpstream{}
 var _ EvmUpstream = &FakeUpstream{}
+var _ HealthTracker = &FakeHealthTracker{}
 
 type FakeUpstream struct {
-	id             string
-	config         *UpstreamConfig
-	network        Network
-	evmStatePoller EvmStatePoller
-	cordoned       bool
-	cordonedReason string
-	cordonMu       sync.RWMutex
+	id                 string
+	config             *UpstreamConfig
+	network            Network
+	evmStatePoller     EvmStatePoller
+	cordoned           bool
+	lastCordonedReason string
+	cordonMu           sync.RWMutex
+	tracker            HealthTracker
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -27,6 +29,7 @@ func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
 		config: &UpstreamConfig{
 			Id: id,
 		},
+		tracker: &FakeHealthTracker{},
 	}
 
 	for _, opt := range opts {
@@ -70,6 +73,10 @@ func (u *FakeUpstream) NetworkId() string {
 	return "evm:123"
 }
 
+func (u *FakeUpstream) NetworkLabel() string {
+	return "evm:123"
+}
+
 func (u *FakeUpstream) SetNetwork(network Network) {
 	u.network = network
 }
@@ -84,6 +91,10 @@ func (u *FakeUpstream) EvmSyncingState() EvmSyncingState {
 
 func (u *FakeUpstream) Vendor() Vendor {
 	return nil
+}
+
+func (u *FakeUpstream) Tracker() HealthTracker {
+	return u.tracker
 }
 
 func (u *FakeUpstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
@@ -106,20 +117,20 @@ func (u *FakeUpstream) Cordon(method string, reason string) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()
 	u.cordoned = true
-	u.cordonedReason = reason
+	u.lastCordonedReason = reason
 }
 
-func (u *FakeUpstream) Uncordon(method string) {
+func (u *FakeUpstream) Uncordon(method string, reason string) {
 	u.cordonMu.Lock()
 	defer u.cordonMu.Unlock()
 	u.cordoned = false
-	u.cordonedReason = ""
+	u.lastCordonedReason = ""
 }
 
 func (u *FakeUpstream) CordonedReason() (string, bool) {
 	u.cordonMu.RLock()
 	defer u.cordonMu.RUnlock()
-	return u.cordonedReason, u.cordoned
+	return u.lastCordonedReason, u.cordoned
 }
 
 func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
@@ -174,7 +185,7 @@ func (p *FakeEvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, 
 	return p.latestBlockNumber, nil
 }
 
-func (p *FakeEvmStatePoller) SetNetworkConfig(config *EvmNetworkConfig) {
+func (p *FakeEvmStatePoller) SetNetworkConfig(config *NetworkConfig) {
 	// No-op for testing
 }
 
@@ -192,4 +203,34 @@ func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
+}
+
+// FakeHealthTracker is a no-op implementation of HealthTracker for testing
+type FakeHealthTracker struct {
+	MisbehaviorRecorded bool
+	MisbehaviorCount    int
+	mu                  sync.Mutex
+}
+
+func (t *FakeHealthTracker) RecordUpstreamMisbehavior(up Upstream, method string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.MisbehaviorRecorded = true
+	t.MisbehaviorCount++
+}
+
+func (t *FakeHealthTracker) RecordUpstreamRequest(up Upstream, method string) {
+	// No-op for testing
+}
+
+func (t *FakeHealthTracker) RecordUpstreamFailure(up Upstream, method string, err error) {
+	// No-op for testing
+}
+
+func (t *FakeHealthTracker) Cordon(upstream Upstream, method string, reason string) {
+	// No-op for testing
+}
+
+func (t *FakeHealthTracker) Uncordon(upstream Upstream, method string, reason string) {
+	// No-op for testing
 }

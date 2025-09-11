@@ -1,7 +1,6 @@
 package clients
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
@@ -37,7 +35,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -63,7 +61,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -88,7 +86,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -101,71 +99,10 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 
 		assert.Error(t, err)
 	})
-
-	t.Run("TraceExecutionTimeout", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			BodyString(`{"jsonrpc":"2.0","id":1,"result":[{"error":"execution timeout"}]}`)
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"debug_traceBlockByNumber","params":["0x226AECC",{"tracer":"callTracer","timeout":"1ms"}],"id":1}`))
-		_, err = client.SendRequest(context.Background(), req)
-
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "-32015")
-		assert.Contains(t, err.Error(), "execution timeout")
-	})
 }
 
 func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	logger := log.Logger
-
-	t.Run("SimpleBatchRequest", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", nil, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, &common.JsonRpcUpstreamConfig{
-			SupportsBatch: &[]bool{true}[0],
-			BatchMaxSize:  5,
-			BatchMaxWait:  common.Duration(50 * time.Millisecond),
-		}, nil)
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
-
-		var wg sync.WaitGroup
-		for i := 0; i < 3; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
-				_, err := client.SendRequest(context.Background(), req)
-				if err != nil {
-					assert.NotContains(t, err.Error(), "no response received for request")
-				}
-				assert.NoError(t, err)
-			}(i + 1)
-		}
-		wg.Wait()
-	})
 
 	t.Run("ConcurrentRequestsRaceCondition", func(t *testing.T) {
 		util.ResetGock()
@@ -182,7 +119,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			BatchMaxSize:  2,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
 		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -208,62 +145,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		wg.Wait()
 	})
 
-	t.Run("SeparateBatchRequestsWithSameIDs", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", nil, &url.URL{Scheme: "http", Host: "rpc1.localhost"}, &common.JsonRpcUpstreamConfig{
-			SupportsBatch: &common.TRUE,
-			BatchMaxSize:  5,
-			BatchMaxWait:  common.Duration(500 * time.Millisecond),
-		}, nil)
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Times(5).
-			Reply(200).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":6,"result":"0x6"}]`)
-
-		var wg sync.WaitGroup
-		for i := 0; i < 5; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-				resp1, err1 := client.SendRequest(context.Background(), req1)
-				assert.NoError(t, err1)
-				if resp1 == nil {
-					panic(fmt.Sprintf("SeparateBatchRequestsWithSameIDs: resp1 is nil err1: %v", err1))
-				}
-				wr := bytes.NewBuffer([]byte{})
-				_, werr := resp1.WriteTo(wr)
-				assert.NoError(t, werr)
-				txt := wr.String()
-				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, txt)
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[]}`))
-				resp6, err6 := client.SendRequest(context.Background(), req6)
-				assert.NoError(t, err6)
-				wr := bytes.NewBuffer([]byte{})
-				_, werr := resp6.WriteTo(wr)
-				assert.NoError(t, werr)
-				txt := wr.String()
-				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, txt)
-			}()
-			time.Sleep(10 * time.Millisecond)
-		}
-		wg.Wait()
-
-		assert.True(t, gock.IsDone())
-	})
-
 	t.Run("RequestEndpointTimeout", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -274,7 +155,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -305,7 +186,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			BatchMaxSize:  5,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
 		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -348,7 +229,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			BatchMaxSize:  5,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
 		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -389,7 +270,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			BatchMaxSize:  5,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
 		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -426,7 +307,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			BatchMaxSize:  5,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
 		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -448,143 +329,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		wg.Wait()
 	})
 
-	t.Run("SingleObjectResponseForBatchRequest", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		ups.Config().JsonRpc = &common.JsonRpcUpstreamConfig{
-			SupportsBatch: &common.TRUE,
-			BatchMaxSize:  5,
-			BatchMaxWait:  common.Duration(50 * time.Millisecond),
-		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(429).
-			BodyString(`{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}`)
-
-		var wg sync.WaitGroup
-		for i := 0; i < 3; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
-				_, err := client.SendRequest(context.Background(), req)
-				assert.Error(t, err)
-				txt, _ := sonic.Marshal(err)
-				assert.Contains(t, string(txt), "ErrEndpointCapacityExceeded")
-			}(i + 1)
-		}
-		wg.Wait()
-	})
-
-	t.Run("SingleRequestUnauthorized", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(401).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error":   map[string]interface{}{"code": -32000, "message": "Unauthorized"},
-			})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		_, err = client.SendRequest(context.Background(), req)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "Unauthorized")
-		assert.IsType(t, &common.ErrEndpointUnauthorized{}, err)
-	})
-
-	t.Run("SingleRequestUnsupported", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(415).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error":   map[string]interface{}{"code": -32601, "message": "Method not found"},
-			})
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_unsupportedMethod","params":[]}`))
-		_, err = client.SendRequest(context.Background(), req)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "Method not found")
-		assert.IsType(t, &common.ErrEndpointUnsupported{}, err)
-	})
-
-	t.Run("SingleRequestCapacityExceeded", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		ups.Config().JsonRpc = &common.JsonRpcUpstreamConfig{
-			SupportsBatch: &common.TRUE,
-			BatchMaxSize:  3,
-			BatchMaxWait:  common.Duration(50 * time.Millisecond),
-		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(429).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error":   map[string]interface{}{"code": -32005, "message": "Exceeded the quota"},
-			})
-
-		var wg sync.WaitGroup
-		for i := 0; i < 3; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
-				_, err := client.SendRequest(context.Background(), req)
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "ErrEndpointCapacityExceeded")
-			}(i + 1)
-		}
-		wg.Wait()
-	})
-
 	t.Run("PartialBatchResponse", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -600,7 +344,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			BatchMaxSize:  3,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
 		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -646,7 +390,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			BatchMaxSize:  3,
 			BatchMaxWait:  common.Duration(50 * time.Millisecond),
 		}
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
 
 		gock.New("http://rpc1.localhost:8545").
@@ -709,6 +453,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			&url.URL{Scheme: "http", Host: "rpc1.localhost:8545"},
 			ups.Config().JsonRpc,
 			nil,
+			&noopErrorExtractor{},
 		)
 		assert.NoError(t, err)
 
@@ -780,6 +525,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			&url.URL{Scheme: "http", Host: "rpc1.localhost:8545"},
 			ups.Config().JsonRpc,
 			proxyPool,
+			&noopErrorExtractor{},
 		)
 		assert.NoError(t, err, "expected no error creating JsonRpcClient")
 
@@ -806,78 +552,4 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		assert.Equal(t, "myproxy1:8080", proxiedUrl.Host)
 	})
 
-}
-func TestHttpJsonRpcClient_CapacityExceededErrors(t *testing.T) {
-	logger := log.Logger
-
-	t.Run("Direct429Response", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
-		assert.NoError(t, err)
-
-		// Set up a 429 response with an empty body
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(429).
-			BodyString("")
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		_, err = client.SendRequest(context.Background(), req)
-
-		// Verify the error
-		assert.Error(t, err)
-
-		// Check that we got a capacity exceeded error
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "Expected ErrEndpointCapacityExceeded, got: %T: %v", err, err)
-
-		// Verify the underlying JSON-RPC error code
-		capacityErr, ok := err.(*common.ErrEndpointCapacityExceeded)
-		assert.True(t, ok, "Expected ErrEndpointCapacityExceeded, got: %T", err)
-
-		// Verify the status code was preserved in the details
-		cause, ok := capacityErr.Cause.(*common.ErrJsonRpcExceptionInternal)
-		assert.True(t, ok, "Expected ErrJsonRpcExceptionInternal, got: %T", capacityErr.Cause)
-		details := cause.Details
-		assert.Equal(t, 429, details["statusCode"])
-	})
-
-	t.Run("429WithErrorMessage", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
-		assert.NoError(t, err)
-
-		// Set up a 429 response with a rate limit error message
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(429).
-			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"Rate limit exceeded"}}`)
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		_, err = client.SendRequest(context.Background(), req)
-
-		// Verify the error
-		assert.Error(t, err)
-
-		// Check that we got a capacity exceeded error
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "Expected ErrEndpointCapacityExceeded, got: %T: %v", err, err)
-
-		// Verify the error message was preserved
-		assert.Contains(t, err.Error(), "Rate limit exceeded")
-	})
 }

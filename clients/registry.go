@@ -31,14 +31,17 @@ type ClientRegistry struct {
 	projectId         string
 	clients           sync.Map
 	proxyPoolRegistry *ProxyPoolRegistry
+	evmExtractor      common.JsonRpcErrorExtractor
 }
 
-func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry) *ClientRegistry {
-	return &ClientRegistry{
+func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry, evmExtractor common.JsonRpcErrorExtractor) *ClientRegistry {
+	cr := &ClientRegistry{
 		logger:            logger,
 		projectId:         projectId,
 		proxyPoolRegistry: proxyPoolRegistry,
+		evmExtractor:      evmExtractor,
 	}
+	return cr
 }
 
 func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {
@@ -89,6 +92,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						parsedUrl,
 						cfg.JsonRpc,
 						proxyPool,
+						manager.evmExtractor,
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
