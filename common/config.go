@@ -196,8 +196,8 @@ type CacheMethodConfig struct {
 
 type CachePolicyConfig struct {
 	// New matcher-based configuration
-	Matchers    []*MatcherConfig     `yaml:"matchers,omitempty" json:"matchers"`
-	Connector   string               `yaml:"connector" json:"connector"`
+	Matchers  []*MatcherConfig `yaml:"matchers,omitempty" json:"matchers"`
+	Connector string           `yaml:"connector" json:"connector"`
 
 	// Legacy fields (kept for backward compatibility and converted into matchers)
 	Network     string               `yaml:"network,omitempty" json:"network"`

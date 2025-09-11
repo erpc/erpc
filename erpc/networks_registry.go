@@ -121,19 +121,12 @@ func NewNetwork(
 
 	// Create a default executor if no failsafe config is provided or matched
 	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-<<<<<<< HEAD
-		config:     nil, // Default executor has no config
-		method:     "*", // "*" means match any method
-		finalities: nil, // nil means match any finality
-		executor:   failsafe.NewExecutor[*common.NormalizedResponse](),
-		timeout:    nil,
-=======
+		config:                 nil, // Default executor has no config
 		method:                 "*", // "*" means match any method
 		finalities:             nil, // nil means match any finality
 		executor:               failsafe.NewExecutor[*common.NormalizedResponse](),
 		timeout:                nil,
 		consensusPolicyEnabled: false,
->>>>>>> origin/main
 	})
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))

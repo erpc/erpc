@@ -735,12 +735,6 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -866,12 +860,6 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -1008,23 +996,11 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		upsFsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
 		}
 		ntwFsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -1186,23 +1162,11 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		upsFsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
 		}
 		ntwFsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -1556,12 +1520,6 @@ func TestNetwork_Forward(t *testing.T) {
 		// Initialize various components for the test environment
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Hedge:   nil,
 			Timeout: nil,
 			Retry: &common.RetryPolicyConfig{
@@ -1754,27 +1712,19 @@ func TestNetwork_Forward(t *testing.T) {
 		// First upstream returns the retryable client error
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_call")
-			}).
 			Reply(400).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
 				"id": 1,
 				"error": {
 					"code": -32000,
-									"message": "pending block is not available"
-			}
-		}`))
+					"message": "pending block is not available"
+				}
+			}`))
 
 		// Second upstream responds successfully
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_call")
-			}).
 			Reply(200).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
@@ -1893,12 +1843,6 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
-					Matchers: []*common.MatcherConfig{
-						{
-							Method: "*",
-							Action: common.MatcherInclude,
-						},
-					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 3,
 					}},
@@ -1960,10 +1904,6 @@ func TestNetwork_Forward(t *testing.T) {
 		// Mock a client error response (400) and code -32602, meaning invalid argument
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_call")
-			}).
 			Reply(400).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
@@ -1977,10 +1917,6 @@ func TestNetwork_Forward(t *testing.T) {
 		// Second upstream responds successfully
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_call")
-			}).
 			Reply(200).
 			JSON([]byte(`{
 				"jsonrpc": "2.0",
@@ -2099,12 +2035,6 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
-					Matchers: []*common.MatcherConfig{
-						{
-							Method: "*",
-							Action: common.MatcherInclude,
-						},
-					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 3,
 					}},
@@ -2216,12 +2146,6 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Configure network with hedge policy
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(hedgeDelay),
 				MaxCount: 1,
@@ -2364,12 +2288,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "eth_getBalance",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -2578,12 +2496,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "eth_getBalance",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -2774,12 +2686,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -2964,12 +2870,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -3172,12 +3072,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
 			},
@@ -3407,12 +3301,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -3605,12 +3493,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3, // Allow up to 3 retry attempts
 			},
@@ -3799,12 +3681,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -3988,20 +3864,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-<<<<<<< HEAD
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-		}
-=======
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{}
->>>>>>> origin/main
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -4266,12 +4130,6 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -4444,12 +4302,6 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -4580,12 +4432,6 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -4835,12 +4681,6 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3,
 			},
@@ -4972,12 +4812,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4,
 			},
@@ -5177,12 +5011,6 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
-					Matchers: []*common.MatcherConfig{
-						{
-							Method: "*",
-							Action: common.MatcherInclude,
-						},
-					},
 					Timeout: &common.TimeoutPolicyConfig{
 						Duration: common.Duration(30 * time.Millisecond),
 					}},
@@ -5245,12 +5073,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: common.Duration(1 * time.Second),
 			},
@@ -5383,12 +5205,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(200 * time.Millisecond),
 				MaxCount: 1,
@@ -5542,12 +5358,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(100 * time.Millisecond),
 				MaxCount: 5,
@@ -5700,12 +5510,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(100 * time.Millisecond),
 				MaxCount: 5,
@@ -5862,12 +5666,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
 				FailureThresholdCapacity: 4,
@@ -5978,10 +5776,6 @@ func TestNetwork_Forward(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_traceTransaction")
-			}).
 			Times(1).
 			Reply(503).
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
@@ -6001,23 +5795,11 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfgNetwork := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 1,
 			},
 		}
 		fsCfgUp1 := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    1,
 				FailureThresholdCapacity: 1,
@@ -6309,20 +6091,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-<<<<<<< HEAD
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-		}
-=======
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{}
->>>>>>> origin/main
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -6458,12 +6228,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -6609,12 +6373,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -6743,12 +6501,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -6901,12 +6653,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -7131,12 +6877,6 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: []*common.FailsafeConfig{{
-					Matchers: []*common.MatcherConfig{
-						{
-							Method: "*",
-							Action: common.MatcherInclude,
-						},
-					},
 					Retry: &common.RetryPolicyConfig{
 						MaxAttempts: 2,
 					}},
@@ -7198,14 +6938,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-		}
+		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -7328,14 +7061,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-		}
+		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -7457,14 +7183,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-		}
+		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -7764,14 +7483,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-		}
+		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -7910,18 +7622,14 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Policies: []*common.CachePolicyConfig{
 				{
-					Matchers: []*common.MatcherConfig{
-						{
-							Network: "*",
-							Method:  "*",
-							Action:  common.MatcherInclude,
-						},
-					},
+					Network:   "*",
+					Method:    "*",
 					TTL:       common.Duration(5 * time.Minute),
 					Connector: "mock",
 				},
 			},
 		}
+		cacheCfg.SetDefaults()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -8328,6 +8036,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			EvalInterval:     common.Duration(100 * time.Millisecond),
 			EvalFunction:     evalFn,
 		}
+		selectionPolicy.SetDefaults()
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -8531,12 +8240,6 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				ChainId: 123,
 			},
 			Failsafe: []*common.FailsafeConfig{{
-				Matchers: []*common.MatcherConfig{
-					{
-						Method: "*",
-						Action: common.MatcherInclude,
-					},
-				},
 				Retry: nil,
 				Hedge: nil,
 				Timeout: &common.TimeoutPolicyConfig{
@@ -9314,14 +9017,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			common.EvmNodeTypeFull,    // rpc2 type
 			1000,                      // rpc2 max recent blocks
 			&common.FailsafeConfig{
-				Matchers: []*common.MatcherConfig{
-					{
-						Method: "*",
-						Action: common.MatcherInclude,
-					},
-				},
-				Hedge:   nil,
-				Timeout: nil,
+				MatchMethod: "*",
+				Hedge:       nil,
+				Timeout:     nil,
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 2,
 				},
@@ -9408,14 +9106,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		// Setup network with a Full node that has limited block history (128 blocks)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-			Hedge:   nil,
-			Timeout: nil,
+			MatchMethod: "*",
+			Hedge:       nil,
+			Timeout:     nil,
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
@@ -9996,19 +9689,15 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			},
 			Policies: []*common.CachePolicyConfig{
 				{
-					Matchers: []*common.MatcherConfig{
-						{
-							Network:  "*",
-							Method:   "*",
-							Finality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
-							Action:   common.MatcherInclude,
-						},
-					},
+					Network:   "*",
+					Method:    "*",
 					TTL:       common.Duration(5 * time.Minute),
 					Connector: "mock",
+					Finality:  common.DataFinalityStateUnfinalized,
 				},
 			},
 		}
+		cacheCfg.SetDefaults()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -10290,12 +9979,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		pollerDebounce := 1000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
+			MatchMethod: "*",
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: failAttempts, // upstream‑level retries
 			},
@@ -10900,15 +10584,10 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 
 	if failsafeConfig == nil {
 		failsafeConfig = &common.FailsafeConfig{
-			Matchers: []*common.MatcherConfig{
-				{
-					Method: "*",
-					Action: common.MatcherInclude,
-				},
-			},
-			Hedge:   nil,
-			Timeout: nil,
-			Retry:   nil,
+			MatchMethod: "*",
+			Hedge:       nil,
+			Timeout:     nil,
+			Retry:       nil,
 		}
 	}
 
