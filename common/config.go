@@ -195,20 +195,19 @@ type CacheMethodConfig struct {
 }
 
 type CachePolicyConfig struct {
-	// New matcher-based configuration
-	Matchers  []*MatcherConfig `yaml:"matchers,omitempty" json:"matchers"`
-	Connector string           `yaml:"connector" json:"connector"`
-
-	// Legacy fields (kept for backward compatibility and converted into matchers)
-	Network     string               `yaml:"network,omitempty" json:"network"`
-	Method      string               `yaml:"method,omitempty" json:"method"`
-	Params      []interface{}        `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState    `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
-	Empty       CacheEmptyBehavior   `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
+	Matchers    []*MatcherConfig     `yaml:"matchers,omitempty" json:"matchers"`
+	Connector   string               `yaml:"connector" json:"connector"`
 	AppliesTo   CachePolicyAppliesTo `yaml:"appliesTo,omitempty" json:"appliesTo" tstype:"'get' | 'set' | 'both'"`
 	MinItemSize *string              `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
 	MaxItemSize *string              `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
 	TTL         Duration             `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
+
+	// Deprecated: Use Matchers instead
+	Network  string             `yaml:"network,omitempty" json:"network"`
+	Method   string             `yaml:"method,omitempty" json:"method"`
+	Params   []interface{}      `yaml:"params,omitempty" json:"params"`
+	Finality DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty    CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
 }
 
 type ConnectorDriverType string
@@ -745,17 +744,17 @@ type MatchResult struct {
 	Action  MatcherAction
 }
 
-type FailsafeConfig struct {
-	// Deprecated: Use Matchers instead
-	MatchMethod string `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	// Deprecated: Use Matchers instead
-	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
+type FailsafeConfig struct {        `yaml:"matchFinality,omitempty" json:"matchFinality"`
 	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
 	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
 	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+
+	// Deprecated: Use Matchers instead
+	MatchMethod string `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality  []DataFinalityState 
 }
 
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
