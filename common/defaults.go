@@ -1340,8 +1340,15 @@ func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) error {
 		p.UpstreamIdTemplate = "<PROVIDER>-<NETWORK>"
 	}
 	if p.Overrides != nil {
+		// Do not inherit Failsafe defaults into overrides; overrides should replace them.
+		var defsNoFailsafe *UpstreamConfig
+		if upsDefaults != nil {
+			tmp := *upsDefaults
+			tmp.Failsafe = nil
+			defsNoFailsafe = &tmp
+		}
 		for _, override := range p.Overrides {
-			if err := override.SetDefaults(upsDefaults); err != nil {
+			if err := override.SetDefaults(defsNoFailsafe); err != nil {
 				return fmt.Errorf("failed to set defaults for override: %w", err)
 			}
 		}

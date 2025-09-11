@@ -239,7 +239,33 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
 	for _, fe := range n.failsafeExecutors {
-		if fe.config != nil && matchers.Match(ctx, fe.config.Matchers, req, nil) {
+		if fe.config != nil {
+			// Prefer new matcher-based selection when matchers are provided
+			if len(fe.config.Matchers) > 0 {
+				if matchers.Match(ctx, fe.config.Matchers, req, nil) {
+					return fe
+				}
+				continue
+			}
+
+			// Fallback to legacy matching when no matchers are defined
+			method, _ := req.Method()
+			if ok, _ := common.WildcardMatch(fe.method, method); !ok {
+				continue
+			}
+			if len(fe.finalities) > 0 {
+				reqFinality := req.Finality(ctx)
+				finalityMatched := false
+				for _, f := range fe.finalities {
+					if f == reqFinality {
+						finalityMatched = true
+						break
+					}
+				}
+				if !finalityMatched {
+					continue
+				}
+			}
 			return fe
 		}
 	}
