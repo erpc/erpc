@@ -563,17 +563,6 @@ func (c *CompressionConfig) SetDefaults() error {
 }
 
 func (c *CachePolicyConfig) SetDefaults() error {
-	// Keep main's new field defaults
-	if c.Method == "" {
-		c.Method = "*"
-	}
-	if c.Network == "" {
-		c.Network = "*"
-	}
-	if c.AppliesTo == "" {
-		c.AppliesTo = CachePolicyAppliesToBoth
-	}
-	// And convert legacy fields to matcher-based config while preserving explicit matchers
 	c.convertLegacyMatchers()
 
 	return nil
