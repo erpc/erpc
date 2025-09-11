@@ -744,7 +744,7 @@ type MatchResult struct {
 	Action  MatcherAction
 }
 
-type FailsafeConfig struct {        `yaml:"matchFinality,omitempty" json:"matchFinality"`
+type FailsafeConfig struct {
 	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
@@ -753,8 +753,8 @@ type FailsafeConfig struct {        `yaml:"matchFinality,omitempty" json:"matchF
 	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 
 	// Deprecated: Use Matchers instead
-	MatchMethod string `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	MatchFinality  []DataFinalityState 
+	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
 }
 
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
