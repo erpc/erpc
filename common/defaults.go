@@ -33,9 +33,6 @@ func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	return false
 }
 
-// matchFailsafeConfigs checks if two failsafe configs should be considered matching
-// for the purpose of inheriting defaults. This preserves main branch behavior where
-// upstreams with existing failsafe configs don't inherit additional policies.
 func matchFailsafeConfigs(fs, dfs *FailsafeConfig) bool {
 	// Ensure both have matchers converted from legacy fields
 	fs.convertLegacyMatchers()
