@@ -18,7 +18,6 @@ var dwellirNetworkSubdomains = map[int64]string{
 	25:        "api-cronos-mainnet-archive.n",
 	44:        "api-darwiniacrab.n",
 	46:        "api-darwinia.n",
-	40:        "api-xdc-mainnet.n",
 	50:        "api-xdc-mainnet.n",
 	56:        "api-bsc-mainnet-full.n",
 	88:        "api-viction-mainnet.n",
