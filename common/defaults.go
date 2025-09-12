@@ -33,51 +33,6 @@ func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	return false
 }
 
-func matchFailsafeConfigs(fs, dfs *FailsafeConfig) bool {
-	// Ensure both have matchers converted from legacy fields
-	fs.convertLegacyMatchers()
-	dfs.convertLegacyMatchers()
-
-	// For backward compatibility with main branch behavior:
-	// If the upstream failsafe has any policies defined (Retry, Hedge, etc.),
-	// it should not inherit additional policies from defaults.
-	// This maintains the original "replace, don't merge" semantics.
-
-	hasUpstreamPolicies := fs.Retry != nil || fs.Hedge != nil || fs.CircuitBreaker != nil ||
-		fs.Timeout != nil || fs.Consensus != nil
-	hasDefaultPolicies := dfs.Retry != nil || dfs.Hedge != nil || dfs.CircuitBreaker != nil ||
-		dfs.Timeout != nil || dfs.Consensus != nil
-
-	// If upstream has policies and default has different policies, don't match
-	// This prevents mixing policies from different sources
-	if hasUpstreamPolicies && hasDefaultPolicies {
-		return false
-	}
-
-	// Otherwise, use matcher-based matching for method/finality patterns
-	if len(fs.Matchers) == 0 || len(dfs.Matchers) == 0 {
-		return true
-	}
-
-	for _, fsMatcher := range fs.Matchers {
-		for _, dfsMatcher := range dfs.Matchers {
-			methodMatch := true
-			if fsMatcher.Method != "" && dfsMatcher.Method != "" {
-				methodMatch, _ = WildcardMatch(dfsMatcher.Method, fsMatcher.Method)
-			} else if fsMatcher.Method != "" || dfsMatcher.Method != "" {
-				methodMatch = false
-			}
-
-			finalityMatch := matchFinalities(dfsMatcher.Finality, fsMatcher.Finality)
-
-			if methodMatch && finalityMatch {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 type connectorScope string
 
 const (
@@ -1374,15 +1329,8 @@ func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) error {
 		p.UpstreamIdTemplate = "<PROVIDER>-<NETWORK>"
 	}
 	if p.Overrides != nil {
-		// Do not inherit Failsafe defaults into overrides; overrides should replace them.
-		var defsNoFailsafe *UpstreamConfig
-		if upsDefaults != nil {
-			tmp := *upsDefaults
-			tmp.Failsafe = nil
-			defsNoFailsafe = &tmp
-		}
 		for _, override := range p.Overrides {
-			if err := override.SetDefaults(defsNoFailsafe); err != nil {
+			if err := override.SetDefaults(upsDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for override: %w", err)
 			}
 		}
@@ -1499,12 +1447,46 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
 			// Apply defaults to each failsafe config
 			for i, fs := range u.Failsafe {
-				// Find matching default using the new matcher system
+				// Find matching default - don't inherit if upstream has policies defined
 				var defaultFs *FailsafeConfig
-				for _, dfs := range defaults.Failsafe {
-					if matchFailsafeConfigs(fs, dfs) {
-						defaultFs = dfs
-						break
+				hasUpstreamPolicies := fs.Retry != nil || fs.Hedge != nil || fs.CircuitBreaker != nil ||
+					fs.Timeout != nil || fs.Consensus != nil
+
+				if !hasUpstreamPolicies {
+					for _, dfs := range defaults.Failsafe {
+						// Convert legacy fields to matchers for matching
+						fs.convertLegacyMatchers()
+						dfs.convertLegacyMatchers()
+
+						// Use matcher-based matching for method/finality patterns
+						methodMatch := true
+						finalityMatch := true
+
+						if len(fs.Matchers) > 0 && len(dfs.Matchers) > 0 {
+							methodMatch = false
+							finalityMatch = false
+							for _, fsMatcher := range fs.Matchers {
+								for _, dfsMatcher := range dfs.Matchers {
+									if fsMatcher.Method == "" || dfsMatcher.Method == "" || fsMatcher.Method == "*" || dfsMatcher.Method == "*" {
+										methodMatch = true
+									} else {
+										methodMatch, _ = WildcardMatch(dfsMatcher.Method, fsMatcher.Method)
+									}
+									finalityMatch = matchFinalities(dfsMatcher.Finality, fsMatcher.Finality)
+									if methodMatch && finalityMatch {
+										break
+									}
+								}
+								if methodMatch && finalityMatch {
+									break
+								}
+							}
+						}
+
+						if methodMatch && finalityMatch {
+							defaultFs = dfs
+							break
+						}
 					}
 				}
 				if defaultFs != nil {
