@@ -33,6 +33,54 @@ func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	return false
 }
 
+// matchFailsafeConfigs checks if two failsafe configs should be considered matching
+// for the purpose of inheriting defaults. This preserves main branch behavior where
+// upstreams with existing failsafe configs don't inherit additional policies.
+func matchFailsafeConfigs(fs, dfs *FailsafeConfig) bool {
+	// Ensure both have matchers converted from legacy fields
+	fs.convertLegacyMatchers()
+	dfs.convertLegacyMatchers()
+
+	// For backward compatibility with main branch behavior:
+	// If the upstream failsafe has any policies defined (Retry, Hedge, etc.),
+	// it should not inherit additional policies from defaults.
+	// This maintains the original "replace, don't merge" semantics.
+
+	hasUpstreamPolicies := fs.Retry != nil || fs.Hedge != nil || fs.CircuitBreaker != nil ||
+		fs.Timeout != nil || fs.Consensus != nil
+	hasDefaultPolicies := dfs.Retry != nil || dfs.Hedge != nil || dfs.CircuitBreaker != nil ||
+		dfs.Timeout != nil || dfs.Consensus != nil
+
+	// If upstream has policies and default has different policies, don't match
+	// This prevents mixing policies from different sources
+	if hasUpstreamPolicies && hasDefaultPolicies {
+		return false
+	}
+
+	// Otherwise, use matcher-based matching for method/finality patterns
+	if len(fs.Matchers) == 0 || len(dfs.Matchers) == 0 {
+		return true
+	}
+
+	for _, fsMatcher := range fs.Matchers {
+		for _, dfsMatcher := range dfs.Matchers {
+			methodMatch := true
+			if fsMatcher.Method != "" && dfsMatcher.Method != "" {
+				methodMatch, _ = WildcardMatch(dfsMatcher.Method, fsMatcher.Method)
+			} else if fsMatcher.Method != "" || dfsMatcher.Method != "" {
+				methodMatch = false
+			}
+
+			finalityMatch := matchFinalities(dfsMatcher.Finality, fsMatcher.Finality)
+
+			if methodMatch && finalityMatch {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type connectorScope string
 
 const (
@@ -1454,22 +1502,10 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
 			// Apply defaults to each failsafe config
 			for i, fs := range u.Failsafe {
-				// Find matching default by method/finality
+				// Find matching default using the new matcher system
 				var defaultFs *FailsafeConfig
 				for _, dfs := range defaults.Failsafe {
-					// Match method using wildcard (if both are specified)
-					methodMatch := true
-					if dfs.MatchMethod != "" && fs.MatchMethod != "" {
-						methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
-					} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
-						// If only one has a method specified, they don't match
-						methodMatch = false
-					}
-
-					// Match finality (empty array means any finality)
-					finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
-
-					if methodMatch && finalityMatch {
+					if matchFailsafeConfigs(fs, dfs) {
 						defaultFs = dfs
 						break
 					}
@@ -1907,6 +1943,7 @@ func (f *FailsafeConfig) convertLegacyMatchers() {
 			Action: MatcherInclude,
 		})
 	}
+
 }
 
 func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {
