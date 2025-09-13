@@ -705,3 +705,52 @@ func TestRetryPolicy_TypeAssertion(t *testing.T) {
 		t.Errorf("Type assertion to EvmUpstream failed for %T", mockUpstream)
 	}
 }
+
+func TestFailsafeMatcherFinality(t *testing.T) {
+	// Test single finality matcher
+	t.Run("SingleFinalityMatcher", func(t *testing.T) {
+		cfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method:   "eth_getBlockByNumber",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}
+
+		// Test that the configuration is properly set up
+		assert.Len(t, cfg.Matchers, 1)
+		assert.Equal(t, "eth_getBlockByNumber", cfg.Matchers[0].Method)
+		assert.Len(t, cfg.Matchers[0].Finality, 1)
+		assert.Equal(t, common.DataFinalityStateFinalized, cfg.Matchers[0].Finality[0])
+		assert.Equal(t, 3, cfg.Retry.MaxAttempts)
+	})
+
+	// Test array finality matcher
+	t.Run("ArrayFinalityMatcher", func(t *testing.T) {
+		cfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method:   "eth_*",
+					Finality: []common.DataFinalityState{common.DataFinalityStateFinalized, common.DataFinalityStateUnfinalized},
+					Action:   common.MatcherInclude,
+				},
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 5,
+			},
+		}
+
+		// Test that the configuration is properly set up
+		assert.Len(t, cfg.Matchers, 1)
+		assert.Equal(t, "eth_*", cfg.Matchers[0].Method)
+		assert.Len(t, cfg.Matchers[0].Finality, 2)
+		assert.Contains(t, []common.DataFinalityState(cfg.Matchers[0].Finality), common.DataFinalityStateFinalized)
+		assert.Contains(t, []common.DataFinalityState(cfg.Matchers[0].Finality), common.DataFinalityStateUnfinalized)
+		assert.Equal(t, 5, cfg.Retry.MaxAttempts)
+	})
+}

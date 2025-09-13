@@ -563,17 +563,67 @@ func (c *CompressionConfig) SetDefaults() error {
 }
 
 func (c *CachePolicyConfig) SetDefaults() error {
-	if c.Method == "" {
-		c.Method = "*"
-	}
-	if c.Network == "" {
-		c.Network = "*"
-	}
-	if c.AppliesTo == "" {
-		c.AppliesTo = CachePolicyAppliesToBoth
-	}
+	c.convertLegacyMatchers()
 
 	return nil
+}
+
+// convertLegacyMatchers converts legacy cache policy fields to new matcher format
+func (c *CachePolicyConfig) convertLegacyMatchers() {
+	if c == nil {
+		return
+	}
+
+	// If we already have matchers, don't convert legacy fields
+	if len(c.Matchers) > 0 {
+		return
+	}
+
+	// Convert legacy fields to new matcher format if any are present
+	hasLegacyFields := c.Network != "" || c.Method != "" || len(c.Params) > 0
+
+	// For finality and empty, we need to check if they were explicitly set by looking at the struct
+	// Since we can't distinguish between unset and zero value, we'll convert if any other field is set
+	if hasLegacyFields {
+		matcher := &MatcherConfig{
+			Action: MatcherInclude, // Default action for cache policies
+		}
+
+		// Convert Network
+		if c.Network != "" {
+			matcher.Network = c.Network
+		}
+
+		// Convert Method
+		if c.Method != "" {
+			matcher.Method = c.Method
+		}
+
+		// Convert Params
+		if len(c.Params) > 0 {
+			matcher.Params = make([]interface{}, len(c.Params))
+			copy(matcher.Params, c.Params)
+		}
+
+		// Convert Finality - single state to array
+		// Always include finality when converting legacy fields
+		matcher.Finality = []DataFinalityState{c.Finality}
+
+		// Convert Empty behavior
+		// Always include empty behavior when converting legacy fields
+		matcher.Empty = c.Empty
+
+		// Add the matcher
+		c.Matchers = append(c.Matchers, matcher)
+	}
+
+	// If no matchers exist at all, create a default catch-all matcher
+	if len(c.Matchers) == 0 {
+		c.Matchers = append(c.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
+	}
 }
 
 func (c *TracingConfig) SetDefaults() error {
@@ -1397,24 +1447,46 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
 			// Apply defaults to each failsafe config
 			for i, fs := range u.Failsafe {
-				// Find matching default by method/finality
+				// Find matching default - don't inherit if upstream has policies defined
 				var defaultFs *FailsafeConfig
-				for _, dfs := range defaults.Failsafe {
-					// Match method using wildcard (if both are specified)
-					methodMatch := true
-					if dfs.MatchMethod != "" && fs.MatchMethod != "" {
-						methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
-					} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
-						// If only one has a method specified, they don't match
-						methodMatch = false
-					}
+				hasUpstreamPolicies := fs.Retry != nil || fs.Hedge != nil || fs.CircuitBreaker != nil ||
+					fs.Timeout != nil || fs.Consensus != nil
 
-					// Match finality (empty array means any finality)
-					finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+				if !hasUpstreamPolicies {
+					for _, dfs := range defaults.Failsafe {
+						// Convert legacy fields to matchers for matching
+						fs.convertLegacyMatchers()
+						dfs.convertLegacyMatchers()
 
-					if methodMatch && finalityMatch {
-						defaultFs = dfs
-						break
+						// Use matcher-based matching for method/finality patterns
+						methodMatch := true
+						finalityMatch := true
+
+						if len(fs.Matchers) > 0 && len(dfs.Matchers) > 0 {
+							methodMatch = false
+							finalityMatch = false
+							for _, fsMatcher := range fs.Matchers {
+								for _, dfsMatcher := range dfs.Matchers {
+									if fsMatcher.Method == "" || dfsMatcher.Method == "" || fsMatcher.Method == "*" || dfsMatcher.Method == "*" {
+										methodMatch = true
+									} else {
+										methodMatch, _ = WildcardMatch(dfsMatcher.Method, fsMatcher.Method)
+									}
+									finalityMatch = matchFinalities(dfsMatcher.Finality, fsMatcher.Finality)
+									if methodMatch && finalityMatch {
+										break
+									}
+								}
+								if methodMatch && finalityMatch {
+									break
+								}
+							}
+						}
+
+						if methodMatch && finalityMatch {
+							defaultFs = dfs
+							break
+						}
 					}
 				}
 				if defaultFs != nil {
@@ -1734,14 +1806,7 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 }
 
 func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
-	// Set default for MatchMethod if empty
-	if f.MatchMethod == "" {
-		if defaults != nil && defaults.MatchMethod != "" {
-			f.MatchMethod = defaults.MatchMethod
-		} else {
-			f.MatchMethod = "*" // Default to match any method
-		}
-	}
+	f.convertLegacyMatchers()
 
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
@@ -1814,6 +1879,50 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 	}
 
 	return nil
+}
+
+// convertLegacyMatchers converts legacy failsafe fields to new matcher format
+func (f *FailsafeConfig) convertLegacyMatchers() {
+	if f == nil {
+		return
+	}
+
+	// If we already have matchers, don't convert legacy fields
+	if len(f.Matchers) > 0 {
+		return
+	}
+
+	// Convert legacy fields to new matcher format if any are present
+	// Note: Empty MatchMethod now means "match all methods" (consistent with new matcher system)
+	if f.MatchMethod != "" || len(f.MatchFinality) > 0 {
+		matcher := &MatcherConfig{
+			Action: MatcherInclude, // Default action for legacy configs
+		}
+
+		// Convert MatchMethod - empty MatchMethod means match all methods
+		if f.MatchMethod != "" {
+			matcher.Method = f.MatchMethod
+		}
+		// If MatchMethod is empty, leave Method empty (which means match all)
+
+		// Convert MatchFinality - include all finality states in a single matcher
+		if len(f.MatchFinality) > 0 {
+			// Convert the slice to DataFinalityStateArray and assign to matcher
+			matcher.Finality = f.MatchFinality
+		}
+
+		// Add the matcher (with or without finality states)
+		f.Matchers = append(f.Matchers, matcher)
+	}
+
+	// If no matchers exist at all, create a default catch-all matcher
+	if len(f.Matchers) == 0 {
+		f.Matchers = append(f.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
+	}
+
 }
 
 func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {
