@@ -727,21 +727,35 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			}
 		}
 	} else {
-		// Only update items for this single upstream in this network
-		t.upsMetrics.Range(func(key, value any) bool {
-			k, ok := key.(upstreamKey)
-			if !ok {
+		// Only update items for this single upstream in this network.
+		// Prefer the pre-built per-network index to avoid ranging the entire map.
+		t.mu.RLock()
+		relevantKeys := t.upstreamsByNetwork[net]
+		t.mu.RUnlock()
+		if len(relevantKeys) == 0 {
+			// Fallback for safety if index not yet populated.
+			t.upsMetrics.Range(func(key, value any) bool {
+				k, ok := key.(upstreamKey)
+				if !ok || k.ups == nil {
+					return true
+				}
+				if k.ups.Id() == id && k.ups.NetworkId() == net {
+					tm := value.(*TrackedMetrics)
+					tm.BlockHeadLag.Store(upsLag)
+				}
 				return true
+			})
+		} else {
+			for _, k := range relevantKeys {
+				if k.ups == nil || k.ups.Id() != id {
+					continue
+				}
+				if v, ok := t.upsMetrics.Load(k); ok {
+					tm := v.(*TrackedMetrics)
+					tm.BlockHeadLag.Store(upsLag)
+				}
 			}
-			if k.ups == nil {
-				return true
-			}
-			if k.ups.Id() == id && k.ups.NetworkId() == net {
-				tm := value.(*TrackedMetrics)
-				tm.BlockHeadLag.Store(upsLag)
-			}
-			return true
-		})
+		}
 	}
 }
 
@@ -831,21 +845,35 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 			return true
 		})
 	} else {
-		// Only update finalization lag for this single upstream
-		t.upsMetrics.Range(func(key, value any) bool {
-			k, ok := key.(upstreamKey)
-			if !ok {
+		// Only update finalization lag for this single upstream.
+		// Prefer the pre-built per-network index to avoid ranging the entire map.
+		t.mu.RLock()
+		relevantKeys := t.upstreamsByNetwork[net]
+		t.mu.RUnlock()
+		if len(relevantKeys) == 0 {
+			// Fallback for safety if index not yet populated.
+			t.upsMetrics.Range(func(key, value any) bool {
+				k, ok := key.(upstreamKey)
+				if !ok || k.ups == nil {
+					return true
+				}
+				if k.ups.Id() == id && k.ups.NetworkId() == net {
+					tm := value.(*TrackedMetrics)
+					tm.FinalizationLag.Store(upsLag)
+				}
 				return true
+			})
+		} else {
+			for _, k := range relevantKeys {
+				if k.ups == nil || k.ups.Id() != id {
+					continue
+				}
+				if v, ok := t.upsMetrics.Load(k); ok {
+					tm := v.(*TrackedMetrics)
+					tm.FinalizationLag.Store(upsLag)
+				}
 			}
-			if k.ups == nil {
-				return true
-			}
-			if k.ups.Id() == id && k.ups.NetworkId() == net {
-				tm := value.(*TrackedMetrics)
-				tm.FinalizationLag.Store(upsLag)
-			}
-			return true
-		})
+		}
 	}
 }
 
