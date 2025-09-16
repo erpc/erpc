@@ -1445,7 +1445,7 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 
 	// only apply defaults if user has NO failsafe policies
 	if len(u.Failsafe) > 0 {
-		// User has defined failsafe policies - keep them as-is, apply SetDefaults to normalize them
+		// User has defined failsafe policies - keep them as-is, normalize and fill required fields
 		for i, fs := range u.Failsafe {
 			if err := fs.SetDefaults(nil); err != nil {
 				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
@@ -1563,28 +1563,29 @@ func (j *JsonRpcUpstreamConfig) SetDefaults() error {
 }
 
 func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) error {
+	// Handle failsafe policies first (must run even when defaults is nil)
+	if len(n.Failsafe) > 0 {
+		// User has defined failsafe policies - keep them as-is, normalize and fill required fields
+		for i, fs := range n.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
+		}
+	} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+		// User has no failsafe policies - use all defaults
+		n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+		for i, dfs := range defaults.Failsafe {
+			n.Failsafe[i] = &FailsafeConfig{}
+			*n.Failsafe[i] = *dfs
+			if err := n.Failsafe[i].SetDefaults(dfs); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
+		}
+	}
+
 	if defaults != nil {
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
-		}
-		// only apply defaults if user has NO failsafe policies
-		if len(n.Failsafe) > 0 {
-			// User has defined failsafe policies - keep them as-is, apply SetDefaults to normalize them
-			for i, fs := range n.Failsafe {
-				if err := fs.SetDefaults(nil); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-				}
-			}
-		} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
-			// User has no failsafe policies - use all defaults
-			n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
-			for i, dfs := range defaults.Failsafe {
-				n.Failsafe[i] = &FailsafeConfig{}
-				*n.Failsafe[i] = *dfs
-				if err := n.Failsafe[i].SetDefaults(dfs); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-				}
-			}
 		}
 		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
 			n.SelectionPolicy = &SelectionPolicyConfig{}
@@ -1720,7 +1721,7 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 	return nil
 }
 
-func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
+func (f *FailsafeConfig) Normalize() {
 	f.convertLegacyMatchers()
 
 	if len(f.Matchers) == 0 {
@@ -1729,6 +1730,10 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 			Action: MatcherInclude,
 		})
 	}
+}
+
+func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
+	f.Normalize()
 
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {

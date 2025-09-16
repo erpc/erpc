@@ -515,6 +515,8 @@ projects:
         duration: 2s
       retry:
         maxAttempts: 3
+        backoffFactor: 1.2
+        backoffMaxDelay: 3s
     - matchMethod: "eth_*"
       timeout:
         duration: 5s
@@ -727,6 +729,8 @@ projects:
               duration: 2s
             retry:
               maxAttempts: 3  # Correct field name
+              backoffFactor: 1.2
+              backoffMaxDelay: 3s
               delay: 10ms
 `
 		fs := afero.NewMemMapFs()
@@ -820,6 +824,8 @@ projects:
             duration: 2s
           retry:
             maxAttempts: 3
+            backoffFactor: 1.2
+            backoffMaxDelay: 3s
 `
 		fs := afero.NewMemMapFs()
 		err := afero.WriteFile(fs, "test-config.yaml", []byte(yamlData), 0644)
@@ -855,11 +861,15 @@ projects:
               duration: 2s
             retry:
               maxAttempts: 3
+              backoffFactor: 1.2
+              backoffMaxDelay: 3s
           - matchMethod: "eth_*"
             timeout:
               duration: 5s
             retry:
               maxAttempts: 5
+              backoffFactor: 1.2
+              backoffMaxDelay: 3s
 `
 		fs := afero.NewMemMapFs()
 		err := afero.WriteFile(fs, "test-config.yaml", []byte(yamlData), 0644)
