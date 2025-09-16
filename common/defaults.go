@@ -33,72 +33,6 @@ func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	return false
 }
 
-func matchFailsafeConfigs(fs, dfs *FailsafeConfig) bool {
-	fs.convertLegacyMatchers()
-	dfs.convertLegacyMatchers()
-
-	// If either has no matchers, they match ONLY if at least one has no policies
-	// This prevents configs with explicit policies from matching unless they have compatible matchers
-	if len(fs.Matchers) == 0 || len(dfs.Matchers) == 0 {
-		hasUpstreamPolicies := fs.Timeout != nil || fs.Retry != nil || fs.Hedge != nil || fs.CircuitBreaker != nil || fs.Consensus != nil
-		hasDefaultPolicies := dfs.Timeout != nil || dfs.Retry != nil || dfs.Hedge != nil || dfs.CircuitBreaker != nil || dfs.Consensus != nil
-
-		// Only match if at least one side has no policies (truly empty config)
-		if !hasUpstreamPolicies || !hasDefaultPolicies {
-			return true
-		}
-		// If both have policies but no explicit matchers, they don't match (no inheritance)
-		return false
-	}
-
-	// Check if any matcher from the upstream matches any matcher from defaults
-	// If we find at least one compatible pair, the configs match
-	for _, fsMatcher := range fs.Matchers {
-		for _, dfsMatcher := range dfs.Matchers {
-			if matchersCompatible(fsMatcher, dfsMatcher) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func matchersCompatible(fs, dfs *MatcherConfig) bool {
-	// Network matching: both must be compatible or at least one must be empty
-	if fs.Network != "" && dfs.Network != "" {
-		if match, _ := WildcardMatch(dfs.Network, fs.Network); !match {
-			return false
-		}
-	}
-
-	// Method matching: both must be compatible or at least one must be empty
-	if fs.Method != "" && dfs.Method != "" {
-		if match, _ := WildcardMatch(dfs.Method, fs.Method); !match {
-			return false
-		}
-	}
-
-	// Params matching: if both have params, they must match
-	if len(fs.Params) > 0 && len(dfs.Params) > 0 {
-		if len(fs.Params) != len(dfs.Params) {
-			return false
-		}
-		for i, fsParam := range fs.Params {
-			dfsParam := dfs.Params[i]
-			if fmt.Sprintf("%v", fsParam) != fmt.Sprintf("%v", dfsParam) {
-				return false
-			}
-		}
-	}
-
-	// Finality matching: check for overlap or if one is empty
-	if !matchFinalities(dfs.Finality, fs.Finality) {
-		return false
-	}
-
-	return true
-}
-
 type connectorScope string
 
 const (
@@ -1509,37 +1443,16 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		u.Type = UpstreamTypeEvm
 	}
 
+	// only apply defaults if user has NO failsafe policies
 	if len(u.Failsafe) > 0 {
-		if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
-			// Apply defaults to each failsafe config
-			for i, fs := range u.Failsafe {
-				// Find matching default using the new matcher system
-				var defaultFs *FailsafeConfig
-				for _, dfs := range defaults.Failsafe {
-					if matchFailsafeConfigs(fs, dfs) {
-						defaultFs = dfs
-						break
-					}
-				}
-				if defaultFs != nil {
-					if err := fs.SetDefaults(defaultFs); err != nil {
-						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-					}
-				} else {
-					if err := fs.SetDefaults(nil); err != nil {
-						return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-					}
-				}
-			}
-		} else {
-			// Apply nil defaults to each failsafe config
-			for i, fs := range u.Failsafe {
-				if err := fs.SetDefaults(nil); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-				}
+		// User has defined failsafe policies - keep them as-is, apply SetDefaults to normalize them
+		for i, fs := range u.Failsafe {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
 			}
 		}
 	} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+		// User has no failsafe policies - use all defaults
 		u.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
 		for i, dfs := range defaults.Failsafe {
 			u.Failsafe[i] = &FailsafeConfig{}
@@ -1654,45 +1567,22 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
-		if len(defaults.Failsafe) > 0 {
-			if len(n.Failsafe) == 0 {
-				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
-				for i, fs := range defaults.Failsafe {
-					n.Failsafe[i] = &FailsafeConfig{}
-					*n.Failsafe[i] = *fs
+		// only apply defaults if user has NO failsafe policies
+		if len(n.Failsafe) > 0 {
+			// User has defined failsafe policies - keep them as-is, apply SetDefaults to normalize them
+			for i, fs := range n.Failsafe {
+				if err := fs.SetDefaults(nil); err != nil {
+					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
 				}
-			} else {
-				// Apply defaults to each failsafe config
-				for i, fs := range n.Failsafe {
-					// Find matching default by method/finality
-					var defaultFs *FailsafeConfig
-					for _, dfs := range defaults.Failsafe {
-						// Match method using wildcard (if both are specified)
-						methodMatch := true
-						if dfs.MatchMethod != "" && fs.MatchMethod != "" {
-							methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
-						} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
-							// If only one has a method specified, they don't match
-							methodMatch = false
-						}
-
-						// Match finality (empty array means any finality)
-						finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
-
-						if methodMatch && finalityMatch {
-							defaultFs = dfs
-							break
-						}
-					}
-					// If no specific match found, use first default as general default
-					if defaultFs == nil && len(defaults.Failsafe) > 0 {
-						defaultFs = defaults.Failsafe[0]
-					}
-					if defaultFs != nil {
-						if err := fs.SetDefaults(defaultFs); err != nil {
-							return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-						}
-					}
+			}
+		} else if defaults != nil && defaults.Failsafe != nil && len(defaults.Failsafe) > 0 {
+			// User has no failsafe policies - use all defaults
+			n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
+			for i, dfs := range defaults.Failsafe {
+				n.Failsafe[i] = &FailsafeConfig{}
+				*n.Failsafe[i] = *dfs
+				if err := n.Failsafe[i].SetDefaults(dfs); err != nil {
+					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
 				}
 			}
 		}
@@ -1737,13 +1627,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.Evm != nil {
 			if err := n.Evm.SetDefaults(); err != nil {
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
-			}
-		}
-	} else if len(n.Failsafe) > 0 {
-		// Apply system default to each failsafe config
-		for i, fs := range n.Failsafe {
-			if err := fs.SetDefaults(nil); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
 			}
 		}
 	}
