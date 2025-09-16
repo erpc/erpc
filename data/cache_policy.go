@@ -109,31 +109,64 @@ func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface
 	for i := len(p.config.Matchers) - 1; i >= 0; i-- {
 		matcher := p.config.Matchers[i]
 
-		// For GET, we don't have isEmptyish, so pass false
-		if matchers.MatchConfig(matcher, networkId, method, params, finality, false) {
-			if matcher.Action == common.MatcherInclude {
-				return true, nil
+		// Check network match
+		if matcher.Network != "" {
+			match, err := common.WildcardMatch(matcher.Network, networkId)
+			if err != nil || !match {
+				continue
 			}
 		}
 
-		// Special finality handling for cache GET
-		if finality == common.DataFinalityStateUnknown {
-			// Unknown finality should match any policy regardless of finality settings
-			if matchers.MatchConfig(matcher, networkId, method, params, common.DataFinalityStateFinalized, false) ||
-				matchers.MatchConfig(matcher, networkId, method, params, common.DataFinalityStateUnfinalized, false) ||
-				matchers.MatchConfig(matcher, networkId, method, params, common.DataFinalityStateRealtime, false) {
-				if matcher.Action == common.MatcherInclude {
-					return true, nil
-				}
+		// Check method match
+		if matcher.Method != "" {
+			match, err := common.WildcardMatch(matcher.Method, method)
+			if err != nil || !match {
+				continue
 			}
+		}
+
+		// Check params match
+		if len(matcher.Params) > 0 {
+			match, err := matchers.MatchParams(matcher.Params, params)
+			if err != nil || !match {
+				continue
+			}
+		}
+
+		// At this point, network/method/params match. Now handle finality with special GET semantics.
+		finalityMatches := false
+
+		if len(matcher.Finality) == 0 {
+			// No finality constraint means it matches any finality
+			finalityMatches = true
+		} else if finality == common.DataFinalityStateUnknown {
+			// Unknown finality matches any policy (we don't know what finality the cached data has)
+			finalityMatches = true
 		} else if finality == common.DataFinalityStateFinalized {
-			// Finalized requests can match unfinalized policies too
+			// Finalized requests can match both finalized and unfinalized policies
 			// (data might have been cached as unfinalized but is now finalized)
-			if matchers.MatchConfig(matcher, networkId, method, params, common.DataFinalityStateUnfinalized, false) {
-				if matcher.Action == common.MatcherInclude {
-					return true, nil
+			for _, f := range matcher.Finality {
+				if f == common.DataFinalityStateFinalized || f == common.DataFinalityStateUnfinalized {
+					finalityMatches = true
+					break
 				}
 			}
+		} else {
+			// For unfinalized or realtime, require exact match
+			for _, f := range matcher.Finality {
+				if f == finality {
+					finalityMatches = true
+					break
+				}
+			}
+		}
+
+		if finalityMatches {
+			// This matcher fully matches, return based on action
+			if matcher.Action == common.MatcherInclude {
+				return true, nil
+			}
+			return false, nil
 		}
 	}
 	// No matcher matched

@@ -783,6 +783,11 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 					matcherCopy.Params = make([]interface{}, len(matcher.Params))
 					copy(matcherCopy.Params, matcher.Params)
 				}
+				// Deep copy the Finality slice
+				if matcher.Finality != nil {
+					matcherCopy.Finality = make([]DataFinalityState, len(matcher.Finality))
+					copy(matcherCopy.Finality, matcher.Finality)
+				}
 				copied.Matchers[i] = matcherCopy
 			}
 		}
