@@ -238,11 +238,20 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 }
 
 func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
-	for _, fe := range n.failsafeExecutors {
+	method, _ := req.Method()
+	finality := req.Finality(ctx)
+
+	for i, fe := range n.failsafeExecutors {
 		if fe.config != nil {
 			// Prefer new matcher-based selection when matchers are provided
 			if len(fe.config.Matchers) > 0 {
 				if matchers.Match(ctx, fe.config.Matchers, req, nil) {
+					n.logger.Debug().
+						Str("method", method).
+						Str("finality", finality.String()).
+						Int("failsafeIndex", i).
+						Interface("matchers", fe.config.Matchers).
+						Msg("matched failsafe executor")
 					return fe
 				}
 				continue
