@@ -1832,6 +1832,15 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 	f.convertLegacyMatchers()
 
+	// If we still have no matchers after legacy conversion but have policies,
+	// add a default catch-all matcher for backward compatibility
+	if len(f.Matchers) == 0 && (f.Timeout != nil || f.Retry != nil || f.Hedge != nil || f.CircuitBreaker != nil || f.Consensus != nil) {
+		f.Matchers = append(f.Matchers, &MatcherConfig{
+			Method: "*",
+			Action: MatcherInclude,
+		})
+	}
+
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
 			if err := f.Timeout.SetDefaults(defaults.Timeout); err != nil {
