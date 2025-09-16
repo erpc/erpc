@@ -34,48 +34,61 @@ func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 }
 
 func matchFailsafeConfigs(fs, dfs *FailsafeConfig) bool {
-	// Ensure both have matchers converted from legacy fields
 	fs.convertLegacyMatchers()
 	dfs.convertLegacyMatchers()
 
-	// For backward compatibility with main branch behavior:
-	// If the upstream failsafe has any policies defined (Retry, Hedge, etc.),
-	// it should not inherit additional policies from defaults.
-	// This maintains the original "replace, don't merge" semantics.
-
-	hasUpstreamPolicies := fs.Retry != nil || fs.Hedge != nil || fs.CircuitBreaker != nil ||
-		fs.Timeout != nil || fs.Consensus != nil
-	hasDefaultPolicies := dfs.Retry != nil || dfs.Hedge != nil || dfs.CircuitBreaker != nil ||
-		dfs.Timeout != nil || dfs.Consensus != nil
-
-	// If upstream has policies and default has different policies, don't match
-	// This prevents mixing policies from different sources
-	if hasUpstreamPolicies && hasDefaultPolicies {
-		return false
-	}
-
-	// Otherwise, use matcher-based matching for method/finality patterns
+	// If either has no matchers, they match (for backward compatibility)
+	// This handles cases where one side is a catch-all configuration
 	if len(fs.Matchers) == 0 || len(dfs.Matchers) == 0 {
 		return true
 	}
 
+	// Check if any matcher from the upstream matches any matcher from defaults
+	// If we find at least one compatible pair, the configs match
 	for _, fsMatcher := range fs.Matchers {
 		for _, dfsMatcher := range dfs.Matchers {
-			methodMatch := true
-			if fsMatcher.Method != "" && dfsMatcher.Method != "" {
-				methodMatch, _ = WildcardMatch(dfsMatcher.Method, fsMatcher.Method)
-			} else if fsMatcher.Method != "" || dfsMatcher.Method != "" {
-				methodMatch = false
-			}
-
-			finalityMatch := matchFinalities(dfsMatcher.Finality, fsMatcher.Finality)
-
-			if methodMatch && finalityMatch {
+			if matchersCompatible(fsMatcher, dfsMatcher) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func matchersCompatible(fs, dfs *MatcherConfig) bool {
+	// Network matching: both must be compatible or at least one must be empty
+	if fs.Network != "" && dfs.Network != "" {
+		if match, _ := WildcardMatch(dfs.Network, fs.Network); !match {
+			return false
+		}
+	}
+
+	// Method matching: both must be compatible or at least one must be empty
+	if fs.Method != "" && dfs.Method != "" {
+		if match, _ := WildcardMatch(dfs.Method, fs.Method); !match {
+			return false
+		}
+	}
+
+	// Params matching: if both have params, they must match
+	if len(fs.Params) > 0 && len(dfs.Params) > 0 {
+		if len(fs.Params) != len(dfs.Params) {
+			return false
+		}
+		for i, fsParam := range fs.Params {
+			dfsParam := dfs.Params[i]
+			if fmt.Sprintf("%v", fsParam) != fmt.Sprintf("%v", dfsParam) {
+				return false
+			}
+		}
+	}
+
+	// Finality matching: check for overlap or if one is empty
+	if !matchFinalities(dfs.Finality, fs.Finality) {
+		return false
+	}
+
+	return true
 }
 
 type connectorScope string
@@ -1924,16 +1937,13 @@ func (f *FailsafeConfig) convertLegacyMatchers() {
 
 		// Add the matcher (with or without finality states)
 		f.Matchers = append(f.Matchers, matcher)
-	}
 
-	// If no matchers exist at all, create a default catch-all matcher
-	if len(f.Matchers) == 0 {
-		f.Matchers = append(f.Matchers, &MatcherConfig{
-			Method: "*",
-			Action: MatcherInclude,
-		})
+		// If we converted legacy fields and ended up with an empty method matcher,
+		// make it explicit as a catch-all
+		if len(f.Matchers) == 1 && f.Matchers[0].Method == "" {
+			f.Matchers[0].Method = "*"
+		}
 	}
-
 }
 
 func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {
