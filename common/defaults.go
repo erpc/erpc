@@ -1840,9 +1840,7 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 	f.convertLegacyMatchers()
 
-	// Add a default catch-all matcher if we have no matchers but have policies
-	// This ensures backward compatibility for configs with policies but no explicit matchers
-	if len(f.Matchers) == 0 && (f.Timeout != nil || f.Retry != nil || f.Hedge != nil || f.CircuitBreaker != nil || f.Consensus != nil) {
+	if len(f.Matchers) == 0 {
 		f.Matchers = append(f.Matchers, &MatcherConfig{
 			Method: "*",
 			Action: MatcherInclude,
@@ -1955,9 +1953,10 @@ func (f *FailsafeConfig) convertLegacyMatchers() {
 		// Add the matcher (with or without finality states)
 		f.Matchers = append(f.Matchers, matcher)
 
-		// If we converted legacy fields and ended up with an empty method matcher,
-		// make it explicit as a catch-all
-		if len(f.Matchers) == 1 && f.Matchers[0].Method == "" {
+		// If we converted legacy fields and ended up with an empty method matcher
+		// AND no finality constraints, make it explicit as a catch-all
+		// If there are finality constraints, keep method empty to allow validation to add excludes
+		if len(f.Matchers) == 1 && f.Matchers[0].Method == "" && len(f.Matchers[0].Finality) == 0 {
 			f.Matchers[0].Method = "*"
 		}
 	}
