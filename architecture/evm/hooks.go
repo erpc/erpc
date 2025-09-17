@@ -102,6 +102,8 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
 		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
+	case "eth_getblockreceipts":
+		return upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
 	case // Block lookups
 		"eth_getblockbynumber",
 		"eth_getblockbyhash",

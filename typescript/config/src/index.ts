@@ -63,6 +63,8 @@ export type {
   // Upstream related
   UpstreamConfig,
   EvmUpstreamConfig,
+  UpstreamIntegrityConfig,
+  UpstreamIntegrityEthGetBlockReceiptsConfig,
   RoutingConfig,
   ScoreMultiplierConfig,
   RateLimitAutoTuneConfig,
