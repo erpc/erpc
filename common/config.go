@@ -595,6 +595,51 @@ type ShadowUpstreamConfig struct {
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
+type UpstreamIntegrityConfig struct {
+	EthGetBlockReceipts *UpstreamIntegrityEthGetBlockReceiptsConfig `yaml:"eth_getBlockReceipts,omitempty" json:"eth_getBlockReceipts"`
+}
+
+func (c *UpstreamIntegrityConfig) Copy() *UpstreamIntegrityConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &UpstreamIntegrityConfig{}
+
+	if c.EthGetBlockReceipts != nil {
+		copied.EthGetBlockReceipts = c.EthGetBlockReceipts.Copy()
+	}
+
+	return copied
+}
+
+type UpstreamIntegrityEthGetBlockReceiptsConfig struct {
+	Enabled                       bool  `yaml:"enabled,omitempty" json:"enabled"`
+	CheckLogIndexStrictIncrements *bool `yaml:"checkLogIndexStrictIncrements,omitempty" json:"checkLogIndexStrictIncrements"`
+	CheckLogsBloom                *bool `yaml:"checkLogsBloom,omitempty" json:"checkLogsBloom"`
+}
+
+func (c *UpstreamIntegrityEthGetBlockReceiptsConfig) Copy() *UpstreamIntegrityEthGetBlockReceiptsConfig {
+	if c == nil {
+		return nil
+	}
+
+	copyCfg := &UpstreamIntegrityEthGetBlockReceiptsConfig{
+		Enabled: c.Enabled,
+	}
+
+	if c.CheckLogIndexStrictIncrements != nil {
+		val := *c.CheckLogIndexStrictIncrements
+		copyCfg.CheckLogIndexStrictIncrements = &val
+	}
+	if c.CheckLogsBloom != nil {
+		val := *c.CheckLogsBloom
+		copyCfg.CheckLogsBloom = &val
+	}
+
+	return copyCfg
+}
+
 type RoutingConfig struct {
 	ScoreMultipliers     []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
 	ScoreLatencyQuantile float64                  `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile"`
@@ -696,13 +741,14 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                            int64       `yaml:"chainId" json:"chainId"`
-	NodeType                           EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
-	StatePollerInterval                Duration    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
-	StatePollerDebounce                Duration    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
-	MaxAvailableRecentBlocks           int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
-	GetLogsAutoSplittingRangeThreshold int64       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
-	SkipWhenSyncing                    *bool       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	ChainId                            int64                    `yaml:"chainId" json:"chainId"`
+	NodeType                           EvmNodeType              `yaml:"nodeType,omitempty" json:"nodeType"`
+	StatePollerInterval                Duration                 `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	StatePollerDebounce                Duration                 `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+	MaxAvailableRecentBlocks           int64                    `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
+	GetLogsAutoSplittingRangeThreshold int64                    `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
+	SkipWhenSyncing                    *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	Integrity                          *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
 	// @deprecated: should be removed in a future release
 	DeprecatedGetLogsMaxAllowedRange     int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"-"`
@@ -719,6 +765,19 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 
 	copied := &EvmUpstreamConfig{}
 	*copied = *c
+
+	// Deep copy pointer fields to avoid shared state
+	if c.SkipWhenSyncing != nil {
+		v := *c.SkipWhenSyncing
+		copied.SkipWhenSyncing = &v
+	}
+	if c.Integrity != nil {
+		copied.Integrity = c.Integrity.Copy()
+	}
+	if c.DeprecatedGetLogsSplitOnError != nil {
+		v := *c.DeprecatedGetLogsSplitOnError
+		copied.DeprecatedGetLogsSplitOnError = &v
+	}
 
 	return copied
 }

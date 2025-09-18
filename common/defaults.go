@@ -1402,6 +1402,12 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			Headers:       defaults.JsonRpc.Headers,
 		}
 	}
+	// Integrity moved under Evm.Integrity
+	if u.Evm != nil && defaults.Evm != nil {
+		if u.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
+			u.Evm.Integrity = defaults.Evm.Integrity.Copy()
+		}
+	}
 	if u.Routing == nil {
 		u.Routing = defaults.Routing
 	}

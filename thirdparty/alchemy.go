@@ -38,7 +38,7 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	42161:     "arb-mainnet",
 	421614:    "arb-sepolia",
 	42170:     "arbnova-mainnet",
-    42220:     "celo-mainnet",
+	42220:     "celo-mainnet",
 	43113:     "avax-fuji",
 	43114:     "avax-mainnet",
 	5000:      "mantle-mainnet",

@@ -265,6 +265,12 @@ export interface NetworkDefaults {
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -300,9 +306,23 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   ignoreFields?: { [key: string]: string[]};
+}
+export interface UpstreamIntegrityConfig {
+  eth_getBlockReceipts?: UpstreamIntegrityEthGetBlockReceiptsConfig;
+}
+export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
+  enabled?: boolean;
+  checkLogIndexStrictIncrements?: boolean;
+  checkLogsBloom?: boolean;
 }
 export interface RoutingConfig {
   scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
@@ -346,6 +366,7 @@ export interface EvmUpstreamConfig {
   maxAvailableRecentBlocks?: number /* int64 */;
   getLogsAutoSplittingRangeThreshold?: number /* int64 */;
   skipWhenSyncing?: boolean;
+  integrity?: UpstreamIntegrityConfig;
 }
 export interface FailsafeConfig {
   matchMethod?: string;
@@ -446,6 +467,12 @@ export interface NetworkConfig {
   alias?: string;
   methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
