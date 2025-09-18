@@ -247,7 +247,13 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	fsCfg := &common.FailsafeConfig{
+			fsCfg := &common.FailsafeConfig{
+			Matchers: []*common.MatcherConfig{
+				{
+					Method: "*",
+					Action: common.MatcherInclude,
+				},
+			},
 		Retry: &common.RetryPolicyConfig{
 			MaxAttempts: 3,
 		},
