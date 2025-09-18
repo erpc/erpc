@@ -18,6 +18,21 @@ type CachePolicy struct {
 	maxSize   *int
 }
 
+// PolicyWithMatcher holds a policy along with the specific matcher that matched
+type PolicyWithMatcher struct {
+	Policy  *CachePolicy
+	Matcher *common.MatcherConfig
+}
+
+// EmptyState returns the empty state behavior from the matched matcher
+func (pm *PolicyWithMatcher) EmptyState() common.CacheEmptyBehavior {
+	if pm.Matcher != nil {
+		return pm.Matcher.Empty
+	}
+	// Fall back to policy's default behavior if no matcher
+	return pm.Policy.EmptyState()
+}
+
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
 	var minSize, maxSize *int
 
@@ -79,6 +94,12 @@ func (p *CachePolicy) MarshalJSON() ([]byte, error) {
 }
 
 func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) (bool, error) {
+	matched, _ := p.MatchesForSetWithMatcher(networkId, method, params, finality, isEmptyish)
+	return matched, nil
+}
+
+// MatchesForSetWithMatcher returns both the match result and the specific matcher that matched
+func (p *CachePolicy) MatchesForSetWithMatcher(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) (bool, *common.MatcherConfig) {
 	// Respect appliesTo directive for set
 	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToSet {
 		return false, nil
@@ -89,7 +110,7 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface
 		matcher := p.config.Matchers[i]
 		if matchers.MatchConfig(matcher, networkId, method, params, finality, isEmptyish) {
 			// For cache policies, we only cache if action is include
-			return matcher.Action == common.MatcherInclude, nil
+			return matcher.Action == common.MatcherInclude, matcher
 		}
 	}
 	// No matcher matched
@@ -97,6 +118,12 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface
 }
 
 func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, error) {
+	matched, _ := p.MatchesForGetWithMatcher(networkId, method, params, finality)
+	return matched, nil
+}
+
+// MatchesForGetWithMatcher returns both the match result and the specific matcher that matched
+func (p *CachePolicy) MatchesForGetWithMatcher(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, *common.MatcherConfig) {
 	// Respect appliesTo directive for get
 	if p.config.AppliesTo != "" && p.config.AppliesTo != common.CachePolicyAppliesToBoth && p.config.AppliesTo != common.CachePolicyAppliesToGet {
 		return false, nil
@@ -164,7 +191,7 @@ func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface
 		if finalityMatches {
 			// This matcher fully matches, return based on action
 			if matcher.Action == common.MatcherInclude {
-				return true, nil
+				return true, matcher
 			}
 			return false, nil
 		}

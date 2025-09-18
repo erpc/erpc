@@ -177,4 +177,70 @@ func TestCachePolicy_MatchersIntegration(t *testing.T) {
 		// Too large
 		assert.False(t, policy.MatchesSizeLimits(2000))
 	})
+
+	t.Run("matched matcher empty state behavior", func(t *testing.T) {
+		// Test that empty state is correctly taken from the specific matcher that matched
+		policy, err := NewCachePolicy(&common.CachePolicyConfig{
+			Matchers: []*common.MatcherConfig{
+				// First matcher: exclude everything with empty=ignore
+				{
+					Method: "*",
+					Empty:  common.CacheEmptyBehaviorIgnore,
+					Action: common.MatcherExclude,
+				},
+				// Second matcher: include eth_call with empty=allow
+				{
+					Method: "eth_call",
+					Empty:  common.CacheEmptyBehaviorAllow,
+					Action: common.MatcherInclude,
+				},
+				// Third matcher: include eth_getBalance with empty=only
+				{
+					Method: "eth_getBalance",
+					Empty:  common.CacheEmptyBehaviorOnly,
+					Action: common.MatcherInclude,
+				},
+			},
+			Connector: "test",
+		}, mockConnector)
+		assert.NoError(t, err)
+
+		// Test MatchesForGetWithMatcher returns the correct matcher
+		matched, matcher := policy.MatchesForGetWithMatcher("1", "eth_call", nil, common.DataFinalityStateFinalized)
+		assert.True(t, matched)
+		assert.NotNil(t, matcher)
+		assert.Equal(t, common.CacheEmptyBehaviorAllow, matcher.Empty)
+		assert.Equal(t, "eth_call", matcher.Method)
+
+		matched, matcher = policy.MatchesForGetWithMatcher("1", "eth_getBalance", nil, common.DataFinalityStateFinalized)
+		assert.True(t, matched)
+		assert.NotNil(t, matcher)
+		assert.Equal(t, common.CacheEmptyBehaviorOnly, matcher.Empty)
+		assert.Equal(t, "eth_getBalance", matcher.Method)
+
+		// Test MatchesForSetWithMatcher
+		matched, matcher = policy.MatchesForSetWithMatcher("1", "eth_call", nil, common.DataFinalityStateFinalized, false)
+		assert.True(t, matched)
+		assert.NotNil(t, matcher)
+		assert.Equal(t, common.CacheEmptyBehaviorAllow, matcher.Empty)
+
+		// Test that PolicyWithMatcher correctly returns the matched matcher's empty state
+		pwm := &PolicyWithMatcher{
+			Policy: policy,
+			Matcher: &common.MatcherConfig{
+				Method: "eth_call",
+				Empty:  common.CacheEmptyBehaviorAllow,
+				Action: common.MatcherInclude,
+			},
+		}
+		assert.Equal(t, common.CacheEmptyBehaviorAllow, pwm.EmptyState())
+
+		// Test fallback when no matcher is set
+		pwm2 := &PolicyWithMatcher{
+			Policy:  policy,
+			Matcher: nil,
+		}
+		// Should fall back to the policy's default EmptyState behavior
+		assert.Equal(t, policy.EmptyState(), pwm2.EmptyState())
+	})
 }
