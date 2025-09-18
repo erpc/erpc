@@ -184,14 +184,24 @@ func (p *CachePolicy) MatchesSizeLimits(size int) bool {
 }
 
 func (p *CachePolicy) EmptyState() common.CacheEmptyBehavior {
-	// Check matchers first (new format)
+	// For legacy configs, use the legacy field
+	if p.config.Empty != 0 || p.config.Network != "" || p.config.Method != "" {
+		return p.config.Empty
+	}
+
+	// For new matcher configs, find the first INCLUDE matcher (skip auto-added excludes)
 	if len(p.config.Matchers) > 0 {
-		// Return the empty behavior from the first matcher
-		// (all matchers should have the same empty behavior for a single policy)
-		if len(p.config.Matchers) > 0 && p.config.Matchers[0] != nil {
+		for _, matcher := range p.config.Matchers {
+			if matcher != nil && matcher.Action == common.MatcherInclude {
+				return matcher.Empty
+			}
+		}
+		// If no include matchers, use the first one
+		if p.config.Matchers[0] != nil {
 			return p.config.Matchers[0].Empty
 		}
 	}
+
 	// Fall back to legacy field
 	return p.config.Empty
 }

@@ -201,6 +201,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	var jrr *common.JsonRpcResponse
 	var connector data.Connector
 	var policy *data.CachePolicy
+	var matchedPolicy *data.CachePolicy
 	for _, policy = range policies {
 		connector = policy.GetConnector()
 		policyCtx, policySpan := common.StartDetailSpan(ctx, "Cache.GetForPolicy", trace.WithAttributes(
@@ -236,8 +237,13 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		}
 		policySpan.End()
 		if jrr != nil {
+			matchedPolicy = policy // Remember which policy actually returned data
 			break
 		}
+	}
+	// Use matchedPolicy if we found data, otherwise use the last policy for metrics
+	if matchedPolicy != nil {
+		policy = matchedPolicy
 	}
 
 	if jrr == nil {
