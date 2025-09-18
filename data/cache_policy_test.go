@@ -234,13 +234,5 @@ func TestCachePolicy_MatchersIntegration(t *testing.T) {
 			},
 		}
 		assert.Equal(t, common.CacheEmptyBehaviorAllow, pwm.EmptyState())
-
-		// Test fallback when no matcher is set
-		pwm2 := &PolicyWithMatcher{
-			Policy:  policy,
-			Matcher: nil,
-		}
-		// Should fall back to the policy's default EmptyState behavior
-		assert.Equal(t, policy.EmptyState(), pwm2.EmptyState())
 	})
 }

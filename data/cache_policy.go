@@ -26,11 +26,7 @@ type PolicyWithMatcher struct {
 
 // EmptyState returns the empty state behavior from the matched matcher
 func (pm *PolicyWithMatcher) EmptyState() common.CacheEmptyBehavior {
-	if pm.Matcher != nil {
-		return pm.Matcher.Empty
-	}
-	// Fall back to policy's default behavior if no matcher
-	return pm.Policy.EmptyState()
+	return pm.Matcher.Empty
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
@@ -208,29 +204,6 @@ func (p *CachePolicy) MatchesSizeLimits(size int) bool {
 		return false
 	}
 	return true
-}
-
-func (p *CachePolicy) EmptyState() common.CacheEmptyBehavior {
-	// For legacy configs, use the legacy field
-	if p.config.Empty != 0 || p.config.Network != "" || p.config.Method != "" {
-		return p.config.Empty
-	}
-
-	// For new matcher configs, find the first INCLUDE matcher (skip auto-added excludes)
-	if len(p.config.Matchers) > 0 {
-		for _, matcher := range p.config.Matchers {
-			if matcher != nil && matcher.Action == common.MatcherInclude {
-				return matcher.Empty
-			}
-		}
-		// If no include matchers, use the first one
-		if p.config.Matchers[0] != nil {
-			return p.config.Matchers[0].Empty
-		}
-	}
-
-	// Fall back to legacy field
-	return p.config.Empty
 }
 
 func (p *CachePolicy) GetConnector() Connector {
