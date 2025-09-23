@@ -149,7 +149,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			host = host[:colonIndex]
 		}
 
-		var projectId, architecture, chainId string
+		var projectId, architecture, chainId, tokenSlug string
 		var isAdmin, isHealthCheck bool
 		var err error
 
@@ -174,7 +174,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		w.Header().Set("X-ERPC-Version", common.ErpcVersion)
 		w.Header().Set("X-ERPC-Commit", common.ErpcCommitSha)
 
-		projectId, architecture, chainId, isAdmin, isHealthCheck, err = s.parseUrlPath(r, projectId, architecture, chainId)
+		projectId, architecture, chainId, tokenSlug, isAdmin, isHealthCheck, err = s.parseUrlPath(r, projectId, architecture, chainId)
 		if err != nil {
 			handleErrorResponse(
 				httpCtx,
@@ -370,7 +370,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				var err error
 
 				if project != nil {
-					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
+					if tokenSlug == "" {
+						ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
+					} else {
+						ap, err = auth.NewPayloadFromToken(method, tokenSlug)
+					}
 				} else if isAdmin {
 					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
 				}
@@ -628,7 +632,7 @@ func (s *HttpServer) parseUrlPath(
 	preSelectedArchitecture,
 	preSelectedChainId string,
 ) (
-	projectId, architecture, chainId string,
+	projectId, architecture, chainId, token string,
 	isAdmin bool,
 	isHealthCheck bool,
 	err error,
@@ -646,10 +650,11 @@ func (s *HttpServer) parseUrlPath(
 	projectId = preSelectedProjectId
 	architecture = preSelectedArchitecture
 	chainId = preSelectedChainId
+	token = ""
 
 	// Special case for admin endpoint
 	if len(segments) == 1 && segments[0] == "admin" && (isPost || isOptions) {
-		return "", "", "", true, false, nil
+		return "", "", "", "", true, false, nil
 	}
 
 	// Handle healthcheck variations
@@ -683,12 +688,17 @@ func (s *HttpServer) parseUrlPath(
 			projectId = segments[0]
 			architecture = segments[1]
 			chainId = segments[2]
+		case 4:
+			projectId = segments[0]
+			architecture = segments[1]
+			chainId = segments[2]
+			token = segments[3]
 		case 0:
 			if !isHealthCheck {
-				return "", "", "", false, false, common.NewErrInvalidUrlPath("must provide /<project>/<architecture>/<chainId>", ps)
+				return "", "", "", "", false, false, common.NewErrInvalidUrlPath("must provide /<project>/<architecture>/<chainId>/<authToken?>", ps)
 			}
 		default:
-			return "", "", "", false, false, common.NewErrInvalidUrlPath("must only provide /<project>/<architecture>/<chainId>", ps)
+			return "", "", "", "", false, false, common.NewErrInvalidUrlPath("must only provide /<project>/<architecture>/<chainId>/<authToken?>", ps)
 		}
 
 	case projectId != "" && architecture == "" && chainId == "":
@@ -706,16 +716,30 @@ func (s *HttpServer) parseUrlPath(
 			architecture = segments[0]
 			chainId = segments[1]
 		case 3:
-			// Still allow explicitly specifying projectId
+			// Check if first segment is a valid projectId
+			if _, err := s.erpc.GetProject(segments[0]); err == nil {
+				// projectId is passed explicitly
+				projectId = segments[0]
+				architecture = segments[1]
+				chainId = segments[2]
+			} else {
+				// Assume format is /<architecture>/<chainId/<authToken>
+				architecture = segments[0]
+				chainId = segments[1]
+				token = segments[2]
+			}
+		case 4:
+			// Only possible valid format is /<projectId>/<architecture>/<chainId>/<authToken>
 			projectId = segments[0]
 			architecture = segments[1]
 			chainId = segments[2]
+			token = segments[3]
 		case 0:
 			if !isHealthCheck {
-				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-only alias must provide /<architecture>/<chainId>", ps)
+				return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for project-only alias must provide /<architecture>/<chainId>/<authToken?>", ps)
 			}
 		default:
-			return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-only alias must only provide /<architecture>/<chainId>", ps)
+			return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for project-only alias must only provide /<architecture>/<chainId>/<authToken?>", ps)
 		}
 
 	case projectId != "" && architecture != "" && chainId == "":
@@ -734,25 +758,51 @@ func (s *HttpServer) parseUrlPath(
 				chainId = segments[0]
 			}
 			if chainId == "" && !isHealthCheck {
-				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
+				return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
 			}
+		case 2:
+			// Assume format is /<chainId/<authToken?>
+			// Check if segment is a network alias
+			if project, err := s.erpc.GetProject(projectId); err == nil {
+				ar, ch := project.networksRegistry.ResolveAlias(segments[0])
+				if ar != "" && ch != "" {
+					architecture = ar
+					chainId = ch
+				}
+			}
+			if chainId == "" {
+				chainId = segments[0]
+			}
+			token = segments[1]
 		case 3:
 			// Still allow explicitly specifying projectId+architecture
 			projectId = segments[0]
 			architecture = segments[1]
 			chainId = segments[2]
+		case 4:
+			// Allow explicitly specifying projectId+architecture+authToken
+			projectId = segments[0]
+			architecture = segments[1]
+			chainId = segments[2]
+			token = segments[3]
 		case 0:
 			if !isHealthCheck {
-				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
+				return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
 			}
 		default:
-			return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must only provide /<chainId>", ps)
+			return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must only provide /<chainId>", ps)
 		}
 
 	case projectId != "" && architecture != "" && chainId != "":
 		// Case: All values preselected
+		switch len(segments) {
+		case 1:
+			// Assume /<authToken>
+			token = segments[0]
+		}
+
 		if len(segments) > 1 && !isHealthCheck {
-			return "", "", "", false, false, common.NewErrInvalidUrlPath("must not provide anything on the path and only use /", ps)
+			return "", "", "", "", false, false, common.NewErrInvalidUrlPath("must not provide anything on the path and only use /", ps)
 		}
 
 	case projectId == "" && architecture != "" && chainId != "":
@@ -760,11 +810,14 @@ func (s *HttpServer) parseUrlPath(
 		case 1:
 			projectId = segments[0]
 			if projectId == "" && !isHealthCheck {
-				return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must provide /<project>", ps)
+				return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must provide /<project>/<authToken?>", ps)
 			}
+		case 2:
+			projectId = segments[0]
+			token = segments[1]
 		case 0:
 			if !isHealthCheck {
-				return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must provide /<project>", ps)
+				return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must provide /<project>/<authToken?>", ps)
 			}
 		case 3:
 			// Still allow explicitly specifying project+architecture+chain
@@ -772,7 +825,7 @@ func (s *HttpServer) parseUrlPath(
 			architecture = segments[1]
 			chainId = segments[2]
 		default:
-			return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must only provide /<project>", ps)
+			return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must only provide /<project>", ps)
 		}
 
 	case projectId == "" && architecture != "" && chainId == "":
@@ -788,30 +841,30 @@ func (s *HttpServer) parseUrlPath(
 			architecture = segments[1]
 			chainId = segments[2]
 		default:
-			return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-only alias must only provide /<project>", ps)
+			return "", "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-only alias must only provide /<project>", ps)
 		}
 
 	default:
 		if projectId != "" && architecture == "" && chainId != "" {
-			return "", "", "", false, false, common.NewErrInvalidUrlPath("it is not possible to alias for project and chain WITHOUT architecture", ps)
+			return "", "", "", "", false, false, common.NewErrInvalidUrlPath("it is not possible to alias for project and chain WITHOUT architecture", ps)
 		}
 		// Invalid combination of preselected values
-		return "", "", "", false, false, common.NewErrInvalidUrlPath("invalid combination of path elements and/or aliasing rules", ps)
+		return "", "", "", "", false, false, common.NewErrInvalidUrlPath("invalid combination of path elements and/or aliasing rules", ps)
 	}
 
 	if projectId == "" && !isHealthCheck {
-		return "", "", "", false, false, common.NewErrInvalidUrlPath("project is required either in path or via domain aliasing", ps)
+		return "", "", "", "", false, false, common.NewErrInvalidUrlPath("project is required either in path or via domain aliasing", ps)
 	}
 
 	if (chainId != "" || architecture != "") && !common.IsValidArchitecture(architecture) {
-		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm')", ps)
+		return "", "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm')", ps)
 	}
 
 	if !isPost && !isOptions {
 		isHealthCheck = true
 	}
 
-	return projectId, architecture, chainId, isAdmin, isHealthCheck, nil
+	return projectId, architecture, chainId, token, isAdmin, isHealthCheck, nil
 }
 
 func (s *HttpServer) handleCORS(httpCtx context.Context, w http.ResponseWriter, r *http.Request, corsConfig *common.CORSConfig) bool {

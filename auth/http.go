@@ -99,3 +99,13 @@ func normalizeSiweMessage(msg string) string {
 	}
 	return string(decoded)
 }
+
+func NewPayloadFromToken(method string, token string) (*AuthPayload, error) {
+	return &AuthPayload{
+		Method: method,
+		Type:   common.AuthTypeSecret,
+		Secret: &SecretPayload{
+			Value: token,
+		},
+	}, nil
+}

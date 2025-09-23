@@ -3335,6 +3335,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 		wantProject        string
 		wantArch           string
 		wantChain          string
+		wantToken          string
 		wantAdmin          bool
 		wantHealthcheck    bool
 		wantErr            bool
@@ -3342,11 +3343,12 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 	}{
 		{
 			name:        "Basic path with all segments",
-			path:        "/myproject/evm/123",
+			path:        "/myproject/evm/123/123456",
 			method:      "POST",
 			wantProject: "myproject",
 			wantArch:    "evm",
 			wantChain:   "123",
+			wantToken:   "123456",
 			wantAdmin:   false,
 			wantErr:     false,
 		},
@@ -3357,6 +3359,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject: "",
 			wantArch:    "",
 			wantChain:   "",
+			wantToken:   "",
 			wantAdmin:   true,
 			wantErr:     false,
 		},
@@ -3367,6 +3370,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject: "",
 			wantArch:    "",
 			wantChain:   "",
+			wantToken:   "",
 			wantAdmin:   true,
 			wantErr:     false,
 		},
@@ -3377,6 +3381,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:     "",
 			wantArch:        "",
 			wantChain:       "",
+			wantToken:       "",
 			wantAdmin:       false,
 			wantHealthcheck: true,
 			wantErr:         false,
@@ -3388,6 +3393,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:     "",
 			wantArch:        "",
 			wantChain:       "",
+			wantToken:       "",
 			wantAdmin:       false,
 			wantHealthcheck: true,
 			wantErr:         false,
@@ -3401,6 +3407,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:      "myproject",
 			wantArch:         "evm",
 			wantChain:        "123",
+			wantToken:        "",
 			wantAdmin:        false,
 			wantHealthcheck:  true,
 			wantErr:          false,
@@ -3412,6 +3419,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:     "myproject",
 			wantArch:        "evm",
 			wantChain:       "123",
+			wantToken:       "",
 			wantAdmin:       false,
 			wantHealthcheck: true,
 			wantErr:         false,
@@ -3424,6 +3432,18 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:        "myproject",
 			wantArch:           "evm",
 			wantChain:          "123",
+			wantToken:          "",
+			wantErr:            false,
+		},
+		{
+			name:               "Project preselected, valid path, auth token",
+			path:               "/evm/123/123456",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "123",
+			wantToken:          "123456",
 			wantErr:            false,
 		},
 		{
@@ -3438,6 +3458,18 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantErr:            false,
 		},
 		{
+			name:               "Project and arch preselected, valid path, auth token",
+			path:               "/123/123456",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "123",
+			wantToken:          "123456",
+			wantErr:            false,
+		},
+		{
 			name:               "All preselected, valid empty path",
 			path:               "/",
 			method:             "POST",
@@ -3447,6 +3479,19 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:        "myproject",
 			wantArch:           "evm",
 			wantChain:          "123",
+			wantErr:            false,
+		},
+		{
+			name:               "All preselected, auth token",
+			path:               "/123456",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			preSelectedChain:   "123",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "123",
+			wantToken:          "123456",
 			wantErr:            false,
 		},
 		{
@@ -3464,7 +3509,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 		},
 		{
 			name:        "Invalid path - too many segments",
-			path:        "/myproject/evm/123/extra",
+			path:        "/myproject/evm/123/token/extra",
 			method:      "POST",
 			wantErr:     true,
 			errContains: "must only provide",
@@ -3477,8 +3522,23 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			errContains: "architecture is not valid",
 		},
 		{
+			name:        "Invalid path - wrong architecture, auth token",
+			path:        "/myproject/x/123/123456",
+			method:      "POST",
+			wantErr:     true,
+			errContains: "architecture is not valid",
+		},
+		{
 			name:               "Invalid path - project preselected but missing arch",
 			path:               "/123",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			wantErr:            true,
+			errContains:        "architecture is not valid",
+		},
+		{
+			name:               "Invalid path - project preselected but missing arch, auth token",
+			path:               "/123/123456",
 			method:             "POST",
 			preSelectedProject: "myproject",
 			wantErr:            true,
@@ -3494,8 +3554,24 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			errContains:        "it is not possible to alias for project and chain WITHOUT architecture",
 		},
 		{
+			name:               "Invalid path - project and chain preselected, auth token",
+			path:               "/evm/123456",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedChain:   "123",
+			wantErr:            true,
+			errContains:        "it is not possible to alias for project and chain WITHOUT architecture",
+		},
+		{
 			name:        "Invalid path - empty architecture segment",
 			path:        "/myproject//123",
+			method:      "POST",
+			wantErr:     true,
+			errContains: "architecture is not valid",
+		},
+		{
+			name:        "Invalid path - empty architecture segment, auth token",
+			path:        "/myproject//123/123456",
 			method:      "POST",
 			wantErr:     true,
 			errContains: "architecture is not valid",
@@ -3516,6 +3592,18 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:      "myproject",
 			wantArch:         "evm",
 			wantChain:        "123",
+			wantErr:          false,
+		},
+		{
+			name:             "Architecture and chain preselected, auth token",
+			path:             "/myproject/123456",
+			method:           "POST",
+			preSelectedArch:  "evm",
+			preSelectedChain: "123",
+			wantProject:      "myproject",
+			wantArch:         "evm",
+			wantChain:        "123",
+			wantToken:        "123456",
 			wantErr:          false,
 		},
 		{
@@ -3555,8 +3643,27 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			errContains: "architecture is not valid",
 		},
 		{
+			name:        "Project and chainId provided but not architecture, auth token",
+			path:        "/myproject/123/123456",
+			method:      "POST",
+			wantProject: "myproject",
+			wantChain:   "123",
+			wantToken:   "123456",
+			wantErr:     true,
+			errContains: "architecture is not valid",
+		},
+		{
 			name:               "Only architecture provided",
 			path:               "/evm",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedChain:   "123",
+			wantErr:            true,
+			errContains:        "it is not possible",
+		},
+		{
+			name:               "Only architecture provided, auth token",
+			path:               "/evm/123456",
 			method:             "POST",
 			preSelectedProject: "myproject",
 			preSelectedChain:   "123",
@@ -3575,6 +3682,18 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantErr:            false,
 		},
 		{
+			name:               "Only chainId provided, auth token",
+			path:               "/123/123456",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "123",
+			wantToken:          "123456",
+			wantErr:            false,
+		},
+		{
 			name:               "Architecture and chainId provided",
 			path:               "/evm/123",
 			method:             "POST",
@@ -3582,6 +3701,17 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:        "myproject",
 			wantArch:           "evm",
 			wantChain:          "123",
+			wantErr:            false,
+		},
+		{
+			name:               "Architecture and chainId provided, auth token",
+			path:               "/evm/123/123456",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "123",
+			wantToken:          "123456",
 			wantErr:            false,
 		},
 		{
@@ -3593,6 +3723,18 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantProject:        "myproject",
 			wantArch:           "evm",
 			wantChain:          "123",
+			wantErr:            false,
+		},
+		{
+			name:               "project and architecture preselected, network alias in path, auth token",
+			path:               "/arbitrum/123456",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "123",
+			wantToken:          "123456",
 			wantErr:            false,
 		},
 	}
@@ -3626,7 +3768,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 				},
 			}
 
-			project, arch, chain, isAdmin, isHealth, err := s.parseUrlPath(r, tt.preSelectedProject, tt.preSelectedArch, tt.preSelectedChain)
+			project, arch, chain, token, isAdmin, isHealth, err := s.parseUrlPath(r, tt.preSelectedProject, tt.preSelectedArch, tt.preSelectedChain)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -3640,6 +3782,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			assert.Equal(t, tt.wantProject, project)
 			assert.Equal(t, tt.wantArch, arch)
 			assert.Equal(t, tt.wantChain, chain)
+			assert.Equal(t, tt.wantToken, token)
 			assert.Equal(t, tt.wantAdmin, isAdmin)
 			assert.Equal(t, tt.wantHealthcheck, isHealth)
 		})
