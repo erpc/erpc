@@ -87,6 +87,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(500)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -377,6 +378,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -400,6 +402,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -423,6 +426,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -444,6 +448,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
@@ -465,6 +470,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
+				time.Sleep(50 * time.Millisecond)
 			},
 		},
 		{
