@@ -271,7 +271,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		// Replace the existing body read with our potentially decompressed reader
 		_, readBodySpan := common.StartDetailSpan(httpCtx, "Http.ReadBody")
-		body, err := util.ReadAll(bodyReader, 2048)
+		body, cleanup, err := util.ReadAll(bodyReader, 2048)
+		// Clean up buffer after parsing the request
+		if cleanup != nil {
+			defer cleanup()
+		}
 		readBodySpan.End()
 		if err != nil {
 			common.SetTraceSpanError(readBodySpan, err)

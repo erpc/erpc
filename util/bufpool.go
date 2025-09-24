@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-const maxBufCap = 16 << 10 // 16 KiB
+const maxBufCap = 64 << 10 // 64 KiB
 
 var byteBufPool = sync.Pool{
 	New: func() any { return bytes.NewBuffer(make([]byte, 0, maxBufCap)) },

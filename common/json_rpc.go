@@ -266,9 +266,13 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		defer span.End()
 	}
 
-	data, err := util.ReadAll(reader, expectedSize)
+	data, returnBuf, err := util.ReadAll(reader, expectedSize)
 	if err != nil {
 		return err
+	}
+	// Return buffer after we're done parsing and copying what we need
+	if returnBuf != nil {
+		defer returnBuf()
 	}
 
 	// Parse into a temporary struct to extract fields without string conversion
@@ -280,23 +284,29 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 
 	// Use Sonic's Unmarshal which works directly with bytes
 	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
-		// Store the raw data even if parsing fails, so vendor-specific error detection can access it
+		// Must copy data before storing since we're returning the buffer
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
 		r.resultMu.Lock()
-		r.result = data
+		r.result = dataCopy
 		r.resultMu.Unlock()
 		return err
 	}
 
-	// Store the raw bytes directly
+	// Copy parsed bytes since we're returning the buffer
 	if len(temp.ID) > 0 {
+		idCopy := make([]byte, len(temp.ID))
+		copy(idCopy, temp.ID)
 		r.idMu.Lock()
-		r.idBytes = temp.ID
+		r.idBytes = idCopy
 		r.idMu.Unlock()
 	}
 
 	if len(temp.Result) > 0 {
+		resultCopy := make([]byte, len(temp.Result))
+		copy(resultCopy, temp.Result)
 		r.resultMu.Lock()
-		r.result = temp.Result
+		r.result = resultCopy
 		r.resultMu.Unlock()
 	}
 

@@ -456,12 +456,15 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	bodyBytes, err := c.readResponseBody(resp, int(resp.ContentLength))
+	bodyBytes, cleanup, err := c.readResponseBody(resp, int(resp.ContentLength))
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
 		}
 		return
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	bodyStr := string(bodyBytes)
@@ -797,7 +800,7 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	return httpReq, nil
 }
 
-func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
+func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, func(), error) {
 	var reader io.ReadCloser = resp.Body
 	defer resp.Body.Close()
 
@@ -805,7 +808,7 @@ func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expecte
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gr, err := c.gzipPool.GetReset(resp.Body)
 		if err != nil {
-			return nil, fmt.Errorf("error creating gzip reader: %w", err)
+			return nil, nil, fmt.Errorf("error creating gzip reader: %w", err)
 		}
 		defer c.gzipPool.Put(gr)
 		reader = gr
