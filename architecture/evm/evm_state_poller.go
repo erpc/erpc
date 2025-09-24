@@ -83,6 +83,10 @@ type EvmStatePoller struct {
 	sharedStateRegistry data.SharedStateRegistry
 
 	stateMu sync.RWMutex
+
+	// Track if updates are in progress to avoid goroutine pile-up
+	latestUpdateInProgress    sync.Mutex
+	finalizedUpdateInProgress sync.Mutex
 }
 
 func NewEvmStatePoller(
@@ -416,8 +420,36 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 }
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
-	// TODO after subscription epic this method should be called for every new block received from this upstream
-	e.latestBlockShared.TryUpdate(e.appCtx, blockNumber)
+	// Best-effort, non-blocking update to avoid goroutine pile-up
+	// If an update is already in progress, skip this one
+	if !e.latestUpdateInProgress.TryLock() {
+		// Another update is already in progress, skip this one
+		e.logger.Trace().
+			Int64("blockNumber", blockNumber).
+			Msg("skipping latest block suggestion as another update is in progress")
+		return
+	}
+
+	// We acquired the lock, perform the update and release when done
+	go func() {
+		defer e.latestUpdateInProgress.Unlock()
+
+		// Check if this update is still relevant (not older than current value)
+		currentValue := e.latestBlockShared.GetValue()
+		if blockNumber <= currentValue {
+			e.logger.Trace().
+				Int64("blockNumber", blockNumber).
+				Int64("currentValue", currentValue).
+				Msg("skipping latest block update as it's not newer")
+			return
+		}
+
+		// Create a timeout context to avoid blocking forever on Redis operations
+		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
+		defer cancel()
+
+		e.latestBlockShared.TryUpdate(ctx, blockNumber)
+	}()
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {
@@ -495,7 +527,36 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 }
 
 func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
-	e.finalizedBlockShared.TryUpdate(e.appCtx, blockNumber)
+	// Best-effort, non-blocking update to avoid goroutine pile-up
+	// If an update is already in progress, skip this one
+	if !e.finalizedUpdateInProgress.TryLock() {
+		// Another update is already in progress, skip this one
+		e.logger.Trace().
+			Int64("blockNumber", blockNumber).
+			Msg("skipping finalized block suggestion as another update is in progress")
+		return
+	}
+
+	// We acquired the lock, perform the update and release when done
+	go func() {
+		defer e.finalizedUpdateInProgress.Unlock()
+
+		// Check if this update is still relevant (not older than current value)
+		currentValue := e.finalizedBlockShared.GetValue()
+		if blockNumber <= currentValue {
+			e.logger.Trace().
+				Int64("blockNumber", blockNumber).
+				Int64("currentValue", currentValue).
+				Msg("skipping finalized block update as it's not newer")
+			return
+		}
+
+		// Create a timeout context to avoid blocking forever on Redis operations
+		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
+		defer cancel()
+
+		e.finalizedBlockShared.TryUpdate(ctx, blockNumber)
+	}()
 }
 
 func (e *EvmStatePoller) FinalizedBlock() int64 {

@@ -10503,6 +10503,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		}
 		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h)
 		upsList[0].EvmStatePoller().SuggestLatestBlock(h)
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	upstream.ReorderUpstreams(upstreamsRegistry)
@@ -10638,6 +10639,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		lb2, _ := common.HexToInt64("0x22228888")
 		upsList[1].EvmStatePoller().SuggestLatestBlock(lb2)
 	}
+	time.Sleep(50 * time.Millisecond)
 
 	return network
 }
@@ -10771,6 +10773,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		// Set up block numbers - syncing node has higher block number
 		syncingUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Higher block
 		syncedUpstream.EvmStatePoller().SuggestLatestBlock(1000)  // Lower block
+		time.Sleep(50 * time.Millisecond)
 
 		// Set syncing states
 		syncingUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
@@ -10924,6 +10927,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		// Set up block numbers - excluded node has higher block number
 		excludedUpstream.EvmStatePoller().SuggestLatestBlock(3000) // Higher block
 		includedUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Lower block
+		time.Sleep(50 * time.Millisecond)
 
 		// Create metrics to make excluded upstream have high error rate
 		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*")

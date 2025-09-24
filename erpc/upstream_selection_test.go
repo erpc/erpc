@@ -879,6 +879,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		require.NoError(t, err)
 		ups.EvmStatePoller().SuggestLatestBlock(1000)
 		ups.EvmStatePoller().SuggestFinalizedBlock(900)
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// Force score refresh to ensure upstreams are properly sorted

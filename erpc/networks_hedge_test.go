@@ -1029,6 +1029,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		ups.EvmStatePoller().SuggestLatestBlock(1000)
 		ups.EvmStatePoller().SuggestFinalizedBlock(900)
 	}
+	time.Sleep(50 * time.Millisecond)
 
 	upstream.ReorderUpstreams(upstreamsRegistry)
 	time.Sleep(100 * time.Millisecond)

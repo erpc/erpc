@@ -1082,12 +1082,12 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 						if err == nil {
 							if ups := resp.Upstream(); ups != nil {
 								if ups, ok := ups.(common.EvmUpstream); ok {
-									// We don't need to wait for these calls (as it might take bit long when updating distributed shard-variables)
-									// but the overall request doesn't need to wait for these poller proactive updates.
-									if blkTag == "finalized" {
-										go ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
-									} else if blkTag == "latest" {
-										go ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+									// These methods are non-blocking and handle async updates internally
+									switch blkTag {
+									case "finalized":
+										ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+									case "latest":
+										ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 									}
 								}
 							}
@@ -1103,7 +1103,8 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 				if err == nil {
 					if ups := resp.Upstream(); ups != nil {
 						if ups, ok := ups.(common.EvmUpstream); ok {
-							go ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+							// This method is non-blocking and handles async updates internally
+							ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 						}
 					}
 				}
