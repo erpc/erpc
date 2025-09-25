@@ -1349,9 +1349,72 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.gzipWriter.Write(b)
 }
 
+// bufferedGzipWriter wraps ResponseWriter to buffer small responses
+// and only compress if they exceed a size threshold
+type bufferedGzipWriter struct {
+	http.ResponseWriter
+	buffer     []byte
+	gzipWriter *gzip.Writer
+	pool       *util.GzipWriterPool
+	threshold  int
+	written    bool
+}
+
+func (w *bufferedGzipWriter) Write(b []byte) (int, error) {
+	if w.written {
+		// Already decided to compress, write directly
+		return w.gzipWriter.Write(b)
+	}
+
+	// Buffer the data
+	w.buffer = append(w.buffer, b...)
+
+	// Check if we should start compressing
+	if len(w.buffer) >= w.threshold {
+		// Start compression
+		w.written = true
+
+		// Set compression headers
+		w.ResponseWriter.Header().Del("Content-Length")
+		w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
+		w.ResponseWriter.Header().Set("Vary", "Accept-Encoding")
+		if ct := w.ResponseWriter.Header().Get("Content-Type"); ct == "" {
+			w.ResponseWriter.Header().Set("Content-Type", "application/json")
+		}
+
+		// Initialize gzip writer
+		w.gzipWriter = w.pool.Get(w.ResponseWriter)
+
+		// Write buffered data
+		_, err := w.gzipWriter.Write(w.buffer)
+		w.buffer = nil // Free the buffer
+		return len(b), err
+	}
+
+	return len(b), nil
+}
+
+func (w *bufferedGzipWriter) Close() error {
+	if w.written && w.gzipWriter != nil {
+		// Was compressing, close the gzip writer
+		err := w.gzipWriter.Close()
+		w.pool.Put(w.gzipWriter)
+		return err
+	} else if len(w.buffer) > 0 {
+		// Small response, write without compression
+		_, err := w.ResponseWriter.Write(w.buffer)
+		w.buffer = nil
+		return err
+	}
+	return nil
+}
+
 func gzipHandler(next http.Handler) http.Handler {
 	// Pool writers across responses
 	var gzPool = util.NewGzipWriterPool()
+	// Only compress responses larger than 1KB to reduce CPU usage on small responses
+	const compressionThreshold = 1024
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if client accepts gzip encoding
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -1359,31 +1422,18 @@ func gzipHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Initialize gzip writer from pool
-		gz := gzPool.Get(w)
-		defer func() {
-			_ = gz.Close()
-			gzPool.Put(gz)
-		}()
-
-		// Create gzip response writer
-		gzw := &gzipResponseWriter{
+		// Create buffered gzip response writer
+		gzw := &bufferedGzipWriter{
 			ResponseWriter: w,
-			gzipWriter:     gz,
+			pool:           gzPool,
+			threshold:      compressionThreshold,
+			buffer:         make([]byte, 0, compressionThreshold),
 		}
 
-		// Remove Content-Length header as it will no longer be valid
-		w.Header().Del("Content-Length")
-
-		// Set required headers
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
-		// Ensure Content-Type is preserved
-		if ct := w.Header().Get("Content-Type"); ct == "" {
-			w.Header().Set("Content-Type", "application/json")
-		}
-
-		// Call the next handler with our gzip response writer
+		// Call the next handler with our buffered gzip response writer
 		next.ServeHTTP(gzw, r)
+
+		// Ensure we flush any buffered data
+		_ = gzw.Close()
 	})
 }

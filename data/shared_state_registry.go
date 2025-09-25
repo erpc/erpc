@@ -135,11 +135,18 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 		return err
 	}
 
-	// Start the watch loop in a goroutine
+	// Start the watch loop in a goroutine with debouncing to reduce update frequency
 	go func() {
 		if cleanup != nil {
 			defer cleanup()
 		}
+
+		// Debounce rapid updates to reduce CPU pressure
+		var lastValue int64 = -1
+		updateTimer := time.NewTimer(time.Hour) // Initially inactive
+		updateTimer.Stop()
+		defer updateTimer.Stop()
+
 		for {
 			select {
 			case <-r.appCtx.Done():
@@ -152,11 +159,21 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 					return
 				}
 
-				r.logger.Debug().
-					Str("key", counter.key).
-					Int64("newValue", newValue).
-					Msg("received new value from shared state sync")
-				counter.processNewValue(UpdateSourceRemoteSync, newValue)
+				// Store latest value and reset timer for debouncing
+				lastValue = newValue
+				updateTimer.Stop()
+				updateTimer.Reset(50 * time.Millisecond) // Small debounce window
+
+			case <-updateTimer.C:
+				// Process the debounced update
+				if lastValue >= 0 {
+					r.logger.Debug().
+						Str("key", counter.key).
+						Int64("newValue", lastValue).
+						Msg("received new value from shared state sync")
+					counter.processNewValue(UpdateSourceRemoteSync, lastValue)
+					lastValue = -1
+				}
 			}
 		}
 	}()

@@ -819,31 +819,59 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 
 	// Update the finalization lag across the network if needed
 	if needsGlobalUpdate {
-		t.upsMetrics.Range(func(key, value any) bool {
-			k, ok := key.(upstreamKey)
-			if !ok {
-				return true
-			}
-			otherUps := k.ups
-			if otherUps == nil {
-				return true
-			}
-			otherNet := otherUps.NetworkId()
-			if otherNet == net {
-				tm := value.(*TrackedMetrics)
-				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-				otherVal := otherUpsMeta.evmFinalizedBlockNumber.Load()
-				if otherVal <= 0 {
-					lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
+		// Use the pre-built index to avoid ranging over ALL upstreams
+		t.mu.RLock()
+		relevantKeys := t.upstreamsByNetwork[net]
+		t.mu.RUnlock()
+
+		if len(relevantKeys) == 0 {
+			// Fallback only if index not ready
+			t.upsMetrics.Range(func(key, value any) bool {
+				k, ok := key.(upstreamKey)
+				if !ok {
 					return true
 				}
-				otherLag := ntwVal - otherVal
-				tm.FinalizationLag.Store(otherLag)
-				gOtherLag := t.getFinalizationLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
-				gOtherLag.Set(float64(otherLag))
+				otherUps := k.ups
+				if otherUps == nil {
+					return true
+				}
+				otherNet := otherUps.NetworkId()
+				if otherNet == net {
+					tm := value.(*TrackedMetrics)
+					otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
+					otherVal := otherUpsMeta.evmFinalizedBlockNumber.Load()
+					if otherVal <= 0 {
+						lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
+						return true
+					}
+					otherLag := ntwVal - otherVal
+					tm.FinalizationLag.Store(otherLag)
+					gOtherLag := t.getFinalizationLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
+					gOtherLag.Set(float64(otherLag))
+				}
+				return true
+			})
+		} else {
+			// Optimized: iterate only relevant keys for this network
+			for _, k := range relevantKeys {
+				if k.ups == nil {
+					continue
+				}
+				if v, ok := t.upsMetrics.Load(k); ok {
+					tm := v.(*TrackedMetrics)
+					otherUpsMeta := t.getMetadata(metadataKey{k.ups, net})
+					otherVal := otherUpsMeta.evmFinalizedBlockNumber.Load()
+					if otherVal <= 0 {
+						lg.Debug().Str("otherUpstreamId", k.ups.Id()).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
+						continue
+					}
+					otherLag := ntwVal - otherVal
+					tm.FinalizationLag.Store(otherLag)
+					gOtherLag := t.getFinalizationLagGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
+					gOtherLag.Set(float64(otherLag))
+				}
 			}
-			return true
-		})
+		}
 	} else {
 		// Only update finalization lag for this single upstream.
 		// Prefer the pre-built per-network index to avoid ranging the entire map.

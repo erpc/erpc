@@ -115,11 +115,24 @@ func NewEvmStatePoller(
 		networkLabel:         "n/a",
 	}
 
+	// Rate limit health tracker updates to reduce CPU pressure from sync.Map operations
+	var lastLatestUpdate time.Time
+	var lastFinalizedUpdate time.Time
+	const minUpdateInterval = 500 * time.Millisecond
+
 	lbs.OnValue(func(value int64) {
-		e.tracker.SetLatestBlockNumber(e.upstream, value)
+		now := time.Now()
+		if now.Sub(lastLatestUpdate) >= minUpdateInterval {
+			e.tracker.SetLatestBlockNumber(e.upstream, value)
+			lastLatestUpdate = now
+		}
 	})
 	fbs.OnValue(func(value int64) {
-		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
+		now := time.Now()
+		if now.Sub(lastFinalizedUpdate) >= minUpdateInterval {
+			e.tracker.SetFinalizedBlockNumber(e.upstream, value)
+			lastFinalizedUpdate = now
+		}
 	})
 
 	lbs.OnLargeRollback(func(currentVal, newVal int64) {
