@@ -620,6 +620,111 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 // Block Number & Lag Tracking
 // --------------------------------------------
 
+// updateNetworkLagMetrics updates lag metrics for all upstreams in a network
+// This is a DRY helper to avoid code duplication between SetLatestBlockNumber and SetFinalizedBlockNumber
+func (t *Tracker) updateNetworkLagMetrics(
+	net string,
+	networkValue int64,
+	getUpstreamValue func(*NetworkMetadata) int64,
+	setLag func(*TrackedMetrics, int64),
+	getGauge func(string, string, string, string) prometheus.Gauge,
+	lg *zerolog.Logger,
+) {
+	// Use the pre-built index to avoid ranging over ALL upstreams
+	t.mu.RLock()
+	relevantKeys := t.upstreamsByNetwork[net]
+	t.mu.RUnlock()
+
+	if len(relevantKeys) == 0 {
+		// Fallback only if index not ready - this should be rare
+		t.upsMetrics.Range(func(key, value any) bool {
+			k, ok := key.(upstreamKey)
+			if !ok || k.ups == nil {
+				return true
+			}
+			if k.ups.NetworkId() != net {
+				return true
+			}
+			tm := value.(*TrackedMetrics)
+			upsMeta := t.getMetadata(metadataKey{k.ups, net})
+			upsValue := getUpstreamValue(upsMeta)
+			if upsValue <= 0 {
+				lg.Debug().
+					Str("upstreamId", k.ups.Id()).
+					Int64("value", upsValue).
+					Msg("ignoring lag tracking for non-positive value")
+				return true
+			}
+			lag := networkValue - upsValue
+			setLag(tm, lag)
+			gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
+			gauge.Set(float64(lag))
+			return true
+		})
+	} else {
+		// Optimized path: iterate only relevant keys for this network
+		for _, k := range relevantKeys {
+			if k.ups == nil {
+				continue
+			}
+			if v, ok := t.upsMetrics.Load(k); ok {
+				tm := v.(*TrackedMetrics)
+				upsMeta := t.getMetadata(metadataKey{k.ups, net})
+				upsValue := getUpstreamValue(upsMeta)
+				if upsValue <= 0 {
+					lg.Debug().
+						Str("upstreamId", k.ups.Id()).
+						Int64("value", upsValue).
+						Msg("ignoring lag tracking for non-positive value")
+					continue
+				}
+				lag := networkValue - upsValue
+				setLag(tm, lag)
+				gauge := getGauge(t.projectId, k.ups.VendorName(), k.ups.NetworkLabel(), k.ups.Id())
+				gauge.Set(float64(lag))
+			}
+		}
+	}
+}
+
+// updateSingleUpstreamLag updates lag metrics for a single upstream
+func (t *Tracker) updateSingleUpstreamLag(
+	id string,
+	net string,
+	lag int64,
+	setLag func(*TrackedMetrics, int64),
+) {
+	// Use the pre-built index when available
+	t.mu.RLock()
+	relevantKeys := t.upstreamsByNetwork[net]
+	t.mu.RUnlock()
+
+	if len(relevantKeys) == 0 {
+		// Fallback for safety if index not yet populated
+		t.upsMetrics.Range(func(key, value any) bool {
+			k, ok := key.(upstreamKey)
+			if !ok || k.ups == nil {
+				return true
+			}
+			if k.ups.Id() == id && k.ups.NetworkId() == net {
+				tm := value.(*TrackedMetrics)
+				setLag(tm, lag)
+			}
+			return true
+		})
+	} else {
+		// Optimized path: check only relevant keys
+		for _, k := range relevantKeys {
+			if k.ups != nil && k.ups.Id() == id {
+				if v, ok := t.upsMetrics.Load(k); ok {
+					tm := v.(*TrackedMetrics)
+					setLag(tm, lag)
+				}
+			}
+		}
+	}
+}
+
 func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
@@ -670,92 +775,22 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// 4) Update the TrackedMetrics.BlockHeadLag fields for Upstream(s)
 	if needsGlobalUpdate {
 		// Recompute for every upstream in the network
-		t.mu.RLock()
-		relevantKeys := t.upstreamsByNetwork[net]
-		t.mu.RUnlock()
-
-		if len(relevantKeys) == 0 {
-			// Fallback: if we have not yet registered upstream keys for this network,
-			// iterate over all known metrics to ensure correctness.
-			t.upsMetrics.Range(func(key, value any) bool {
-				k, ok := key.(upstreamKey)
-				if !ok {
-					return true
-				}
-				otherUps := k.ups
-				if otherUps == nil {
-					return true
-				}
-				if otherUps.NetworkId() != net {
-					return true
-				}
-				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-				otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
-				if otherVal <= 0 {
-					lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
-					return true
-				}
-				otherLag := ntwBn - otherVal
-				tm := value.(*TrackedMetrics)
-				tm.BlockHeadLag.Store(otherLag)
-				gOtherLag := t.getHeadLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
-				gOtherLag.Set(float64(otherLag))
-				return true
-			})
-		} else {
-			for _, k := range relevantKeys {
-				if v, ok := t.upsMetrics.Load(k); ok {
-					tm := v.(*TrackedMetrics)
-					otherUps := k.ups
-					if otherUps == nil {
-						continue
-					}
-					otherNet := otherUps.NetworkId()
-					if otherNet == net {
-						otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-						otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
-						if otherVal <= 0 {
-							lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
-							continue
-						}
-						otherLag := ntwBn - otherVal
-						tm.BlockHeadLag.Store(otherLag)
-						gOtherLag := t.getHeadLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
-						gOtherLag.Set(float64(otherLag))
-					}
-				}
-			}
-		}
+		t.updateNetworkLagMetrics(
+			net,
+			ntwBn,
+			func(meta *NetworkMetadata) int64 { return meta.evmLatestBlockNumber.Load() },
+			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
+			t.getHeadLagGauge,
+			&lg,
+		)
 	} else {
-		// Only update items for this single upstream in this network.
-		// Prefer the pre-built per-network index to avoid ranging the entire map.
-		t.mu.RLock()
-		relevantKeys := t.upstreamsByNetwork[net]
-		t.mu.RUnlock()
-		if len(relevantKeys) == 0 {
-			// Fallback for safety if index not yet populated.
-			t.upsMetrics.Range(func(key, value any) bool {
-				k, ok := key.(upstreamKey)
-				if !ok || k.ups == nil {
-					return true
-				}
-				if k.ups.Id() == id && k.ups.NetworkId() == net {
-					tm := value.(*TrackedMetrics)
-					tm.BlockHeadLag.Store(upsLag)
-				}
-				return true
-			})
-		} else {
-			for _, k := range relevantKeys {
-				if k.ups == nil || k.ups.Id() != id {
-					continue
-				}
-				if v, ok := t.upsMetrics.Load(k); ok {
-					tm := v.(*TrackedMetrics)
-					tm.BlockHeadLag.Store(upsLag)
-				}
-			}
-		}
+		// Only update items for this single upstream
+		t.updateSingleUpstreamLag(
+			id,
+			net,
+			upsLag,
+			func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) },
+		)
 	}
 }
 
@@ -819,61 +854,23 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 
 	// Update the finalization lag across the network if needed
 	if needsGlobalUpdate {
-		t.upsMetrics.Range(func(key, value any) bool {
-			k, ok := key.(upstreamKey)
-			if !ok {
-				return true
-			}
-			otherUps := k.ups
-			if otherUps == nil {
-				return true
-			}
-			otherNet := otherUps.NetworkId()
-			if otherNet == net {
-				tm := value.(*TrackedMetrics)
-				otherUpsMeta := t.getMetadata(metadataKey{otherUps, net})
-				otherVal := otherUpsMeta.evmFinalizedBlockNumber.Load()
-				if otherVal <= 0 {
-					lg.Debug().Str("otherUpstreamId", otherUps.Id()).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
-					return true
-				}
-				otherLag := ntwVal - otherVal
-				tm.FinalizationLag.Store(otherLag)
-				gOtherLag := t.getFinalizationLagGauge(t.projectId, otherUps.VendorName(), otherUps.NetworkLabel(), otherUps.Id())
-				gOtherLag.Set(float64(otherLag))
-			}
-			return true
-		})
+		// Recompute for every upstream in the network
+		t.updateNetworkLagMetrics(
+			net,
+			ntwVal,
+			func(meta *NetworkMetadata) int64 { return meta.evmFinalizedBlockNumber.Load() },
+			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
+			t.getFinalizationLagGauge,
+			&lg,
+		)
 	} else {
-		// Only update finalization lag for this single upstream.
-		// Prefer the pre-built per-network index to avoid ranging the entire map.
-		t.mu.RLock()
-		relevantKeys := t.upstreamsByNetwork[net]
-		t.mu.RUnlock()
-		if len(relevantKeys) == 0 {
-			// Fallback for safety if index not yet populated.
-			t.upsMetrics.Range(func(key, value any) bool {
-				k, ok := key.(upstreamKey)
-				if !ok || k.ups == nil {
-					return true
-				}
-				if k.ups.Id() == id && k.ups.NetworkId() == net {
-					tm := value.(*TrackedMetrics)
-					tm.FinalizationLag.Store(upsLag)
-				}
-				return true
-			})
-		} else {
-			for _, k := range relevantKeys {
-				if k.ups == nil || k.ups.Id() != id {
-					continue
-				}
-				if v, ok := t.upsMetrics.Load(k); ok {
-					tm := v.(*TrackedMetrics)
-					tm.FinalizationLag.Store(upsLag)
-				}
-			}
-		}
+		// Only update finalization lag for this single upstream
+		t.updateSingleUpstreamLag(
+			id,
+			net,
+			upsLag,
+			func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
+		)
 	}
 }
 
