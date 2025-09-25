@@ -656,7 +656,7 @@ func (s *ServerConfig) SetDefaults() error {
 
 func (h *HealthCheckConfig) SetDefaults() error {
 	if h.Mode == "" {
-		h.Mode = HealthCheckModeVerbose
+		h.Mode = HealthCheckModeNetworks
 	}
 	if h.DefaultEval == "" {
 		h.DefaultEval = EvalAnyInitializedUpstreams
