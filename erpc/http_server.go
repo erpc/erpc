@@ -29,6 +29,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// Only compress responses larger than 1KB to save CPU on small responses
+const compressionThreshold = 1024
+
 type HttpServer struct {
 	appCtx                  context.Context
 	serverCfg               *common.ServerConfig
@@ -1349,9 +1352,82 @@ func (w *gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.gzipWriter.Write(b)
 }
 
+// conditionalGzipWriter wraps ResponseWriter and decides whether to compress
+// based on the first write size. This avoids buffering while still allowing
+// us to skip compression for small responses.
+type conditionalGzipWriter struct {
+	http.ResponseWriter
+	gzipWriter  *gzip.Writer
+	pool        *util.GzipWriterPool
+	decided     bool
+	compressing bool
+}
+
+// Compile-time check that conditionalGzipWriter implements http.Flusher
+var _ http.Flusher = (*conditionalGzipWriter)(nil)
+
+func (w *conditionalGzipWriter) Write(b []byte) (int, error) {
+	// If we've already decided, just pass through
+	if w.decided {
+		if w.compressing {
+			return w.gzipWriter.Write(b)
+		}
+		return w.ResponseWriter.Write(b)
+	}
+
+	// First write - decide based on size
+	w.decided = true
+
+	// If the first chunk is small, assume the whole response is small
+	// This works well for RPC responses which are typically sent in one write
+	if len(b) < compressionThreshold {
+		// Skip compression for small responses
+		w.compressing = false
+		return w.ResponseWriter.Write(b)
+	}
+
+	// Large response, enable compression
+	w.compressing = true
+
+	// Set compression headers
+	w.ResponseWriter.Header().Del("Content-Length")
+	w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
+	w.ResponseWriter.Header().Set("Vary", "Accept-Encoding")
+	if ct := w.ResponseWriter.Header().Get("Content-Type"); ct == "" {
+		w.ResponseWriter.Header().Set("Content-Type", "application/json")
+	}
+
+	// Initialize gzip writer
+	w.gzipWriter = w.pool.Get(w.ResponseWriter)
+
+	// Write the data
+	return w.gzipWriter.Write(b)
+}
+
+// Flush implements http.Flusher interface to support streaming responses
+func (w *conditionalGzipWriter) Flush() {
+	if w.compressing && w.gzipWriter != nil {
+		_ = w.gzipWriter.Flush()
+	}
+	// Also flush underlying ResponseWriter if it supports it
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *conditionalGzipWriter) Close() error {
+	if w.compressing && w.gzipWriter != nil {
+		err := w.gzipWriter.Close()
+		w.pool.Put(w.gzipWriter)
+		return err
+	}
+	return nil
+}
+
 func gzipHandler(next http.Handler) http.Handler {
-	// Pool writers across responses
+	// Pool writers across responses for better performance
 	var gzPool = util.NewGzipWriterPool()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if client accepts gzip encoding
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -1359,31 +1435,16 @@ func gzipHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Initialize gzip writer from pool
-		gz := gzPool.Get(w)
-		defer func() {
-			_ = gz.Close()
-			gzPool.Put(gz)
-		}()
-
-		// Create gzip response writer
-		gzw := &gzipResponseWriter{
+		// Create conditional gzip response writer that decides on first write
+		gzw := &conditionalGzipWriter{
 			ResponseWriter: w,
-			gzipWriter:     gz,
+			pool:           gzPool,
 		}
 
-		// Remove Content-Length header as it will no longer be valid
-		w.Header().Del("Content-Length")
-
-		// Set required headers
-		w.Header().Set("Content-Encoding", "gzip")
-		w.Header().Set("Vary", "Accept-Encoding")
-		// Ensure Content-Type is preserved
-		if ct := w.Header().Get("Content-Type"); ct == "" {
-			w.Header().Set("Content-Type", "application/json")
-		}
-
-		// Call the next handler with our gzip response writer
+		// Call the next handler with our conditional gzip response writer
 		next.ServeHTTP(gzw, r)
+
+		// Ensure proper cleanup
+		_ = gzw.Close()
 	})
 }

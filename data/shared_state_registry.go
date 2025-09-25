@@ -135,11 +135,11 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 		return err
 	}
 
-	// Start the watch loop in a goroutine
 	go func() {
 		if cleanup != nil {
 			defer cleanup()
 		}
+
 		for {
 			select {
 			case <-r.appCtx.Done():
