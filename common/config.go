@@ -114,8 +114,9 @@ type HealthCheckConfig struct {
 type HealthCheckMode string
 
 const (
-	HealthCheckModeSimple  HealthCheckMode = "simple"
-	HealthCheckModeVerbose HealthCheckMode = "verbose"
+	HealthCheckModeSimple   HealthCheckMode = "simple"
+	HealthCheckModeNetworks HealthCheckMode = "networks"
+	HealthCheckModeVerbose  HealthCheckMode = "verbose"
 )
 
 const (
