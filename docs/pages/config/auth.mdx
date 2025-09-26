@@ -269,6 +269,7 @@ projects:
         - alchemy_getAssetTransfers
         rateLimitBudget: premium
         secret:
+          id: "custom-id-for-metrics"
           value: "some-random-secret-value" # To use env vars: ${MY_SECRET_VALUE}
     upstreams:
     # ...
@@ -302,6 +303,7 @@ export default createConfig({
             ],
             rateLimitBudget: "premium",
             secret: {
+              id: "custom-id-for-metrics",
               value: "some-random-secret-value", // To use env vars: process.env.MY_SECRET_VALUE
             },
           },

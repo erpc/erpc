@@ -26,6 +26,6 @@ func (s *SecretStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*co
 	}
 
 	return &common.User{
-		Id: s.cfg.Value,
+		Id: s.cfg.Id,
 	}, nil
 }
