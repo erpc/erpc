@@ -1,14 +1,17 @@
 package evm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/common"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/crypto/sha3"
 )
 
 // upstreamPostForward_eth_getBlockReceipts validates receipts structure per Upstream integrity config.
@@ -44,7 +47,9 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 
 	// Minimal JSON model for validation
 	type logLite struct {
-		LogIndex string `json:"logIndex"`
+		LogIndex string   `json:"logIndex"`
+		Address  string   `json:"address"`
+		Topics   []string `json:"topics"`
 	}
 	type receiptLite struct {
 		BlockHash string    `json:"blockHash"`
@@ -113,8 +118,66 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 			if lb != "" && len(receipts[i].Logs) == 0 {
 				return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("non-zero receipt.logsBloom but 0 logs"), u)
 			}
+
+			// Recompute receipt bloom from logs (address + topics) and compare
+			if len(receipts[i].Logs) > 0 {
+				providedBloom, perr := evm.HexToBytes(receipts[i].LogsBloom)
+				if perr != nil {
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid receipt.logsBloom hex: %w", perr), u)
+				}
+				if len(providedBloom) != evm.BloomLength {
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid receipt.logsBloom length: %d", len(providedBloom)), u)
+				}
+
+				expected := make([]byte, evm.BloomLength)
+				for j := range receipts[i].Logs {
+					// address
+					if addr := strings.TrimSpace(receipts[i].Logs[j].Address); addr != "" {
+						ab, aerr := evm.HexToBytes(addr)
+						if aerr != nil {
+							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.address hex in receipt %d log %d: %w", i, j, aerr), u)
+						}
+						if len(ab) != evm.AddressLength {
+							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.address length in receipt %d log %d: %d", i, j, len(ab)), u)
+						}
+						bloomAdd(expected, ab)
+					}
+					// topics
+					for k := range receipts[i].Logs[j].Topics {
+						tb, terr := evm.HexToBytes(receipts[i].Logs[j].Topics[k])
+						if terr != nil {
+							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.topic hex in receipt %d log %d idx %d: %w", i, j, k, terr), u)
+						}
+						if len(tb) != evm.TopicLength {
+							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.topic length in receipt %d log %d idx %d: %d", i, j, k, len(tb)), u)
+						}
+						bloomAdd(expected, tb)
+					}
+				}
+
+				// Compare recomputed vs provided bloom
+				if !bytes.Equal(expected, providedBloom) {
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("receipt.logsBloom does not match logs content"), u)
+				}
+			}
 		}
 	}
 
 	return rs, re
+}
+
+// bloomAdd sets the three keccak-derived bit positions for value into bloom (2048-bit, 256 bytes, big-endian)
+func bloomAdd(bloom []byte, value []byte) {
+	var h [32]byte
+	hw := sha3.NewLegacyKeccak256()
+	_, _ = hw.Write(value)
+	_ = hw.Sum(h[:0])
+
+	for i := 0; i < 6; i += 2 {
+		bitpos := uint16(h[i])<<8 | uint16(h[i+1])
+		bitpos &= 0x7FF // 2047
+		byteIndex := 255 - int(bitpos>>3)
+		bitMask := byte(1 << (bitpos & 7))
+		bloom[byteIndex] |= bitMask
+	}
 }
