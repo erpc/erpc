@@ -92,6 +92,8 @@ func NewGrpcConnector(
 		initializer:       util.NewInitializer(ctx, &lg, nil),
 	}
 	if cfg.Headers != nil {
+		// Make a copy of the headers map to avoid sharing the same reference
+		gc.headers = make(map[string]string, len(cfg.Headers))
 		for k, v := range cfg.Headers {
 			gc.headers[k] = v
 		}

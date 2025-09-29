@@ -816,9 +816,12 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 	if c == nil || h == nil {
 		return
 	}
+	// Make a copy of the headers map to avoid sharing the same reference
+	newHeaders := make(map[string]string, len(h))
 	for k, v := range h {
-		c.headers[k] = v
+		newHeaders[k] = v
 	}
+	c.headers = newHeaders
 }
 
 // Helper functions for conversion

@@ -1343,13 +1343,22 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
+		// Make a copy of the headers map to avoid sharing the same reference
+		var headers map[string]string
+		if defaults.JsonRpc.Headers != nil {
+			headers = make(map[string]string, len(defaults.JsonRpc.Headers))
+			for k, v := range defaults.JsonRpc.Headers {
+				headers[k] = v
+			}
+		}
+
 		u.JsonRpc = &JsonRpcUpstreamConfig{
 			SupportsBatch: defaults.JsonRpc.SupportsBatch,
 			BatchMaxSize:  defaults.JsonRpc.BatchMaxSize,
 			BatchMaxWait:  defaults.JsonRpc.BatchMaxWait,
 			EnableGzip:    defaults.JsonRpc.EnableGzip,
 			ProxyPool:     defaults.JsonRpc.ProxyPool,
-			Headers:       defaults.JsonRpc.Headers,
+			Headers:       headers,
 		}
 	}
 	// Integrity moved under Evm.Integrity

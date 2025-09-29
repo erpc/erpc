@@ -125,8 +125,7 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		}
 		var jsonRpc *common.JsonRpcUpstreamConfig
 		if upstream.JsonRpc != nil {
-			jsonRpc = &common.JsonRpcUpstreamConfig{}
-			*jsonRpc = *upstream.JsonRpc
+			jsonRpc = upstream.JsonRpc.Copy()
 		}
 		var failsafe []*common.FailsafeConfig
 		if upstream.Failsafe != nil {
