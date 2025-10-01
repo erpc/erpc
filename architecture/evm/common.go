@@ -19,6 +19,12 @@ func upstreamPostForward_markUnexpectedEmpty(
 		return rs, re
 	}
 
+	if rq != nil {
+		if rd := rq.Directives(); rd != nil && !rd.RetryEmpty {
+			return rs, re
+		}
+	}
+
 	// Build a simple message and include raw result in details for diagnostics.
 	method, _ := rq.Method()
 	details := map[string]interface{}{"method": method}

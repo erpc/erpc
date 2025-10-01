@@ -438,6 +438,37 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				return false
 			}
 		} else if scope == common.ScopeNetwork && err != nil {
+			if result != nil {
+				if req := result.Request(); req != nil {
+					if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+						if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+							span.SetAttributes(
+								attribute.Bool("retry", false),
+								attribute.String("reason", "missing_data_but_retry_empty_disabled"),
+							)
+							return false
+						}
+					}
+					// If RetryEmpty is enabled but the error is MissingData (produced by hooks for empty results),
+					// respect the emptyResultIgnore list and do NOT retry for ignored methods.
+					if rds := req.Directives(); rds != nil && rds.RetryEmpty {
+						if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+							method, _ := req.Method()
+							span.SetAttributes(
+								attribute.String("method", method),
+								attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
+							)
+							if slices.Contains(emptyResultIgnore, method) {
+								span.SetAttributes(
+									attribute.Bool("retry", false),
+									attribute.String("reason", "missing_data_method_in_empty_ignore_list"),
+								)
+								return false
+							}
+						}
+					}
+				}
+			}
 			isRetryable := common.IsRetryableTowardNetwork(err)
 			span.SetAttributes(
 				attribute.Bool("error.retryable_to_network", isRetryable),
