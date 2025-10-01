@@ -4606,7 +4606,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			"chainId": "1",
 		})
 		assert.Equal(t, http.StatusNotFound, statusCode)
-		assert.Contains(t, body, "no upstreams found",
+		assert.Contains(t, body, "ErrNetworkNotFound",
 			"expected network evm:1 to not be recognized because only evm:5 and evm:10 are allowed")
 	})
 
@@ -4717,6 +4717,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
+			Times(2).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -4744,10 +4745,10 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		defer shutdown()
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
-		assert.Equal(t, http.StatusInternalServerError, statusCode)
-		assert.Contains(t, body, "Internal bummer error")
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x123456")
 
-		time.Sleep((2 * time.Second) + (100 * time.Millisecond))
+		time.Sleep((3 * time.Second) + (200 * time.Millisecond))
 
 		statusCode, _, body = sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
 		assert.Equal(t, http.StatusOK, statusCode)

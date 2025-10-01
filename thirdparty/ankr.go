@@ -58,7 +58,7 @@ var ankrNetworkNames = map[int64]string{
 	88888:  "chiliz",
 	167000: "taiko",
 	534352: "scroll",
-	660279:  "xai",
+	660279: "xai",
 	5201:   "electroneum",
 }
 

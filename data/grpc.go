@@ -107,7 +107,7 @@ func NewGrpcConnector(
 				parsed, perr := url.Parse(serverURL)
 				if perr != nil {
 					gc.logger.Error().Err(perr).Str("server", serverURL).Msg("invalid gRPC server URL")
-					return perr
+					return common.NewTaskFatal(perr)
 				}
 				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed)
 				if cerr != nil {

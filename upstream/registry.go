@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,9 +182,20 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		}
 	}()
 
-	// Require only one ready upstream to start handling requests, maximum 5 seconds
+	// Require only one ready upstream to start handling requests.
+	// Use adaptive timeout: default to 30s, but cap to the caller's context deadline if sooner.
 	minReady := 1
-	waitTimeout := 5 * time.Second
+	waitTimeout := 30 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		until := time.Until(deadline)
+		if until < waitTimeout {
+			if until <= 0 {
+				// Ensure a small positive wait in case the deadline is already due
+				until = 50 * time.Millisecond
+			}
+			waitTimeout = until
+		}
+	}
 
 	// 3) Wait until either static upstreams or provider-based upstreams are ready, or timeout/context ends
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -209,23 +221,57 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 						Msg("timeout reached but some upstreams are ready for network initialization")
 					return nil
 				}
-				return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+				// Consider per-network and unknown upstream/provider activity
+				summary := u.summarizeNetworkTasks(networkId)
+				if summary.hasOngoing {
+					return common.NewErrNetworkInitializing(u.prjId, networkId)
+				}
+				if summary.providersAllTerminal {
+					// Grace period to allow in-flight upstream registrations to complete
+					time.Sleep(100 * time.Millisecond)
+					u.upstreamsMu.RLock()
+					latest := len(u.networkUpstreams[networkId])
+					u.upstreamsMu.RUnlock()
+					if latest >= minReady {
+						u.logger.Info().
+							Str("networkId", networkId).
+							Int("upstreamsCount", latest).
+							Msg("upstreams became ready during grace period after providers terminal state")
+						return nil
+					}
+					return common.NewTaskFatal(common.NewErrNetworkNotSupported(u.prjId, networkId))
+				}
+				// Default: initializing
+				return common.NewErrNetworkInitializing(u.prjId, networkId)
 			}
 			return timeoutCtx.Err()
 		case <-ticker.C:
-			state := u.initializer.State()
-			if state == util.StateFailed {
-				return u.initializer.Errors()
-			} else if state == util.StateReady {
-				return nil
-			}
-
 			// Check how many upstreams are ready for this network
 			u.upstreamsMu.RLock()
 			upstreamsCount := len(u.networkUpstreams[networkId])
 			u.upstreamsMu.RUnlock()
 
 			if upstreamsCount < minReady {
+				// Keep waiting if there is any ongoing per-network or unknown upstream work
+				summary := u.summarizeNetworkTasks(networkId)
+				if summary.hasOngoing {
+					continue
+				}
+				if summary.providersAllTerminal {
+					// Grace period to allow in-flight upstream registrations to complete
+					time.Sleep(100 * time.Millisecond)
+					u.upstreamsMu.RLock()
+					latest := len(u.networkUpstreams[networkId])
+					u.upstreamsMu.RUnlock()
+					if latest >= minReady {
+						u.logger.Info().
+							Str("networkId", networkId).
+							Int("upstreamsCount", latest).
+							Msg("upstreams became ready during grace period after providers terminal state")
+						return nil
+					}
+					return common.NewTaskFatal(common.NewErrNetworkNotSupported(u.prjId, networkId))
+				}
 				continue
 			}
 
@@ -453,8 +499,13 @@ func (u *UpstreamsRegistry) registerUpstreams(ctx context.Context, upsCfgs ...*c
 func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *util.BootstrapTask {
 	cfg := new(common.UpstreamConfig)
 	*cfg = *upsCfg
+	// Name: network/<networkId>/upstream/<id> if chainId configured; else upstream/<id>
+	taskName := fmt.Sprintf("upstream/%s", cfg.Id)
+	if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
+		taskName = fmt.Sprintf("network/%s/upstream/%s", util.EvmNetworkId(cfg.Evm.ChainId), cfg.Id)
+	}
 	return util.NewBootstrapTask(
-		fmt.Sprintf("upstream/%s", cfg.Id),
+		taskName,
 		func(ctx context.Context) error {
 			_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.buildUpstreamBootstrapTask")
 			defer span.End()
@@ -506,7 +557,7 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 	provider *thirdparty.Provider,
 	networkId string,
 ) *util.BootstrapTask {
-	taskName := fmt.Sprintf("provider/%s/network/%s", provider.Id(), networkId)
+	taskName := fmt.Sprintf("network/%s/provider/%s", networkId, provider.Id())
 	return util.NewBootstrapTask(
 		taskName,
 		func(ctx context.Context) error {
@@ -535,6 +586,52 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 			return u.registerUpstreams(ctx, upsCfgs...)
 		},
 	)
+}
+
+// providerTasksCompletionAndFatal inspects tasks in the initializer and returns
+// (allDone, anyFatal) for provider tasks associated with the given networkId.
+// We infer membership by task name prefix: "provider/<id>/network/<networkId>".
+type networkTaskSummary struct {
+	providersAllTerminal bool
+	hasOngoing           bool
+}
+
+// summarizeNetworkTasks computes provider completion/fatality and presence of any ongoing
+// per-network or unknown upstream tasks in a single pass.
+func (u *UpstreamsRegistry) summarizeNetworkTasks(networkId string) networkTaskSummary {
+	provPrefix := "network/" + networkId + "/provider/"
+	upsPrefix := "network/" + networkId + "/upstream/"
+	unknownUpsPrefix := "upstream/"
+
+	providersAllTerminal := true
+	hasOngoing := false
+
+	st := u.initializer.Status()
+	for _, ts := range st.Tasks {
+		name := ts.Name
+		if strings.HasPrefix(name, provPrefix) {
+			switch ts.State {
+			case util.TaskSucceeded, util.TaskFatal:
+				// terminal
+			case util.TaskPending, util.TaskRunning, util.TaskFailed, util.TaskTimedOut:
+				providersAllTerminal = false
+				hasOngoing = true
+			default:
+				providersAllTerminal = false
+			}
+			continue
+		}
+		if strings.HasPrefix(name, upsPrefix) || strings.HasPrefix(name, unknownUpsPrefix) {
+			switch ts.State {
+			case util.TaskPending, util.TaskRunning, util.TaskFailed, util.TaskTimedOut:
+				hasOngoing = true
+			}
+		}
+	}
+	return networkTaskSummary{
+		providersAllTerminal: providersAllTerminal,
+		hasOngoing:           hasOngoing,
+	}
 }
 
 func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {

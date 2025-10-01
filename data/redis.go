@@ -132,7 +132,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("attempting to connect to Redis using provided URI")
 	options, err = redis.ParseURL(redisURI)
 	if err != nil {
-		return fmt.Errorf("failed to parse Redis URI: %w", err)
+		return common.NewTaskFatal(fmt.Errorf("failed to parse Redis URI: %w", err))
 	}
 
 	if r.initTimeout == 0 && options.DialTimeout > 0 {
@@ -156,7 +156,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	if cfgTLS := r.cfg.TLS; cfgTLS != nil && cfgTLS.Enabled {
 		tlsConfig, err := common.CreateTLSConfig(cfgTLS)
 		if err != nil {
-			return fmt.Errorf("failed to create TLS config: %w", err)
+			return common.NewTaskFatal(fmt.Errorf("failed to create TLS config: %w", err))
 		}
 
 		if options.TLSConfig == nil {
@@ -197,9 +197,9 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 			if len(options.TLSConfig.Certificates) > 0 {
 				errMsg += " Also verify the client certificate and key ('tls.certFile', 'tls.keyFile') if used."
 			}
-			return fmt.Errorf(errMsg)
+			return common.NewTaskFatal(fmt.Errorf(errMsg))
 		}
-		return fmt.Errorf("failed to connect to Redis: %w", err)
+		return err
 	}
 
 	if r.client != nil {
