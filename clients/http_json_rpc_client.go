@@ -123,7 +123,11 @@ func NewGenericHttpJsonRpcClient(
 		}
 
 		if jsonRpcCfg.Headers != nil {
-			client.headers = jsonRpcCfg.Headers
+			// Make a copy of the headers map to avoid sharing the same reference
+			client.headers = make(map[string]string, len(jsonRpcCfg.Headers))
+			for k, v := range jsonRpcCfg.Headers {
+				client.headers[k] = v
+			}
 		}
 
 		client.proxyPool = proxyPool
