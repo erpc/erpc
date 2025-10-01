@@ -124,7 +124,7 @@ func NewDynamoDBConnector(
 func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoDBConnectorConfig) error {
 	sess, err := createSession(cfg)
 	if err != nil {
-		return err
+		return common.NewTaskFatal(err)
 	}
 
 	d.writeClient = dynamodb.New(sess, &aws.Config{
@@ -142,7 +142,7 @@ func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoD
 	})
 
 	if cfg.Table == "" {
-		return fmt.Errorf("missing table name for dynamodb connector")
+		return common.NewTaskFatal(fmt.Errorf("missing table name for dynamodb connector"))
 	}
 
 	err = createTableIfNotExists(ctx, d.logger, d.writeClient, cfg)

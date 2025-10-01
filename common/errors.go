@@ -401,6 +401,30 @@ func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
 }
 
 //
+// Initializer / Task Control
+//
+
+// TaskFatalError marks a background initialization task as fatal (non-retryable).
+// It is intentionally not a StandardError because it's a control signal for the
+// initializer rather than a domain error returned to clients.
+type TaskFatalError struct {
+	Err error
+}
+
+func (e *TaskFatalError) Error() string {
+	if e == nil || e.Err == nil {
+		return "fatal task error"
+	}
+	return e.Err.Error()
+}
+
+func (e *TaskFatalError) Unwrap() error { return e.Err }
+
+func (e *TaskFatalError) IsTaskFatal() bool { return true }
+
+func NewTaskFatal(err error) error { return &TaskFatalError{Err: err} }
+
+//
 // Server
 //
 
@@ -1217,6 +1241,48 @@ var NewErrNoUpstreamsFound = func(project string, network string) error {
 }
 
 func (e *ErrNoUpstreamsFound) ErrorStatusCode() int { return http.StatusNotFound }
+
+// ErrNetworkInitializing indicates that the network is still initializing (e.g., providers
+// are being bootstrapped) and the client should retry shortly.
+type ErrNetworkInitializing struct{ BaseError }
+
+const ErrCodeNetworkInitializing ErrorCode = "ErrNetworkInitializing"
+
+var NewErrNetworkInitializing = func(project string, network string) error {
+	return &ErrNetworkInitializing{
+		BaseError{
+			Code:    ErrCodeNetworkInitializing,
+			Message: fmt.Sprintf("network '%s' for project '%s' is initializing; please retry shortly", network, project),
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkInitializing) ErrorStatusCode() int { return http.StatusServiceUnavailable }
+
+// ErrNetworkNotSupported indicates that providers do not support the requested network
+// and no static upstreams exist. It should be treated as fatal for initialization tasks.
+type ErrNetworkNotSupported struct{ BaseError }
+
+const ErrCodeNetworkNotSupported ErrorCode = "ErrNetworkNotSupported"
+
+var NewErrNetworkNotSupported = func(project string, network string) error {
+	return &ErrNetworkNotSupported{
+		BaseError{
+			Code:    ErrCodeNetworkNotSupported,
+			Message: fmt.Sprintf("network '%s' is not supported for project '%s'", network, project),
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkNotSupported) ErrorStatusCode() int { return http.StatusNotFound }
 
 type ErrUpstreamNetworkNotDetected struct {
 	UpstreamAwareError

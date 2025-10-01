@@ -109,7 +109,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 
 	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
 	if err != nil {
-		return fmt.Errorf("failed to parse connection URI: %w", err)
+		return common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
 	}
 	config.MinConns = p.minConns
 	config.MaxConns = p.maxConns
@@ -121,7 +121,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 
 	conn, err := pgxpool.ConnectConfig(ctx, config)
 	if err != nil {
-		return fmt.Errorf("failed to connect to postgres: %w", err)
+		return err
 	}
 
 	// Create table if not exists with TTL column
@@ -135,7 +135,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		)
 	`, cfg.Table))
 	if err != nil {
-		return fmt.Errorf("failed to create table: %w", err)
+		return err
 	}
 
 	// Migrate existing TEXT column to BYTEA if needed

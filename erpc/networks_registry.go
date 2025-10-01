@@ -231,7 +231,8 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 			nr.logger.Debug().Str("networkId", networkId).Msg("attempt to bootstrap network")
 			nwCfg, err := nr.resolveNetworkConfig(networkId)
 			if err != nil {
-				return err
+				// Network config resolution failed definitively (e.g., invalid format)
+				return common.NewTaskFatal(err)
 			}
 			// passing task ctx here will cancel the task if the request is finished or the initializer is cancelled/times out
 			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
