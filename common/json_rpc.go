@@ -1500,7 +1500,7 @@ func TranslateToJsonRpcException(err error) error {
 		return NewErrJsonRpcExceptionInternal(
 			0,
 			JsonRpcErrorEvmLargeRange,
-			"allowed block range threshold exceeded for eth_getLogs",
+			"getLogs request exceeded max allowed range",
 			err,
 			nil,
 		)

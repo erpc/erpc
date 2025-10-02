@@ -90,7 +90,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmLargeRange,
-					err.Message,
+					fmt.Sprintf("getLogs request exceeded max allowed range: %s", err.Message),
 					nil,
 					details,
 				),
@@ -101,7 +101,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmLargeRange,
-					err.Message,
+					fmt.Sprintf("getLogs request exceeded max allowed addresses: %s", err.Message),
 					nil,
 					details,
 				),
