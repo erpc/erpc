@@ -1328,72 +1328,6 @@ var NewErrUpstreamShadowing = func(upstreamId string) error {
 	}
 }
 
-type ErrUpstreamGetLogsExceededMaxAllowedRange struct{ BaseError }
-
-const ErrCodeUpstreamGetLogsExceededMaxAllowedRange ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedRange"
-
-var NewErrUpstreamGetLogsExceededMaxAllowedRange = func(upstreamId string, requestRange int64, maxAllowedRange int64) error {
-	return &ErrUpstreamGetLogsExceededMaxAllowedRange{
-		BaseError{
-			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedRange,
-			Message: "upstream request range exceeded max allowed range",
-			Details: map[string]interface{}{
-				"upstreamId":      upstreamId,
-				"requestRange":    requestRange,
-				"maxAllowedRange": maxAllowedRange,
-			},
-		},
-	}
-}
-
-func (e *ErrUpstreamGetLogsExceededMaxAllowedRange) ErrorStatusCode() int {
-	return http.StatusRequestEntityTooLarge
-}
-
-type ErrUpstreamGetLogsExceededMaxAllowedAddresses struct{ BaseError }
-
-const ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedAddresses"
-
-var NewErrUpstreamGetLogsExceededMaxAllowedAddresses = func(upstreamId string, requestAddresses int64, maxAllowedAddresses int64) error {
-	return &ErrUpstreamGetLogsExceededMaxAllowedAddresses{
-		BaseError{
-			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses,
-			Message: "upstream request addresses exceeded max allowed addresses",
-			Details: map[string]interface{}{
-				"upstreamId":          upstreamId,
-				"requestAddresses":    requestAddresses,
-				"maxAllowedAddresses": maxAllowedAddresses,
-			},
-		},
-	}
-}
-
-func (e *ErrUpstreamGetLogsExceededMaxAllowedAddresses) ErrorStatusCode() int {
-	return http.StatusRequestEntityTooLarge
-}
-
-type ErrUpstreamGetLogsExceededMaxAllowedTopics struct{ BaseError }
-
-const ErrCodeUpstreamGetLogsExceededMaxAllowedTopics ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedTopics"
-
-var NewErrUpstreamGetLogsExceededMaxAllowedTopics = func(upstreamId string, requestTopics int64, maxAllowedTopics int64) error {
-	return &ErrUpstreamGetLogsExceededMaxAllowedTopics{
-		BaseError{
-			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedTopics,
-			Message: "upstream request topics exceeded max allowed topics",
-			Details: map[string]interface{}{
-				"upstreamId":       upstreamId,
-				"requestTopics":    requestTopics,
-				"maxAllowedTopics": maxAllowedTopics,
-			},
-		},
-	}
-}
-
-func (e *ErrUpstreamGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
-	return http.StatusRequestEntityTooLarge
-}
-
 type ErrUpstreamNotAllowed struct{ BaseError }
 
 var NewErrUpstreamNotAllowed = func(required, upstreamId string) error {
@@ -2575,7 +2509,7 @@ var NewErrGetLogsExceededMaxAllowedRange = func(requestRange int64, maxAllowedRa
 	return &ErrGetLogsExceededMaxAllowedRange{
 		BaseError{
 			Code:    ErrCodeGetLogsExceededMaxAllowedRange,
-			Message: "getLogs request range exceeded max allowed range",
+			Message: "getLogs request exceeded max allowed range",
 			Details: map[string]interface{}{
 				"requestRange":    requestRange,
 				"maxAllowedRange": maxAllowedRange,
@@ -2596,7 +2530,7 @@ var NewErrGetLogsExceededMaxAllowedAddresses = func(requestAddresses int64, maxA
 	return &ErrGetLogsExceededMaxAllowedAddresses{
 		BaseError{
 			Code:    ErrCodeGetLogsExceededMaxAllowedAddresses,
-			Message: "getLogs request addresses exceeded max allowed addresses",
+			Message: "getLogs request exceeded max allowed addresses",
 			Details: map[string]interface{}{
 				"requestAddresses":    requestAddresses,
 				"maxAllowedAddresses": maxAllowedAddresses,
@@ -2617,7 +2551,7 @@ var NewErrGetLogsExceededMaxAllowedTopics = func(requestTopics int64, maxAllowed
 	return &ErrGetLogsExceededMaxAllowedTopics{
 		BaseError{
 			Code:    ErrCodeGetLogsExceededMaxAllowedTopics,
-			Message: "getLogs request topics exceeded max allowed topics",
+			Message: "getLogs request exceeded max allowed topics",
 			Details: map[string]interface{}{
 				"requestTopics":    requestTopics,
 				"maxAllowedTopics": maxAllowedTopics,
