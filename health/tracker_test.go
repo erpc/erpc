@@ -449,3 +449,105 @@ func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
 	metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1")
 	assert.Equal(t, int64(0), metrics2Updated.FinalizationLag.Load(), "upstream2 should now be caught up in finalization")
 }
+
+func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
+	t.Run("SetsTimestampAndRecordsDistance", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.Bootstrap(context.Background())
+		network := "evm:1"
+		networkLabel := "ethereum"
+
+		// Get current time and create a block timestamp 10 seconds ago
+		now := time.Now().Unix()
+		blockTimestamp := now - 10
+
+		tracker.SetLatestBlockTimestampForNetwork(network, networkLabel, blockTimestamp)
+
+		// Verify the timestamp was stored
+		ntwMdKey := metadataKey{nil, network}
+		ntwMeta := tracker.getMetadata(ntwMdKey)
+		storedTimestamp := ntwMeta.evmLatestBlockTimestamp.Load()
+
+		assert.Equal(t, blockTimestamp, storedTimestamp, "Expected timestamp to be stored")
+	})
+
+	t.Run("OnlyUpdatesWithNewerTimestamp", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.Bootstrap(context.Background())
+		network := "evm:2"
+		networkLabel := "ethereum"
+
+		// Set initial timestamp
+		now := time.Now().Unix()
+		initialTimestamp := now - 20
+		tracker.SetLatestBlockTimestampForNetwork(network, networkLabel, initialTimestamp)
+
+		ntwMdKey := metadataKey{nil, network}
+		ntwMeta := tracker.getMetadata(ntwMdKey)
+		stored := ntwMeta.evmLatestBlockTimestamp.Load()
+
+		assert.Equal(t, initialTimestamp, stored, "Expected initial timestamp to be set")
+
+		// Try to set an older timestamp - should not update
+		olderTimestamp := now - 30
+		tracker.SetLatestBlockTimestampForNetwork(network, networkLabel, olderTimestamp)
+		stored = ntwMeta.evmLatestBlockTimestamp.Load()
+
+		assert.Equal(t, initialTimestamp, stored, "Timestamp should not update to older value")
+
+		// Set a newer timestamp - should update
+		newerTimestamp := now - 5
+		tracker.SetLatestBlockTimestampForNetwork(network, networkLabel, newerTimestamp)
+		stored = ntwMeta.evmLatestBlockTimestamp.Load()
+
+		assert.Equal(t, newerTimestamp, stored, "Expected newer timestamp to be set")
+	})
+
+	t.Run("IgnoresNonPositiveTimestamp", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.Bootstrap(context.Background())
+		network := "evm:3"
+		networkLabel := "polygon"
+
+		// Try to set zero timestamp - should be ignored
+		tracker.SetLatestBlockTimestampForNetwork(network, networkLabel, 0)
+
+		ntwMdKey := metadataKey{nil, network}
+		ntwMeta := tracker.getMetadata(ntwMdKey)
+		stored := ntwMeta.evmLatestBlockTimestamp.Load()
+
+		assert.Equal(t, int64(0), stored, "Expected zero timestamp to be ignored")
+
+		// Try to set negative timestamp - should be ignored
+		tracker.SetLatestBlockTimestampForNetwork(network, networkLabel, -100)
+		stored = ntwMeta.evmLatestBlockTimestamp.Load()
+
+		assert.Equal(t, int64(0), stored, "Expected negative timestamp to be ignored")
+	})
+
+	t.Run("CalculatesCorrectDistance", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.Bootstrap(context.Background())
+		network := "evm:4"
+		networkLabel := "arbitrum"
+
+		// Create a block timestamp that's exactly 15 seconds old
+		now := time.Now().Unix()
+		blockTimestamp := now - 15
+
+		tracker.SetLatestBlockTimestampForNetwork(network, networkLabel, blockTimestamp)
+
+		// The distance should be approximately 15 seconds (allowing for small timing variations)
+		ntwMdKey := metadataKey{nil, network}
+		ntwMeta := tracker.getMetadata(ntwMdKey)
+		storedTimestamp := ntwMeta.evmLatestBlockTimestamp.Load()
+
+		currentTime := time.Now().Unix()
+		expectedDistance := currentTime - blockTimestamp
+
+		// Allow 2 seconds variance for test execution time
+		assert.GreaterOrEqual(t, expectedDistance, int64(14), "Distance should be at least 14 seconds")
+		assert.LessOrEqual(t, expectedDistance, int64(17), "Distance should be at most 17 seconds")
+		assert.Equal(t, blockTimestamp, storedTimestamp, "Expected timestamp to be stored correctly")
+	})
+}
