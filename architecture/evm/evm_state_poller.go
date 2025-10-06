@@ -377,7 +377,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			e.networkLabel,
 			e.upstream.Id(),
 		).Inc()
-		blockNum, err := e.fetchBlock(ctx, "latest")
+		blockNum, blockTimestamp, err := e.fetchBlockWithTimestamp(ctx, "latest")
 		if err != nil || blockNum == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
@@ -412,8 +412,18 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
+		// Update network-level block timestamp distance metric if we have a valid timestamp
+		if blockTimestamp > 0 {
+			e.tracker.SetLatestBlockTimestampForNetwork(
+				e.upstream.NetworkId(),
+				e.networkLabel,
+				blockTimestamp,
+			)
+		}
+
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
+			Int64("blockTimestamp", blockTimestamp).
 			Msg("fetched latest block from upstream")
 		return blockNum, nil
 	})
@@ -686,6 +696,66 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	}
 
 	return blockNum, nil
+}
+
+// fetchBlockWithTimestamp fetches both block number and timestamp for a given block tag.
+// This is used specifically for latest block polling to track timestamp distance metrics.
+func (e *EvmStatePoller) fetchBlockWithTimestamp(ctx context.Context, blockTag string) (int64, int64, error) {
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
+	))
+	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return 0, 0, err
+	}
+	if jrr == nil || jrr.Error != nil {
+		return 0, 0, jrr.Error
+	}
+
+	if jrr.IsResultEmptyish(ctx) {
+		return 0, 0, nil
+	}
+
+	numberStr, err := jrr.PeekStringByPath(ctx, "number")
+	if err != nil {
+		return 0, 0, &common.BaseError{
+			Code:    "ErrEvmStatePoller",
+			Message: "cannot get block number from block data",
+			Details: map[string]interface{}{
+				"blockTag": blockTag,
+				"result":   jrr.GetResultString(),
+			},
+		}
+	}
+	// Force-copy the small string to avoid any potential reference to backing buffers
+	numberStr = string(append([]byte(nil), numberStr...))
+	blockNum, err := common.HexToInt64(numberStr)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Extract timestamp - this is a hex string representing Unix timestamp
+	timestampStr, err := jrr.PeekStringByPath(ctx, "timestamp")
+	var blockTimestamp int64
+	if err == nil && timestampStr != "" {
+		// Force-copy the small string to avoid any potential reference to backing buffers
+		timestampStr = string(append([]byte(nil), timestampStr...))
+		blockTimestamp, err = common.HexToInt64(timestampStr)
+		if err != nil {
+			// If timestamp parsing fails, log but don't fail the whole operation
+			e.logger.Debug().Err(err).Str("timestamp", timestampStr).Msg("failed to parse block timestamp, continuing without it")
+			blockTimestamp = 0
+		}
+	}
+
+	return blockNum, blockTimestamp, nil
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
