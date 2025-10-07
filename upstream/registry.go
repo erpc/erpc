@@ -499,6 +499,12 @@ func (u *UpstreamsRegistry) registerUpstreams(ctx context.Context, upsCfgs ...*c
 func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *util.BootstrapTask {
 	cfg := new(common.UpstreamConfig)
 	*cfg = *upsCfg
+	// Deep copy Evm config to avoid race conditions during bootstrap
+	if cfg.Evm != nil {
+		evmCfg := new(common.EvmUpstreamConfig)
+		*evmCfg = *cfg.Evm
+		cfg.Evm = evmCfg
+	}
 	// Name: network/<networkId>/upstream/<id> if chainId configured; else upstream/<id>
 	taskName := fmt.Sprintf("upstream/%s", cfg.Id)
 	if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
