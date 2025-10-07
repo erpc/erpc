@@ -726,7 +726,7 @@ func (t *Tracker) updateSingleUpstreamLag(
 	}
 }
 
-func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
+func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
 	netLabel := upstream.NetworkLabel()
@@ -751,6 +751,22 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g := t.getLatestBlockGauge(t.projectId, "*", netLabel, "*")
 		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
+
+		// Atomically update timestamp when network-level block number is updated
+		if blockTimestamp > 0 {
+			oldTimestamp := ntwMeta.evmLatestBlockTimestamp.Load()
+			if blockTimestamp > oldTimestamp {
+				ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
+
+				// Calculate and record distance metric
+				currentTime := time.Now().Unix()
+				distance := currentTime - blockTimestamp
+				telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
+					t.projectId,
+					netLabel,
+				).Set(float64(distance))
+			}
+		}
 	}
 
 	// 2) Update this upstream's latest block
@@ -798,33 +814,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int64) {
 	ntwMeta := t.getMetadata(metadataKey{nil, network})
 	ntwMeta.evmLatestBlockNumber.Store(blockNumber)
-}
-
-// SetLatestBlockTimestampForNetwork updates the network-level latest block timestamp
-// and records the distance metric between the block timestamp and current time.
-func (t *Tracker) SetLatestBlockTimestampForNetwork(network, networkLabel string, blockTimestamp int64) {
-	if blockTimestamp <= 0 {
-		return
-	}
-
-	ntwMdKey := metadataKey{nil, network}
-	ntwMeta := t.getMetadata(ntwMdKey)
-
-	// Only update if this timestamp is newer
-	oldTimestamp := ntwMeta.evmLatestBlockTimestamp.Load()
-	if blockTimestamp > oldTimestamp {
-		ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
-
-		// Calculate distance between block timestamp and current time
-		currentTime := time.Now().Unix()
-		distance := currentTime - blockTimestamp
-
-		// Record the metric (distance can be negative if block is in the future, which shouldn't happen but we handle it)
-		telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
-			t.projectId,
-			networkLabel,
-		).Set(float64(distance))
-	}
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {

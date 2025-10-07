@@ -1411,11 +1411,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		mt.RecordUpstreamRequest(ups1, "method1")
 		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.SetLatestBlockNumber(ups1, 100)
+		mt.SetLatestBlockNumber(ups1, 100, 0)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
 		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.SetLatestBlockNumber(ups2, 102)
+		mt.SetLatestBlockNumber(ups2, 102, 0)
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1473,16 +1473,16 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		mt.RecordUpstreamRequest(ups1, "method1")
 		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.SetLatestBlockNumber(ups1, 100)
+		mt.SetLatestBlockNumber(ups1, 100, 0)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
 		mt.RecordUpstreamDuration(ups2, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.SetLatestBlockNumber(ups2, 102)
+		mt.SetLatestBlockNumber(ups2, 102, 0)
 
 		// Set healthy metrics for fallback upstream
 		mt.RecordUpstreamRequest(ups3, "method1")
 		mt.RecordUpstreamDuration(ups3, "method1", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.SetLatestBlockNumber(ups3, 103)
+		mt.SetLatestBlockNumber(ups3, 103, 0)
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1548,16 +1548,16 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		mt.RecordUpstreamRequest(ups1, "method1")
 		mt.RecordUpstreamDuration(ups1, "method1", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.SetLatestBlockNumber(ups1, 100)
+		mt.SetLatestBlockNumber(ups1, 100, 0)
 
 		mt.RecordUpstreamRequest(ups2, "method1")
 		mt.RecordUpstreamFailure(ups2, "method1", fmt.Errorf("test problem"))
-		mt.SetLatestBlockNumber(ups2, 95) // Lagging
+		mt.SetLatestBlockNumber(ups2, 95, 0) // Lagging
 
 		// Set good metrics for fallback
 		mt.RecordUpstreamRequest(ups3, "method1")
 		mt.RecordUpstreamDuration(ups3, "method1", 15*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
-		mt.SetLatestBlockNumber(ups3, 101)
+		mt.SetLatestBlockNumber(ups3, 101, 0)
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1574,7 +1574,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			mt.RecordUpstreamRequest(ups2, "method1")
 			mt.RecordUpstreamDuration(ups2, "method1", 20*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
 		}
-		mt.SetLatestBlockNumber(ups2, 101)
+		mt.SetLatestBlockNumber(ups2, 101, 0)
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1613,9 +1613,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test Case 1: Default upstream within lag threshold
-		mt.SetLatestBlockNumber(ups1, 100) // Leader
-		mt.SetLatestBlockNumber(ups2, 95)  // Lag of 5 blocks (exceeds threshold)
-		mt.SetLatestBlockNumber(ups3, 99)  // Small lag for fallback (does not exceed threshold)
+		mt.SetLatestBlockNumber(ups1, 100, 0) // Leader
+		mt.SetLatestBlockNumber(ups2, 95, 0)  // Lag of 5 blocks (exceeds threshold)
+		mt.SetLatestBlockNumber(ups3, 99, 0)  // Small lag for fallback (does not exceed threshold)
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1627,9 +1627,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.Error(t, err, "Fallback ups3 with should be inactive because at least one default is healthy")
 
 		// // Test Case 2: All defaults exceed lag threshold
-		mt.SetLatestBlockNumber(ups3, 200) // Fallback becomes leader
-		mt.SetLatestBlockNumber(ups1, 195) // Now lagging by 5 blocks (exceeds threshold)
-		mt.SetLatestBlockNumber(ups2, 190) // Now lagging by 10 blocks (exceeds threshold)
+		mt.SetLatestBlockNumber(ups3, 200, 0) // Fallback becomes leader
+		mt.SetLatestBlockNumber(ups1, 195, 0) // Now lagging by 5 blocks (exceeds threshold)
+		mt.SetLatestBlockNumber(ups2, 190, 0) // Now lagging by 10 blocks (exceeds threshold)
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1670,9 +1670,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Set initial block numbers
 		mt.SetLatestBlockNumberForNetwork("evm:123", 100)
 
-		mt.SetLatestBlockNumber(ups1, 99)
-		mt.SetLatestBlockNumber(ups2, 99)
-		mt.SetLatestBlockNumber(ups3, 99)
+		mt.SetLatestBlockNumber(ups1, 99, 0)
+		mt.SetLatestBlockNumber(ups2, 99, 0)
+		mt.SetLatestBlockNumber(ups3, 99, 0)
 
 		// Test Case 1: Error rates around threshold
 		// rpc1: 20% error rate (below threshold)
@@ -1879,8 +1879,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		require.NoError(t, err)
 
 		// Phase 1: Both upstreams start healthy (low block head lag)
-		mt.SetLatestBlockNumber(ups1, 100) // ups1 is the leader
-		mt.SetLatestBlockNumber(ups2, 95)  // ups2 has lag of 5 blocks (< 10, so healthy)
+		mt.SetLatestBlockNumber(ups1, 100, 0) // ups1 is the leader
+		mt.SetLatestBlockNumber(ups2, 95, 0)  // ups2 has lag of 5 blocks (< 10, so healthy)
 
 		// Wait for evaluation
 		time.Sleep(100 * time.Millisecond)
@@ -1899,8 +1899,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		assert.False(t, metrics2.Cordoned.Load(), "ups2 should not be cordoned")
 
 		// Phase 2: ups2 falls behind significantly (high block head lag)
-		mt.SetLatestBlockNumber(ups1, 120) // ups1 advances to 120 (still leader)
-		mt.SetLatestBlockNumber(ups2, 105) // ups2 now has lag of 15 blocks (> 10, so unhealthy)
+		mt.SetLatestBlockNumber(ups1, 120, 0) // ups1 advances to 120 (still leader)
+		mt.SetLatestBlockNumber(ups2, 105, 0) // ups2 now has lag of 15 blocks (> 10, so unhealthy)
 
 		// Wait for evaluation
 		time.Sleep(100 * time.Millisecond)
@@ -1921,8 +1921,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		assert.Equal(t, "excluded by selection policy", metrics2.LastCordonedReason.Load(), "ups2 should be cordoned due to selection policy")
 
 		// Phase 3: ups2 catches up (block head lag improves)
-		mt.SetLatestBlockNumber(ups2, 125) // ups2 catches up and becomes leader
-		mt.SetLatestBlockNumber(ups1, 120) // ups1 now has lag of 5 blocks (< 10, so healthy)
+		mt.SetLatestBlockNumber(ups2, 125, 0) // ups2 catches up and becomes leader
+		mt.SetLatestBlockNumber(ups1, 120, 0) // ups1 now has lag of 5 blocks (< 10, so healthy)
 
 		// Wait for evaluation
 		time.Sleep(100 * time.Millisecond)
@@ -1941,8 +1941,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		assert.False(t, metrics2.Cordoned.Load(), "ups2 should be uncordoned after catching up")
 
 		// Phase 4: Test edge case where upstream has 0 block head lag
-		mt.SetLatestBlockNumber(ups1, 130) // ups1 becomes leader
-		mt.SetLatestBlockNumber(ups2, 130) // ups2 has 0 lag
+		mt.SetLatestBlockNumber(ups1, 130, 0) // ups1 becomes leader
+		mt.SetLatestBlockNumber(ups2, 130, 0) // ups2 has 0 lag
 
 		// Wait for evaluation
 		time.Sleep(100 * time.Millisecond)
@@ -1997,8 +1997,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		require.NoError(t, err)
 
 		// Set up initial state - both upstreams healthy
-		mt.SetLatestBlockNumber(ups1, 100)
-		mt.SetLatestBlockNumber(ups2, 95)
+		mt.SetLatestBlockNumber(ups1, 100, 0)
+		mt.SetLatestBlockNumber(ups2, 95, 0)
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -2010,8 +2010,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		assert.NoError(t, err, "ups2 should be active")
 
 		// One upstream falls behind
-		mt.SetLatestBlockNumber(ups1, 120)
-		mt.SetLatestBlockNumber(ups2, 105) // lag of 15 blocks
+		mt.SetLatestBlockNumber(ups1, 120, 0)
+		mt.SetLatestBlockNumber(ups2, 105, 0) // lag of 15 blocks
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -2023,7 +2023,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		assert.Error(t, err, "ups2 should be cordoned")
 
 		// ups2 catches up
-		mt.SetLatestBlockNumber(ups2, 118) // lag of 2 blocks
+		mt.SetLatestBlockNumber(ups2, 118, 0) // lag of 2 blocks
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -2074,8 +2074,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		require.NoError(t, err)
 
 		// Set up initial state
-		mt.SetLatestBlockNumber(ups1, 100)
-		mt.SetLatestBlockNumber(ups2, 95) // lag of 5 blocks (exactly at threshold)
+		mt.SetLatestBlockNumber(ups1, 100, 0)
+		mt.SetLatestBlockNumber(ups2, 95, 0) // lag of 5 blocks (exactly at threshold)
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -2087,7 +2087,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		assert.Error(t, err, "ups2 should be cordoned with lag >= 5")
 
 		// ups2 catches up slightly
-		mt.SetLatestBlockNumber(ups2, 97) // lag of 3 blocks (< 5)
+		mt.SetLatestBlockNumber(ups2, 97, 0) // lag of 3 blocks (< 5)
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -2137,8 +2137,8 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		// Test rapid changes in block head lag
 		for i := 0; i < 5; i++ {
 			// ups1 advances
-			mt.SetLatestBlockNumber(ups1, int64(100+i*10))
-			mt.SetLatestBlockNumber(ups2, int64(100+i*10-3)) // lag of 3 blocks (> 2, so unhealthy)
+			mt.SetLatestBlockNumber(ups1, int64(100+i*10), 0)
+			mt.SetLatestBlockNumber(ups2, int64(100+i*10-3), 0) // lag of 3 blocks (> 2, so unhealthy)
 
 			time.Sleep(50 * time.Millisecond)
 
@@ -2150,7 +2150,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 			assert.Error(t, err, "ups2 should be cordoned in iteration %d", i)
 
 			// ups2 catches up
-			mt.SetLatestBlockNumber(ups2, int64(100+i*10-1)) // lag of 1 block (< 2, so healthy)
+			mt.SetLatestBlockNumber(ups2, int64(100+i*10-1), 0) // lag of 1 block (< 2, so healthy)
 
 			time.Sleep(50 * time.Millisecond)
 
