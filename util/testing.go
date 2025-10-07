@@ -63,7 +63,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x11118888"},"_note":"evm state poller expected mock for latest block"}`))
+		JSON([]byte(`{"result":{"number":"0x11118888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Persist().
@@ -72,7 +72,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x11117777"},"_note":"evm state poller expected mock for finalized block"}`))
+		JSON([]byte(`{"result":{"number":"0x11117777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Persist().
@@ -97,7 +97,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x22228888"},"_note":"evm state poller expected mock for latest block"}`))
+		JSON([]byte(`{"result":{"number":"0x22228888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Persist().
@@ -106,7 +106,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x22227777"},"_note":"evm state poller expected mock for finalized block"}`))
+		JSON([]byte(`{"result":{"number":"0x22227777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Persist().
@@ -133,7 +133,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
 	gock.New("http://rpc3.localhost").
 		Post("").
 		Persist().
@@ -142,7 +142,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
 	gock.New("http://rpc3.localhost").
 		Post("").
 		Persist().
@@ -169,7 +169,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
 	gock.New("http://rpc4.localhost").
 		Post("").
 		Persist().
@@ -178,7 +178,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
 	gock.New("http://rpc4.localhost").
 		Post("").
 		Persist().
@@ -205,7 +205,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
 	gock.New("http://rpc5.localhost").
 		Post("").
 		Persist().
@@ -214,7 +214,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
 	gock.New("http://rpc5.localhost").
 		Post("").
 		Persist().
@@ -241,7 +241,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
 	gock.New("http://rpc5.localhost").
 		Post("").
 		Persist().
@@ -250,7 +250,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
 	gock.New("http://rpc5.localhost").
 		Post("").
 		Persist().
@@ -277,7 +277,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33338888"},"_note":"evm state poller expected mock for latest block"}`))
+		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
 	gock.New("http://rpc7.localhost").
 		Post("").
 		Persist().
@@ -286,7 +286,7 @@ func SetupMocksForEvmStatePoller() {
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
 		}).
 		Reply(200).
-		JSON([]byte(`{"result":{"number":"0x33337777"},"_note":"evm state poller expected mock for finalized block"}`))
+		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
 	gock.New("http://rpc7.localhost").
 		Post("").
 		Persist().

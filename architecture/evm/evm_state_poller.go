@@ -367,6 +367,12 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		),
 	)
 	defer span.End()
+
+	// Read networkLabel with lock to avoid race condition
+	e.stateMu.RLock()
+	networkLabel := e.networkLabel
+	e.stateMu.RUnlock()
+
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		if e.logger.GetLevel() <= zerolog.TraceLevel {
 			e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
@@ -374,7 +380,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.networkLabel,
+			networkLabel,
 			e.upstream.Id(),
 		).Inc()
 		blockNum, blockTimestamp, err := e.fetchBlock(ctx, "latest")
@@ -416,7 +422,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		if blockTimestamp > 0 {
 			e.tracker.SetLatestBlockTimestampForNetwork(
 				e.upstream.NetworkId(),
-				e.networkLabel,
+				networkLabel,
 				blockTimestamp,
 			)
 		}
@@ -482,12 +488,18 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
+
+	// Read networkLabel with lock to avoid race condition
+	e.stateMu.RLock()
+	networkLabel := e.networkLabel
+	e.stateMu.RUnlock()
+
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.networkLabel,
+			networkLabel,
 			e.upstream.Id(),
 		).Inc()
 
