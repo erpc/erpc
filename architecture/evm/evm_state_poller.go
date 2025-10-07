@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -79,6 +80,7 @@ type EvmStatePoller struct {
 	latestBlockFailureCount   int
 	latestBlockSuccessfulOnce bool
 	latestBlockShared         data.CounterInt64SharedVariable
+	latestBlockTimestamp      atomic.Int64
 
 	sharedStateRegistry data.SharedStateRegistry
 
@@ -116,7 +118,8 @@ func NewEvmStatePoller(
 	}
 
 	lbs.OnValue(func(value int64) {
-		e.tracker.SetLatestBlockNumber(e.upstream, value)
+		timestamp := e.latestBlockTimestamp.Load()
+		e.tracker.SetLatestBlockNumber(e.upstream, value, timestamp)
 	})
 	fbs.OnValue(func(value int64) {
 		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
@@ -418,13 +421,9 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
-		// Update network-level block timestamp distance metric if we have a valid timestamp
+		// Store timestamp atomically for OnValue callback to use
 		if blockTimestamp > 0 {
-			e.tracker.SetLatestBlockTimestampForNetwork(
-				e.upstream.NetworkId(),
-				networkLabel,
-				blockTimestamp,
-			)
+			e.latestBlockTimestamp.Store(blockTimestamp)
 		}
 
 		e.logger.Debug().
