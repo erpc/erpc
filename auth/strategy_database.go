@@ -134,9 +134,9 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 		}
 
 		var userData struct {
-			UserId             string `json:"userId"`
-			PerSecondRateLimit *int64 `json:"perSecondRateLimit,omitempty"`
-			Enabled            *bool  `json:"enabled,omitempty"`
+			UserId          string `json:"userId"`
+			Enabled         *bool  `json:"enabled,omitempty"`
+			RateLimitBudget string `json:"rateLimitBudget,omitempty"`
 		}
 		if err := json.Unmarshal(valueBytes, &userData); err != nil {
 			s.logger.Error().Err(err).Str("apiKey", apiKey).RawJSON("data", valueBytes).Msg("failed to parse user data from database")
@@ -155,8 +155,8 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 			return &authFetchResult{user: nil, err: common.NewErrAuthUnauthorized("database", "API key is disabled"), neg: true}, nil
 		}
 		user := &common.User{Id: userData.UserId}
-		if userData.PerSecondRateLimit != nil {
-			user.PerSecondRateLimit = *userData.PerSecondRateLimit
+		if userData.RateLimitBudget != "" {
+			user.RateLimitBudget = userData.RateLimitBudget
 		}
 		return &authFetchResult{user: user, err: nil, neg: false}, nil
 	})
@@ -179,7 +179,7 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*
 		s.logger.Debug().Str("apiKey", apiKey).Dur("ttl", ttl).Msg("cached API key data")
 	}
 
-	s.logger.Debug().Str("apiKey", apiKey).Str("userId", user.Id).Int64("rateLimit", user.PerSecondRateLimit).Msg("user authenticated successfully")
+	s.logger.Debug().Str("apiKey", apiKey).Str("userId", user.Id).Str("budget", user.RateLimitBudget).Msg("user authenticated successfully")
 
 	return user, nil
 }

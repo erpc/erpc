@@ -395,7 +395,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						return
 					}
 				} else {
-					user, err := project.AuthenticateConsumer(requestCtx, method, ap)
+					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)

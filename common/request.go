@@ -96,6 +96,9 @@ type NormalizedRequest struct {
 	// Cached agent information to avoid recalculation
 	agentName    atomic.Value // Cached agent name from User-Agent
 	agentVersion atomic.Value // Cached agent version from User-Agent
+
+	// Resolved client IP (set by HTTP ingress using trusted forwarders)
+	clientIP atomic.Value
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -468,6 +471,27 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 			e.Str("body", string(r.body))
 		}
 	}
+}
+
+// SetClientIP stores the resolved client IP address
+func (r *NormalizedRequest) SetClientIP(ip string) {
+	if r == nil {
+		return
+	}
+	r.clientIP.Store(ip)
+}
+
+// ClientIP returns the resolved client IP address or "n/a" if not available
+func (r *NormalizedRequest) ClientIP() string {
+	if r == nil {
+		return "n/a"
+	}
+	if v := r.clientIP.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return "n/a"
 }
 
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm

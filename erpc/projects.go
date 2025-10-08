@@ -76,9 +76,9 @@ func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
 	}, nil
 }
 
-func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
+func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, req *common.NormalizedRequest, method string, ap *auth.AuthPayload) (*common.User, error) {
 	if p.consumerAuthRegistry != nil {
-		return p.consumerAuthRegistry.Authenticate(ctx, method, ap)
+		return p.consumerAuthRegistry.Authenticate(ctx, req, method, ap)
 	}
 	return nil, nil
 }
@@ -93,7 +93,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
-	if err := p.acquireRateLimitPermit(nq); err != nil {
+	if err := p.acquireRateLimitPermit(ctx, nq); err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
@@ -250,7 +250,7 @@ func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *c
 	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
 }
 
-func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) error {
+func (p *PreparedProject) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {
 	if p.Config.RateLimitBudget == "" {
 		return nil
 	}
@@ -276,21 +276,20 @@ func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) 
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {
-		for _, rule := range rules {
-			permit := rule.Limiter.TryAcquirePermit()
-			if !permit {
-				telemetry.MetricProjectRequestSelfRateLimited.WithLabelValues(
-					p.Config.Id,
-					method,
-				).Inc()
-				return common.NewErrProjectRateLimitRuleExceeded(
-					p.Config.Id,
-					p.Config.RateLimitBudget,
-					fmt.Sprintf("%+v", rule.Config),
-				)
-			} else {
-				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("project-level rate limit passed")
-			}
+		allowed, err := rlb.TryAcquirePermit(ctx, req, method)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			telemetry.MetricProjectRequestSelfRateLimited.WithLabelValues(
+				p.Config.Id,
+				method,
+			).Inc()
+			return common.NewErrProjectRateLimitRuleExceeded(
+				p.Config.Id,
+				p.Config.RateLimitBudget,
+				fmt.Sprintf("method:%s", method),
+			)
 		}
 	}
 
