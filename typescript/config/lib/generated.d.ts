@@ -404,6 +404,14 @@ export interface PunishMisbehaviorConfig {
     disputeWindow?: Duration;
     sitOutPenalty?: Duration;
 }
+export type RateLimitPeriod = number;
+export declare const RateLimitPeriodSecond: RateLimitPeriod;
+export declare const RateLimitPeriodMinute: RateLimitPeriod;
+export declare const RateLimitPeriodHour: RateLimitPeriod;
+export declare const RateLimitPeriodDay: RateLimitPeriod;
+export declare const RateLimitPeriodWeek: RateLimitPeriod;
+export declare const RateLimitPeriodMonth: RateLimitPeriod;
+export declare const RateLimitPeriodYear: RateLimitPeriod;
 export interface RateLimiterConfig {
     budgets: RateLimitBudgetConfig[];
 }
@@ -414,7 +422,7 @@ export interface RateLimitBudgetConfig {
 export interface RateLimitRuleConfig {
     method: string;
     maxCount: number;
-    period: Duration;
+    period: RateLimitPeriod;
     waitTime: Duration;
 }
 export interface ProxyPoolConfig {

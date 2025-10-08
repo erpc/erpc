@@ -651,6 +651,16 @@ func (s *ServerConfig) SetDefaults() error {
 		s.IncludeErrorDetails = util.BoolPtr(true)
 	}
 
+	// Safe defaults for client IP resolution
+	if len(s.TrustedIPForwarders) == 0 {
+		// Only loopback by default; do not trust private subnets unless explicitly configured
+		s.TrustedIPForwarders = []string{"127.0.0.1/8", "::1/128"}
+	}
+	if s.TrustedIPHeaders == nil {
+		// Empty by default to avoid trusting headers unless explicitly configured
+		s.TrustedIPHeaders = []string{}
+	}
+
 	return nil
 }
 
@@ -2298,8 +2308,13 @@ func (b *RateLimitBudgetConfig) SetDefaults() error {
 }
 
 func (r *RateLimitRuleConfig) SetDefaults() error {
-	if r.PeriodEnum == "" {
-		r.PeriodEnum = RateLimitPeriodSecond
+	// Default to 'second' when period is unset or invalid
+	switch r.Period {
+	case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+		RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+		// ok
+	default:
+		r.Period = RateLimitPeriodSecond
 	}
 	if r.Method == "" {
 		r.Method = "*"

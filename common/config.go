@@ -104,7 +104,8 @@ type ServerConfig struct {
 	WaitBeforeShutdown  *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
 	WaitAfterShutdown   *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
 	IncludeErrorDetails *bool           `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
-	TrustedForwarders   []string        `yaml:"trustedForwarders,omitempty" json:"trustedForwarders"`
+	TrustedIPForwarders []string        `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
+	TrustedIPHeaders    []string        `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 }
 
 type HealthCheckConfig struct {
@@ -979,8 +980,8 @@ type RateLimitBudgetConfig struct {
 type RateLimitRuleConfig struct {
 	Method   string `yaml:"method" json:"method"`
 	MaxCount uint32 `yaml:"maxCount" json:"maxCount"`
-	// PeriodEnum is the canonical period selector. Supported: second, minute, hour, day, week, month, year
-	PeriodEnum RateLimitPeriod `yaml:"period" json:"period" tstype:"'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'"`
+	// Period is the canonical period selector. Supported: second, minute, hour, day, week, month, year
+	Period     RateLimitPeriod `yaml:"period" json:"period" tstype:"RateLimitPeriod"`
 	WaitTime   Duration        `yaml:"waitTime,omitempty" json:"waitTime,omitempty" tstype:"Duration"`
 	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
 	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
@@ -988,17 +989,44 @@ type RateLimitRuleConfig struct {
 }
 
 // RateLimitPeriod enumerates supported periods for rate limiting.
-type RateLimitPeriod string
+// It is an int enum to enable strong typing in TypeScript generation, while
+// marshaling to JSON/YAML as human-readable strings like "second", "minute", etc.
+type RateLimitPeriod int
 
 const (
-	RateLimitPeriodSecond RateLimitPeriod = "second"
-	RateLimitPeriodMinute RateLimitPeriod = "minute"
-	RateLimitPeriodHour   RateLimitPeriod = "hour"
-	RateLimitPeriodDay    RateLimitPeriod = "day"
-	RateLimitPeriodWeek   RateLimitPeriod = "week"
-	RateLimitPeriodMonth  RateLimitPeriod = "month"
-	RateLimitPeriodYear   RateLimitPeriod = "year"
+	RateLimitPeriodSecond RateLimitPeriod = iota
+	RateLimitPeriodMinute
+	RateLimitPeriodHour
+	RateLimitPeriodDay
+	RateLimitPeriodWeek
+	RateLimitPeriodMonth
+	RateLimitPeriodYear
 )
+
+func (p RateLimitPeriod) String() string {
+	switch p {
+	case RateLimitPeriodSecond:
+		return "second"
+	case RateLimitPeriodMinute:
+		return "minute"
+	case RateLimitPeriodHour:
+		return "hour"
+	case RateLimitPeriodDay:
+		return "day"
+	case RateLimitPeriodWeek:
+		return "week"
+	case RateLimitPeriodMonth:
+		return "month"
+	case RateLimitPeriodYear:
+		return "year"
+	default:
+		return "unknown"
+	}
+}
+
+func (p RateLimitPeriod) MarshalJSON() ([]byte, error) {
+	return SonicCfg.Marshal(p.String())
+}
 
 // Backward-compat: accept Go duration strings (e.g., 1s, 1m, 1h, 24h, 7d, 30d, 365d) and map to enum.
 func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -1007,25 +1035,25 @@ func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error
 	if err := unmarshal(&s); err == nil {
 		ls := strings.ToLower(strings.TrimSpace(s))
 		switch ls {
-		case string(RateLimitPeriodSecond), "1s":
+		case "second", "1s":
 			*p = RateLimitPeriodSecond
 			return nil
-		case string(RateLimitPeriodMinute), "1m":
+		case "minute", "1m":
 			*p = RateLimitPeriodMinute
 			return nil
-		case string(RateLimitPeriodHour), "1h":
+		case "hour", "1h":
 			*p = RateLimitPeriodHour
 			return nil
-		case string(RateLimitPeriodDay), "24h", "1d":
+		case "day", "24h", "1d":
 			*p = RateLimitPeriodDay
 			return nil
-		case string(RateLimitPeriodWeek), "7d", "168h":
+		case "week", "7d", "168h":
 			*p = RateLimitPeriodWeek
 			return nil
-		case string(RateLimitPeriodMonth), "30d", "720h":
+		case "month", "30d", "720h":
 			*p = RateLimitPeriodMonth
 			return nil
-		case string(RateLimitPeriodYear), "365d", "8760h":
+		case "year", "365d", "8760h":
 			*p = RateLimitPeriodYear
 			return nil
 		default:
@@ -1054,8 +1082,20 @@ func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error
 			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
 		}
 	}
+	// Try as integer enum
+	var i int
+	if err := unmarshal(&i); err == nil {
+		switch RateLimitPeriod(i) {
+		case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+			RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+			*p = RateLimitPeriod(i)
+			return nil
+		default:
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %d)", i)
+		}
+	}
 	// Not a string → invalid for our schema
-	return fmt.Errorf("invalid period type; expected string enum or duration like '1s'")
+	return fmt.Errorf("invalid period type; expected string enum, integer enum, or duration like '1s'")
 }
 
 func (p RateLimitPeriod) Unit() pb.RateLimitResponse_RateLimit_Unit {
@@ -1368,13 +1408,13 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("method", c.Method).
 		Uint("maxCount", uint(c.MaxCount)).
-		Str("period", string(c.PeriodEnum)).
+		Str("period", c.Period.String()).
 		Str("waitTimeMs", fmt.Sprintf("%d", c.WaitTime))
 }
 
 // RateLimitStoreConfig defines where rate limit counters are stored
 type RateLimitStoreConfig struct {
-	Type           string                `yaml:"type" json:"type"` // "redis" | "memory" (memory not yet implemented)
+	Driver         string                `yaml:"driver" json:"driver"` // "redis" | "memory" (memory not yet implemented)
 	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
