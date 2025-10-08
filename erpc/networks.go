@@ -1163,27 +1163,26 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {
-		for _, rule := range rules {
-			permit := rule.Limiter.TryAcquirePermit()
-			if !permit {
-				finality := req.Finality(context.Background())
-				telemetry.CounterHandle(telemetry.MetricNetworkRequestSelfRateLimited,
-					n.projectId,
-					n.Label(),
-					method,
-					finality.String(),
-					req.UserId(),
-					req.AgentName(),
-				).Inc()
-				return common.NewErrNetworkRateLimitRuleExceeded(
-					n.projectId,
-					n.networkId,
-					n.cfg.RateLimitBudget,
-					fmt.Sprintf("%+v", rule.Config),
-				)
-			} else {
-				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("network-level rate limit passed")
-			}
+		allowed, err := rlb.TryAcquirePermit(ctx, req, method)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			finality := req.Finality(context.Background())
+			telemetry.CounterHandle(telemetry.MetricNetworkRequestSelfRateLimited,
+				n.projectId,
+				n.Label(),
+				method,
+				finality.String(),
+				req.UserId(),
+				req.AgentName(),
+			).Inc()
+			return common.NewErrNetworkRateLimitRuleExceeded(
+				n.projectId,
+				n.networkId,
+				n.cfg.RateLimitBudget,
+				fmt.Sprintf("method:%s", method),
+			)
 		}
 	}
 

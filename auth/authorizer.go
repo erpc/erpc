@@ -112,12 +112,19 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 	return shouldApply
 }
 
-func (a *Authorizer) acquireRateLimitPermit(user *common.User, method string) error {
-	if a.cfg.RateLimitBudget == "" {
+func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest, method string) error {
+	// Determine effective budget
+	effectiveBudget := a.cfg.RateLimitBudget
+	if req != nil {
+		if u := req.User(); u != nil && u.RateLimitBudget != "" {
+			effectiveBudget = u.RateLimitBudget
+		}
+	}
+	if effectiveBudget == "" {
 		return nil
 	}
 
-	rlb, errNetLimit := a.rateLimitersRegistry.GetBudget(a.cfg.RateLimitBudget)
+	rlb, errNetLimit := a.rateLimitersRegistry.GetBudget(effectiveBudget)
 	if errNetLimit != nil {
 		return errNetLimit
 	}
@@ -125,34 +132,22 @@ func (a *Authorizer) acquireRateLimitPermit(user *common.User, method string) er
 		return nil
 	}
 
-	lg := a.logger.With().Str("method", method).Logger()
-
-	rules, errRules := rlb.GetRulesByMethod(method)
-	if errRules != nil {
-		return errRules
+	allowed, err := rlb.TryAcquirePermit(ctx, req, method)
+	if err != nil {
+		return err
 	}
-	lg.Debug().Msgf("found %d auth-level rate limiters", len(rules))
-
-	if len(rules) > 0 {
-		for _, rule := range rules {
-			permit := rule.Limiter.TryAcquirePermit()
-			if !permit {
-				telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(
-					a.projectId,
-					string(a.cfg.Type),
-					method,
-				).Inc()
-				return common.NewErrAuthRateLimitRuleExceeded(
-					a.projectId,
-					string(a.cfg.Type),
-					a.cfg.RateLimitBudget,
-					fmt.Sprintf("%+v", rule.Config),
-				)
-			} else {
-				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("auth-level rate limit passed")
-			}
-		}
+	if !allowed {
+		telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(
+			a.projectId,
+			string(a.cfg.Type),
+			method,
+		).Inc()
+		return common.NewErrAuthRateLimitRuleExceeded(
+			a.projectId,
+			string(a.cfg.Type),
+			effectiveBudget,
+			fmt.Sprintf("method:%s", method),
+		)
 	}
-
 	return nil
 }
