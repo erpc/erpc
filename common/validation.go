@@ -91,8 +91,8 @@ func (s *ServerConfig) Validate() error {
 		return fmt.Errorf("server.maxTimeout is required")
 	}
 
-	// Validate trusted forwarders if provided (IPs or CIDRs)
-	for _, entry := range s.TrustedForwarders {
+	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field
+	for _, entry := range s.TrustedIPForwarders {
 		val := strings.TrimSpace(entry)
 		if val == "" {
 			return fmt.Errorf("server.trustedForwarders contains empty entry")
@@ -107,6 +107,7 @@ func (s *ServerConfig) Validate() error {
 			}
 		}
 	}
+	// No validation for trusted IP headers; treat as raw header names with XFF-like syntax
 	return nil
 }
 
@@ -162,7 +163,7 @@ func (m *MetricsConfig) Validate() error {
 func (r *RateLimiterConfig) Validate() error {
 	// Validate store when present
 	if r.Store != nil {
-		switch strings.ToLower(strings.TrimSpace(r.Store.Type)) {
+		switch strings.ToLower(strings.TrimSpace(r.Store.Driver)) {
 		case "":
 			// ok, optional
 		case "redis":
@@ -179,7 +180,7 @@ func (r *RateLimiterConfig) Validate() error {
 		case "memory":
 			// Placeholder: memory backend not implemented yet
 		default:
-			return fmt.Errorf("rateLimiters.store.type '%s' is invalid must be one of: redis, memory", r.Store.Type)
+			return fmt.Errorf("rateLimiters.store.type '%s' is invalid must be one of: redis, memory", r.Store.Driver)
 		}
 	}
 
@@ -215,7 +216,7 @@ func (r *RateLimitRuleConfig) Validate() error {
 	}
 
 	// Period must be one of the supported enums (with legacy duration already mapped in unmarshal)
-	switch r.PeriodEnum {
+	switch r.Period {
 	case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
 		RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
 		// ok

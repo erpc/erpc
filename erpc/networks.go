@@ -390,7 +390,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// 3) Apply rate limits
-	if err := n.acquireRateLimitPermit(req); err != nil {
+	if err := n.acquireRateLimitPermit(ctx, req); err != nil {
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)
 		}
@@ -1137,7 +1137,7 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 	return nil
 }
 
-func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
+func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {
 	if n.cfg.RateLimitBudget == "" {
 		return nil
 	}

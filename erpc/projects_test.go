@@ -34,7 +34,7 @@ func TestProject_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 3,
-								Period:   common.Duration(60 * time.Second),
+								Period:   common.RateLimitPeriodMinute,
 								WaitTime: common.Duration(0),
 							},
 						},
