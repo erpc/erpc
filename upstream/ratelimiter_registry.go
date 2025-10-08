@@ -41,7 +41,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 	}
 
 	// Initialize shared cache if configured
-	if r.cfg.Store != nil && r.cfg.Store.Type == "redis" && r.cfg.Store.Redis != nil {
+	if r.cfg.Store != nil && r.cfg.Store.Driver == "redis" && r.cfg.Store.Redis != nil {
 		store := gostats.NewStore(gostats.NewNullSink(), false)
 		mgr := stats.NewStatManager(store, settings.NewSettings())
 		useTLS := r.cfg.Store.Redis.TLS != nil && r.cfg.Store.Redis.TLS.Enabled
@@ -63,7 +63,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			mgr,
 			false,
 		)
-	} else if r.cfg.Store != nil && r.cfg.Store.Type == "memory" {
+	} else if r.cfg.Store != nil && r.cfg.Store.Driver == "memory" {
 		store := gostats.NewStore(gostats.NewNullSink(), false)
 		mgr := stats.NewStatManager(store, settings.NewSettings())
 		r.envoyCache = NewMemoryRateLimitCache(utils.NewTimeSourceImpl(), rand.New(rand.NewSource(time.Now().Unix())), 0, defaultNearLimitRatio(r.cfg.Store.NearLimitRatio), defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix), mgr)

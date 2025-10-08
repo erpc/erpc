@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
@@ -82,16 +83,25 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.No
 		// Build descriptor entries
 		entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "method", Value: method}}
 		if rule.Config.PerIP {
+			if req == nil {
+				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perIP")
+			}
 			if ip := req.ClientIP(); ip != "" && ip != "n/a" {
 				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: ip})
 			}
 		}
 		if rule.Config.PerUser {
+			if req == nil {
+				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perUser")
+			}
 			if uid := req.UserId(); uid != "" && uid != "n/a" {
 				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "user", Value: uid})
 			}
 		}
 		if rule.Config.PerNetwork {
+			if req == nil {
+				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perNetwork")
+			}
 			if nid := req.NetworkId(); nid != "" && nid != "n/a" {
 				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "network", Value: nid})
 			}
@@ -101,7 +111,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.No
 		rlReq := &pb.RateLimitRequest{Domain: b.Id, Descriptors: []*pb_struct.RateLimitDescriptor{descriptor}, HitsAddend: 1}
 
 		// Map enum period to unit (supports second..year)
-		unit := rule.Config.PeriodEnum.Unit()
+		unit := rule.Config.Period.Unit()
 		limit := &config.RateLimit{Limit: &pb.RateLimitResponse_RateLimit{RequestsPerUnit: rule.Config.MaxCount, Unit: unit}}
 
 		statuses := b.cache.DoLimit(ctx, rlReq, []*config.RateLimit{limit})
