@@ -1,11 +1,15 @@
 package upstream
 
 import (
+	"context"
 	"sync"
 
+	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
+	"github.com/envoyproxy/ratelimit/src/config"
+	"github.com/envoyproxy/ratelimit/src/limiter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
-	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
 )
 
@@ -15,11 +19,11 @@ type RateLimiterBudget struct {
 	Rules    []*RateLimitRule
 	registry *RateLimitersRegistry
 	rulesMu  sync.RWMutex
+	cache    limiter.RateLimitCache
 }
 
 type RateLimitRule struct {
-	Config  *common.RateLimitRuleConfig
-	Limiter ratelimiter.RateLimiter[interface{}]
+	Config *common.RateLimitRuleConfig
 }
 
 func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, error) {
@@ -41,26 +45,71 @@ func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, e
 	return rules, nil
 }
 
-func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint) error {
+// AdjustBudget updates the MaxCount for the provided rule and refreshes telemetry.
+func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32) error {
+	if rule == nil || rule.Config == nil {
+		return nil
+	}
 	b.rulesMu.Lock()
 	defer b.rulesMu.Unlock()
 
-	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d ", rule.Config.MaxCount, newMaxCount)
-
-	newCfg := &common.RateLimitRuleConfig{
-		Method:   rule.Config.Method,
-		Period:   rule.Config.Period,
-		MaxCount: newMaxCount,
-		WaitTime: rule.Config.WaitTime,
+	prev := rule.Config.MaxCount
+	if prev == newMaxCount {
+		return nil
 	}
-	newLimiter, err := b.registry.createRateLimiter(b.Id, newCfg)
-	if err != nil {
-		return err
-	}
-	rule.Config = newCfg
-	rule.Limiter = newLimiter
-
+	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d", prev, newMaxCount)
+	rule.Config.MaxCount = newMaxCount
 	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method).Set(float64(newMaxCount))
-
 	return nil
+}
+
+// TryAcquirePermit evaluates all matching rules for the given method using Envoy's DoLimit
+// and returns whether the request is allowed.
+func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.NormalizedRequest, method string) (bool, error) {
+	if b.cache == nil {
+		return true, nil
+	}
+
+	rules, err := b.GetRulesByMethod(method)
+	if err != nil {
+		return false, err
+	}
+	if len(rules) == 0 {
+		return true, nil
+	}
+
+	for _, rule := range rules {
+		// Build descriptor entries
+		entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "method", Value: method}}
+		if rule.Config.PerIP {
+			if ip := req.ClientIP(); ip != "" && ip != "n/a" {
+				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: ip})
+			}
+		}
+		if rule.Config.PerUser {
+			if uid := req.UserId(); uid != "" && uid != "n/a" {
+				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "user", Value: uid})
+			}
+		}
+		if rule.Config.PerNetwork {
+			if nid := req.NetworkId(); nid != "" && nid != "n/a" {
+				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "network", Value: nid})
+			}
+		}
+
+		descriptor := &pb_struct.RateLimitDescriptor{Entries: entries}
+		rlReq := &pb.RateLimitRequest{Domain: b.Id, Descriptors: []*pb_struct.RateLimitDescriptor{descriptor}, HitsAddend: 1}
+
+		// Map enum period to unit (supports second..year)
+		unit := rule.Config.PeriodEnum.Unit()
+		limit := &config.RateLimit{Limit: &pb.RateLimitResponse_RateLimit{RequestsPerUnit: rule.Config.MaxCount, Unit: unit}}
+
+		statuses := b.cache.DoLimit(ctx, rlReq, []*config.RateLimit{limit})
+		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
+			// Telemetry: over limit per rule
+			telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(b.Id, "<rule>", method).Inc()
+			return false, nil
+		}
+	}
+	return true, nil
 }

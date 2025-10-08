@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
@@ -103,6 +104,7 @@ type ServerConfig struct {
 	WaitBeforeShutdown  *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
 	WaitAfterShutdown   *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
 	IncludeErrorDetails *bool           `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	TrustedForwarders   []string        `yaml:"trustedForwarders,omitempty" json:"trustedForwarders"`
 }
 
 type HealthCheckConfig struct {
@@ -965,6 +967,7 @@ func (c *PunishMisbehaviorConfig) Copy() *PunishMisbehaviorConfig {
 }
 
 type RateLimiterConfig struct {
+	Store   *RateLimitStoreConfig    `yaml:"store,omitempty" json:"store"`
 	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets" tstype:"RateLimitBudgetConfig[]"`
 }
 
@@ -974,10 +977,106 @@ type RateLimitBudgetConfig struct {
 }
 
 type RateLimitRuleConfig struct {
-	Method   string   `yaml:"method" json:"method"`
-	MaxCount uint     `yaml:"maxCount" json:"maxCount"`
-	Period   Duration `yaml:"period" json:"period" tstype:"Duration"`
-	WaitTime Duration `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
+	Method   string `yaml:"method" json:"method"`
+	MaxCount uint32 `yaml:"maxCount" json:"maxCount"`
+	// PeriodEnum is the canonical period selector. Supported: second, minute, hour, day, week, month, year
+	PeriodEnum RateLimitPeriod `yaml:"period" json:"period" tstype:"'second' | 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year'"`
+	WaitTime   Duration        `yaml:"waitTime,omitempty" json:"waitTime,omitempty" tstype:"Duration"`
+	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
+	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
+	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
+}
+
+// RateLimitPeriod enumerates supported periods for rate limiting.
+type RateLimitPeriod string
+
+const (
+	RateLimitPeriodSecond RateLimitPeriod = "second"
+	RateLimitPeriodMinute RateLimitPeriod = "minute"
+	RateLimitPeriodHour   RateLimitPeriod = "hour"
+	RateLimitPeriodDay    RateLimitPeriod = "day"
+	RateLimitPeriodWeek   RateLimitPeriod = "week"
+	RateLimitPeriodMonth  RateLimitPeriod = "month"
+	RateLimitPeriodYear   RateLimitPeriod = "year"
+)
+
+// Backward-compat: accept Go duration strings (e.g., 1s, 1m, 1h, 24h, 7d, 30d, 365d) and map to enum.
+func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try as string (enum name)
+	var s string
+	if err := unmarshal(&s); err == nil {
+		ls := strings.ToLower(strings.TrimSpace(s))
+		switch ls {
+		case string(RateLimitPeriodSecond), "1s":
+			*p = RateLimitPeriodSecond
+			return nil
+		case string(RateLimitPeriodMinute), "1m":
+			*p = RateLimitPeriodMinute
+			return nil
+		case string(RateLimitPeriodHour), "1h":
+			*p = RateLimitPeriodHour
+			return nil
+		case string(RateLimitPeriodDay), "24h", "1d":
+			*p = RateLimitPeriodDay
+			return nil
+		case string(RateLimitPeriodWeek), "7d", "168h":
+			*p = RateLimitPeriodWeek
+			return nil
+		case string(RateLimitPeriodMonth), "30d", "720h":
+			*p = RateLimitPeriodMonth
+			return nil
+		case string(RateLimitPeriodYear), "365d", "8760h":
+			*p = RateLimitPeriodYear
+			return nil
+		default:
+			// Try as duration expression (e.g., 1s)
+			if d, err := time.ParseDuration(s); err == nil {
+				switch d {
+				case time.Second:
+					*p = RateLimitPeriodSecond
+				case time.Minute:
+					*p = RateLimitPeriodMinute
+				case time.Hour:
+					*p = RateLimitPeriodHour
+				case 24 * time.Hour:
+					*p = RateLimitPeriodDay
+				case 7 * 24 * time.Hour:
+					*p = RateLimitPeriodWeek
+				case 30 * 24 * time.Hour:
+					*p = RateLimitPeriodMonth
+				case 365 * 24 * time.Hour:
+					*p = RateLimitPeriodYear
+				default:
+					return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
+				}
+				return nil
+			}
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
+		}
+	}
+	// Not a string → invalid for our schema
+	return fmt.Errorf("invalid period type; expected string enum or duration like '1s'")
+}
+
+func (p RateLimitPeriod) Unit() pb.RateLimitResponse_RateLimit_Unit {
+	switch p {
+	case RateLimitPeriodSecond:
+		return pb.RateLimitResponse_RateLimit_SECOND
+	case RateLimitPeriodMinute:
+		return pb.RateLimitResponse_RateLimit_MINUTE
+	case RateLimitPeriodHour:
+		return pb.RateLimitResponse_RateLimit_HOUR
+	case RateLimitPeriodDay:
+		return pb.RateLimitResponse_RateLimit_DAY
+	case RateLimitPeriodWeek:
+		return pb.RateLimitResponse_RateLimit_WEEK
+	case RateLimitPeriodMonth:
+		return pb.RateLimitResponse_RateLimit_MONTH
+	case RateLimitPeriodYear:
+		return pb.RateLimitResponse_RateLimit_YEAR
+	default:
+		return pb.RateLimitResponse_RateLimit_UNKNOWN
+	}
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
@@ -1268,9 +1367,17 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 
 func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("method", c.Method).
-		Uint("maxCount", c.MaxCount).
-		Str("periodMs", fmt.Sprintf("%d", c.Period)).
+		Uint("maxCount", uint(c.MaxCount)).
+		Str("period", string(c.PeriodEnum)).
 		Str("waitTimeMs", fmt.Sprintf("%d", c.WaitTime))
+}
+
+// RateLimitStoreConfig defines where rate limit counters are stored
+type RateLimitStoreConfig struct {
+	Type           string                `yaml:"type" json:"type"` // "redis" | "memory" (memory not yet implemented)
+	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
+	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
+	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
 }
 
 func (c *NetworkConfig) NetworkId() string {

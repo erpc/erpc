@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -89,6 +90,23 @@ func (s *ServerConfig) Validate() error {
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
 	}
+
+	// Validate trusted forwarders if provided (IPs or CIDRs)
+	for _, entry := range s.TrustedForwarders {
+		val := strings.TrimSpace(entry)
+		if val == "" {
+			return fmt.Errorf("server.trustedForwarders contains empty entry")
+		}
+		if strings.Contains(val, "/") {
+			if _, _, err := net.ParseCIDR(val); err != nil {
+				return fmt.Errorf("server.trustedForwarders entry '%s' is not a valid CIDR: %v", val, err)
+			}
+		} else {
+			if ip := net.ParseIP(val); ip == nil {
+				return fmt.Errorf("server.trustedForwarders entry '%s' is not a valid IP address", val)
+			}
+		}
+	}
 	return nil
 }
 
@@ -142,6 +160,29 @@ func (m *MetricsConfig) Validate() error {
 }
 
 func (r *RateLimiterConfig) Validate() error {
+	// Validate store when present
+	if r.Store != nil {
+		switch strings.ToLower(strings.TrimSpace(r.Store.Type)) {
+		case "":
+			// ok, optional
+		case "redis":
+			if r.Store.Redis == nil {
+				return fmt.Errorf("rateLimiters.store.redis is required when store.type is 'redis'")
+			}
+			if r.Store.NearLimitRatio != 0 && (r.Store.NearLimitRatio <= 0 || r.Store.NearLimitRatio >= 1) {
+				return fmt.Errorf("rateLimiters.store.nearLimitRatio must be > 0 and < 1")
+			}
+			// Validate redis connector
+			if err := r.Store.Redis.Validate(); err != nil {
+				return fmt.Errorf("rateLimiters.store.redis is invalid: %w", err)
+			}
+		case "memory":
+			// Placeholder: memory backend not implemented yet
+		default:
+			return fmt.Errorf("rateLimiters.store.type '%s' is invalid must be one of: redis, memory", r.Store.Type)
+		}
+	}
+
 	if len(r.Budgets) > 0 {
 		for _, budget := range r.Budgets {
 			if err := budget.Validate(); err != nil {
@@ -168,8 +209,18 @@ func (r *RateLimitRuleConfig) Validate() error {
 	if r.Method == "" {
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.method is required")
 	}
-	if r.WaitTime == 0 {
-		return fmt.Errorf("rateLimiter.*.budget.rules.*.waitTime is required")
+	// waitTime is deprecated; warn and ignore if provided
+	if r.WaitTime != 0 {
+		log.Warn().Msg("rateLimiter.*.budget.rules.*.waitTime is deprecated and will be ignored")
+	}
+
+	// Period must be one of the supported enums (with legacy duration already mapped in unmarshal)
+	switch r.PeriodEnum {
+	case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+		RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+		// ok
+	default:
+		return fmt.Errorf("rateLimiter.*.budget.rules.*.period must be one of: second, minute, hour, day, week, month, year")
 	}
 	return nil
 }

@@ -2298,11 +2298,8 @@ func (b *RateLimitBudgetConfig) SetDefaults() error {
 }
 
 func (r *RateLimitRuleConfig) SetDefaults() error {
-	if r.WaitTime == 0 {
-		r.WaitTime = Duration(1 * time.Second)
-	}
-	if r.Period == 0 {
-		r.Period = Duration(1 * time.Second)
+	if r.PeriodEnum == "" {
+		r.PeriodEnum = RateLimitPeriodSecond
 	}
 	if r.Method == "" {
 		r.Method = "*"
