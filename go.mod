@@ -13,7 +13,7 @@ require (
 	github.com/dgraph-io/ristretto/v2 v2.2.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/envoyproxy/go-control-plane/envoy v1.32.4
-	github.com/envoyproxy/ratelimit v0.0.0
+	github.com/envoyproxy/ratelimit v1.4.1-0.20250815163327-e74a664aadf9
 	github.com/evanw/esbuild v0.24.0
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/go-logr/zerologr v1.2.3
@@ -48,8 +48,6 @@ require (
 replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20250821184139-92189beaba9b
 
 replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250926125802-923aabcd7cef
-
-replace github.com/envoyproxy/ratelimit v0.0.0 => ../ratelimit
 
 require (
 	cel.dev/expr v0.24.0 // indirect

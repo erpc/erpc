@@ -162,26 +162,27 @@ func (m *MetricsConfig) Validate() error {
 
 func (r *RateLimiterConfig) Validate() error {
 	// Validate store when present
-	if r.Store != nil {
-		switch strings.ToLower(strings.TrimSpace(r.Store.Driver)) {
-		case "":
-			// ok, optional
-		case "redis":
-			if r.Store.Redis == nil {
-				return fmt.Errorf("rateLimiters.store.redis is required when store.type is 'redis'")
-			}
-			if r.Store.NearLimitRatio != 0 && (r.Store.NearLimitRatio <= 0 || r.Store.NearLimitRatio >= 1) {
-				return fmt.Errorf("rateLimiters.store.nearLimitRatio must be > 0 and < 1")
-			}
-			// Validate redis connector
-			if err := r.Store.Redis.Validate(); err != nil {
-				return fmt.Errorf("rateLimiters.store.redis is invalid: %w", err)
-			}
-		case "memory":
-			// Placeholder: memory backend not implemented yet
-		default:
-			return fmt.Errorf("rateLimiters.store.type '%s' is invalid must be one of: redis, memory", r.Store.Driver)
+	if r.Store == nil {
+		return fmt.Errorf("rateLimiters.store is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Store.Driver)) {
+	case "redis":
+		if r.Store.Redis == nil {
+			return fmt.Errorf("rateLimiters.store.redis is required when store.type is 'redis'")
 		}
+		if r.Store.NearLimitRatio != 0 && (r.Store.NearLimitRatio <= 0 || r.Store.NearLimitRatio >= 1) {
+			return fmt.Errorf("rateLimiters.store.nearLimitRatio must be > 0 and < 1")
+		}
+		// Validate redis connector
+		if err := r.Store.Redis.Validate(); err != nil {
+			return fmt.Errorf("rateLimiters.store.redis is invalid: %w", err)
+		}
+	case "memory":
+		// No validation for memory store
+	case "":
+		fallthrough
+	default:
+		return fmt.Errorf("rateLimiters.store.type '%s' is invalid must be one of: redis, memory", r.Store.Driver)
 	}
 
 	if len(r.Budgets) > 0 {
@@ -733,6 +734,7 @@ func (j *JwtStrategyConfig) Validate() error {
 	if len(j.VerificationKeys) == 0 {
 		return fmt.Errorf("auth.*.jwt.verificationKeys is required, add at least one verification key")
 	}
+	// No validation required for RateLimitBudgetClaimName; empty is allowed and defaulted in SetDefaults
 	return nil
 }
 

@@ -31,20 +31,20 @@ services:
     networks:
       erpc:
 
-  # jaeger:
-  #   container_name: erpc-jaeger
-  #   image: jaegertracing/all-in-one:latest
-  #   restart: always
-  #   ports:
-  #     - "16686:16686"    # Jaeger UI
-  #     - "4317:4317"      # OTLP gRPC
-  #     - "4318:4318"      # OTLP HTTP
-  #   environment:
-  #     - COLLECTOR_OTLP_ENABLED=true
-  #     - COLLECTOR_FILTER_PROCESSOR_ENABLED=true
-  #     - COLLECTOR_FILTER_PROCESSOR_MAX_DURATION=1s
-  #   networks:
-  #     erpc:
+  jaeger:
+    container_name: erpc-jaeger
+    image: jaegertracing/all-in-one:latest
+    restart: always
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "4317:4317"      # OTLP gRPC
+      - "4318:4318"      # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - COLLECTOR_FILTER_PROCESSOR_ENABLED=true
+      - COLLECTOR_FILTER_PROCESSOR_MAX_DURATION=1s
+    networks:
+      erpc:
 
   # postgresql:
   #   container_name: erpc-postgresql

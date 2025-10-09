@@ -988,6 +988,22 @@ type RateLimitRuleConfig struct {
 	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
 }
 
+// ScopeString returns a comma-separated list of enabled scopes in deterministic order.
+// Possible values: "user", "network", "ip". Empty string if no scope-specific flags are enabled.
+func (c *RateLimitRuleConfig) ScopeString() string {
+	scopes := make([]string, 0, 3)
+	if c.PerUser {
+		scopes = append(scopes, "user")
+	}
+	if c.PerNetwork {
+		scopes = append(scopes, "network")
+	}
+	if c.PerIP {
+		scopes = append(scopes, "ip")
+	}
+	return strings.Join(scopes, ",")
+}
+
 // RateLimitPeriod enumerates supported periods for rate limiting.
 // It is an int enum to enable strong typing in TypeScript generation, while
 // marshaling to JSON/YAML as human-readable strings like "second", "minute", etc.
@@ -1336,6 +1352,8 @@ type AuthStrategyConfig struct {
 type SecretStrategyConfig struct {
 	Id    string `yaml:"id" json:"id"`
 	Value string `yaml:"value" json:"value"`
+	// RateLimitBudget, if set, is applied to the authenticated user from this strategy
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 // custom json marshaller to redact the secret value
@@ -1363,10 +1381,16 @@ type JwtStrategyConfig struct {
 	AllowedAlgorithms []string          `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
 	RequiredClaims    []string          `yaml:"requiredClaims" json:"requiredClaims"`
 	VerificationKeys  map[string]string `yaml:"verificationKeys" json:"verificationKeys"`
+	// RateLimitBudgetClaimName is the JWT claim name that, if present,
+	// will be used to set the per-user RateLimitBudget override.
+	// Defaults to "rlm".
+	RateLimitBudgetClaimName string `yaml:"rateLimitBudgetClaimName,omitempty" json:"rateLimitBudgetClaimName,omitempty"`
 }
 
 type SiweStrategyConfig struct {
 	AllowedDomains []string `yaml:"allowedDomains" json:"allowedDomains"`
+	// RateLimitBudget, if set, is applied to the authenticated user
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 type NetworkStrategyConfig struct {
@@ -1374,6 +1398,8 @@ type NetworkStrategyConfig struct {
 	AllowedCIDRs   []string `yaml:"allowedCIDRs" json:"allowedCIDRs"`
 	AllowLocalhost bool     `yaml:"allowLocalhost" json:"allowLocalhost"`
 	TrustedProxies []string `yaml:"trustedProxies" json:"trustedProxies"`
+	// RateLimitBudget, if set, is applied to the authenticated user (client IP)
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 type LabelMode string

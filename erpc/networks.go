@@ -236,9 +236,9 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return leader
 }
 
-func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
 	method, _ := req.Method()
-	finality := req.Finality(context.Background())
+	finality := req.Finality(ctx)
 
 	// First, try to find a specific match for both method and finality
 	for _, fe := range n.failsafeExecutors {
@@ -443,7 +443,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// This is the only way to pass additional values to failsafe policy executors context
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	failsafeExecutor := n.getFailsafeExecutor(req)
+	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
 	if failsafeExecutor == nil {
 		return nil, errors.New("no failsafe executor found for this request")
 	}
@@ -1168,7 +1168,7 @@ func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.Normal
 			return err
 		}
 		if !allowed {
-			finality := req.Finality(context.Background())
+			finality := req.Finality(ctx)
 			telemetry.CounterHandle(telemetry.MetricNetworkRequestSelfRateLimited,
 				n.projectId,
 				n.Label(),

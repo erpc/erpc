@@ -82,9 +82,19 @@ func (s *JwtStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*commo
 		return nil, common.NewErrAuthUnauthorized("jwt", "missing 'sub' claim to be used as user id")
 	}
 
-	return &common.User{
-		Id: id,
-	}, nil
+	user := &common.User{Id: id}
+	// Optional rate limit budget override via claim
+	claimName := s.cfg.RateLimitBudgetClaimName
+	if claimName == "" {
+		claimName = "rlm"
+	}
+	if v, exists := claims[claimName]; exists {
+		if s, ok := v.(string); ok && s != "" {
+			user.RateLimitBudget = s
+		}
+	}
+
+	return user, nil
 }
 
 func (s *JwtStrategy) findVerificationKey(token *jwt.Token) (jwt.Keyfunc, error) {

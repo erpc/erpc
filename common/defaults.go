@@ -2272,6 +2272,9 @@ func (s *SecretStrategyConfig) SetDefaults() error {
 }
 
 func (j *JwtStrategyConfig) SetDefaults() error {
+	if j.RateLimitBudgetClaimName == "" {
+		j.RateLimitBudgetClaimName = "rlm"
+	}
 	return nil
 }
 
@@ -2284,6 +2287,12 @@ func (n *NetworkStrategyConfig) SetDefaults() error {
 }
 
 func (r *RateLimiterConfig) SetDefaults() error {
+	if r.Store == nil {
+		r.Store = &RateLimitStoreConfig{}
+	}
+	if err := r.Store.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for rate limit store: %w", err)
+	}
 	if len(r.Budgets) > 0 {
 		for _, budget := range r.Budgets {
 			if err := budget.SetDefaults(); err != nil {
@@ -2292,6 +2301,21 @@ func (r *RateLimiterConfig) SetDefaults() error {
 		}
 	}
 
+	return nil
+}
+
+func (r *RateLimitStoreConfig) SetDefaults() error {
+	if r.Driver == "" {
+		r.Driver = "memory"
+	}
+	if r.Driver == "redis" {
+		if r.Redis == nil {
+			r.Redis = &RedisConnectorConfig{}
+		}
+		if err := r.Redis.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for redis connector: %w", err)
+		}
+	}
 	return nil
 }
 
