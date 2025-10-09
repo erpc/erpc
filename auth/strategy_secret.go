@@ -25,7 +25,9 @@ func (s *SecretStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*co
 		return nil, common.NewErrAuthUnauthorized("secret", "invalid secret")
 	}
 
-	return &common.User{
-		Id: s.cfg.Id,
-	}, nil
+	user := &common.User{Id: s.cfg.Id}
+	if s.cfg.RateLimitBudget != "" {
+		user.RateLimitBudget = s.cfg.RateLimitBudget
+	}
+	return user, nil
 }

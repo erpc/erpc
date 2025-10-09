@@ -49,9 +49,11 @@ func (s *SiweStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*comm
 		return nil, common.NewErrAuthUnauthorized("siwe", fmt.Sprintf("SIWE message expired: %s", err))
 	}
 
-	return &common.User{
-		Id: strings.ToLower(message.GetAddress().String()),
-	}, nil
+	user := &common.User{Id: strings.ToLower(message.GetAddress().String())}
+	if s.cfg.RateLimitBudget != "" {
+		user.RateLimitBudget = s.cfg.RateLimitBudget
+	}
+	return user, nil
 }
 
 func (s *SiweStrategy) isDomainAllowed(domain string) bool {
