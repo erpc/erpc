@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
@@ -60,7 +61,17 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 	}
 	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d", prev, newMaxCount)
 	rule.Config.MaxCount = newMaxCount
-	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method).Set(float64(newMaxCount))
+	scope := []string{}
+	if rule.Config.PerUser {
+		scope = append(scope, "user")
+	}
+	if rule.Config.PerNetwork {
+		scope = append(scope, "network")
+	}
+	if rule.Config.PerIP {
+		scope = append(scope, "ip")
+	}
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, strings.Join(scope, ",")).Set(float64(newMaxCount))
 	return nil
 }
 
@@ -110,16 +121,42 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.No
 		descriptor := &pb_struct.RateLimitDescriptor{Entries: entries}
 		rlReq := &pb.RateLimitRequest{Domain: b.Id, Descriptors: []*pb_struct.RateLimitDescriptor{descriptor}, HitsAddend: 1}
 
-		// Map enum period to unit (supports second..year)
+		// Map enum period to unit (supports second..year) and construct full RateLimit
 		unit := rule.Config.Period.Unit()
-		limit := &config.RateLimit{Limit: &pb.RateLimitResponse_RateLimit{RequestsPerUnit: rule.Config.MaxCount, Unit: unit}}
+		// Build stats key similar to Envoy: domain + '.' + keys (avoid high-cardinality values)
+		statsKey := b.Id + ".method_" + method
+		if rule.Config.PerIP {
+			statsKey += ".ip"
+		}
+		if rule.Config.PerUser {
+			statsKey += ".user"
+		}
+		if rule.Config.PerNetwork {
+			statsKey += ".network"
+		}
+		rlStats := b.registry.statsManager.NewStats(statsKey)
+		limit := config.NewRateLimit(rule.Config.MaxCount, unit, rlStats, false, false, "", nil, false)
+
+		// Emit Prometheus rate-limiter metrics
+		userLabel := ""
+		networkLabel := ""
+		if rule.Config.PerUser && req != nil {
+			userLabel = req.UserId()
+		}
+		if rule.Config.PerNetwork && req != nil {
+			networkLabel = req.NetworkId()
+		}
+		telemetry.MetricRateLimitRequestsTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
 
 		statuses := b.cache.DoLimit(ctx, rlReq, []*config.RateLimit{limit})
 		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
 			// Telemetry: over limit per rule
 			telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(b.Id, "<rule>", method).Inc()
+			telemetry.MetricRateLimitOverLimitTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
 			return false, nil
 		}
+
+		telemetry.MetricRateLimitWithinLimitTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
 	}
 	return true, nil
 }

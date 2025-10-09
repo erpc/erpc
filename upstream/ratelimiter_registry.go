@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ type RateLimitersRegistry struct {
 	cfg             *common.RateLimiterConfig
 	budgetsLimiters sync.Map
 	envoyCache      limiter.RateLimitCache
+	statsManager    stats.Manager
 }
 
 func NewRateLimitersRegistry(cfg *common.RateLimiterConfig, logger *zerolog.Logger) (*RateLimitersRegistry, error) {
@@ -63,10 +65,12 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			mgr,
 			false,
 		)
+		r.statsManager = mgr
 	} else if r.cfg.Store != nil && r.cfg.Store.Driver == "memory" {
 		store := gostats.NewStore(gostats.NewNullSink(), false)
 		mgr := stats.NewStatManager(store, settings.NewSettings())
 		r.envoyCache = NewMemoryRateLimitCache(utils.NewTimeSourceImpl(), rand.New(rand.NewSource(time.Now().Unix())), 0, defaultNearLimitRatio(r.cfg.Store.NearLimitRatio), defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix), mgr)
+		r.statsManager = mgr
 	}
 
 	for _, budgetCfg := range r.cfg.Budgets {
@@ -87,7 +91,17 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			budget.Rules = append(budget.Rules, &RateLimitRule{Config: rule})
 			budget.rulesMu.Unlock()
 
-			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetCfg.Id, rule.Method).Set(float64(rule.MaxCount))
+			scope := []string{}
+			if rule.PerUser {
+				scope = append(scope, "user")
+			}
+			if rule.PerNetwork {
+				scope = append(scope, "network")
+			}
+			if rule.PerIP {
+				scope = append(scope, "ip")
+			}
+			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetCfg.Id, rule.Method, strings.Join(scope, ",")).Set(float64(rule.MaxCount))
 		}
 
 		r.budgetsLimiters.Store(budgetCfg.Id, budget)
