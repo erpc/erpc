@@ -111,6 +111,8 @@ github.com/envoyproxy/go-control-plane/ratelimit v0.1.1-0.20250812085011-4cf7e84
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/envoyproxy/protoc-gen-validate v1.2.1 h1:DEo3O99U8j4hBFwbJfrz9VtgcDfUKS7KJ7spH3d86P8=
 github.com/envoyproxy/protoc-gen-validate v1.2.1/go.mod h1:d/C80l/jxXLdfEIhX1W2TmLfsJ31lvEjwamM4DxlWXU=
+github.com/envoyproxy/ratelimit v1.4.1-0.20250815163327-e74a664aadf9 h1:HgF27HtVaDXfwGDUZ1x4Giu127cic1hhu+v8jnKBI14=
+github.com/envoyproxy/ratelimit v1.4.1-0.20250815163327-e74a664aadf9/go.mod h1:toBObxqDFQpAKBvPl1akZt9B8tb+pul5WB0ONyhTpb0=
 github.com/ethereum/go-ethereum v1.14.13 h1:L81Wmv0OUP6cf4CW6wtXsr23RUrDhKs2+Y9Qto+OgHU=
 github.com/ethereum/go-ethereum v1.14.13/go.mod h1:RAC2gVMWJ6FkxSPESfbshrcKpIokgQKsVKmAuqdekDY=
 github.com/evanw/esbuild v0.24.0 h1:GZ78naTLp7FKr+K7eNuM/SLs5maeiHYRPsTg6kmdsSE=

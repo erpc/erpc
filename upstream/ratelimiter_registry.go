@@ -52,7 +52,20 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			url = r.cfg.Store.Redis.Addr
 		}
 		poolSize := r.cfg.Store.Redis.ConnPoolSize
-		client := redis.NewClientImpl(store.Scope("erpc_rl"), useTLS, "", "tcp", "single", url, poolSize, 0, 0, nil, false, nil)
+		client := redis.NewClientImpl(
+			store.Scope("erpc_rl"),
+			useTLS,
+			r.cfg.Store.Redis.Username,
+			"tcp",
+			"single",
+			url,
+			poolSize,
+			1*time.Millisecond,
+			8,
+			nil,
+			false,
+			nil,
+		)
 		r.envoyCache = redis.NewFixedRateLimitCacheImpl(
 			client,
 			nil,
@@ -156,5 +169,5 @@ func defaultCacheKeyPrefix(val string) string {
 	if val != "" {
 		return val
 	}
-	return "erpc_rl"
+	return "erpc_rl_"
 }

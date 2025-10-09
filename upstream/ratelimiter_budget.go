@@ -3,7 +3,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
@@ -13,6 +12,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type RateLimiterBudget struct {
@@ -61,17 +62,7 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 	}
 	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d", prev, newMaxCount)
 	rule.Config.MaxCount = newMaxCount
-	scope := []string{}
-	if rule.Config.PerUser {
-		scope = append(scope, "user")
-	}
-	if rule.Config.PerNetwork {
-		scope = append(scope, "network")
-	}
-	if rule.Config.PerIP {
-		scope = append(scope, "ip")
-	}
-	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, strings.Join(scope, ",")).Set(float64(newMaxCount))
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(newMaxCount))
 	return nil
 }
 
@@ -81,6 +72,15 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.No
 	if b.cache == nil {
 		return true, nil
 	}
+
+	// Detailed span for internal evaluation
+	ctx, span := common.StartDetailSpan(ctx, "RateLimiter.TryAcquirePermit",
+		trace.WithAttributes(
+			attribute.String("budget", b.Id),
+			attribute.String("method", method),
+		),
+	)
+	defer span.End()
 
 	rules, err := b.GetRulesByMethod(method)
 	if err != nil {
@@ -148,14 +148,26 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.No
 		}
 		telemetry.MetricRateLimitRequestsTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
 
+		// External span around cache.DoLimit to capture total time spent
+		_, doSpan := common.StartSpan(ctx, "RateLimiter.DoLimit",
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("budget", b.Id),
+				attribute.String("method", method),
+				attribute.String("scope", rule.Config.ScopeString()),
+			),
+		)
 		statuses := b.cache.DoLimit(ctx, rlReq, []*config.RateLimit{limit})
 		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
+			doSpan.SetAttributes(attribute.String("result", "over_limit"))
+			doSpan.End()
 			// Telemetry: over limit per rule
 			telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(b.Id, "<rule>", method).Inc()
 			telemetry.MetricRateLimitOverLimitTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
 			return false, nil
 		}
-
+		doSpan.SetAttributes(attribute.String("result", "ok"))
+		doSpan.End()
 		telemetry.MetricRateLimitWithinLimitTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
 	}
 	return true, nil

@@ -73,26 +73,32 @@ func (s *NetworkStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*c
 
 	// Check if localhost is allowed
 	if s.cfg.AllowLocalhost && isLocalhost(clientIP) {
-		return &common.User{
-			Id: clientIP.String(),
-		}, nil
+		user := &common.User{Id: clientIP.String()}
+		if s.cfg.RateLimitBudget != "" {
+			user.RateLimitBudget = s.cfg.RateLimitBudget
+		}
+		return user, nil
 	}
 
 	// Check against allowed IPs
 	for _, ip := range s.allowedIPs {
 		if clientIP.Equal(*ip) {
-			return &common.User{
-				Id: clientIP.String(),
-			}, nil
+			user := &common.User{Id: clientIP.String()}
+			if s.cfg.RateLimitBudget != "" {
+				user.RateLimitBudget = s.cfg.RateLimitBudget
+			}
+			return user, nil
 		}
 	}
 
 	// Check against allowed CIDRs
 	for _, cidr := range s.allowedCIDRs {
 		if cidr.Contains(clientIP) {
-			return &common.User{
-				Id: clientIP.String(),
-			}, nil
+			user := &common.User{Id: clientIP.String()}
+			if s.cfg.RateLimitBudget != "" {
+				user.RateLimitBudget = s.cfg.RateLimitBudget
+			}
+			return user, nil
 		}
 	}
 
