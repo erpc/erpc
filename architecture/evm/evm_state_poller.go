@@ -120,8 +120,9 @@ func NewEvmStatePoller(
 	}
 
 	lbs.OnValue(func(value int64) {
-		timestamp := e.latestBlockTimestamp.Load()
-		e.tracker.SetLatestBlockNumber(e.upstream, value, timestamp)
+		// Pass 0 timestamp for remote updates to avoid using stale/incorrect timestamps
+		// The tracker already handles 0 timestamp gracefully by skipping timestamp metric updates
+		e.tracker.SetLatestBlockNumber(e.upstream, value, 0)
 	})
 	fbs.OnValue(func(value int64) {
 		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
@@ -423,9 +424,13 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
-		// Store timestamp atomically for OnValue callback to use
+		// Store timestamp atomically for potential future use and debugging
+		// Note: We no longer use this in OnValue callback to avoid stale timestamps
 		if blockTimestamp > 0 {
 			e.latestBlockTimestamp.Store(blockTimestamp)
+			// Directly update tracker with fresh block number AND timestamp
+			// This ensures locally-fetched blocks update the timestamp metric correctly
+			e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
 		}
 
 		e.logger.Debug().
