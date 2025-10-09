@@ -47,15 +47,19 @@ func TestNetwork_Forward(t *testing.T) {
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{
+				Store: &common.RateLimitStoreConfig{
+					Driver: "memory",
+				},
 				Budgets: []*common.RateLimitBudgetConfig{
 					{
 						Id: "MyLimiterBudget_Test1",
 						Rules: []*common.RateLimitRuleConfig{
 							{
-								Method:   "*",
-								MaxCount: 3,
-								Period:   common.RateLimitPeriodSecond,
-								WaitTime: common.Duration(0),
+								Method:     "*",
+								MaxCount:   3,
+								Period:     common.RateLimitPeriodSecond,
+								WaitTime:   common.Duration(0),
+								PerNetwork: true,
 							},
 						},
 					},
@@ -141,7 +145,14 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// Allow async upstream bootstrapping to settle
+		time.Sleep(100 * time.Millisecond)
+
 		upstream.ReorderUpstreams(upsReg)
+
+		// Align to the start of the next second to avoid rate limit window rollover flakiness
+		now := time.Now()
+		time.Sleep(time.Until(now.Truncate(time.Second).Add(time.Second)))
 
 		var lastErr error
 		var lastResp *common.NormalizedResponse
@@ -614,7 +625,7 @@ func TestNetwork_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 1000,
-								WaitTime: common.Duration(0),
+								Period:   common.RateLimitPeriodMinute,
 							},
 						},
 					},
@@ -4546,7 +4557,7 @@ func TestNetwork_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 1000,
-								WaitTime: common.Duration(0),
+								Period:   common.RateLimitPeriodMinute,
 							},
 						},
 					},
