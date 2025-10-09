@@ -218,13 +218,31 @@ var (
 		Namespace: "erpc",
 		Name:      "rate_limiter_budget_max_count",
 		Help:      "Maximum number of requests allowed per second for a rate limiter budget (including auto-tuner).",
-	}, []string{"budget", "method"})
+	}, []string{"budget", "method", "scope"})
 
 	MetricAuthRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "auth_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed (locally) rate limited requests due to auth config for a project.",
 	}, []string{"project", "strategy", "category"})
+
+	MetricRateLimitRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limit_requests_total",
+		Help:      "Total number of local rate-limit checks performed.",
+	}, []string{"budget", "category", "user", "network"})
+
+	MetricRateLimitWithinLimitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limit_within_limit_total",
+		Help:      "Total number of requests allowed by the local rate-limiter.",
+	}, []string{"budget", "category", "user", "network"})
+
+	MetricRateLimitOverLimitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limit_over_limit_total",
+		Help:      "Total number of requests blocked by the local rate-limiter.",
+	}, []string{"budget", "category", "user", "network"})
 
 	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
