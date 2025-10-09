@@ -60,8 +60,8 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			"single",
 			url,
 			poolSize,
-			1*time.Millisecond,
-			8,
+			5*time.Millisecond,
+			32,
 			nil,
 			false,
 			nil,
@@ -70,8 +70,8 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			client,
 			nil,
 			utils.NewTimeSourceImpl(),
-			rand.New(rand.NewSource(time.Now().Unix())),
-			0,
+			rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404
+			5,
 			nil,
 			defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
 			defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
@@ -82,7 +82,14 @@ func (r *RateLimitersRegistry) bootstrap() error {
 	} else if r.cfg.Store != nil && r.cfg.Store.Driver == "memory" {
 		store := gostats.NewStore(gostats.NewNullSink(), false)
 		mgr := stats.NewStatManager(store, settings.NewSettings())
-		r.envoyCache = NewMemoryRateLimitCache(utils.NewTimeSourceImpl(), rand.New(rand.NewSource(time.Now().Unix())), 0, defaultNearLimitRatio(r.cfg.Store.NearLimitRatio), defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix), mgr)
+		r.envoyCache = NewMemoryRateLimitCache(
+			utils.NewTimeSourceImpl(),
+			rand.New(rand.NewSource(time.Now().Unix())), // #nosec G404
+			0,
+			defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
+			defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
+			mgr,
+		)
 		r.statsManager = mgr
 	}
 
