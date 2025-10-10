@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -82,8 +81,6 @@ type EvmStatePoller struct {
 	latestBlockFailureCount   int
 	latestBlockSuccessfulOnce bool
 	latestBlockShared         data.CounterInt64SharedVariable
-	latestBlockTimestamp      atomic.Int64
-	latestLocalBlockNumber    atomic.Int64 // Track the last block we fetched locally
 
 	sharedStateRegistry data.SharedStateRegistry
 
@@ -121,14 +118,9 @@ func NewEvmStatePoller(
 	}
 
 	lbs.OnValue(func(value int64) {
-		// Check if this update is from our local fetch or a remote replica
-		timestamp := int64(0)
-		if value == e.latestLocalBlockNumber.Load() {
-			// This is our own update, use the actual timestamp
-			timestamp = e.latestBlockTimestamp.Load()
-		}
-		// For remote updates, timestamp remains 0 to avoid using stale/incorrect timestamps
-		e.tracker.SetLatestBlockNumber(e.upstream, value, timestamp)
+		// Always pass 0 timestamp to avoid using stale/incorrect timestamps from remote updates
+		// Only nodes that fetch blocks directly will emit timestamp metrics (via direct tracker update)
+		e.tracker.SetLatestBlockNumber(e.upstream, value, 0)
 	})
 	fbs.OnValue(func(value int64) {
 		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
@@ -430,13 +422,9 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
-		// Store both the block number and timestamp for this local fetch
-		// The OnValue callback will check if the update matches this block number
-		// and use the correct timestamp accordingly
-		e.latestLocalBlockNumber.Store(blockNum)
-		if blockTimestamp > 0 {
-			e.latestBlockTimestamp.Store(blockTimestamp)
-		}
+		// Directly update tracker with the correct timestamp for this locally-fetched block
+		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
+		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
 
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
