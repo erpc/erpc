@@ -83,6 +83,7 @@ type EvmStatePoller struct {
 	latestBlockSuccessfulOnce bool
 	latestBlockShared         data.CounterInt64SharedVariable
 	latestBlockTimestamp      atomic.Int64
+	latestLocalBlockNumber    atomic.Int64 // Track the last block we fetched locally
 
 	sharedStateRegistry data.SharedStateRegistry
 
@@ -120,9 +121,14 @@ func NewEvmStatePoller(
 	}
 
 	lbs.OnValue(func(value int64) {
-		// Pass 0 timestamp for remote updates to avoid using stale/incorrect timestamps
-		// The tracker already handles 0 timestamp gracefully by skipping timestamp metric updates
-		e.tracker.SetLatestBlockNumber(e.upstream, value, 0)
+		// Check if this update is from our local fetch or a remote replica
+		timestamp := int64(0)
+		if value == e.latestLocalBlockNumber.Load() {
+			// This is our own update, use the actual timestamp
+			timestamp = e.latestBlockTimestamp.Load()
+		}
+		// For remote updates, timestamp remains 0 to avoid using stale/incorrect timestamps
+		e.tracker.SetLatestBlockNumber(e.upstream, value, timestamp)
 	})
 	fbs.OnValue(func(value int64) {
 		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
@@ -424,13 +430,12 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
-		// Store timestamp atomically for potential future use and debugging
-		// Note: We no longer use this in OnValue callback to avoid stale timestamps
+		// Store both the block number and timestamp for this local fetch
+		// The OnValue callback will check if the update matches this block number
+		// and use the correct timestamp accordingly
+		e.latestLocalBlockNumber.Store(blockNum)
 		if blockTimestamp > 0 {
 			e.latestBlockTimestamp.Store(blockTimestamp)
-			// Directly update tracker with fresh block number AND timestamp
-			// This ensures locally-fetched blocks update the timestamp metric correctly
-			e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
 		}
 
 		e.logger.Debug().
