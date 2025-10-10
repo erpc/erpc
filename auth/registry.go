@@ -43,7 +43,7 @@ func NewAuthRegistry(appCtx context.Context, logger *zerolog.Logger, projectId s
 }
 
 // Authenticate checks the authentication payload against all registered strategies
-func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *AuthPayload) (*common.User, error) {
+func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedRequest, method string, ap *AuthPayload) (*common.User, error) {
 	if ap == nil {
 		return nil, common.NewErrAuthUnauthorized("n/a", "auth payload is nil")
 	}
@@ -71,7 +71,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *Auth
 		}
 
 		// If authentication is passed then apply and consume the rate limit
-		if err := az.acquireRateLimitPermit(user, method); err != nil {
+		if err := az.acquireRateLimitPermit(ctx, req, method); err != nil {
 			return user, err
 		}
 
