@@ -13,12 +13,12 @@ import (
 
 // API Key structure for management
 type ApiKey struct {
-	Key                string    `json:"key"`
-	UserId             string    `json:"userId"`
-	PerSecondRateLimit *int64    `json:"perSecondRateLimit,omitempty"`
-	Enabled            bool      `json:"enabled"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	Key             string    `json:"key"`
+	UserId          string    `json:"userId"`
+	RateLimitBudget string    `json:"rateLimitBudget,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
@@ -38,9 +38,9 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 	case "erpc_taxonomy":
 		return e.handleTaxonomy(ctx, nq)
 	case "erpc_config":
-		return e.handleConfig(ctx, nq)
+		return e.handleConfig(nq)
 	case "erpc_project":
-		return e.handleProject(ctx, nq)
+		return e.handleProject(nq)
 	case "erpc_addApiKey":
 		return e.handleAddApiKey(ctx, nq)
 	case "erpc_listApiKeys":
@@ -86,7 +86,7 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 	}
 
 	if len(jrr.Params) < 1 {
-		return nil, common.NewErrInvalidRequest(fmt.Errorf("requires params: {projectId, connectorId, apiKey, userId, perSecondRateLimit?}"))
+		return nil, common.NewErrInvalidRequest(fmt.Errorf("requires params: {projectId, connectorId, apiKey, userId, rateLimitBudget?}"))
 	}
 
 	params, ok := jrr.Params[0].(map[string]interface{})
@@ -114,13 +114,12 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 		return nil, common.NewErrInvalidRequest(fmt.Errorf("userId is required and must be a string"))
 	}
 
-	var perSecondRateLimit *int64
-	if rateLimit, exists := params["perSecondRateLimit"]; exists && rateLimit != nil {
-		if rateLimitFloat, ok := rateLimit.(float64); ok {
-			rateLimitInt := int64(rateLimitFloat)
-			perSecondRateLimit = &rateLimitInt
+	var rateLimitBudget string
+	if budget, exists := params["rateLimitBudget"]; exists && budget != nil {
+		if budgetStr, ok := budget.(string); ok {
+			rateLimitBudget = budgetStr
 		} else {
-			return nil, common.NewErrInvalidRequest(fmt.Errorf("perSecondRateLimit must be a number"))
+			return nil, common.NewErrInvalidRequest(fmt.Errorf("rateLimitBudget must be a string"))
 		}
 	}
 
@@ -129,13 +128,22 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
+	enabled := true
+	if enabledVal, exists := params["enabled"]; exists && enabledVal != nil {
+		if enabledBool, ok := enabledVal.(bool); ok {
+			enabled = enabledBool
+		} else {
+			return nil, common.NewErrInvalidRequest(fmt.Errorf("enabled must be a boolean"))
+		}
+	}
+
 	// Create user data
 	userData := map[string]interface{}{
 		"userId":  userId,
-		"enabled": true, // New API keys are enabled by default
+		"enabled": enabled,
 	}
-	if perSecondRateLimit != nil {
-		userData["perSecondRateLimit"] = *perSecondRateLimit
+	if rateLimitBudget != "" {
+		userData["rateLimitBudget"] = rateLimitBudget
 	}
 
 	userDataBytes, err := json.Marshal(userData)
@@ -237,10 +245,9 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 			}
 		}
 
-		if rate, ok := userData["perSecondRateLimit"]; ok {
-			if rateFloat, ok := rate.(float64); ok {
-				rateInt := int64(rateFloat)
-				apiKey.PerSecondRateLimit = &rateInt
+		if budget, ok := userData["rateLimitBudget"]; ok {
+			if budgetStr, ok := budget.(string); ok {
+				apiKey.RateLimitBudget = budgetStr
 			}
 		}
 
@@ -321,7 +328,11 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 
 	// Apply updates
 	for key, value := range updates {
-		currentData[key] = value
+		if value == nil {
+			delete(currentData, key)
+		} else {
+			currentData[key] = value
+		}
 	}
 
 	// Save updated data to the same location
@@ -330,8 +341,7 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to marshal updated data: %w", err)
 	}
 
-	err = connector.Set(ctx, apiKey, userId, updatedBytes, nil)
-	if err != nil {
+	if err := connector.Set(ctx, apiKey, userId, updatedBytes, nil); err != nil {
 		return nil, fmt.Errorf("failed to update API key: %w", err)
 	}
 
@@ -422,7 +432,7 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 }
 
 // handleConfig returns the eRPC configuration
-func (e *ERPC) handleConfig(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (e *ERPC) handleConfig(nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrr, err := nq.JsonRpcRequest()
 	if err != nil {
 		return nil, err
@@ -510,7 +520,7 @@ func (e *ERPC) handleTaxonomy(ctx context.Context, nq *common.NormalizedRequest)
 }
 
 // handleProject returns the configuration and health information for a specific project
-func (e *ERPC) handleProject(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (e *ERPC) handleProject(nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrr, err := nq.JsonRpcRequest()
 	if err != nil {
 		return nil, err
