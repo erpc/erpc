@@ -203,9 +203,9 @@ func BenchmarkUpstreamSelfRateLimited_Cached(b *testing.B) {
 
 	lg := zerolog.New(io.Discard)
 	tk := NewTracker(&lg, project, time.Minute)
-	// Prewarm cached handles
+	// Prewarm by exercising the public API; upstream self counter handle was removed
 	for _, c := range combos {
-		tk.getSelfRateLimitedCounter(c.up, c.method, "n/a", "unknown")
+		tk.RecordUpstreamSelfRateLimited(c.up, c.method, nil)
 	}
 
 	b.ReportAllocs()

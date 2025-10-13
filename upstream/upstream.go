@@ -391,7 +391,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			allowed, err := limitersBudget.TryAcquirePermit(ctx, nrq, method)
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method)
 			if err != nil {
 				common.SetTraceSpanError(span, err)
 				return nil, err

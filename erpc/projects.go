@@ -93,6 +93,8 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
+	// Ensure project label is available for budget decision metrics by setting network on request early
+	nq.SetNetwork(network)
 	if err := p.acquireRateLimitPermit(ctx, nq); err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -276,14 +278,23 @@ func (p *PreparedProject) acquireRateLimitPermit(ctx context.Context, req *commo
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {
-		allowed, err := rlb.TryAcquirePermit(ctx, req, method)
+		allowed, err := rlb.TryAcquirePermit(ctx, p.Config.Id, req, method)
 		if err != nil {
 			return err
 		}
 		if !allowed {
-			telemetry.MetricProjectRequestSelfRateLimited.WithLabelValues(
+			telemetry.CounterHandle(
+				telemetry.MetricRateLimiterAttemptTotal,
 				p.Config.Id,
+				"",
 				method,
+				req.Finality(ctx).String(),
+				req.UserId(),
+				req.AgentName(),
+				"",
+				"",
+				"project",
+				p.Config.Id,
 			).Inc()
 			return common.NewErrProjectRateLimitRuleExceeded(
 				p.Config.Id,

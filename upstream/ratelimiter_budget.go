@@ -68,7 +68,7 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 
 // TryAcquirePermit evaluates all matching rules for the given method using Envoy's DoLimit
 // and returns whether the request is allowed.
-func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.NormalizedRequest, method string) (bool, error) {
+func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string) (bool, error) {
 	if b.cache == nil {
 		return true, nil
 	}
@@ -137,16 +137,17 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.No
 		rlStats := b.registry.statsManager.NewStats(statsKey)
 		limit := config.NewRateLimit(rule.Config.MaxCount, unit, rlStats, false, false, "", nil, false)
 
-		// Emit Prometheus rate-limiter metrics
+		// Emit consolidated budget decision metrics only (avoid redundant per-call trio counters)
 		userLabel := ""
+		agentName := ""
 		networkLabel := ""
-		if rule.Config.PerUser && req != nil {
+		finality := ""
+		if req != nil {
 			userLabel = req.UserId()
-		}
-		if rule.Config.PerNetwork && req != nil {
+			agentName = req.AgentName()
 			networkLabel = req.NetworkId()
+			finality = req.Finality(ctx).String()
 		}
-		telemetry.MetricRateLimitRequestsTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
 
 		// External span around cache.DoLimit to capture total time spent
 		_, doSpan := common.StartSpan(ctx, "RateLimiter.DoLimit",
@@ -161,14 +162,36 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, req *common.No
 		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
 			doSpan.SetAttributes(attribute.String("result", "over_limit"))
 			doSpan.End()
-			// Telemetry: over limit per rule
-			telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(b.Id, "<rule>", method).Inc()
-			telemetry.MetricRateLimitOverLimitTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
+			telemetry.CounterHandle(
+				telemetry.MetricRateLimiterBudgetDecisionTotal,
+				projectId,
+				networkLabel,
+				method,
+				finality,
+				userLabel,
+				agentName,
+				b.Id,
+				method,
+				rule.Config.ScopeString(),
+				"blocked",
+			).Inc()
 			return false, nil
 		}
 		doSpan.SetAttributes(attribute.String("result", "ok"))
 		doSpan.End()
-		telemetry.MetricRateLimitWithinLimitTotal.WithLabelValues(b.Id, method, userLabel, networkLabel).Inc()
+		telemetry.CounterHandle(
+			telemetry.MetricRateLimiterBudgetDecisionTotal,
+			projectId,
+			networkLabel,
+			method,
+			finality,
+			userLabel,
+			agentName,
+			b.Id,
+			method,
+			rule.Config.ScopeString(),
+			"allowed",
+		).Inc()
 	}
 	return true, nil
 }

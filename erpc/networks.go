@@ -1163,19 +1163,24 @@ func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.Normal
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {
-		allowed, err := rlb.TryAcquirePermit(ctx, req, method)
+		allowed, err := rlb.TryAcquirePermit(ctx, n.projectId, req, method)
 		if err != nil {
 			return err
 		}
 		if !allowed {
 			finality := req.Finality(ctx)
-			telemetry.CounterHandle(telemetry.MetricNetworkRequestSelfRateLimited,
+			telemetry.CounterHandle(
+				telemetry.MetricRateLimiterAttemptTotal,
 				n.projectId,
 				n.Label(),
 				method,
 				finality.String(),
 				req.UserId(),
 				req.AgentName(),
+				"",
+				"",
+				"network",
+				n.networkId,
 			).Inc()
 			return common.NewErrNetworkRateLimitRuleExceeded(
 				n.projectId,

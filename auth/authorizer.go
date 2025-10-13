@@ -17,10 +17,11 @@ type Authorizer struct {
 	cfg                  *common.AuthStrategyConfig
 	strategy             AuthStrategy
 	rateLimitersRegistry *upstream.RateLimitersRegistry
+	index                int
 }
 
 // NewAuthorizer creates a new Authorizer based on the provided configuration
-func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*Authorizer, error) {
+func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry, index int) (*Authorizer, error) {
 	if cfg == nil {
 		return nil, common.NewErrInvalidConfig("auth strategy config is nil")
 	}
@@ -72,6 +73,8 @@ func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId str
 		cfg:                  cfg,
 		strategy:             strategy,
 		rateLimitersRegistry: rateLimitersRegistry,
+		projectId:            projectId,
+		index:                index,
 	}, nil
 }
 
@@ -132,15 +135,24 @@ func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.Nor
 		return nil
 	}
 
-	allowed, err := rlb.TryAcquirePermit(ctx, req, method)
+	allowed, err := rlb.TryAcquirePermit(ctx, a.projectId, req, method)
 	if err != nil {
 		return err
 	}
 	if !allowed {
-		telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(
+		entity := fmt.Sprintf("%s:%d", string(a.cfg.Type), a.index)
+		telemetry.CounterHandle(
+			telemetry.MetricRateLimiterAttemptTotal,
 			a.projectId,
-			string(a.cfg.Type),
+			req.NetworkId(),
 			method,
+			req.Finality(ctx).String(),
+			req.UserId(),
+			req.AgentName(),
+			"",
+			"",
+			"auth",
+			entity,
 		).Inc()
 		return common.NewErrAuthRateLimitRuleExceeded(
 			a.projectId,
