@@ -22,6 +22,13 @@ const CONFIG = {
   MAX_CACHED_TXS: 50,                // maximum number of transaction hashes to cache
 };
 
+const API_KEYS = typeof __ENV.API_KEYS === 'string'
+  ? __ENV.API_KEYS
+      .split(',')
+      .map((key) => key.trim())
+      .filter((key) => key.length > 0)
+  : [];
+
 // Update CHAINS structure to include transaction cache
 const CHAINS = {
   // ETH: {
@@ -59,11 +66,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 500,  // Reduced from 1000 to test truncation fixes
+      rate: 5,
       timeUnit: '1s',
       duration: '30m',
-      preAllocatedVUs: 500,
-      maxVUs: 500,
+      preAllocatedVUs: 100,
+      maxVUs: 1000,
     },
   },
   ext: {
@@ -99,12 +106,32 @@ function getFullUrl(chain) {
   }
   // Ensure path ends with a single slash before appending chain.id
   if (!path.endsWith('/')) path += '/';
-  return path + chain.id + query;
+  const finalPath = path + chain.id;
+  const apiKey = getRandomApiKey();
+  const existingQuery = query.startsWith('?') ? query.slice(1) : query;
+  const querySegments = existingQuery ? [existingQuery] : [];
+  if (__ENV.TRACE) {
+    console.log(`${new Date().toISOString()} API Key: ${apiKey}`);
+  }
+  if (apiKey) {
+    querySegments.unshift(`secret=${encodeURIComponent(apiKey)}`);
+  }
+  if (querySegments.length === 0) {
+    return finalPath;
+  }
+  return `${finalPath}?${querySegments.join('&')}`;
 }
 
 function getRandomChain() {
   const chains = Object.values(CHAINS);
   return chains[randomIntBetween(0, chains.length - 1)];
+}
+
+function getRandomApiKey() {
+  if (API_KEYS.length === 0) {
+    return null;
+  }
+  return API_KEYS[randomIntBetween(0, API_KEYS.length - 1)];
 }
 
 async function latestBlockWithLogs(http, params, chain) {
@@ -133,7 +160,12 @@ async function latestBlockWithLogs(http, params, chain) {
 
 async function recentBlockFewBlocks(http, params, chain) {
   const latestBlock = await getLatestBlock(http, params, chain);
-  if (!latestBlock) return null;
+  if (!latestBlock) {
+    console.warn(`${new Date().toISOString()} No latest block for ${chain.id}`);
+    return null;
+  } else {
+    console.log(`${new Date().toISOString()} Latest block for ${chain.id}: ${latestBlock?.number}`);
+  }
 
   const randomShift = randomIntBetween(0, 500);
   const decimalBlockNumber = parseInt(latestBlock.number, 16);
@@ -167,7 +199,7 @@ function randomAccountBalances(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  return makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, payload, params);
+  return makeRequestWithRetry(http, getFullUrl(chain), payload, params);
 }
 
 async function getLatestBlock(http, params, chain) {
@@ -186,8 +218,9 @@ async function getLatestBlock(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  const res = await makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, payload, params);
+  const res = await makeRequestWithRetry(http, getFullUrl(chain), payload, params);
   if (res.status === 200) {
+    console.log(`${new Date().toISOString()} Latest block body received for ${chain.id}: ${res?.body?.length}`);
     try {
       const body = JSON.parse(res.body);
       if (body.result) {
@@ -202,6 +235,8 @@ async function getLatestBlock(http, params, chain) {
     } catch (e) {
       console.error(`Failed to parse latest block response: ${e}`);
     }
+  } else {
+    console.warn(`${new Date().toISOString()} Could not get latest block for ${chain.id}: ${res?.body || JSON.stringify(res)}`);
   }
   return null;
 }
@@ -253,7 +288,7 @@ async function traceLatestTransaction(http, params, chain) {
     if (__ENV.TRACE) {
       console.log(`Request: ${tracePayload}`);
     }
-    const traceRes = await makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, tracePayload, params);
+    const traceRes = await makeRequestWithRetry(http, getFullUrl(chain), tracePayload, params);
     if (traceRes.status === 200) {
       try {
         const body = JSON.parse(traceRes.body);
@@ -289,7 +324,7 @@ async function latestBlockReceipts(http, params, chain) {
   if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
-  return makeRequestWithRetry(http, ERPC_BASE_URL + chain.id, payload, params);
+  return makeRequestWithRetry(http, getFullUrl(chain), payload, params);
 }
 
 function randomIntBetween(min, max) {
@@ -375,6 +410,7 @@ export default async function () {
   for (const [pattern, weight] of Object.entries(TRAFFIC_PATTERNS)) {
     cumulativeWeight += weight;
     if (rand <= cumulativeWeight) {
+      console.log(`${new Date().toISOString()} Pattern: ${pattern} Weight: ${weight} Rand: ${rand} Cumulative Weight: ${cumulativeWeight}`);
       switch (pattern) {
         case 'RECENT_BLOCK_FEW_BLOCKS':
           res = await recentBlockFewBlocks(http, params, selectedChain);
@@ -409,8 +445,10 @@ export default async function () {
     }
 
     if (__ENV.DEBUG || __ENV.TRACE) {
-      if (res.status >= 400) {
-        console.warn(`${new Date().toISOString()} Status Code: ${res.status} Response body: ${truncateResponseBody(res.body)} Tags: ${JSON.stringify(tags)}`);
+      if (!res?.status) {
+        console.warn(`${new Date().toISOString()} No status code for ${selectedChain.id}: ${JSON.stringify(res?.body || res)}`);
+      } else if (res.status > 210) {
+        console.warn(`${new Date().toISOString()} Status Code: ${res?.status || 'n/a'} Response body: ${truncateResponseBody(res?.body || 'n/a')} Tags: ${JSON.stringify(tags)}`);
       }
     }
 
@@ -444,6 +482,8 @@ export default async function () {
         return true;
       },
     }, tags);
+  } else {
+    console.warn(`${new Date().toISOString()} No response for ${selectedChain.id}`);
   }
 }
 
