@@ -30,9 +30,9 @@ func NewAuthRegistry(appCtx context.Context, logger *zerolog.Logger, projectId s
 		rateLimitersRegistry: rateLimitersRegistry,
 	}
 
-	for _, strategy := range cfg.Strategies {
-		lg := logger.With().Str("strategy", string(strategy.Type)).Logger()
-		az, err := NewAuthorizer(appCtx, &lg, projectId, strategy, rateLimitersRegistry)
+	for idx, strategy := range cfg.Strategies {
+		lg := logger.With().Str("strategy", string(strategy.Type)).Int("index", idx).Logger()
+		az, err := NewAuthorizer(appCtx, &lg, projectId, strategy, rateLimitersRegistry, idx)
 		if err != nil {
 			return nil, common.NewErrInvalidConfig(fmt.Sprintf("failed to create authorizer for project %s with strategy %s: %v", projectId, strategy.Type, err))
 		}
@@ -70,6 +70,10 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 			continue
 		}
 
+		// Attach user to the request early so downstream labels (user/agent) can be populated
+		if user != nil && req != nil {
+			req.SetUser(user)
+		}
 		// If authentication is passed then apply and consume the rate limit
 		if err := az.acquireRateLimitPermit(ctx, req, method); err != nil {
 			return user, err

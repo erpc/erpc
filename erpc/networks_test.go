@@ -10752,10 +10752,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		require.NoError(t, err)
 
 		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		upstreamsRegistry.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
 		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")

@@ -457,8 +457,9 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 	b.SetParallelism(500)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
+		local := rand.New(rand.NewSource(time.Now().UnixNano()))
 		for pb.Next() {
-			fromBlock := 0x11118001 + uint64(rand.Intn(1000000))
+			fromBlock := 0x11118001 + uint64(local.Intn(1000000))
 			toBlock := fromBlock + 0x50
 			requestBytes := []byte(`{
 				"jsonrpc": "2.0",

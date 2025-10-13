@@ -173,7 +173,7 @@ func TestRateLimiter_ConcurrentPermits(t *testing.T) {
 				rules, err := budget.GetRulesByMethod("test-method")
 				require.NoError(t, err)
 				require.Len(t, rules, 1)
-				ok, err := budget.TryAcquirePermit(context.TODO(), nil, "test-method")
+				ok, err := budget.TryAcquirePermit(context.TODO(), "", nil, "test-method", "", "", "", "upstream")
 				require.NoError(t, err)
 				require.True(t, ok)
 			}
@@ -220,7 +220,7 @@ func TestRateLimiter_ExceedCapacity(t *testing.T) {
 		rules, err := budget.GetRulesByMethod("test-method")
 		require.NoError(t, err)
 		require.Len(t, rules, 1)
-		ok, err := budget.TryAcquirePermit(context.TODO(), nil, "test-method")
+		ok, err := budget.TryAcquirePermit(context.TODO(), "", nil, "test-method", "", "", "", "upstream")
 		require.NoError(t, err)
 		require.True(t, ok)
 	}
@@ -228,7 +228,7 @@ func TestRateLimiter_ExceedCapacity(t *testing.T) {
 	rules, err := budget.GetRulesByMethod("test-method")
 	require.NoError(t, err)
 	require.Len(t, rules, 1)
-	ok, err := budget.TryAcquirePermit(context.TODO(), nil, "test-method")
+	ok, err := budget.TryAcquirePermit(context.TODO(), "", nil, "test-method", "", "", "", "upstream")
 	require.NoError(t, err)
 	require.False(t, ok)
 }

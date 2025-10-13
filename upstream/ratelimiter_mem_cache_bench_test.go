@@ -152,7 +152,8 @@ func BenchmarkMemoryRateLimitCache_DoLimit_Parallel_ManyKeys(b *testing.B) {
 			b.ResetTimer()
 			b.RunParallel(func(pb *testing.PB) {
 				ctx := context.Background()
-				idx := rand.Intn(keys)
+				local := rand.New(rand.NewSource(time.Now().UnixNano()))
+				idx := local.Intn(keys)
 				for pb.Next() {
 					_ = cache.DoLimit(ctx, reqs[idx], limits)
 					idx++
@@ -353,7 +354,8 @@ func BenchmarkMemoryRateLimitCache_DoLimit_FewBudgets_NoUser_Parallel(b *testing
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		ctx := context.Background()
-		idx := rand.Intn(len(reqs))
+		local := rand.New(rand.NewSource(time.Now().UnixNano()))
+		idx := local.Intn(len(reqs))
 		for pb.Next() {
 			_ = cache.DoLimit(ctx, reqs[idx], limits)
 			idx++

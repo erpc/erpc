@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -17,10 +16,11 @@ type Authorizer struct {
 	cfg                  *common.AuthStrategyConfig
 	strategy             AuthStrategy
 	rateLimitersRegistry *upstream.RateLimitersRegistry
+	index                int
 }
 
 // NewAuthorizer creates a new Authorizer based on the provided configuration
-func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*Authorizer, error) {
+func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry, index int) (*Authorizer, error) {
 	if cfg == nil {
 		return nil, common.NewErrInvalidConfig("auth strategy config is nil")
 	}
@@ -72,6 +72,8 @@ func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId str
 		cfg:                  cfg,
 		strategy:             strategy,
 		rateLimitersRegistry: rateLimitersRegistry,
+		projectId:            projectId,
+		index:                index,
 	}, nil
 }
 
@@ -132,16 +134,12 @@ func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.Nor
 		return nil
 	}
 
-	allowed, err := rlb.TryAcquirePermit(ctx, req, method)
+	allowed, err := rlb.TryAcquirePermit(ctx, a.projectId, req, method, "", "", fmt.Sprintf("%s:%d", string(a.cfg.Type), a.index), "auth")
 	if err != nil {
 		return err
 	}
 	if !allowed {
-		telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(
-			a.projectId,
-			string(a.cfg.Type),
-			method,
-		).Inc()
+		// Blocked event already recorded in budget.TryAcquirePermit; avoid double recording here
 		return common.NewErrAuthRateLimitRuleExceeded(
 			a.projectId,
 			string(a.cfg.Type),

@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import { check, randomSeed } from 'k6';
 import { Rate, Counter, Trend, Gauge } from 'k6/metrics';
+import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.4/index.js';
 
 // Target URL (can be configured via environment variables)
 const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
@@ -66,9 +67,9 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 5,
+      rate: 500,
       timeUnit: '1s',
-      duration: '30m',
+      duration: '20s',
       preAllocatedVUs: 100,
       maxVUs: 1000,
     },
@@ -88,6 +89,25 @@ const parsingErrorsCounter = new Counter('parsing_errors');
 const truncatedResponseCounter = new Counter('truncated_responses');
 const retriesCounter = new Counter('request_retries');
 const responseSizes = new Trend('response_sizes');
+const STATUS_CODE_METRIC_PREFIX = 'status_code_';
+const STATUS_CODE_COUNTERS = (() => {
+  const counters = new Map();
+  counters.set('unknown', new Counter(`${STATUS_CODE_METRIC_PREFIX}unknown`));
+  for (let code = 100; code <= 599; code += 1) {
+    const key = code.toString();
+    counters.set(key, new Counter(`${STATUS_CODE_METRIC_PREFIX}${key}`));
+  }
+  return counters;
+})();
+const statusCodeCounters = (() => {
+  const counters = new Map();
+  counters.set('unknown', new Counter('status_code_unknown'));
+  for (let code = 100; code <= 599; code += 1) {
+    const codeKey = code.toString();
+    counters.set(codeKey, new Counter(`status_code_${codeKey}`));
+  }
+  return counters;
+})();
 
 // Common ERC20 Transfer event topic
 const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -134,6 +154,83 @@ function getRandomApiKey() {
   return API_KEYS[randomIntBetween(0, API_KEYS.length - 1)];
 }
 
+function getStatusCodeTotals(metrics) {
+  const totals = new Map();
+  if (!metrics || typeof metrics !== 'object') {
+    return totals;
+  }
+  for (const [metricName, metric] of Object.entries(metrics)) {
+    if (!metricName.startsWith(STATUS_CODE_METRIC_PREFIX)) {
+      continue;
+    }
+    const status = metricName.substring(STATUS_CODE_METRIC_PREFIX.length);
+    const count = metric && metric.values && typeof metric.values.count === 'number'
+      ? metric.values.count
+      : 0;
+    if (count === 0) {
+      continue;
+    }
+    totals.set(status, (totals.get(status) || 0) + count);
+  }
+  if (totals.size > 0) {
+    return totals;
+  }
+  const statusMetric = metrics.status_codes;
+  if (!statusMetric) {
+    return totals;
+  }
+  const candidateCollections = [];
+  if (statusMetric.tags && typeof statusMetric.tags === 'object') {
+    candidateCollections.push(statusMetric.tags);
+  }
+  if (statusMetric.submetrics && typeof statusMetric.submetrics === 'object') {
+    candidateCollections.push(statusMetric.submetrics);
+  }
+  if (statusMetric.valuesByTag && typeof statusMetric.valuesByTag === 'object') {
+    candidateCollections.push(statusMetric.valuesByTag);
+  }
+  const extractCount = (entry) => {
+    if (entry == null) {
+      return 0;
+    }
+    if (typeof entry === 'number') {
+      return entry;
+    }
+    if (typeof entry === 'object') {
+      if (typeof entry.count === 'number') {
+        return entry.count;
+      }
+      if (entry.values && typeof entry.values === 'object') {
+        if (typeof entry.values.count === 'number') {
+          return entry.values.count;
+        }
+        if (typeof entry.values.value === 'number') {
+          return entry.values.value;
+        }
+      }
+      if (typeof entry.value === 'number') {
+        return entry.value;
+      }
+    }
+    return 0;
+  };
+  for (const collection of candidateCollections) {
+    for (const [tagKey, metric] of Object.entries(collection)) {
+      const match = /status_code:([^,]+)/.exec(tagKey);
+      if (!match) {
+        continue;
+      }
+      const count = extractCount(metric);
+      if (count === 0) {
+        continue;
+      }
+      const status = match[1];
+      totals.set(status, (totals.get(status) || 0) + count);
+    }
+  }
+  return totals;
+}
+
 async function latestBlockWithLogs(http, params, chain) {
   const latestBlock = await getLatestBlock(http, params, chain);
   if (!latestBlock) return null;
@@ -161,10 +258,14 @@ async function latestBlockWithLogs(http, params, chain) {
 async function recentBlockFewBlocks(http, params, chain) {
   const latestBlock = await getLatestBlock(http, params, chain);
   if (!latestBlock) {
-    console.warn(`${new Date().toISOString()} No latest block for ${chain.id}`);
+    if (__ENV.DEBUG || __ENV.TRACE) {
+      console.warn(`${new Date().toISOString()} No latest block for ${chain.id}`);
+    }
     return null;
   } else {
-    console.log(`${new Date().toISOString()} Latest block for ${chain.id}: ${latestBlock?.number}`);
+    if (__ENV.DEBUG || __ENV.TRACE) {
+      console.log(`${new Date().toISOString()} Latest block for ${chain.id}: ${latestBlock?.number}`);
+    }
   }
 
   const randomShift = randomIntBetween(0, 500);
@@ -220,7 +321,9 @@ async function getLatestBlock(http, params, chain) {
   }
   const res = await makeRequestWithRetry(http, getFullUrl(chain), payload, params);
   if (res.status === 200) {
-    console.log(`${new Date().toISOString()} Latest block body received for ${chain.id}: ${res?.body?.length}`);
+    if (__ENV.TRACE) {
+      console.log(`${new Date().toISOString()} Latest block body received for ${chain.id}: ${res?.body?.length}`);
+    }
     try {
       const body = JSON.parse(res.body);
       if (body.result) {
@@ -236,7 +339,9 @@ async function getLatestBlock(http, params, chain) {
       console.error(`Failed to parse latest block response: ${e}`);
     }
   } else {
-    console.warn(`${new Date().toISOString()} Could not get latest block for ${chain.id}: ${res?.body || JSON.stringify(res)}`);
+    if (__ENV.DEBUG || __ENV.TRACE) {
+      console.warn(`${new Date().toISOString()} Could not get latest block for ${chain.id}: ${res?.body || JSON.stringify(res)}`);
+    }
   }
   return null;
 }
@@ -370,7 +475,9 @@ async function makeRequestWithRetry(http, url, payload, params, maxRetries = 2) 
     // Log truncated responses for debugging
     if (res && res.status === 200 && !isValidJsonResponse(res.body)) {
       truncatedResponseCounter.add(1);
-      console.warn(`${new Date().toISOString()} Truncated response detected (attempt ${attempt + 1}): ${truncateResponseBody(res.body)}`);
+      if (__ENV.DEBUG || __ENV.TRACE) {
+        console.warn(`${new Date().toISOString()} Truncated response detected (attempt ${attempt + 1}): ${truncateResponseBody(res.body)}`);
+      }
     }
     
     // Don't retry on the last attempt
@@ -410,7 +517,9 @@ export default async function () {
   for (const [pattern, weight] of Object.entries(TRAFFIC_PATTERNS)) {
     cumulativeWeight += weight;
     if (rand <= cumulativeWeight) {
-      console.log(`${new Date().toISOString()} Pattern: ${pattern} Weight: ${weight} Rand: ${rand} Cumulative Weight: ${cumulativeWeight}`);
+      if (__ENV.TRACE) {
+        console.log(`${new Date().toISOString()} Pattern: ${pattern} Weight: ${weight} Rand: ${rand} Cumulative Weight: ${cumulativeWeight}`);
+      }
       switch (pattern) {
         case 'RECENT_BLOCK_FEW_BLOCKS':
           res = await recentBlockFewBlocks(http, params, selectedChain);
@@ -436,10 +545,13 @@ export default async function () {
   // res = http.post(ERPC_BASE_URL, JSON.stringify(sampleReq), params);
 
   if (res) {
-    if (res.status) {
-      tags['status_code'] = res.status?.toString();
+    const status = typeof res.status === 'number' ? res.status.toString() : 'unknown';
+    if (status !== 'unknown') {
+      tags.status_code = status;
     }
     statusCodeCounter.add(1, tags);
+    const statusCounter = STATUS_CODE_COUNTERS.get(status) || STATUS_CODE_COUNTERS.get('unknown');
+    statusCounter.add(1, { chain: selectedChain.id });
     if (res.body) {
       responseSizes.add(res.body?.length, tags);
     }
@@ -483,7 +595,28 @@ export default async function () {
       },
     }, tags);
   } else {
-    console.warn(`${new Date().toISOString()} No response for ${selectedChain.id}`);
+    if (__ENV.DEBUG || __ENV.TRACE) {
+      console.warn(`${new Date().toISOString()} No response for ${selectedChain.id}`);
+    }
   }
+}
+
+export function handleSummary(data) {
+  const metrics = (data && data.metrics) || {};
+  const statusTotals = getStatusCodeTotals(metrics);
+  const reportLines = [];
+  if (statusTotals.size > 0) {
+    reportLines.push('Status code totals:');
+    const sorted = Array.from(statusTotals.entries()).sort((a, b) => Number(a[0]) - Number(b[0]));
+    for (const [status, count] of sorted) {
+      reportLines.push(`  ${status}: ${count}`);
+    }
+  } else if (metrics.status_codes && metrics.status_codes.values && typeof metrics.status_codes.values.count === 'number') {
+    reportLines.push(`Total status codes recorded: ${metrics.status_codes.values.count}`);
+  }
+  const statusReport = reportLines.length > 0 ? `\n${reportLines.join('\n')}\n` : '\n';
+  return {
+    stdout: `${textSummary(data, { indent: ' ', enableColors: true })}${statusReport}`,
+  };
 }
 

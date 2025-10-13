@@ -28,18 +28,6 @@ var (
 		Help:      "Total number of errors for actual requests towards upstreams.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "error", "severity", "composite", "finality", "user", "agent_name"})
 
-	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed rate limited requests before sending to upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "user", "agent_name"})
-
-	MetricUpstreamRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_remote_rate_limited_total",
-		Help:      "Total number of remote rate limited requests by upstreams.",
-	}, []string{"project", "vendor", "network", "upstream", "category", "user", "agent_name"})
-
 	MetricUpstreamSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_skipped_total",
@@ -166,12 +154,6 @@ var (
 		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "user", "agent_name"})
 
-	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "network_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed (locally) rate limited requests towards the network.",
-	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
-
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_received_total",
@@ -208,11 +190,11 @@ var (
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user", "agent_name"})
 
-	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricRateLimitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "project_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed (locally) rate limited requests towards the project.",
-	}, []string{"project", "category"})
+		Name:      "rate_limits_total",
+		Help:      "Unified rate limiting events (remote limits and budget decisions).",
+	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user", "agent_name", "budget", "scope", "auth", "origin"})
 
 	MetricRateLimiterBudgetMaxCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -220,29 +202,11 @@ var (
 		Help:      "Maximum number of requests allowed per second for a rate limiter budget (including auto-tuner).",
 	}, []string{"budget", "method", "scope"})
 
-	MetricAuthRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricRateLimiterBudgetDecisionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "auth_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed (locally) rate limited requests due to auth config for a project.",
-	}, []string{"project", "strategy", "category"})
-
-	MetricRateLimitRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "rate_limit_requests_total",
-		Help:      "Total number of local rate-limit checks performed.",
-	}, []string{"budget", "category", "user", "network"})
-
-	MetricRateLimitWithinLimitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "rate_limit_within_limit_total",
-		Help:      "Total number of requests allowed by the local rate-limiter.",
-	}, []string{"budget", "category", "user", "network"})
-
-	MetricRateLimitOverLimitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "rate_limit_over_limit_total",
-		Help:      "Total number of requests blocked by the local rate-limiter.",
-	}, []string{"budget", "category", "user", "network"})
+		Name:      "rate_limiter_budget_decision_total",
+		Help:      "[DEPRECATED] Replaced by rate_limits_total. Total number of local rate-limit decisions by budget.",
+	}, []string{"project", "network", "category", "finality", "user", "agent_name", "budget", "method", "scope", "decision"})
 
 	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
