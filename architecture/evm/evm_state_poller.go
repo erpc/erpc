@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -706,29 +704,15 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		return 0, 0, err
 	}
 
-	// Extract timestamp - can be hex string (0x...), decimal string, or integer
-	timestampStr, err := jrr.PeekStringByPath(ctx, "timestamp")
-	var blockTimestamp int64
-	if err == nil && timestampStr != "" && timestampStr != "null" {
-		// Force-copy the small string to avoid any potential reference to backing buffers
-		timestampStr = string(append([]byte(nil), timestampStr...))
-
-		// Handle both hex (0x...) and decimal formats
-		if strings.HasPrefix(timestampStr, "0x") {
-			blockTimestamp, err = common.HexToInt64(timestampStr)
-		} else {
-			blockTimestamp, err = strconv.ParseInt(timestampStr, 10, 64)
-		}
-
-		if err != nil {
-			// If timestamp parsing fails, log debug and continue without timestamp
-			// This gracefully handles invalid timestamps without breaking the flow
-			e.logger.Debug().
-				Err(err).
-				Str("timestamp", timestampStr).
-				Msg("failed to parse block timestamp, continuing without it")
-			blockTimestamp = 0
-		}
+	// Extract timestamp using shared function
+	blockTimestamp, err := ExtractBlockTimestampFromResponse(ctx, resp)
+	if err != nil {
+		// If timestamp parsing fails, log debug and continue without timestamp
+		// This gracefully handles invalid timestamps without breaking the flow
+		e.logger.Debug().
+			Err(err).
+			Msg("failed to parse block timestamp, continuing without it")
+		blockTimestamp = 0
 	}
 
 	return blockNum, blockTimestamp, nil
