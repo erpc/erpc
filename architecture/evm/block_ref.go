@@ -181,6 +181,56 @@ func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.Normalized
 	return blockRef, blockNumber, nil
 }
 
+// ExtractBlockTimestampFromResponse extracts the block timestamp from a response containing block data
+func ExtractBlockTimestampFromResponse(ctx context.Context, r *common.NormalizedResponse) (int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Evm.ExtractBlockTimestampFromResponse")
+	defer span.End()
+
+	if r == nil {
+		return 0, nil
+	}
+
+	jrr, err := r.JsonRpcResponse()
+	if jrr == nil || err != nil {
+		common.SetTraceSpanError(span, err)
+		return 0, err
+	}
+
+	if jrr.IsResultEmptyish(ctx) {
+		return 0, nil
+	}
+
+	// Extract timestamp - can be hex string (0x...), decimal string, or integer
+	timestampStr, err := jrr.PeekStringByPath(ctx, "timestamp")
+	if err != nil || timestampStr == "" {
+		return 0, err
+	}
+
+	// Force-copy the small string to avoid any potential reference to backing buffers
+	timestampStr = string(append([]byte(nil), timestampStr...))
+
+	var blockTimestamp int64
+	// Handle both hex (0x...) and decimal formats
+	if strings.HasPrefix(timestampStr, "0x") {
+		blockTimestamp, err = common.HexToInt64(timestampStr)
+	} else {
+		blockTimestamp, err = strconv.ParseInt(timestampStr, 10, 64)
+	}
+
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return 0, err
+	}
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("block.timestamp", blockTimestamp),
+		)
+	}
+
+	return blockTimestamp, nil
+}
+
 func extractRefFromJsonRpcRequest(ctx context.Context, req *common.NormalizedRequest, r *common.JsonRpcRequest) (string, int64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Evm.extractRefFromJsonRpcRequest")
 	defer span.End()

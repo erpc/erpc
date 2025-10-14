@@ -120,7 +120,7 @@ func NewEvmStatePoller(
 	lbs.OnValue(func(value int64) {
 		// Always pass 0 timestamp to avoid using stale/incorrect timestamps from remote updates
 		// Only nodes that fetch blocks directly will emit timestamp metrics (via direct tracker update)
-		e.tracker.SetLatestBlockNumber(e.upstream, value, 0)
+		e.tracker.SetLatestBlockNumber(e.upstream, value, 0, "evm_state_poller")
 	})
 	fbs.OnValue(func(value int64) {
 		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
@@ -424,7 +424,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 
 		// Directly update tracker with the correct timestamp for this locally-fetched block
 		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
-		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
+		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp, "evm_state_poller")
 
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
