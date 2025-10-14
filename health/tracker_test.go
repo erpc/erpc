@@ -356,8 +356,8 @@ func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
 	tracker.RecordUpstreamFailure(ups1, "method1", fmt.Errorf("test error"))
 
 	// Now set different block numbers to create lag
-	tracker.SetLatestBlockNumber(ups1, 1000, 0, "evm_state_poller") // ups1 is at block 1000
-	tracker.SetLatestBlockNumber(ups2, 990, 0, "evm_state_poller")  // ups2 is behind by 10 blocks
+	tracker.SetLatestBlockNumber(ups1, 1000, 0) // ups1 is at block 1000
+	tracker.SetLatestBlockNumber(ups2, 990, 0)  // ups2 is behind by 10 blocks
 
 	// Get initial metrics AFTER setting block numbers
 	metrics1Before := tracker.GetUpstreamMethodMetrics(ups1, "method1")
@@ -396,7 +396,7 @@ func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
 	assert.Equal(t, int64(10), metrics2After.BlockHeadLag.Load(), "upstream2 should still be 10 blocks behind")
 
 	// Test that block lag can still be updated after reset
-	tracker.SetLatestBlockNumber(ups2, 1000, 0, "evm_state_poller") // ups2 catches up
+	tracker.SetLatestBlockNumber(ups2, 1000, 0) // ups2 catches up
 	metrics2Updated := tracker.GetUpstreamMethodMetrics(ups2, "method1")
 	assert.Equal(t, int64(0), metrics2Updated.BlockHeadLag.Load(), "upstream2 should now be caught up")
 }
@@ -464,7 +464,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		blockNumber := int64(1000)
 		blockTimestamp := now - 10
 
-		tracker.SetLatestBlockNumber(ups, blockNumber, blockTimestamp, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, blockNumber, blockTimestamp)
 
 		// Verify the timestamp was stored at network level (FakeUpstream uses "evm:123" as network)
 		ntwMdKey := metadataKey{nil, "evm:123"}
@@ -484,7 +484,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		// Set initial block and timestamp
 		now := time.Now().Unix()
 		initialTimestamp := now - 20
-		tracker.SetLatestBlockNumber(ups, 1000, initialTimestamp, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 1000, initialTimestamp)
 
 		ntwMdKey := metadataKey{nil, "evm:123"}
 		ntwMeta := tracker.getMetadata(ntwMdKey)
@@ -494,14 +494,14 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 
 		// Try to set an older timestamp with same block - should not update
 		olderTimestamp := now - 30
-		tracker.SetLatestBlockNumber(ups, 1000, olderTimestamp, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 1000, olderTimestamp)
 		stored = ntwMeta.evmLatestBlockTimestamp.Load()
 
 		assert.Equal(t, initialTimestamp, stored, "Timestamp should not update to older value")
 
 		// Set a newer block with newer timestamp - should update
 		newerTimestamp := now - 5
-		tracker.SetLatestBlockNumber(ups, 2000, newerTimestamp, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 2000, newerTimestamp)
 		stored = ntwMeta.evmLatestBlockTimestamp.Load()
 
 		assert.Equal(t, newerTimestamp, stored, "Expected newer timestamp to be set")
@@ -515,7 +515,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		ups := common.NewFakeUpstream("test-upstream-3")
 
 		// Try to set zero timestamp - should be ignored (timestamp not updated)
-		tracker.SetLatestBlockNumber(ups, 500, 0, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 500, 0)
 
 		ntwMdKey := metadataKey{nil, "evm:123"}
 		ntwMeta := tracker.getMetadata(ntwMdKey)
@@ -525,7 +525,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		assert.Equal(t, int64(500), ntwMeta.evmLatestBlockNumber.Load(), "Block number should still be updated")
 
 		// Try to set negative timestamp - should be ignored
-		tracker.SetLatestBlockNumber(ups, 600, -100, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 600, -100)
 		stored = ntwMeta.evmLatestBlockTimestamp.Load()
 
 		assert.Equal(t, int64(0), stored, "Expected negative timestamp to be ignored")
@@ -543,7 +543,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		blockTimestamp := now - 15
 		blockNumber := int64(3000)
 
-		tracker.SetLatestBlockNumber(ups, blockNumber, blockTimestamp, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, blockNumber, blockTimestamp)
 
 		// The distance should be approximately 15 seconds (allowing for small timing variations)
 		ntwMdKey := metadataKey{nil, "evm:123"}
@@ -568,7 +568,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 
 		// Set initial block and timestamp
 		now := time.Now().Unix()
-		tracker.SetLatestBlockNumber(ups, 1000, now-20, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 1000, now-20)
 
 		ntwMdKey := metadataKey{nil, "evm:123"}
 		ntwMeta := tracker.getMetadata(ntwMdKey)
@@ -578,17 +578,17 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		assert.Equal(t, now-20, ntwMeta.evmLatestBlockTimestamp.Load())
 
 		// Try to update with same block number but newer timestamp - should NOT update
-		tracker.SetLatestBlockNumber(ups, 1000, now-10, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 1000, now-10)
 		assert.Equal(t, int64(1000), ntwMeta.evmLatestBlockNumber.Load(), "Block number should stay same")
 		assert.Equal(t, now-20, ntwMeta.evmLatestBlockTimestamp.Load(), "Timestamp should NOT update when block doesn't increase")
 
 		// Update with higher block number and newer timestamp - BOTH should update
-		tracker.SetLatestBlockNumber(ups, 2000, now-5, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 2000, now-5)
 		assert.Equal(t, int64(2000), ntwMeta.evmLatestBlockNumber.Load(), "Block number should update")
 		assert.Equal(t, now-5, ntwMeta.evmLatestBlockTimestamp.Load(), "Timestamp should update atomically with block")
 
 		// Update with higher block but older timestamp - block updates, timestamp uses newer
-		tracker.SetLatestBlockNumber(ups, 3000, now-15, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, 3000, now-15)
 		assert.Equal(t, int64(3000), ntwMeta.evmLatestBlockNumber.Load(), "Block number should update")
 		assert.Equal(t, now-5, ntwMeta.evmLatestBlockTimestamp.Load(), "Timestamp should stay at newer value")
 	})
@@ -618,7 +618,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		assert.Equal(t, blockTimestamp, parsedTimestamp, "Integer timestamp should parse correctly as decimal")
 
 		// Now test the full flow
-		tracker.SetLatestBlockNumber(ups, blockNumber, parsedTimestamp, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, blockNumber, parsedTimestamp)
 
 		ntwMdKey := metadataKey{nil, "evm:123"}
 		ntwMeta := tracker.getMetadata(ntwMdKey)
@@ -658,7 +658,7 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		assert.Equal(t, blockTimestamp, parsedTimestamp, "Hex timestamp should parse correctly")
 
 		// Now test the full flow
-		tracker.SetLatestBlockNumber(ups, blockNumber, parsedTimestamp, "evm_state_poller")
+		tracker.SetLatestBlockNumber(ups, blockNumber, parsedTimestamp)
 
 		ntwMdKey := metadataKey{nil, "evm:123"}
 		ntwMeta := tracker.getMetadata(ntwMdKey)

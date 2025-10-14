@@ -105,11 +105,11 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		simulateRequests(metricsTracker, upsList[0], method, 100, 0)
-		metricsTracker.SetLatestBlockNumber(upsList[0], 4000090, 0, "evm_state_poller")
+		metricsTracker.SetLatestBlockNumber(upsList[0], 4000090, 0)
 		simulateRequests(metricsTracker, upsList[1], method, 100, 0)
-		metricsTracker.SetLatestBlockNumber(upsList[1], 4000100, 0, "evm_state_poller")
+		metricsTracker.SetLatestBlockNumber(upsList[1], 4000100, 0)
 		simulateRequests(metricsTracker, upsList[2], method, 100, 0)
-		metricsTracker.SetLatestBlockNumber(upsList[2], 3005020, 0, "evm_state_poller")
+		metricsTracker.SetLatestBlockNumber(upsList[2], 3005020, 0)
 
 		registry.RefreshUpstreamNetworkMethodScores()
 

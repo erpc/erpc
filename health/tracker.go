@@ -726,7 +726,7 @@ func (t *Tracker) updateSingleUpstreamLag(
 	}
 }
 
-func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64, origin string) {
+func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
 	netLabel := upstream.NetworkLabel()
@@ -737,11 +737,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	if blockNumber <= 0 {
 		lg.Warn().Int64("value", blockNumber).Msg("ignoring setting non-positive latest block number in tracker")
 		return
-	}
-
-	// Default origin to evm_state_poller if not specified for backwards compatibility
-	if origin == "" {
-		origin = "evm_state_poller"
 	}
 
 	mdKey := metadataKey{upstream, net}
@@ -763,13 +758,13 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			if blockTimestamp > oldTimestamp {
 				ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 
-				// Calculate and record distance metric
+				// Calculate and record distance metric from EVM state poller
 				currentTime := time.Now().Unix()
 				distance := currentTime - blockTimestamp
 				telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
 					t.projectId,
 					netLabel,
-					origin,
+					"evm_state_poller",
 				).Set(float64(distance))
 			}
 		}
