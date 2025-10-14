@@ -868,27 +868,11 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		)
 	}
 
-	// Check if UseUpstream directive is set
-	if r.directives != nil && r.directives.UseUpstream != "" {
-		// Handle UseUpstream directive - find matching upstream
-		for _, upstream := range r.upstreamList {
-			match, err := WildcardMatch(r.directives.UseUpstream, upstream.Id())
-			if err != nil {
-				continue
-			}
-			if match {
-				// Check if this upstream has already been consumed
-				if _, loaded := r.ConsumedUpstreams.LoadOrStore(upstream, true); !loaded {
-					return upstream, nil
-				}
-			}
-		}
-		// If no matching upstream found or all consumed, return error
-		return nil, NewErrNoUpstreamsLeftToSelect(
-			r,
-			"no more non-consumed matching upstreams",
-		)
-	}
+    // Capture any UseUpstream directive to be applied inside the generic selection loop
+    var useUpstreamPattern string
+    if r.directives != nil && r.directives.UseUpstream != "" {
+        useUpstreamPattern = r.directives.UseUpstream
+    }
 
 	upstreamCount := len(r.upstreamList)
 
@@ -898,7 +882,15 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		idx := r.UpstreamIdx % uint32(upstreamCount) // #nosec G115
 		r.UpstreamIdx++                              // Guaranteed increment for next caller
 
-		upstream := r.upstreamList[idx]
+        upstream := r.upstreamList[idx]
+
+        // If a UseUpstream directive is provided, only consider matching upstreams
+        if useUpstreamPattern != "" {
+            match, err := WildcardMatch(useUpstreamPattern, upstream.Id())
+            if err != nil || !match {
+                continue
+            }
+        }
 
 		// Skip if already consumed (gave valid response or consensus-valid error)
 		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
@@ -964,3 +956,4 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 		r.ConsumedUpstreams.Delete(upstream)
 	}
 }
+
