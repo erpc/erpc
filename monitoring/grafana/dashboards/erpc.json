@@ -1991,7 +1991,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "erpc_network_latest_block_timestamp_distance_seconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\"}",
+              "expr": "erpc_network_latest_block_timestamp_distance_seconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",origin=\"evm_state_poller\"}",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{project}}, {{network}}",
@@ -1999,7 +1999,102 @@
               "refId": "A"
             }
           ],
-          "title": "Latest Block Timestamp Distance",
+          "title": "Block Timestamp Distance - EVM State Poller",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Comparison of block timestamp distance between EVM State Poller and Network Responses to identify cache staleness and synchronization issues",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "vis": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "unit": "s",
+              "min": 0
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 82
+          },
+          "id": 100,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Last *",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "11.3.7",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "erpc_network_latest_block_timestamp_distance_seconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",origin=\"network_response\"}",
+              "format": "time_series",
+              "instant": false,
+              "legendFormat": "{{project}}, {{network}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Block Timestamp Distance - Network Response",
           "type": "timeseries"
         }
       ],
