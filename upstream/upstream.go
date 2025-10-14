@@ -403,6 +403,24 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					method,
 					nrq,
 				)
+				// Unified metric for upstream-level local rate limit (blocked)
+				telemetry.CounterHandle(
+					telemetry.MetricRateLimitsTotal,
+					u.ProjectId,                // project
+					u.NetworkLabel(),           // network
+					u.VendorName(),             // vendor
+					cfg.Id,                     // upstream
+					method,                     // category
+					nrq.Finality(ctx).String(), // finality
+					nrq.UserId(),               // user
+					nrq.AgentName(),            // agent_name
+					cfg.RateLimitBudget,        // budget
+					"",                         // scope
+					"blocked",                  // decision
+					u.ProjectId,                // origin_project
+					u.NetworkId(),              // origin_network
+					"",                         // origin_auth
+				).Inc()
 				err = common.NewErrUpstreamRateLimitRuleExceeded(
 					cfg.Id,
 					cfg.RateLimitBudget,

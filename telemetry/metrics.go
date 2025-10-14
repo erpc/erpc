@@ -184,16 +184,25 @@ var (
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user", "agent_name"})
 
+	// Deprecated: use MetricRateLimitsTotal with scope="remote" and decision="blocked" instead.
 	MetricUpstreamRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_remote_rate_limited_total",
-		Help:      "Total number of remote rate limited requests by upstreams.",
+		Help:      "[DEPRECATED] Use rate_limits_total. Total number of remote rate limited requests by upstreams.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "user", "agent_name"})
+
+	// Unified rate limiting counter: consolidates upstream remote limits and local budget decisions.
+	// Labels are a superset; irrelevant ones should be passed as empty strings.
+	MetricRateLimitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limits_total",
+		Help:      "Unified rate limiting events (remote limits and budget decisions).",
+	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user", "agent_name", "budget", "scope", "decision", "origin_project", "origin_network", "origin_auth"})
 
 	MetricRateLimiterAttemptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "rate_limiter_attempt_total",
-		Help:      "Total number of locally rate-limited requests across components.",
+		Help:      "[DEPRECATED] Replaced by rate_limits_total. Total number of locally rate-limited requests across components.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name", "vendor", "upstream", "component", "entity"})
 
 	MetricRateLimiterBudgetMaxCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -205,7 +214,7 @@ var (
 	MetricRateLimiterBudgetDecisionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "rate_limiter_budget_decision_total",
-		Help:      "Total number of local rate-limit decisions by budget.",
+		Help:      "[DEPRECATED] Replaced by rate_limits_total. Total number of local rate-limit decisions by budget.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name", "budget", "method", "scope", "decision"})
 
 	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{

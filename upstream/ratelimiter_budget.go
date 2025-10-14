@@ -162,35 +162,27 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
 			doSpan.SetAttributes(attribute.String("result", "over_limit"))
 			doSpan.End()
-			telemetry.CounterHandle(
-				telemetry.MetricRateLimiterBudgetDecisionTotal,
-				projectId,
-				networkLabel,
-				method,
-				finality,
-				userLabel,
-				agentName,
-				b.Id,
-				method,
-				rule.Config.ScopeString(),
-				"blocked",
-			).Inc()
+			// Blocked decisions are recorded at the origin (project/network/auth) to avoid double counting.
 			return false, nil
 		}
 		doSpan.SetAttributes(attribute.String("result", "ok"))
 		doSpan.End()
 		telemetry.CounterHandle(
-			telemetry.MetricRateLimiterBudgetDecisionTotal,
-			projectId,
-			networkLabel,
-			method,
-			finality,
-			userLabel,
-			agentName,
-			b.Id,
-			method,
-			rule.Config.ScopeString(),
-			"allowed",
+			telemetry.MetricRateLimitsTotal,
+			projectId,                 // project
+			networkLabel,              // network
+			"",                        // vendor (n/a for local budget)
+			"",                        // upstream (n/a for local budget)
+			method,                    // category
+			finality,                  // finality
+			userLabel,                 // user
+			agentName,                 // agent_name
+			b.Id,                      // budget
+			rule.Config.ScopeString(), // scope
+			"allowed",                 // decision
+			"",                        // origin_project
+			"",                        // origin_network
+			"",                        // origin_auth
 		).Inc()
 	}
 	return true, nil

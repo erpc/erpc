@@ -227,8 +227,21 @@ func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId
 	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
 		return v.(prometheus.Counter)
 	}
-	c := telemetry.MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.user, key.agentName,
+	c := telemetry.MetricRateLimitsTotal.WithLabelValues(
+		key.project,   // project
+		key.network,   // network
+		key.vendor,    // vendor
+		key.upstream,  // upstream
+		key.category,  // category
+		"",            // finality (unknown in tracker path)
+		key.user,      // user
+		key.agentName, // agent_name
+		"",            // budget
+		"remote",      // scope (remote upstream)
+		"blocked",     // decision
+		"",            // origin_project
+		"",            // origin_network
+		"",            // origin_auth
 	)
 	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, c)
 	return actual.(prometheus.Counter)

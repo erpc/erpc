@@ -284,17 +284,21 @@ func (p *PreparedProject) acquireRateLimitPermit(ctx context.Context, req *commo
 		}
 		if !allowed {
 			telemetry.CounterHandle(
-				telemetry.MetricRateLimiterAttemptTotal,
-				p.Config.Id,
-				"",
-				method,
-				req.Finality(ctx).String(),
-				req.UserId(),
-				req.AgentName(),
-				"",
-				"",
-				"project",
-				p.Config.Id,
+				telemetry.MetricRateLimitsTotal,
+				p.Config.Id,                // project
+				"",                         // network (unknown at project-level)
+				"",                         // vendor
+				"",                         // upstream
+				method,                     // category
+				req.Finality(ctx).String(), // finality
+				req.UserId(),               // user
+				req.AgentName(),            // agent_name
+				p.Config.RateLimitBudget,   // budget
+				"",                         // scope (rule scope unknown here)
+				"blocked",                  // decision
+				p.Config.Id,                // origin_project
+				"",                         // origin_network
+				"",                         // origin_auth
 			).Inc()
 			return common.NewErrProjectRateLimitRuleExceeded(
 				p.Config.Id,

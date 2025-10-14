@@ -152,16 +152,16 @@ func BenchmarkMetricUpstreamRequestDuration_Cached(b *testing.B) {
 
 func prewarmPerCallSelfRateLimited(combos []labelCombo, project string) {
 	for _, c := range combos {
-		telemetry.MetricUpstreamSelfRateLimitedTotal.
-			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
+		telemetry.MetricRateLimitsTotal.
+			WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "budget-x", "upstream", "blocked", project, c.up.networkId, "auth:0").
 			Inc()
 	}
 }
 
 func prewarmPerCallRemoteRateLimited(combos []labelCombo, project string) {
 	for _, c := range combos {
-		telemetry.MetricUpstreamRemoteRateLimitedTotal.
-			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
+		telemetry.MetricRateLimitsTotal.
+			WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "", "remote", "blocked", "", "", "").
 			Inc()
 	}
 }
@@ -182,8 +182,8 @@ func BenchmarkUpstreamSelfRateLimited_PerCall(b *testing.B) {
 		idx := rand.Intn(len(combos))
 		for pb.Next() {
 			c := combos[idx]
-			telemetry.MetricUpstreamSelfRateLimitedTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
+			telemetry.MetricRateLimitsTotal.
+				WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "budget-x", "upstream", "blocked", project, c.up.networkId, "auth:0").
 				Inc()
 			idx++
 			if idx >= len(combos) {
@@ -240,8 +240,8 @@ func BenchmarkUpstreamRemoteRateLimited_PerCall(b *testing.B) {
 		idx := rand.Intn(len(combos))
 		for pb.Next() {
 			c := combos[idx]
-			telemetry.MetricUpstreamRemoteRateLimitedTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, "n/a", "unknown").
+			telemetry.MetricRateLimitsTotal.
+				WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "", "remote", "blocked", "", "", "").
 				Inc()
 			idx++
 			if idx >= len(combos) {

@@ -140,19 +140,23 @@ func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.Nor
 		return err
 	}
 	if !allowed {
-		entity := fmt.Sprintf("%s:%d", string(a.cfg.Type), a.index)
+		// Record unified rate limit event; attribute to auth origin.
 		telemetry.CounterHandle(
-			telemetry.MetricRateLimiterAttemptTotal,
-			a.projectId,
-			req.NetworkId(),
-			method,
-			req.Finality(ctx).String(),
-			req.UserId(),
-			req.AgentName(),
-			"",
-			"",
-			"auth",
-			entity,
+			telemetry.MetricRateLimitsTotal,
+			a.projectId,                // project
+			req.NetworkId(),            // network
+			"",                         // vendor
+			"",                         // upstream
+			method,                     // category
+			req.Finality(ctx).String(), // finality
+			req.UserId(),               // user
+			req.AgentName(),            // agent_name
+			effectiveBudget,            // budget (effective budget resolved earlier)
+			"",                         // scope (budget rule scope unknown here)
+			"blocked",                  // decision
+			a.projectId,                // origin_project
+			req.NetworkId(),            // origin_network
+			fmt.Sprintf("%s:%d", string(a.cfg.Type), a.index), // origin_auth
 		).Inc()
 		return common.NewErrAuthRateLimitRuleExceeded(
 			a.projectId,

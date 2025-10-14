@@ -1170,17 +1170,21 @@ func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.Normal
 		if !allowed {
 			finality := req.Finality(ctx)
 			telemetry.CounterHandle(
-				telemetry.MetricRateLimiterAttemptTotal,
-				n.projectId,
-				n.Label(),
-				method,
-				finality.String(),
-				req.UserId(),
-				req.AgentName(),
-				"",
-				"",
-				"network",
-				n.networkId,
+				telemetry.MetricRateLimitsTotal,
+				n.projectId,           // project
+				n.Label(),             // network label
+				"",                    // vendor
+				"",                    // upstream
+				method,                // category
+				finality.String(),     // finality
+				req.UserId(),          // user
+				req.AgentName(),       // agent_name
+				n.cfg.RateLimitBudget, // budget
+				"",                    // scope (rule scope unknown here)
+				"blocked",             // decision
+				n.projectId,           // origin_project
+				n.networkId,           // origin_network
+				"",                    // origin_auth
 			).Inc()
 			return common.NewErrNetworkRateLimitRuleExceeded(
 				n.projectId,

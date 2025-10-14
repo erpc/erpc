@@ -327,11 +327,9 @@ func resetMetrics() {
 	if telemetry.MetricUpstreamErrorTotal != nil {
 		telemetry.MetricUpstreamErrorTotal.Reset()
 	}
-	if telemetry.MetricUpstreamSelfRateLimitedTotal != nil {
-		telemetry.MetricUpstreamSelfRateLimitedTotal.Reset()
-	}
-	if telemetry.MetricUpstreamRemoteRateLimitedTotal != nil {
-		telemetry.MetricUpstreamRemoteRateLimitedTotal.Reset()
+	// Unified metric now covers rate limit events; older specific counters removed.
+	if telemetry.MetricRateLimitsTotal != nil {
+		telemetry.MetricRateLimitsTotal.Reset()
 	}
 }
 

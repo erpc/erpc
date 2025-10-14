@@ -89,7 +89,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		startTime := time.Now()
 		resp, err := ntw.Forward(timeoutCtx, req)
 		duration := time.Since(startTime)
-		
+
 		log.Logger.Info().
 			Dur("duration", duration).
 			Err(err).
@@ -338,12 +338,12 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			// Check that error details show upstreams were skipped
 			errorsByUpstream := exhErr.Errors()
 			assert.NotEmpty(t, errorsByUpstream, "Should have errors for each upstream")
-			
+
 			// Verify each upstream has a skip error
 			for _, upErr := range errorsByUpstream {
-				assert.True(t, 
+				assert.True(t,
 					common.HasErrorCode(upErr, common.ErrCodeUpstreamRequestSkipped) ||
-					common.HasErrorCode(upErr, common.ErrCodeUpstreamMethodIgnored),
+						common.HasErrorCode(upErr, common.ErrCodeUpstreamMethodIgnored),
 					"Each upstream error should be a skip/ignore error, got: %v", upErr)
 			}
 		}
@@ -486,7 +486,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 
 		if resp != nil {
 			defer resp.Release()
-			
+
 			// Verify the response came from upstream3
 			assert.Equal(t, "upstream3", resp.Upstream().Id(), "Response should come from upstream3")
 		}
