@@ -45,7 +45,7 @@ func (s *JwtStrategy) Supports(ap *AuthPayload) bool {
 	return ap.Type == common.AuthTypeJwt
 }
 
-func (s *JwtStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*common.User, error) {
+func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	token, _, err := s.parser.ParseUnverified(ap.Jwt.Token, jwt.MapClaims{})
 	if err != nil {
 		return nil, common.NewErrAuthUnauthorized("jwt", "failed to parse JWT")

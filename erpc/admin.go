@@ -21,9 +21,9 @@ type ApiKey struct {
 	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
-func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.AuthPayload) (*common.User, error) {
+func (e *ERPC) AdminAuthenticate(ctx context.Context, req *common.NormalizedRequest, method string, ap *auth.AuthPayload) (*common.User, error) {
 	if e.adminAuthRegistry != nil {
-		return e.adminAuthRegistry.Authenticate(ctx, nil, method, ap)
+		return e.adminAuthRegistry.Authenticate(ctx, req, method, ap)
 	}
 	return nil, fmt.Errorf("admin auth not configured")
 }

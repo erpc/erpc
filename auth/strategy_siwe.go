@@ -23,7 +23,7 @@ func (s *SiweStrategy) Supports(ap *AuthPayload) bool {
 	return ap.Type == common.AuthTypeSiwe
 }
 
-func (s *SiweStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*common.User, error) {
+func (s *SiweStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	if ap.Siwe == nil {
 		return nil, common.NewErrAuthUnauthorized("siwe", "missing SIWE payload")
 	}

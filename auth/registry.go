@@ -64,7 +64,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 			continue
 		}
 
-		user, err := az.strategy.Authenticate(ctx, ap)
+		user, err := az.strategy.Authenticate(ctx, req, ap)
 		if err != nil {
 			errs = append(errs, err)
 			continue

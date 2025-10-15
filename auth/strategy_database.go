@@ -89,7 +89,7 @@ func (s *DatabaseStrategy) Supports(ap *AuthPayload) bool {
 	return ap.Type == common.AuthTypeSecret || ap.Type == common.AuthTypeDatabase
 }
 
-func (s *DatabaseStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*common.User, error) {
+func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	if ap.Secret == nil {
 		return nil, common.NewErrAuthUnauthorized("database", "no secret provided")
 	}

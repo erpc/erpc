@@ -433,7 +433,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 
 				if isAdmin {
-					_, err := s.erpc.AdminAuthenticate(requestCtx, method, ap)
+					_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
 					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
