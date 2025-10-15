@@ -754,19 +754,16 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 
 		// Atomically update timestamp when network-level block number is updated
 		if blockTimestamp > 0 {
-			oldTimestamp := ntwMeta.evmLatestBlockTimestamp.Load()
-			if blockTimestamp > oldTimestamp {
-				ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
+			ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 
-				// Calculate and record distance metric from EVM state poller
-				currentTime := time.Now().Unix()
-				distance := currentTime - blockTimestamp
-				telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
-					t.projectId,
-					netLabel,
-					"evm_state_poller",
-				).Set(float64(distance))
-			}
+			// Calculate and record distance metric from EVM state poller
+			currentTime := time.Now().Unix()
+			distance := currentTime - blockTimestamp
+			telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
+				t.projectId,
+				netLabel,
+				"evm_state_poller",
+			).Set(float64(distance))
 		}
 	}
 
