@@ -7,6 +7,14 @@
       "type": "datasource",
       "pluginId": "prometheus",
       "pluginName": "Prometheus"
+    },
+    {
+      "name": "DS_FLY-PROMETHEUS",
+      "label": "fly-prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
     }
   ],
   "__elements": {},
@@ -119,7 +127,7 @@
             "h": 19,
             "w": 11,
             "x": 0,
-            "y": 849
+            "y": 2017
           },
           "id": 90,
           "options": {
@@ -219,7 +227,7 @@
             "h": 19,
             "w": 13,
             "x": 11,
-            "y": 849
+            "y": 2017
           },
           "id": 100,
           "options": {
@@ -321,7 +329,7 @@
             "h": 17,
             "w": 8,
             "x": 0,
-            "y": 1119
+            "y": 2287
           },
           "id": 118,
           "options": {
@@ -423,7 +431,7 @@
             "h": 17,
             "w": 8,
             "x": 8,
-            "y": 1119
+            "y": 2287
           },
           "id": 119,
           "options": {
@@ -525,7 +533,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 1119
+            "y": 2287
           },
           "id": 120,
           "options": {
@@ -662,7 +670,7 @@
             "h": 14,
             "w": 24,
             "x": 0,
-            "y": 1136
+            "y": 2304
           },
           "id": 85,
           "interval": "1m",
@@ -1096,7 +1104,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 407
+            "y": 1575
           },
           "id": 14,
           "interval": "1m",
@@ -1199,7 +1207,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 407
+            "y": 1575
           },
           "id": 66,
           "interval": "1m",
@@ -1302,7 +1310,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 407
+            "y": 1575
           },
           "id": 67,
           "interval": "1m",
@@ -1418,7 +1426,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 1783
+            "y": 2951
           },
           "id": 8,
           "interval": "1m",
@@ -1518,7 +1526,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 1783
+            "y": 2951
           },
           "id": 44,
           "interval": "1m",
@@ -1617,7 +1625,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 1783
+            "y": 2951
           },
           "id": 45,
           "interval": "1m",
@@ -1721,7 +1729,7 @@
             "h": 7,
             "w": 8,
             "x": 0,
-            "y": 1829
+            "y": 2997
           },
           "id": 103,
           "interval": "1m",
@@ -1821,7 +1829,7 @@
             "h": 7,
             "w": 8,
             "x": 8,
-            "y": 1829
+            "y": 2997
           },
           "id": 104,
           "interval": "1m",
@@ -1920,7 +1928,7 @@
             "h": 7,
             "w": 8,
             "x": 16,
-            "y": 1829
+            "y": 2997
           },
           "id": 105,
           "interval": "1m",
@@ -2026,7 +2034,7 @@
             "h": 7,
             "w": 8,
             "x": 0,
-            "y": 1836
+            "y": 3004
           },
           "id": 106,
           "interval": "1m",
@@ -2126,7 +2134,7 @@
             "h": 7,
             "w": 8,
             "x": 8,
-            "y": 1836
+            "y": 3004
           },
           "id": 107,
           "interval": "1m",
@@ -2225,7 +2233,7 @@
             "h": 7,
             "w": 8,
             "x": 16,
-            "y": 1836
+            "y": 3004
           },
           "id": 108,
           "interval": "1m",
@@ -2340,7 +2348,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 851
+            "y": 4
           },
           "id": 9,
           "interval": "1m",
@@ -2444,7 +2452,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 851
+            "y": 4
           },
           "id": 68,
           "interval": "1m",
@@ -2553,7 +2561,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 851
+            "y": 4
           },
           "id": 33,
           "options": {
@@ -2652,7 +2660,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 1068
+            "y": 16
           },
           "id": 86,
           "interval": "1m",
@@ -2753,7 +2761,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 1068
+            "y": 16
           },
           "id": 89,
           "interval": "1m",
@@ -2864,7 +2872,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 1080
+            "y": 28
           },
           "id": 63,
           "interval": "1m",
@@ -2982,7 +2990,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 1080
+            "y": 28
           },
           "id": 25,
           "interval": "1m",
@@ -3070,16 +3078,28 @@
                 }
               },
               "mappings": [],
-              "unit": "s",
-              "min": 0
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "s"
             },
             "overrides": []
           },
           "gridPos": {
             "h": 10,
-            "w": 24,
+            "w": 12,
             "x": 0,
-            "y": 72
+            "y": 38
           },
           "id": 99,
           "interval": "1m",
@@ -3097,16 +3117,17 @@
               "sortDesc": true
             },
             "tooltip": {
+              "hideZeros": false,
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "pluginVersion": "11.3.7",
+          "pluginVersion": "12.0.1",
           "targets": [
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${datasource}"
+                "uid": "${DS_FLY-PROMETHEUS}"
               },
               "editorMode": "code",
               "exemplar": false,
@@ -3118,7 +3139,7 @@
               "refId": "A"
             }
           ],
-          "title": "Block Timestamp Distance - EVM State Poller",
+          "title": "Block Timestamp Distance - From Upstream Polling",
           "type": "timeseries"
         },
         {
@@ -3133,18 +3154,21 @@
                 "mode": "palette-classic"
               },
               "custom": {
+                "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
                 "axisLabel": "",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
+                "barWidthFactor": 0.6,
                 "drawStyle": "line",
                 "fillOpacity": 10,
                 "gradientMode": "none",
                 "hideFrom": {
                   "legend": false,
                   "tooltip": false,
-                  "vis": false
+                  "vis": false,
+                  "viz": false
                 },
                 "insertNulls": false,
                 "lineInterpolation": "linear",
@@ -3164,18 +3188,30 @@
                 }
               },
               "mappings": [],
-              "unit": "s",
-              "min": 0
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "s"
             },
             "overrides": []
           },
           "gridPos": {
             "h": 10,
-            "w": 24,
-            "x": 0,
-            "y": 82
+            "w": 12,
+            "x": 12,
+            "y": 38
           },
-          "id": 100,
+          "id": 130,
           "interval": "1m",
           "options": {
             "alertThreshold": true,
@@ -3192,16 +3228,17 @@
               "sortDesc": true
             },
             "tooltip": {
+              "hideZeros": false,
               "mode": "multi",
               "sort": "desc"
             }
           },
-          "pluginVersion": "11.3.7",
+          "pluginVersion": "12.0.1",
           "targets": [
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${datasource}"
+                "uid": "${DS_FLY-PROMETHEUS}"
               },
               "editorMode": "code",
               "exemplar": false,
@@ -3213,7 +3250,7 @@
               "refId": "A"
             }
           ],
-          "title": "Block Timestamp Distance - Network Response",
+          "title": "Block Timestamp Distance - From Latest Block Responses",
           "type": "timeseries"
         }
       ],
@@ -3257,7 +3294,7 @@
             "h": 9,
             "w": 24,
             "x": 0,
-            "y": 852
+            "y": 2020
           },
           "id": 81,
           "options": {
@@ -3398,7 +3435,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 920
+            "y": 2088
           },
           "id": 70,
           "interval": "1m",
@@ -3499,7 +3536,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 920
+            "y": 2088
           },
           "id": 29,
           "interval": "1m",
@@ -3599,7 +3636,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 932
+            "y": 2100
           },
           "id": 24,
           "options": {
@@ -3698,7 +3735,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 932
+            "y": 2100
           },
           "id": 82,
           "options": {
@@ -3798,7 +3835,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 946
+            "y": 2114
           },
           "id": 78,
           "interval": "1m",
@@ -3898,7 +3935,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 946
+            "y": 2114
           },
           "id": 79,
           "options": {
@@ -4003,7 +4040,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 946
+            "y": 2114
           },
           "id": 80,
           "options": {
@@ -4122,7 +4159,7 @@
             "h": 12,
             "w": 8,
             "x": 0,
-            "y": 853
+            "y": 2021
           },
           "id": 91,
           "options": {
@@ -4221,7 +4258,7 @@
             "h": 12,
             "w": 8,
             "x": 8,
-            "y": 853
+            "y": 2021
           },
           "id": 46,
           "options": {
@@ -4320,7 +4357,7 @@
             "h": 12,
             "w": 8,
             "x": 16,
-            "y": 853
+            "y": 2021
           },
           "id": 47,
           "options": {
@@ -4425,7 +4462,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 865
+            "y": 2033
           },
           "id": 4,
           "interval": "1m",
@@ -4526,7 +4563,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 865
+            "y": 2033
           },
           "id": 71,
           "interval": "1m",
@@ -4626,7 +4663,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 877
+            "y": 2045
           },
           "id": 83,
           "options": {
@@ -4725,7 +4762,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 877
+            "y": 2045
           },
           "id": 73,
           "options": {
@@ -4824,7 +4861,7 @@
             "h": 9,
             "w": 12,
             "x": 0,
-            "y": 889
+            "y": 2057
           },
           "id": 102,
           "options": {
@@ -4923,7 +4960,7 @@
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 889
+            "y": 2057
           },
           "id": 74,
           "options": {
@@ -5022,7 +5059,7 @@
             "h": 14,
             "w": 12,
             "x": 0,
-            "y": 898
+            "y": 2066
           },
           "id": 87,
           "options": {
@@ -5121,7 +5158,7 @@
             "h": 14,
             "w": 12,
             "x": 12,
-            "y": 898
+            "y": 2066
           },
           "id": 88,
           "options": {
@@ -5197,7 +5234,7 @@
             "h": 19,
             "w": 12,
             "x": 0,
-            "y": 7
+            "y": 1175
           },
           "id": 72,
           "options": {
@@ -5336,7 +5373,7 @@
             "h": 19,
             "w": 12,
             "x": 12,
-            "y": 7
+            "y": 1175
           },
           "id": 50,
           "interval": "1m",
@@ -5443,7 +5480,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 232
+            "y": 1400
           },
           "id": 26,
           "interval": "1m",
@@ -5577,7 +5614,7 @@
             "h": 20,
             "w": 12,
             "x": 0,
-            "y": 242
+            "y": 1410
           },
           "id": 49,
           "interval": "1m",
@@ -5711,7 +5748,7 @@
             "h": 20,
             "w": 12,
             "x": 12,
-            "y": 242
+            "y": 1410
           },
           "id": 59,
           "interval": "1m",
@@ -5821,7 +5858,7 @@
             "h": 15,
             "w": 12,
             "x": 0,
-            "y": 262
+            "y": 1430
           },
           "id": 51,
           "interval": "1m",
@@ -5930,7 +5967,7 @@
             "h": 15,
             "w": 12,
             "x": 12,
-            "y": 262
+            "y": 1430
           },
           "id": 52,
           "interval": "1m",
@@ -6056,7 +6093,7 @@
             "h": 15,
             "w": 12,
             "x": 0,
-            "y": 277
+            "y": 1445
           },
           "id": 54,
           "interval": "1m",
@@ -6187,7 +6224,7 @@
             "h": 15,
             "w": 12,
             "x": 12,
-            "y": 277
+            "y": 1445
           },
           "id": 57,
           "interval": "1m",
@@ -6295,7 +6332,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 292
+            "y": 1460
           },
           "id": 55,
           "interval": "1m",
@@ -6398,7 +6435,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 292
+            "y": 1460
           },
           "id": 56,
           "interval": "1m",
@@ -6500,7 +6537,7 @@
             "h": 13,
             "w": 12,
             "x": 0,
-            "y": 305
+            "y": 1473
           },
           "id": 60,
           "interval": "1m",
@@ -6602,7 +6639,7 @@
             "h": 13,
             "w": 12,
             "x": 12,
-            "y": 305
+            "y": 1473
           },
           "id": 61,
           "interval": "1m",
@@ -6704,7 +6741,7 @@
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 318
+            "y": 1486
           },
           "id": 65,
           "interval": "1m",
@@ -6821,7 +6858,7 @@
             "h": 12,
             "w": 12,
             "x": 0,
-            "y": 8
+            "y": 1176
           },
           "id": 75,
           "interval": "1m",
@@ -6924,7 +6961,7 @@
             "h": 12,
             "w": 12,
             "x": 12,
-            "y": 8
+            "y": 1176
           },
           "id": 76,
           "interval": "1m",
@@ -7026,7 +7063,7 @@
             "h": 12,
             "w": 24,
             "x": 0,
-            "y": 103
+            "y": 1271
           },
           "id": 77,
           "interval": "1m",
@@ -7142,7 +7179,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 8370
+            "y": 9538
           },
           "id": 17,
           "options": {
@@ -7245,7 +7282,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 8370
+            "y": 9538
           },
           "id": 16,
           "options": {
@@ -7356,7 +7393,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 8380
+            "y": 9548
           },
           "id": 36,
           "options": {
@@ -7456,7 +7493,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 8380
+            "y": 9548
           },
           "id": 37,
           "options": {
@@ -7566,7 +7603,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 8390
+            "y": 9558
           },
           "id": 38,
           "options": {
@@ -7668,7 +7705,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 8390
+            "y": 9558
           },
           "id": 39,
           "options": {
@@ -7784,7 +7821,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 8400
+            "y": 9568
           },
           "id": 42,
           "options": {
@@ -7886,7 +7923,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 8400
+            "y": 9568
           },
           "id": 43,
           "options": {
@@ -7996,7 +8033,7 @@
             "h": 10,
             "w": 12,
             "x": 0,
-            "y": 8410
+            "y": 9578
           },
           "id": 40,
           "options": {
@@ -8098,7 +8135,7 @@
             "h": 10,
             "w": 12,
             "x": 12,
-            "y": 8410
+            "y": 9578
           },
           "id": 41,
           "options": {
@@ -8190,7 +8227,7 @@
             "h": 11,
             "w": 24,
             "x": 0,
-            "y": 117
+            "y": 1285
           },
           "id": 121,
           "interval": "1m",
@@ -8304,7 +8341,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 128
+            "y": 1296
           },
           "id": 92,
           "interval": "1m",
@@ -8405,7 +8442,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 128
+            "y": 1296
           },
           "id": 95,
           "interval": "1m",
@@ -8512,7 +8549,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 136
+            "y": 1304
           },
           "id": 94,
           "interval": "1m",
@@ -8617,7 +8654,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 136
+            "y": 1304
           },
           "id": 93,
           "interval": "1m",
@@ -8718,7 +8755,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 144
+            "y": 1312
           },
           "id": 96,
           "interval": "1m",
@@ -8823,9 +8860,9 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 144
+            "y": 1312
           },
-          "id": 99,
+          "id": 131,
           "interval": "1m",
           "options": {
             "alertThreshold": true,
@@ -8924,7 +8961,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 152
+            "y": 1320
           },
           "id": 98,
           "interval": "1m",
@@ -9025,7 +9062,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 152
+            "y": 1320
           },
           "id": 97,
           "interval": "1m",
@@ -9100,7 +9137,7 @@
             "h": 17,
             "w": 16,
             "x": 0,
-            "y": 11
+            "y": 1179
           },
           "id": 109,
           "interval": "1m",
@@ -9208,7 +9245,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 11
+            "y": 1179
           },
           "id": 110,
           "interval": "1m",
@@ -9281,7 +9318,7 @@
             "h": 17,
             "w": 16,
             "x": 0,
-            "y": 28
+            "y": 1196
           },
           "id": 112,
           "interval": "1m",
@@ -9374,7 +9411,7 @@
             "h": 17,
             "w": 8,
             "x": 16,
-            "y": 28
+            "y": 1196
           },
           "id": 113,
           "interval": "1m",
@@ -9427,7 +9464,7 @@
       "type": "row"
     },
     {
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -9435,924 +9472,926 @@
         "y": 11
       },
       "id": 123,
-      "panels": [],
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "description": "Dynamically tuned value for maxCount of different rate limit budgets. NOTE This value is SUM of all replicas (in a multiple container setup)",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 114
+          },
+          "id": 30,
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "min",
+                "max",
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": true,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "avg by (budget, method) (erpc_rate_limiter_budget_max_count)\n",
+              "legendFormat": "{{budget}}, config_method={{method}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Rate-limit budget MaxCount",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 13,
+            "w": 12,
+            "x": 0,
+            "y": 123
+          },
+          "id": 12,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_rate_limits_total{origin=\"project\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, budget)",
+              "legendFormat": "{{project}}, {{network}}, {{budget}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Project-level RPS rate limits",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 13,
+            "w": 12,
+            "x": 12,
+            "y": 123
+          },
+          "id": 124,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_rate_limits_total{origin=\"network\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",budget!=\"<remote>\"}[1m])) by (project, network, user)",
+              "legendFormat": "{{project}}, {{network}}, {{user}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Network-level RPS rate limits",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 13,
+            "w": 12,
+            "x": 0,
+            "y": 136
+          },
+          "id": 125,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_rate_limits_total{origin=\"upstream\",budget=\"<remote>\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
+              "legendFormat": "{{project}}, {{network}}, {{vendor}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Upstream remote RPS rate limits",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 13,
+            "w": 12,
+            "x": 12,
+            "y": 136
+          },
+          "id": 128,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_rate_limits_total{origin=\"upstream\",budget!=\"<remote>\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
+              "legendFormat": "{{project}}, {{network}}, {{vendor}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Upstream self-imposed RPS rate limits",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 13,
+            "w": 12,
+            "x": 0,
+            "y": 149
+          },
+          "id": 126,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_rate_limits_total{origin=\"auth\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, user, auth)",
+              "legendFormat": "{{project}}, {{network}}, {{user}}, {{auth}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Auth-level RPS rate limits",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 13,
+            "w": 12,
+            "x": 12,
+            "y": 149
+          },
+          "id": 129,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [
+                "mean",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true,
+              "sortBy": "Mean",
+              "sortDesc": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(erpc_rate_limits_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin)",
+              "legendFormat": "origin={{origin}}, project={{project}}, {{network}}, {{category}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Method RPS rate limits",
+          "type": "timeseries"
+        }
+      ],
       "title": "Rate Limiters",
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "description": "Dynamically tuned value for maxCount of different rate limit budgets. NOTE This value is SUM of all replicas (in a multiple container setup)",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 12
-      },
-      "id": 30,
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [
-            "min",
-            "max",
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "sortBy": "Mean",
-          "sortDesc": true
-        },
-        "tooltip": {
-          "hideZeros": true,
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "avg by (budget, method) (erpc_rate_limiter_budget_max_count)\n",
-          "legendFormat": "{{budget}}, config_method={{method}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Rate-limit budget MaxCount",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 12,
-        "x": 0,
-        "y": 21
-      },
-      "id": 12,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(erpc_rate_limits_total{origin=\"project\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, budget)",
-          "legendFormat": "{{project}}, {{network}}, {{budget}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Project-level RPS rate limits",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 12,
-        "x": 12,
-        "y": 21
-      },
-      "id": 124,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(erpc_rate_limits_total{origin=\"network\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",budget!=\"<remote>\"}[1m])) by (project, network, user)",
-          "legendFormat": "{{project}}, {{network}}, {{user}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Network-level RPS rate limits",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 12,
-        "x": 0,
-        "y": 34
-      },
-      "id": 125,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(erpc_rate_limits_total{origin=\"upstream\",budget=\"<remote>\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
-          "legendFormat": "{{project}}, {{network}}, {{vendor}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Upstream remote RPS rate limits",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 12,
-        "x": 12,
-        "y": 34
-      },
-      "id": 128,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(erpc_rate_limits_total{origin=\"upstream\",budget!=\"<remote>\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, vendor)",
-          "legendFormat": "{{project}}, {{network}}, {{vendor}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Upstream self-imposed RPS rate limits",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 12,
-        "x": 0,
-        "y": 47
-      },
-      "id": 126,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(erpc_rate_limits_total{origin=\"auth\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, user, auth)",
-          "legendFormat": "{{project}}, {{network}}, {{user}}, {{auth}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Auth-level RPS rate limits",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 12,
-        "x": 12,
-        "y": 47
-      },
-      "id": 129,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "sortBy": "Mean",
-          "sortDesc": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(erpc_rate_limits_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, origin)",
-          "legendFormat": "origin={{origin}}, project={{project}}, {{network}}, {{category}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Method RPS rate limits",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 12
       },
       "id": 127,
-      "panels": [],
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 12,
+            "x": 0,
+            "y": 1181
+          },
+          "id": 114,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
+              "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "eth_getLogs P99 ranges",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green"
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 12,
+            "x": 12,
+            "y": 1181
+          },
+          "id": 115,
+          "interval": "1m",
+          "options": {
+            "alertThreshold": true,
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.0.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "editorMode": "code",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
+              "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "eth_getLogs P50 ranges",
+          "type": "timeseries"
+        }
+      ],
       "title": "evm eth_getLogs",
       "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 14,
-        "w": 12,
-        "x": 0,
-        "y": 61
-      },
-      "id": 114,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
-          "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "eth_getLogs P99 ranges",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 14,
-        "w": 12,
-        "x": 12,
-        "y": 61
-      },
-      "id": 115,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.1",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
-          "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "eth_getLogs P50 ranges",
-      "type": "timeseries"
     }
   ],
   "refresh": "10s",
@@ -10619,6 +10658,6 @@
   "timezone": "",
   "title": "eRPC Metrics",
   "uid": "erpc_metrics",
-  "version": 155,
+  "version": 160,
   "weekStart": ""
 }
