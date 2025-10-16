@@ -587,10 +587,10 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		assert.Equal(t, int64(2000), ntwMeta.evmLatestBlockNumber.Load(), "Block number should update")
 		assert.Equal(t, now-5, ntwMeta.evmLatestBlockTimestamp.Load(), "Timestamp should update atomically with block")
 
-		// Update with higher block but older timestamp - block updates, timestamp uses newer
+		// Update with higher block but older timestamp - both should update to reflect current state
 		tracker.SetLatestBlockNumber(ups, 3000, now-15)
 		assert.Equal(t, int64(3000), ntwMeta.evmLatestBlockNumber.Load(), "Block number should update")
-		assert.Equal(t, now-5, ntwMeta.evmLatestBlockTimestamp.Load(), "Timestamp should stay at newer value")
+		assert.Equal(t, now-15, ntwMeta.evmLatestBlockTimestamp.Load(), "Timestamp should update to match latest block's timestamp")
 	})
 
 	t.Run("ParsesTimestampAsIntegerFromProvider", func(t *testing.T) {
