@@ -1440,7 +1440,7 @@ func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 
 // RateLimitStoreConfig defines where rate limit counters are stored
 type RateLimitStoreConfig struct {
-	Driver         string                `yaml:"driver" json:"driver"` // "redis" | "memory" (memory not yet implemented)
+	Driver         string                `yaml:"driver" json:"driver"` // "redis" | "memory"
 	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
 	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
 	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`

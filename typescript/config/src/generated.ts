@@ -610,7 +610,7 @@ export interface MetricsConfig {
  * RateLimitStoreConfig defines where rate limit counters are stored
  */
 export interface RateLimitStoreConfig {
-  driver: string; // "redis" | "memory" (memory not yet implemented)
+  driver: string; // "redis" | "memory"
   redis?: RedisConnectorConfig;
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;

@@ -139,11 +139,18 @@ func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.Nor
 		return err
 	}
 	if !allowed {
+		uid, cip := "n/a", "n/a"
+		if req != nil {
+			uid = req.UserId()
+			cip = req.ClientIP()
+		}
 		return common.NewErrAuthRateLimitRuleExceeded(
 			a.projectId,
 			string(a.cfg.Type),
 			effectiveBudget,
 			fmt.Sprintf("method:%s", method),
+			uid,
+			cip,
 		)
 	}
 	return nil
