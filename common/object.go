@@ -95,11 +95,11 @@ func setJsValueToGoField(jsValue sobek.Value, fieldValue reflect.Value) error {
 			switch s {
 			case "second", "1s":
 				val = RateLimitPeriodSecond
-			case "minute", "1m":
+			case "minute", "1m", "60s":
 				val = RateLimitPeriodMinute
-			case "hour", "1h":
+			case "hour", "1h", "3600s":
 				val = RateLimitPeriodHour
-			case "day", "24h", "1d":
+			case "day", "24h", "1d", "86400s":
 				val = RateLimitPeriodDay
 			case "week", "7d", "168h":
 				val = RateLimitPeriodWeek

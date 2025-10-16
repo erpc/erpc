@@ -1054,22 +1054,22 @@ func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error
 		case "second", "1s":
 			*p = RateLimitPeriodSecond
 			return nil
-		case "minute", "1m":
+		case "minute", "1m", "60s":
 			*p = RateLimitPeriodMinute
 			return nil
-		case "hour", "1h":
+		case "hour", "1h", "3600s":
 			*p = RateLimitPeriodHour
 			return nil
-		case "day", "24h", "1d":
+		case "day", "24h", "1d", "86400s":
 			*p = RateLimitPeriodDay
 			return nil
-		case "week", "7d", "168h":
+		case "week", "7d", "168h", "604800s":
 			*p = RateLimitPeriodWeek
 			return nil
-		case "month", "30d", "720h":
+		case "month", "30d", "720h", "2592000s":
 			*p = RateLimitPeriodMonth
 			return nil
-		case "year", "365d", "8760h":
+		case "year", "365d", "8760h", "31536000s":
 			*p = RateLimitPeriodYear
 			return nil
 		default:

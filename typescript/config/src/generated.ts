@@ -548,6 +548,10 @@ export interface AuthStrategyConfig {
 export interface SecretStrategyConfig {
   id: string;
   value: string;
+  /**
+   * RateLimitBudget, if set, is applied to the authenticated user from this strategy
+   */
+  rateLimitBudget?: string;
 }
 export interface DatabaseStrategyConfig {
   connector?: ConnectorConfig;
@@ -565,15 +569,29 @@ export interface JwtStrategyConfig {
   allowedAlgorithms: string[];
   requiredClaims: string[];
   verificationKeys: { [key: string]: string};
+  /**
+   * RateLimitBudgetClaimName is the JWT claim name that, if present,
+   * will be used to set the per-user RateLimitBudget override.
+   * Defaults to "rlm".
+   */
+  rateLimitBudgetClaimName?: string;
 }
 export interface SiweStrategyConfig {
   allowedDomains: string[];
+  /**
+   * RateLimitBudget, if set, is applied to the authenticated user
+   */
+  rateLimitBudget?: string;
 }
 export interface NetworkStrategyConfig {
   allowedIPs: string[];
   allowedCIDRs: string[];
   allowLocalhost: boolean;
   trustedProxies: string[];
+  /**
+   * RateLimitBudget, if set, is applied to the authenticated user (client IP)
+   */
+  rateLimitBudget?: string;
 }
 export type LabelMode = string;
 export const ErrorLabelModeVerbose: LabelMode = "verbose";

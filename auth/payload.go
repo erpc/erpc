@@ -23,5 +23,3 @@ type SiwePayload struct {
 	Signature string
 	Message   string
 }
-
-// NetworkPayload is no longer used; client IP is resolved at HTTP ingress and attached to the normalized request

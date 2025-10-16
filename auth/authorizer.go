@@ -139,7 +139,6 @@ func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.Nor
 		return err
 	}
 	if !allowed {
-		// Blocked event already recorded in budget.TryAcquirePermit; avoid double recording here
 		return common.NewErrAuthRateLimitRuleExceeded(
 			a.projectId,
 			string(a.cfg.Type),
