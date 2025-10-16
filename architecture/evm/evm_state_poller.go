@@ -116,7 +116,9 @@ func NewEvmStatePoller(
 	}
 
 	lbs.OnValue(func(value int64) {
-		e.tracker.SetLatestBlockNumber(e.upstream, value)
+		// Always pass 0 timestamp to avoid using stale/incorrect timestamps from remote updates
+		// Only nodes that fetch blocks directly will emit timestamp metrics (via direct tracker update)
+		e.tracker.SetLatestBlockNumber(e.upstream, value, 0)
 	})
 	fbs.OnValue(func(value int64) {
 		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
@@ -367,6 +369,12 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		),
 	)
 	defer span.End()
+
+	// Read networkLabel with lock to avoid race condition
+	e.stateMu.RLock()
+	networkLabel := e.networkLabel
+	e.stateMu.RUnlock()
+
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		if e.logger.GetLevel() <= zerolog.TraceLevel {
 			e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
@@ -374,10 +382,10 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.networkLabel,
+			networkLabel,
 			e.upstream.Id(),
 		).Inc()
-		blockNum, err := e.fetchBlock(ctx, "latest")
+		blockNum, blockTimestamp, err := e.fetchBlock(ctx, "latest")
 		if err != nil || blockNum == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
@@ -412,8 +420,13 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.latestBlockFailureCount = 0
 		e.stateMu.Unlock()
 
+		// Directly update tracker with the correct timestamp for this locally-fetched block
+		// This happens BEFORE the OnValue callback is triggered, ensuring only the fetching node emits the metric
+		e.tracker.SetLatestBlockNumber(e.upstream, blockNum, blockTimestamp)
+
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
+			Int64("blockTimestamp", blockTimestamp).
 			Msg("fetched latest block from upstream")
 		return blockNum, nil
 	})
@@ -472,17 +485,23 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
+
+	// Read networkLabel with lock to avoid race condition
+	e.stateMu.RLock()
+	networkLabel := e.networkLabel
+	e.stateMu.RUnlock()
+
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.VendorName(),
-			e.networkLabel,
+			networkLabel,
 			e.upstream.Id(),
 		).Inc()
 
 		// Actually fetch from upstream
-		blockNum, err := e.fetchBlock(ctx, "finalized")
+		blockNum, _, err := e.fetchBlock(ctx, "finalized")
 		if err != nil || blockNum == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
@@ -644,7 +663,7 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	return e.skipFinalizedCheck
 }
 
-func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
+func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, int64, error) {
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
@@ -653,23 +672,23 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		defer resp.Release()
 	}
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if jrr == nil || jrr.Error != nil {
-		return 0, jrr.Error
+		return 0, 0, jrr.Error
 	}
 
 	if jrr.IsResultEmptyish(ctx) {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	numberStr, err := jrr.PeekStringByPath(ctx, "number")
 	if err != nil {
-		return 0, &common.BaseError{
+		return 0, 0, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
@@ -682,10 +701,21 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	numberStr = string(append([]byte(nil), numberStr...))
 	blockNum, err := common.HexToInt64(numberStr)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	return blockNum, nil
+	// Extract timestamp using shared function
+	blockTimestamp, err := ExtractBlockTimestampFromResponse(ctx, resp)
+	if err != nil {
+		// If timestamp parsing fails, log debug and continue without timestamp
+		// This gracefully handles invalid timestamps without breaking the flow
+		e.logger.Debug().
+			Err(err).
+			Msg("failed to parse block timestamp, continuing without it")
+		blockTimestamp = 0
+	}
+
+	return blockNum, blockTimestamp, nil
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {

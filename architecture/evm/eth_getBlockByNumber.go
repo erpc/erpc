@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -51,6 +52,32 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		common.SetTraceSpanError(span, err)
 		return nr, err
 	}
+
+	// Track timestamp distance for "latest" blocks
+	if nr != nil && re == nil {
+		rqj, rqErr := nq.JsonRpcRequest(ctx)
+		if rqErr == nil && rqj != nil {
+			rqj.RLock()
+			if len(rqj.Params) >= 1 {
+				if bnp, ok := rqj.Params[0].(string); ok && bnp == "latest" {
+					// Extract timestamp from the response
+					blockTimestamp, tsErr := ExtractBlockTimestampFromResponse(ctx, nr)
+					if tsErr == nil && blockTimestamp > 0 {
+						// Calculate and record distance metric
+						currentTime := time.Now().Unix()
+						distance := currentTime - blockTimestamp
+						telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
+							network.ProjectId(),
+							network.Label(),
+							"network_response",
+						).Set(float64(distance))
+					}
+				}
+			}
+			rqj.RUnlock()
+		}
+	}
+
 	return enforceNonNullBlock(nr)
 }
 

@@ -88,6 +88,12 @@ var (
 		Help:      "Finalized block number of upstreams.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	MetricNetworkLatestBlockTimestampDistance = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_latest_block_timestamp_distance_seconds",
+		Help:      "Distance in seconds between the latest block timestamp and current time for a network.",
+	}, []string{"project", "network", "origin"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

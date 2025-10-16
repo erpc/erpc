@@ -46,6 +46,7 @@ type metadataKey struct {
 
 type NetworkMetadata struct {
 	evmLatestBlockNumber    atomic.Int64
+	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 }
 
@@ -725,7 +726,7 @@ func (t *Tracker) updateSingleUpstreamLag(
 	}
 }
 
-func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
+func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64, blockTimestamp int64) {
 	id := upstream.Id()
 	net := upstream.NetworkId()
 	netLabel := upstream.NetworkLabel()
@@ -750,6 +751,20 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g := t.getLatestBlockGauge(t.projectId, "*", netLabel, "*")
 		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
+
+		// Atomically update timestamp when network-level block number is updated
+		if blockTimestamp > 0 {
+			ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
+
+			// Calculate and record distance metric from EVM state poller
+			currentTime := time.Now().Unix()
+			distance := currentTime - blockTimestamp
+			telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
+				t.projectId,
+				netLabel,
+				"evm_state_poller",
+			).Set(float64(distance))
+		}
 	}
 
 	// 2) Update this upstream's latest block
