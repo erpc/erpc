@@ -79,14 +79,9 @@ func NewPayloadFromHttp(method string, remoteAddr string, headers http.Header, a
 		}
 	}
 
-	// Add IP-based authentication
+	// Default to network strategy when no other auth signals are present.
 	if ap.Type == "" {
-		xff := headers.Get("X-Forwarded-For")
 		ap.Type = common.AuthTypeNetwork
-		ap.Network = &NetworkPayload{
-			Address:        remoteAddr,
-			ForwardProxies: strings.Split(xff, ","),
-		}
 	}
 
 	return ap, nil

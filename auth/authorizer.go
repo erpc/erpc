@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -17,10 +16,11 @@ type Authorizer struct {
 	cfg                  *common.AuthStrategyConfig
 	strategy             AuthStrategy
 	rateLimitersRegistry *upstream.RateLimitersRegistry
+	index                int
 }
 
 // NewAuthorizer creates a new Authorizer based on the provided configuration
-func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*Authorizer, error) {
+func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId string, cfg *common.AuthStrategyConfig, rateLimitersRegistry *upstream.RateLimitersRegistry, index int) (*Authorizer, error) {
 	if cfg == nil {
 		return nil, common.NewErrInvalidConfig("auth strategy config is nil")
 	}
@@ -72,6 +72,8 @@ func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId str
 		cfg:                  cfg,
 		strategy:             strategy,
 		rateLimitersRegistry: rateLimitersRegistry,
+		projectId:            projectId,
+		index:                index,
 	}, nil
 }
 
@@ -112,12 +114,19 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 	return shouldApply
 }
 
-func (a *Authorizer) acquireRateLimitPermit(user *common.User, method string) error {
-	if a.cfg.RateLimitBudget == "" {
+func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest, method string) error {
+	// Determine effective budget
+	effectiveBudget := a.cfg.RateLimitBudget
+	if req != nil {
+		if u := req.User(); u != nil && u.RateLimitBudget != "" {
+			effectiveBudget = u.RateLimitBudget
+		}
+	}
+	if effectiveBudget == "" {
 		return nil
 	}
 
-	rlb, errNetLimit := a.rateLimitersRegistry.GetBudget(a.cfg.RateLimitBudget)
+	rlb, errNetLimit := a.rateLimitersRegistry.GetBudget(effectiveBudget)
 	if errNetLimit != nil {
 		return errNetLimit
 	}
@@ -125,34 +134,24 @@ func (a *Authorizer) acquireRateLimitPermit(user *common.User, method string) er
 		return nil
 	}
 
-	lg := a.logger.With().Str("method", method).Logger()
-
-	rules, errRules := rlb.GetRulesByMethod(method)
-	if errRules != nil {
-		return errRules
+	allowed, err := rlb.TryAcquirePermit(ctx, a.projectId, req, method, "", "", fmt.Sprintf("%s:%d", string(a.cfg.Type), a.index), "auth")
+	if err != nil {
+		return err
 	}
-	lg.Debug().Msgf("found %d auth-level rate limiters", len(rules))
-
-	if len(rules) > 0 {
-		for _, rule := range rules {
-			permit := rule.Limiter.TryAcquirePermit()
-			if !permit {
-				telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(
-					a.projectId,
-					string(a.cfg.Type),
-					method,
-				).Inc()
-				return common.NewErrAuthRateLimitRuleExceeded(
-					a.projectId,
-					string(a.cfg.Type),
-					a.cfg.RateLimitBudget,
-					fmt.Sprintf("%+v", rule.Config),
-				)
-			} else {
-				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("auth-level rate limit passed")
-			}
+	if !allowed {
+		uid, cip := "n/a", "n/a"
+		if req != nil {
+			uid = req.UserId()
+			cip = req.ClientIP()
 		}
+		return common.NewErrAuthRateLimitRuleExceeded(
+			a.projectId,
+			string(a.cfg.Type),
+			effectiveBudget,
+			fmt.Sprintf("method:%s", method),
+			uid,
+			cip,
+		)
 	}
-
 	return nil
 }

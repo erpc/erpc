@@ -23,7 +23,7 @@ func (s *SiweStrategy) Supports(ap *AuthPayload) bool {
 	return ap.Type == common.AuthTypeSiwe
 }
 
-func (s *SiweStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*common.User, error) {
+func (s *SiweStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	if ap.Siwe == nil {
 		return nil, common.NewErrAuthUnauthorized("siwe", "missing SIWE payload")
 	}
@@ -49,9 +49,11 @@ func (s *SiweStrategy) Authenticate(ctx context.Context, ap *AuthPayload) (*comm
 		return nil, common.NewErrAuthUnauthorized("siwe", fmt.Sprintf("SIWE message expired: %s", err))
 	}
 
-	return &common.User{
-		Id: strings.ToLower(message.GetAddress().String()),
-	}, nil
+	user := &common.User{Id: strings.ToLower(message.GetAddress().String())}
+	if s.cfg.RateLimitBudget != "" {
+		user.RateLimitBudget = s.cfg.RateLimitBudget
+	}
+	return user, nil
 }
 
 func (s *SiweStrategy) isDomainAllowed(domain string) bool {

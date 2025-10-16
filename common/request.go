@@ -96,6 +96,9 @@ type NormalizedRequest struct {
 	// Cached agent information to avoid recalculation
 	agentName    atomic.Value // Cached agent name from User-Agent
 	agentVersion atomic.Value // Cached agent version from User-Agent
+
+	// Resolved client IP (set by HTTP ingress using trusted forwarders)
+	clientIP atomic.Value
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -468,6 +471,27 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 			e.Str("body", string(r.body))
 		}
 	}
+}
+
+// SetClientIP stores the resolved client IP address
+func (r *NormalizedRequest) SetClientIP(ip string) {
+	if r == nil {
+		return
+	}
+	r.clientIP.Store(ip)
+}
+
+// ClientIP returns the resolved client IP address or "n/a" if not available
+func (r *NormalizedRequest) ClientIP() string {
+	if r == nil {
+		return "n/a"
+	}
+	if v := r.clientIP.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return "n/a"
 }
 
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm
@@ -868,11 +892,11 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		)
 	}
 
-    // Capture any UseUpstream directive to be applied inside the generic selection loop
-    var useUpstreamPattern string
-    if r.directives != nil && r.directives.UseUpstream != "" {
-        useUpstreamPattern = r.directives.UseUpstream
-    }
+	// Capture any UseUpstream directive to be applied inside the generic selection loop
+	var useUpstreamPattern string
+	if r.directives != nil && r.directives.UseUpstream != "" {
+		useUpstreamPattern = r.directives.UseUpstream
+	}
 
 	upstreamCount := len(r.upstreamList)
 
@@ -882,15 +906,15 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 		idx := r.UpstreamIdx % uint32(upstreamCount) // #nosec G115
 		r.UpstreamIdx++                              // Guaranteed increment for next caller
 
-        upstream := r.upstreamList[idx]
+		upstream := r.upstreamList[idx]
 
-        // If a UseUpstream directive is provided, only consider matching upstreams
-        if useUpstreamPattern != "" {
-            match, err := WildcardMatch(useUpstreamPattern, upstream.Id())
-            if err != nil || !match {
-                continue
-            }
-        }
+		// If a UseUpstream directive is provided, only consider matching upstreams
+		if useUpstreamPattern != "" {
+			match, err := WildcardMatch(useUpstreamPattern, upstream.Id())
+			if err != nil || !match {
+				continue
+			}
+		}
 
 		// Skip if already consumed (gave valid response or consensus-valid error)
 		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
@@ -956,4 +980,3 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 		r.ConsumedUpstreams.Delete(upstream)
 	}
 }
-

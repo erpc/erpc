@@ -651,6 +651,16 @@ func (s *ServerConfig) SetDefaults() error {
 		s.IncludeErrorDetails = util.BoolPtr(true)
 	}
 
+	// Safe defaults for client IP resolution
+	if len(s.TrustedIPForwarders) == 0 {
+		// Only loopback by default; do not trust private subnets unless explicitly configured
+		s.TrustedIPForwarders = []string{"127.0.0.1/8", "::1/128"}
+	}
+	if s.TrustedIPHeaders == nil {
+		// Empty by default to avoid trusting headers unless explicitly configured
+		s.TrustedIPHeaders = []string{}
+	}
+
 	return nil
 }
 
@@ -2262,6 +2272,9 @@ func (s *SecretStrategyConfig) SetDefaults() error {
 }
 
 func (j *JwtStrategyConfig) SetDefaults() error {
+	if j.RateLimitBudgetClaimName == "" {
+		j.RateLimitBudgetClaimName = "rlm"
+	}
 	return nil
 }
 
@@ -2274,6 +2287,12 @@ func (n *NetworkStrategyConfig) SetDefaults() error {
 }
 
 func (r *RateLimiterConfig) SetDefaults() error {
+	if r.Store == nil {
+		r.Store = &RateLimitStoreConfig{}
+	}
+	if err := r.Store.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for rate limit store: %w", err)
+	}
 	if len(r.Budgets) > 0 {
 		for _, budget := range r.Budgets {
 			if err := budget.SetDefaults(); err != nil {
@@ -2282,6 +2301,21 @@ func (r *RateLimiterConfig) SetDefaults() error {
 		}
 	}
 
+	return nil
+}
+
+func (r *RateLimitStoreConfig) SetDefaults() error {
+	if r.Driver == "" {
+		r.Driver = "memory"
+	}
+	if r.Driver == "redis" {
+		if r.Redis == nil {
+			r.Redis = &RedisConnectorConfig{}
+		}
+		if err := r.Redis.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for redis connector: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -2298,11 +2332,13 @@ func (b *RateLimitBudgetConfig) SetDefaults() error {
 }
 
 func (r *RateLimitRuleConfig) SetDefaults() error {
-	if r.WaitTime == 0 {
-		r.WaitTime = Duration(1 * time.Second)
-	}
-	if r.Period == 0 {
-		r.Period = Duration(1 * time.Second)
+	// Default to 'second' when period is unset or invalid
+	switch r.Period {
+	case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+		RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+		// ok
+	default:
+		r.Period = RateLimitPeriodSecond
 	}
 	if r.Method == "" {
 		r.Method = "*"

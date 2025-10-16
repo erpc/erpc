@@ -27,6 +27,9 @@ func TestProject_Forward(t *testing.T) {
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{
+				Store: &common.RateLimitStoreConfig{
+					Driver: "memory",
+				},
 				Budgets: []*common.RateLimitBudgetConfig{
 					{
 						Id: "MyLimiterBudget_Test1",
@@ -34,8 +37,7 @@ func TestProject_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 3,
-								Period:   common.Duration(60 * time.Second),
-								WaitTime: common.Duration(0),
+								Period:   common.RateLimitPeriodMinute,
 							},
 						},
 					},
@@ -104,6 +106,10 @@ func TestProject_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		// Align to the start of the next minute to avoid rate limit window rollover flakiness
+		now := time.Now()
+		time.Sleep(time.Until(now.Truncate(time.Minute).Add(time.Minute)))
 
 		var lastErr error
 		var lastResp *common.NormalizedResponse

@@ -88,7 +88,11 @@ func (s *HttpServer) handleHealthCheck(
 			return
 		}
 		if s.healthCheckAuthRegistry != nil {
-			_, err := s.healthCheckAuthRegistry.Authenticate(ctx, "healthcheck", ap)
+			// Create a minimal normalized request to carry client IP context
+			nq := common.NewNormalizedRequest(nil)
+			clientIP := s.resolveRealClientIP(r)
+			nq.SetClientIP(clientIP)
+			_, err := s.healthCheckAuthRegistry.Authenticate(ctx, nq, "healthcheck", ap)
 			if err != nil {
 				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
 				return

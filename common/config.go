@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
@@ -103,6 +104,8 @@ type ServerConfig struct {
 	WaitBeforeShutdown  *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
 	WaitAfterShutdown   *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
 	IncludeErrorDetails *bool           `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	TrustedIPForwarders []string        `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
+	TrustedIPHeaders    []string        `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 }
 
 type HealthCheckConfig struct {
@@ -965,6 +968,7 @@ func (c *PunishMisbehaviorConfig) Copy() *PunishMisbehaviorConfig {
 }
 
 type RateLimiterConfig struct {
+	Store   *RateLimitStoreConfig    `yaml:"store,omitempty" json:"store"`
 	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets" tstype:"RateLimitBudgetConfig[]"`
 }
 
@@ -974,10 +978,161 @@ type RateLimitBudgetConfig struct {
 }
 
 type RateLimitRuleConfig struct {
-	Method   string   `yaml:"method" json:"method"`
-	MaxCount uint     `yaml:"maxCount" json:"maxCount"`
-	Period   Duration `yaml:"period" json:"period" tstype:"Duration"`
-	WaitTime Duration `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
+	Method   string `yaml:"method" json:"method"`
+	MaxCount uint32 `yaml:"maxCount" json:"maxCount"`
+	// Period is the canonical period selector. Supported: second, minute, hour, day, week, month, year
+	Period     RateLimitPeriod `yaml:"period" json:"period" tstype:"RateLimitPeriod"`
+	WaitTime   Duration        `yaml:"waitTime,omitempty" json:"waitTime,omitempty" tstype:"Duration"`
+	PerIP      bool            `yaml:"perIP,omitempty" json:"perIP,omitempty"`
+	PerUser    bool            `yaml:"perUser,omitempty" json:"perUser,omitempty"`
+	PerNetwork bool            `yaml:"perNetwork,omitempty" json:"perNetwork,omitempty"`
+}
+
+// ScopeString returns a comma-separated list of enabled scopes in deterministic order.
+// Possible values: "user", "network", "ip". Empty string if no scope-specific flags are enabled.
+func (c *RateLimitRuleConfig) ScopeString() string {
+	scopes := make([]string, 0, 3)
+	if c.PerUser {
+		scopes = append(scopes, "user")
+	}
+	if c.PerNetwork {
+		scopes = append(scopes, "network")
+	}
+	if c.PerIP {
+		scopes = append(scopes, "ip")
+	}
+	return strings.Join(scopes, ",")
+}
+
+// RateLimitPeriod enumerates supported periods for rate limiting.
+// It is an int enum to enable strong typing in TypeScript generation, while
+// marshaling to JSON/YAML as human-readable strings like "second", "minute", etc.
+type RateLimitPeriod int
+
+const (
+	RateLimitPeriodSecond RateLimitPeriod = iota
+	RateLimitPeriodMinute
+	RateLimitPeriodHour
+	RateLimitPeriodDay
+	RateLimitPeriodWeek
+	RateLimitPeriodMonth
+	RateLimitPeriodYear
+)
+
+func (p RateLimitPeriod) String() string {
+	switch p {
+	case RateLimitPeriodSecond:
+		return "second"
+	case RateLimitPeriodMinute:
+		return "minute"
+	case RateLimitPeriodHour:
+		return "hour"
+	case RateLimitPeriodDay:
+		return "day"
+	case RateLimitPeriodWeek:
+		return "week"
+	case RateLimitPeriodMonth:
+		return "month"
+	case RateLimitPeriodYear:
+		return "year"
+	default:
+		return "unknown"
+	}
+}
+
+func (p RateLimitPeriod) MarshalJSON() ([]byte, error) {
+	return SonicCfg.Marshal(p.String())
+}
+
+// Backward-compat: accept Go duration strings (e.g., 1s, 1m, 1h, 24h, 7d, 30d, 365d) and map to enum.
+func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try as string (enum name)
+	var s string
+	if err := unmarshal(&s); err == nil {
+		ls := strings.ToLower(strings.TrimSpace(s))
+		switch ls {
+		case "second", "1s":
+			*p = RateLimitPeriodSecond
+			return nil
+		case "minute", "1m", "60s":
+			*p = RateLimitPeriodMinute
+			return nil
+		case "hour", "1h", "3600s":
+			*p = RateLimitPeriodHour
+			return nil
+		case "day", "24h", "1d", "86400s":
+			*p = RateLimitPeriodDay
+			return nil
+		case "week", "7d", "168h", "604800s":
+			*p = RateLimitPeriodWeek
+			return nil
+		case "month", "30d", "720h", "2592000s":
+			*p = RateLimitPeriodMonth
+			return nil
+		case "year", "365d", "8760h", "31536000s":
+			*p = RateLimitPeriodYear
+			return nil
+		default:
+			// Try as duration expression (e.g., 1s)
+			if d, err := time.ParseDuration(s); err == nil {
+				switch d {
+				case time.Second:
+					*p = RateLimitPeriodSecond
+				case time.Minute:
+					*p = RateLimitPeriodMinute
+				case time.Hour:
+					*p = RateLimitPeriodHour
+				case 24 * time.Hour:
+					*p = RateLimitPeriodDay
+				case 7 * 24 * time.Hour:
+					*p = RateLimitPeriodWeek
+				case 30 * 24 * time.Hour:
+					*p = RateLimitPeriodMonth
+				case 365 * 24 * time.Hour:
+					*p = RateLimitPeriodYear
+				default:
+					return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
+				}
+				return nil
+			}
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
+		}
+	}
+	// Try as integer enum
+	var i int
+	if err := unmarshal(&i); err == nil {
+		switch RateLimitPeriod(i) {
+		case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+			RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+			*p = RateLimitPeriod(i)
+			return nil
+		default:
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %d)", i)
+		}
+	}
+	// Not a string → invalid for our schema
+	return fmt.Errorf("invalid period type; expected string enum, integer enum, or duration like '1s'")
+}
+
+func (p RateLimitPeriod) Unit() pb.RateLimitResponse_RateLimit_Unit {
+	switch p {
+	case RateLimitPeriodSecond:
+		return pb.RateLimitResponse_RateLimit_SECOND
+	case RateLimitPeriodMinute:
+		return pb.RateLimitResponse_RateLimit_MINUTE
+	case RateLimitPeriodHour:
+		return pb.RateLimitResponse_RateLimit_HOUR
+	case RateLimitPeriodDay:
+		return pb.RateLimitResponse_RateLimit_DAY
+	case RateLimitPeriodWeek:
+		return pb.RateLimitResponse_RateLimit_WEEK
+	case RateLimitPeriodMonth:
+		return pb.RateLimitResponse_RateLimit_MONTH
+	case RateLimitPeriodYear:
+		return pb.RateLimitResponse_RateLimit_YEAR
+	default:
+		return pb.RateLimitResponse_RateLimit_UNKNOWN
+	}
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
@@ -1197,6 +1352,8 @@ type AuthStrategyConfig struct {
 type SecretStrategyConfig struct {
 	Id    string `yaml:"id" json:"id"`
 	Value string `yaml:"value" json:"value"`
+	// RateLimitBudget, if set, is applied to the authenticated user from this strategy
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 // custom json marshaller to redact the secret value
@@ -1224,10 +1381,16 @@ type JwtStrategyConfig struct {
 	AllowedAlgorithms []string          `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
 	RequiredClaims    []string          `yaml:"requiredClaims" json:"requiredClaims"`
 	VerificationKeys  map[string]string `yaml:"verificationKeys" json:"verificationKeys"`
+	// RateLimitBudgetClaimName is the JWT claim name that, if present,
+	// will be used to set the per-user RateLimitBudget override.
+	// Defaults to "rlm".
+	RateLimitBudgetClaimName string `yaml:"rateLimitBudgetClaimName,omitempty" json:"rateLimitBudgetClaimName,omitempty"`
 }
 
 type SiweStrategyConfig struct {
 	AllowedDomains []string `yaml:"allowedDomains" json:"allowedDomains"`
+	// RateLimitBudget, if set, is applied to the authenticated user
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 type NetworkStrategyConfig struct {
@@ -1235,6 +1398,8 @@ type NetworkStrategyConfig struct {
 	AllowedCIDRs   []string `yaml:"allowedCIDRs" json:"allowedCIDRs"`
 	AllowLocalhost bool     `yaml:"allowLocalhost" json:"allowLocalhost"`
 	TrustedProxies []string `yaml:"trustedProxies" json:"trustedProxies"`
+	// RateLimitBudget, if set, is applied to the authenticated user (client IP)
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 type LabelMode string
@@ -1268,9 +1433,17 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 
 func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("method", c.Method).
-		Uint("maxCount", c.MaxCount).
-		Str("periodMs", fmt.Sprintf("%d", c.Period)).
+		Uint("maxCount", uint(c.MaxCount)).
+		Str("period", c.Period.String()).
 		Str("waitTimeMs", fmt.Sprintf("%d", c.WaitTime))
+}
+
+// RateLimitStoreConfig defines where rate limit counters are stored
+type RateLimitStoreConfig struct {
+	Driver         string                `yaml:"driver" json:"driver"` // "redis" | "memory"
+	Redis          *RedisConnectorConfig `yaml:"redis,omitempty" json:"redis,omitempty"`
+	CacheKeyPrefix string                `yaml:"cacheKeyPrefix,omitempty" json:"cacheKeyPrefix"`
+	NearLimitRatio float32               `yaml:"nearLimitRatio,omitempty" json:"nearLimitRatio"`
 }
 
 func (c *NetworkConfig) NetworkId() string {

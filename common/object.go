@@ -85,6 +85,49 @@ func setJsValueToGoField(jsValue sobek.Value, fieldValue reflect.Value) error {
 		}
 	}
 
+	// Handle special case for RateLimitPeriod (accept string or number)
+	if fieldValue.Type() == reflect.TypeOf(RateLimitPeriod(0)) {
+		jsKind := jsValue.ExportType().Kind()
+		switch jsKind {
+		case reflect.String:
+			s := strings.ToLower(strings.TrimSpace(jsValue.String()))
+			var val RateLimitPeriod
+			switch s {
+			case "second", "1s":
+				val = RateLimitPeriodSecond
+			case "minute", "1m", "60s":
+				val = RateLimitPeriodMinute
+			case "hour", "1h", "3600s":
+				val = RateLimitPeriodHour
+			case "day", "24h", "1d", "86400s":
+				val = RateLimitPeriodDay
+			case "week", "7d", "168h":
+				val = RateLimitPeriodWeek
+			case "month", "30d", "720h":
+				val = RateLimitPeriodMonth
+			case "year", "365d", "8760h":
+				val = RateLimitPeriodYear
+			default:
+				return fmt.Errorf("invalid rate limit period: %s", s)
+			}
+			fieldValue.Set(reflect.ValueOf(val))
+			return nil
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			i := jsValue.ToInteger()
+			v := RateLimitPeriod(i)
+			switch v {
+			case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+				RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+				fieldValue.Set(reflect.ValueOf(v))
+				return nil
+			default:
+				return fmt.Errorf("invalid rate limit period: %d", i)
+			}
+		default:
+			return fmt.Errorf("invalid rate limit period type: %v", jsKind)
+		}
+	}
+
 	switch fieldValue.Kind() {
 	case reflect.Bool:
 		fieldValue.SetBool(jsValue.ToBoolean())

@@ -391,24 +391,25 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, err
 		}
 		if len(rules) > 0 {
-			for _, rule := range rules {
-				if !rule.Limiter.TryAcquirePermit() {
-					lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
-					u.metricsTracker.RecordUpstreamSelfRateLimited(
-						u,
-						method,
-						nrq,
-					)
-					err = common.NewErrUpstreamRateLimitRuleExceeded(
-						cfg.Id,
-						cfg.RateLimitBudget,
-						fmt.Sprintf("%+v", rule.Config),
-					)
-					common.SetTraceSpanError(span, err)
-					return nil, err
-				} else {
-					lg.Trace().Str("budget", cfg.RateLimitBudget).Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
-				}
+			allowed, err := limitersBudget.TryAcquirePermit(ctx, u.ProjectId, nrq, method, u.VendorName(), cfg.Id, "", "upstream")
+			if err != nil {
+				common.SetTraceSpanError(span, err)
+				return nil, err
+			}
+			if !allowed {
+				lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit exceeded")
+				u.metricsTracker.RecordUpstreamSelfRateLimited(
+					u,
+					method,
+					nrq,
+				)
+				err = common.NewErrUpstreamRateLimitRuleExceeded(
+					cfg.Id,
+					cfg.RateLimitBudget,
+					fmt.Sprintf("method:%s", method),
+				)
+				common.SetTraceSpanError(span, err)
+				return nil, err
 			}
 		}
 	}
@@ -495,7 +496,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.recordRemoteRateLimit(method, nrq)
+						u.recordRemoteRateLimit(ctx, method, nrq)
 					}
 					u.metricsTracker.RecordUpstreamFailure(
 						u,
@@ -951,8 +952,9 @@ func (u *Upstream) recordRequestSuccess(method string) {
 	}
 }
 
-func (u *Upstream) recordRemoteRateLimit(method string, nrq *common.NormalizedRequest) {
+func (u *Upstream) recordRemoteRateLimit(ctx context.Context, method string, nrq *common.NormalizedRequest) {
 	u.metricsTracker.RecordUpstreamRemoteRateLimited(
+		ctx,
 		u,
 		method,
 		nrq,

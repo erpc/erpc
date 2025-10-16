@@ -301,7 +301,7 @@ func simulateRateLimitedRequestMetrics(tracker *Tracker, upstream common.Upstrea
 			tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
 		}
 		if i >= selfLimited && i < selfLimited+remoteLimited {
-			tracker.RecordUpstreamRemoteRateLimited(upstream, method, nil)
+			tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 		}
 	}
 }
@@ -329,11 +329,8 @@ func resetMetrics() {
 	if telemetry.MetricUpstreamErrorTotal != nil {
 		telemetry.MetricUpstreamErrorTotal.Reset()
 	}
-	if telemetry.MetricUpstreamSelfRateLimitedTotal != nil {
-		telemetry.MetricUpstreamSelfRateLimitedTotal.Reset()
-	}
-	if telemetry.MetricUpstreamRemoteRateLimitedTotal != nil {
-		telemetry.MetricUpstreamRemoteRateLimitedTotal.Reset()
+	if telemetry.MetricRateLimitsTotal != nil {
+		telemetry.MetricRateLimitsTotal.Reset()
 	}
 }
 

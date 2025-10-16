@@ -1,12 +1,19 @@
 package upstream
 
 import (
+	"context"
+	"fmt"
 	"sync"
 
+	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
+	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
+	"github.com/envoyproxy/ratelimit/src/config"
+	"github.com/envoyproxy/ratelimit/src/limiter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
-	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type RateLimiterBudget struct {
@@ -15,11 +22,11 @@ type RateLimiterBudget struct {
 	Rules    []*RateLimitRule
 	registry *RateLimitersRegistry
 	rulesMu  sync.RWMutex
+	cache    limiter.RateLimitCache
 }
 
 type RateLimitRule struct {
-	Config  *common.RateLimitRuleConfig
-	Limiter ratelimiter.RateLimiter[interface{}]
+	Config *common.RateLimitRuleConfig
 }
 
 func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, error) {
@@ -41,26 +48,140 @@ func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, e
 	return rules, nil
 }
 
-func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint) error {
+// AdjustBudget updates the MaxCount for the provided rule and refreshes telemetry.
+func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32) error {
+	if rule == nil || rule.Config == nil {
+		return nil
+	}
 	b.rulesMu.Lock()
 	defer b.rulesMu.Unlock()
 
-	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d ", rule.Config.MaxCount, newMaxCount)
-
-	newCfg := &common.RateLimitRuleConfig{
-		Method:   rule.Config.Method,
-		Period:   rule.Config.Period,
-		MaxCount: newMaxCount,
-		WaitTime: rule.Config.WaitTime,
+	prev := rule.Config.MaxCount
+	if prev == newMaxCount {
+		return nil
 	}
-	newLimiter, err := b.registry.createRateLimiter(b.Id, newCfg)
-	if err != nil {
-		return err
-	}
-	rule.Config = newCfg
-	rule.Limiter = newLimiter
-
-	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method).Set(float64(newMaxCount))
-
+	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d", prev, newMaxCount)
+	rule.Config.MaxCount = newMaxCount
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(newMaxCount))
 	return nil
+}
+
+// TryAcquirePermit evaluates all matching rules for the given method using Envoy's DoLimit
+// and returns whether the request is allowed.
+func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string) (bool, error) {
+	if b.cache == nil {
+		return true, nil
+	}
+
+	// Detailed span for internal evaluation
+	ctx, span := common.StartDetailSpan(ctx, "RateLimiter.TryAcquirePermit",
+		trace.WithAttributes(
+			attribute.String("budget", b.Id),
+			attribute.String("method", method),
+		),
+	)
+	defer span.End()
+
+	rules, err := b.GetRulesByMethod(method)
+	if err != nil {
+		return false, err
+	}
+	if len(rules) == 0 {
+		return true, nil
+	}
+
+	for _, rule := range rules {
+		// Build descriptor entries
+		entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "method", Value: method}}
+		if rule.Config.PerIP {
+			if req == nil {
+				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perIP")
+			}
+			if ip := req.ClientIP(); ip != "" && ip != "n/a" {
+				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: ip})
+			}
+		}
+		if rule.Config.PerUser {
+			if req == nil {
+				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perUser")
+			}
+			if uid := req.UserId(); uid != "" && uid != "n/a" {
+				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "user", Value: uid})
+			}
+		}
+		if rule.Config.PerNetwork {
+			if req == nil {
+				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perNetwork")
+			}
+			if nid := req.NetworkId(); nid != "" && nid != "n/a" {
+				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "network", Value: nid})
+			}
+		}
+
+		descriptor := &pb_struct.RateLimitDescriptor{Entries: entries}
+		rlReq := &pb.RateLimitRequest{Domain: b.Id, Descriptors: []*pb_struct.RateLimitDescriptor{descriptor}, HitsAddend: 1}
+
+		// Map enum period to unit (supports second..year) and construct full RateLimit
+		unit := rule.Config.Period.Unit()
+		// Build stats key similar to Envoy: domain + '.' + keys (avoid high-cardinality values)
+		statsKey := b.Id + ".method_" + method
+		if rule.Config.PerIP {
+			statsKey += ".ip"
+		}
+		if rule.Config.PerUser {
+			statsKey += ".user"
+		}
+		if rule.Config.PerNetwork {
+			statsKey += ".network"
+		}
+		rlStats := b.registry.statsManager.NewStats(statsKey)
+		limit := config.NewRateLimit(rule.Config.MaxCount, unit, rlStats, false, false, "", nil, false)
+
+		// Emit consolidated budget decision metrics only (avoid redundant per-call trio counters)
+		userLabel := ""
+		agentName := ""
+		networkLabel := ""
+		finality := ""
+		if req != nil {
+			userLabel = req.UserId()
+			agentName = req.AgentName()
+			networkLabel = req.NetworkId()
+			finality = req.Finality(ctx).String()
+		}
+
+		// External span around cache.DoLimit to capture total time spent
+		_, doSpan := common.StartSpan(ctx, "RateLimiter.DoLimit",
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("budget", b.Id),
+				attribute.String("method", method),
+				attribute.String("scope", rule.Config.ScopeString()),
+			),
+		)
+		statuses := b.cache.DoLimit(ctx, rlReq, []*config.RateLimit{limit})
+		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
+			doSpan.SetAttributes(attribute.String("result", "over_limit"))
+			doSpan.End()
+			// Record blocked event centrally here to avoid double counting at call sites
+			telemetry.CounterHandle(
+				telemetry.MetricRateLimitsTotal,
+				projectId,                 // project
+				networkLabel,              // network
+				vendor,                    // vendor
+				upstreamId,                // upstream
+				method,                    // category
+				finality,                  // finality
+				userLabel,                 // user
+				agentName,                 // agent_name
+				b.Id,                      // budget
+				rule.Config.ScopeString(), // scope
+				authLabel,                 // auth
+				origin,                    // origin
+			).Inc()
+			return false, nil
+		}
+		doSpan.SetAttributes(attribute.String("result", "ok"))
+		doSpan.End()
+	}
+	return true, nil
 }

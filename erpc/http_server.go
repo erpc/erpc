@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -44,6 +45,9 @@ type HttpServer struct {
 	healthCheckAuthRegistry *auth.AuthRegistry
 	draining                *atomic.Bool
 	gzipPool                *util.GzipReaderPool
+	trustedForwarderNets    []net.IPNet
+	trustedForwarderIPs     map[string]struct{}
+	trustedIPHeaders        []string
 }
 
 func NewHttpServer(
@@ -85,6 +89,43 @@ func NewHttpServer(
 		erpc:           erpc,
 		draining:       &draining,
 		gzipPool:       gzipPool,
+	}
+
+	if cfg != nil {
+		srv.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
+		var forwarders []string
+		forwarders = append(forwarders, cfg.TrustedIPForwarders...)
+		for _, entry := range forwarders {
+			val := strings.TrimSpace(entry)
+			if val == "" {
+				continue
+			}
+			if strings.Contains(val, "/") {
+				if _, ipnet, err := net.ParseCIDR(val); err == nil && ipnet != nil {
+					srv.trustedForwarderNets = append(srv.trustedForwarderNets, *ipnet)
+				} else {
+					logger.Warn().Str("trustedForwarder", val).Msg("invalid CIDR in trusted forwarders; ignoring")
+				}
+			} else {
+				if ip := net.ParseIP(val); ip != nil {
+					srv.trustedForwarderIPs[ip.String()] = struct{}{}
+				} else {
+					logger.Warn().Str("trustedForwarder", val).Msg("invalid IP in trusted forwarders; ignoring")
+				}
+			}
+		}
+	}
+
+	if cfg != nil {
+		var hdrs []string
+		hdrs = append(hdrs, cfg.TrustedIPHeaders...)
+		for _, h := range hdrs {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			srv.trustedIPHeaders = append(srv.trustedIPHeaders, h)
+		}
 	}
 
 	h := srv.createRequestHandler()
@@ -363,6 +404,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				rawReq = nil
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
 
+				// Resolve and set real client IP before any rate limiting/auth checks
+				clientIP := s.resolveRealClientIP(r)
+				nq.SetClientIP(clientIP)
+
 				// Validate the raw JSON-RPC payload early
 				if err := nq.Validate(); err != nil {
 					responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
@@ -388,16 +433,16 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 
 				if isAdmin {
-					_, err := s.erpc.AdminAuthenticate(requestCtx, method, ap)
+					_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
 					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				} else {
-					user, err := project.AuthenticateConsumer(requestCtx, method, ap)
+					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
 					if err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -1447,4 +1492,129 @@ func gzipHandler(next http.Handler) http.Handler {
 		// Ensure proper cleanup
 		_ = gzw.Close()
 	})
+}
+
+// resolveRealClientIP determines the originating client IP, honoring standard forwarding headers
+// only when the immediate peer is a trusted forwarder. Falls back to remote address.
+func (s *HttpServer) resolveRealClientIP(r *http.Request) string {
+	remoteIP := parseRemoteIP(r.RemoteAddr)
+	if remoteIP == nil {
+		return "n/a"
+	}
+
+	if !s.isTrustedForwarder(remoteIP) {
+		return remoteIP.String()
+	}
+
+	// Iterate over configured trusted IP headers in order and parse as XFF-like list
+	for _, hdr := range s.trustedIPHeaders {
+		if hdr == "" {
+			continue
+		}
+		if v := strings.TrimSpace(r.Header.Get(hdr)); v != "" {
+			ips := parseXForwardedFor(v)
+			if ip := trimRightTrustedAndPick(ips, s.isTrustedForwarder); ip != nil {
+				return ip.String()
+			}
+		}
+	}
+
+	return remoteIP.String()
+}
+
+func (s *HttpServer) isTrustedForwarder(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if s.trustedForwarderIPs != nil {
+		if _, ok := s.trustedForwarderIPs[ip.String()]; ok {
+			return true
+		}
+	}
+	for i := range s.trustedForwarderNets {
+		if s.trustedForwarderNets[i].Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// no header allowlist; headers are explicitly configured in server.trustedIPHeaders
+
+func parseRemoteIP(remoteAddr string) net.IP {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	// Remove IPv6 brackets if any
+	host = stripAddrDecorations(host)
+	return net.ParseIP(host)
+}
+
+func parseXForwardedFor(xff string) []net.IP {
+	parts := strings.Split(xff, ",")
+	ips := make([]net.IP, 0, len(parts))
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		v = stripAddrDecorations(v)
+		// Some implementations might include host:port; strip port if present
+		if h, _, err := net.SplitHostPort(v); err == nil {
+			v = h
+		}
+		if ip := net.ParseIP(v); ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+// parseForwardedFor parses RFC 7239 Forwarded header and extracts the sequence of for= IPs
+func parseForwardedFor(fwd string) []net.IP {
+	// Split elements by comma, then params by ';', pick for= value
+	items := strings.Split(fwd, ",")
+	ips := make([]net.IP, 0, len(items))
+	for _, it := range items {
+		params := strings.Split(it, ";")
+		for _, p := range params {
+			p = strings.TrimSpace(p)
+			if len(p) >= 4 && strings.HasPrefix(strings.ToLower(p), "for=") {
+				v := strings.TrimSpace(p[4:])
+				// Remove optional quotes
+				v = strings.Trim(v, "\"")
+				v = stripAddrDecorations(v)
+				// Strip optional :port if present
+				if h, _, err := net.SplitHostPort(v); err == nil {
+					v = h
+				}
+				if ip := net.ParseIP(v); ip != nil {
+					ips = append(ips, ip)
+				}
+			}
+		}
+	}
+	return ips
+}
+
+// trimRightTrustedAndPick removes trailing trusted proxy IPs and returns the nearest untrusted IP (client)
+func trimRightTrustedAndPick(ips []net.IP, isTrusted func(net.IP) bool) net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+	end := len(ips) - 1
+	for end >= 0 && isTrusted(ips[end]) {
+		end--
+	}
+	if end >= 0 {
+		return ips[end]
+	}
+	return nil
+}
+
+// stripAddrDecorations removes brackets and spaces commonly seen around IPv6 or quoted values
+func stripAddrDecorations(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return s[1 : len(s)-1]
+	}
+	return s
 }

@@ -236,9 +236,9 @@ func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return leader
 }
 
-func (n *Network) getFailsafeExecutor(req *common.NormalizedRequest) *FailsafeExecutor {
+func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
 	method, _ := req.Method()
-	finality := req.Finality(context.Background())
+	finality := req.Finality(ctx)
 
 	// First, try to find a specific match for both method and finality
 	for _, fe := range n.failsafeExecutors {
@@ -390,7 +390,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// 3) Apply rate limits
-	if err := n.acquireRateLimitPermit(req); err != nil {
+	if err := n.acquireRateLimitPermit(ctx, req); err != nil {
 		if mlx != nil {
 			mlx.Close(ctx, nil, err)
 		}
@@ -443,7 +443,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// This is the only way to pass additional values to failsafe policy executors context
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	failsafeExecutor := n.getFailsafeExecutor(req)
+	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
 	if failsafeExecutor == nil {
 		return nil, errors.New("no failsafe executor found for this request")
 	}
@@ -1137,7 +1137,7 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 	return nil
 }
 
-func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
+func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {
 	if n.cfg.RateLimitBudget == "" {
 		return nil
 	}
@@ -1163,27 +1163,18 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {
-		for _, rule := range rules {
-			permit := rule.Limiter.TryAcquirePermit()
-			if !permit {
-				finality := req.Finality(context.Background())
-				telemetry.CounterHandle(telemetry.MetricNetworkRequestSelfRateLimited,
-					n.projectId,
-					n.Label(),
-					method,
-					finality.String(),
-					req.UserId(),
-					req.AgentName(),
-				).Inc()
-				return common.NewErrNetworkRateLimitRuleExceeded(
-					n.projectId,
-					n.networkId,
-					n.cfg.RateLimitBudget,
-					fmt.Sprintf("%+v", rule.Config),
-				)
-			} else {
-				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("network-level rate limit passed")
-			}
+		allowed, err := rlb.TryAcquirePermit(ctx, n.projectId, req, method, "", "", "", "network")
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			// Blocked event already recorded in budget.TryAcquirePermit; avoid double recording here
+			return common.NewErrNetworkRateLimitRuleExceeded(
+				n.projectId,
+				n.networkId,
+				n.cfg.RateLimitBudget,
+				fmt.Sprintf("method:%s", method),
+			)
 		}
 	}
 

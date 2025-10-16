@@ -209,6 +209,9 @@ func TestNetwork_BatchRequests(t *testing.T) {
 		err := network.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		require.NoError(t, err)
 
+		// Allow async upstream bootstrapping to settle before issuing batch requests
+		time.Sleep(100 * time.Millisecond)
+
 		// Expect multiple batch calls, each answering for id=1 and id=6
 		gock.New("http://rpc1.localhost").
 			Post("").

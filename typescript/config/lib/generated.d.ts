@@ -50,6 +50,8 @@ export interface ServerConfig {
     waitBeforeShutdown?: Duration;
     waitAfterShutdown?: Duration;
     includeErrorDetails?: boolean;
+    trustedIPForwarders?: string[];
+    trustedIPHeaders?: string[];
 }
 export interface HealthCheckConfig {
     mode?: HealthCheckMode;
@@ -238,6 +240,12 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -277,6 +285,12 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -405,6 +419,7 @@ export interface PunishMisbehaviorConfig {
     sitOutPenalty?: Duration;
 }
 export interface RateLimiterConfig {
+    store?: RateLimitStoreConfig;
     budgets: RateLimitBudgetConfig[];
 }
 export interface RateLimitBudgetConfig {
@@ -414,9 +429,28 @@ export interface RateLimitBudgetConfig {
 export interface RateLimitRuleConfig {
     method: string;
     maxCount: number;
-    period: Duration;
-    waitTime: Duration;
+    /**
+     * Period is the canonical period selector. Supported: second, minute, hour, day, week, month, year
+     */
+    period: RateLimitPeriod;
+    waitTime?: Duration;
+    perIP?: boolean;
+    perUser?: boolean;
+    perNetwork?: boolean;
 }
+/**
+ * RateLimitPeriod enumerates supported periods for rate limiting.
+ * It is an int enum to enable strong typing in TypeScript generation, while
+ * marshaling to JSON/YAML as human-readable strings like "second", "minute", etc.
+ */
+export type RateLimitPeriod = number;
+export declare const RateLimitPeriodSecond: RateLimitPeriod;
+export declare const RateLimitPeriodMinute: RateLimitPeriod;
+export declare const RateLimitPeriodHour: RateLimitPeriod;
+export declare const RateLimitPeriodDay: RateLimitPeriod;
+export declare const RateLimitPeriodWeek: RateLimitPeriod;
+export declare const RateLimitPeriodMonth: RateLimitPeriod;
+export declare const RateLimitPeriodYear: RateLimitPeriod;
 export interface ProxyPoolConfig {
     id: string;
     urls: string[];
@@ -440,6 +474,12 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -492,6 +532,10 @@ export interface AuthStrategyConfig {
 export interface SecretStrategyConfig {
     id: string;
     value: string;
+    /**
+     * RateLimitBudget, if set, is applied to the authenticated user from this strategy
+     */
+    rateLimitBudget?: string;
 }
 export interface DatabaseStrategyConfig {
     connector?: ConnectorConfig;
@@ -511,15 +555,29 @@ export interface JwtStrategyConfig {
     verificationKeys: {
         [key: string]: string;
     };
+    /**
+     * RateLimitBudgetClaimName is the JWT claim name that, if present,
+     * will be used to set the per-user RateLimitBudget override.
+     * Defaults to "rlm".
+     */
+    rateLimitBudgetClaimName?: string;
 }
 export interface SiweStrategyConfig {
     allowedDomains: string[];
+    /**
+     * RateLimitBudget, if set, is applied to the authenticated user
+     */
+    rateLimitBudget?: string;
 }
 export interface NetworkStrategyConfig {
     allowedIPs: string[];
     allowedCIDRs: string[];
     allowLocalhost: boolean;
     trustedProxies: string[];
+    /**
+     * RateLimitBudget, if set, is applied to the authenticated user (client IP)
+     */
+    rateLimitBudget?: string;
 }
 export type LabelMode = string;
 export declare const ErrorLabelModeVerbose: LabelMode;
@@ -533,6 +591,15 @@ export interface MetricsConfig {
     port?: number;
     errorLabelMode?: LabelMode;
     histogramBuckets?: string;
+}
+/**
+ * RateLimitStoreConfig defines where rate limit counters are stored
+ */
+export interface RateLimitStoreConfig {
+    driver: string;
+    redis?: RedisConnectorConfig;
+    cacheKeyPrefix?: string;
+    nearLimitRatio?: number;
 }
 export type DataFinalityState = number;
 /**
@@ -603,6 +670,6 @@ export type HealthTracker = any;
 export type Upstream = any;
 export interface User {
     id: string;
-    persecondratelimit: number;
+    ratelimitbudget: string;
 }
 //# sourceMappingURL=generated.d.ts.map

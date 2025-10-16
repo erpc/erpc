@@ -3,12 +3,11 @@ package auth
 import "github.com/erpc/erpc/common"
 
 type AuthPayload struct {
-	Method  string
-	Type    common.AuthType
-	Secret  *SecretPayload
-	Jwt     *JwtPayload
-	Siwe    *SiwePayload
-	Network *NetworkPayload
+	Method string
+	Type   common.AuthType
+	Secret *SecretPayload
+	Jwt    *JwtPayload
+	Siwe   *SiwePayload
 }
 
 // This payload is used by both "secret" and "database" strategies
@@ -23,9 +22,4 @@ type JwtPayload struct {
 type SiwePayload struct {
 	Signature string
 	Message   string
-}
-
-type NetworkPayload struct {
-	Address        string
-	ForwardProxies []string
 }

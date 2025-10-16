@@ -535,7 +535,7 @@ type ErrAuthRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeAuthRateLimitRuleExceeded ErrorCode = "ErrAuthRateLimitRuleExceeded"
 
-var NewErrAuthRateLimitRuleExceeded = func(projectId, strategy, budget, rule string) error {
+var NewErrAuthRateLimitRuleExceeded = func(projectId, strategy, budget, rule, userId, clientIp string) error {
 	return &ErrAuthRateLimitRuleExceeded{
 		BaseError{
 			Code:    ErrCodeAuthRateLimitRuleExceeded,
@@ -545,6 +545,8 @@ var NewErrAuthRateLimitRuleExceeded = func(projectId, strategy, budget, rule str
 				"strategy":  strategy,
 				"budget":    budget,
 				"rule":      rule,
+				"userId":    userId,
+				"clientIp":  clientIp,
 			},
 		},
 	}

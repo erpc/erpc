@@ -168,7 +168,6 @@ type Tracker struct {
 	urdObsCache sync.Map // map[urdoKey]prometheus.Observer
 
 	// Caches for other hot-path metrics
-	selfRateLimitedCounterCache   sync.Map // map[srltKey]prometheus.Counter
 	remoteRateLimitedCounterCache sync.Map // map[rrltKey]prometheus.Counter
 	latestBlockGaugeCache         sync.Map // map[ubKey]prometheus.Gauge
 	finalizedBlockGaugeCache      sync.Map // map[ubKey]prometheus.Gauge
@@ -211,7 +210,10 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 	return actual.(prometheus.Observer)
 }
 
-type srltKey struct {
+// Removed upstream self rate-limited counter; consolidated under budget decision metric elsewhere.
+
+// Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
+type rrltKey struct {
 	project   string
 	vendor    string
 	network   string
@@ -219,29 +221,27 @@ type srltKey struct {
 	category  string
 	user      string
 	agentName string
+	finality  string
 }
 
-func (t *Tracker) getSelfRateLimitedCounter(up common.Upstream, method, userId, agentName string) prometheus.Counter {
-	key := srltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName}
-	if v, ok := t.selfRateLimitedCounterCache.Load(key); ok {
-		return v.(prometheus.Counter)
-	}
-	c := telemetry.MetricUpstreamSelfRateLimitedTotal.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.user, key.agentName,
-	)
-	actual, _ := t.selfRateLimitedCounterCache.LoadOrStore(key, c)
-	return actual.(prometheus.Counter)
-}
-
-type rrltKey = srltKey
-
-func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName string) prometheus.Counter {
-	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName}
+func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName, finality string) prometheus.Counter {
+	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName, finality}
 	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
 		return v.(prometheus.Counter)
 	}
-	c := telemetry.MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.user, key.agentName,
+	c := telemetry.MetricRateLimitsTotal.WithLabelValues(
+		key.project,   // project
+		key.network,   // network
+		key.vendor,    // vendor
+		key.upstream,  // upstream
+		key.category,  // category
+		key.finality,  // finality
+		key.user,      // user
+		key.agentName, // agent_name
+		"<remote>",    // budget
+		"remote",      // scope (remote upstream)
+		"",            // auth
+		"upstream",    // origin
 	)
 	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, c)
 	return actual.(prometheus.Counter)
@@ -554,26 +554,16 @@ func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
 }
 
 func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
+	// Keep in-memory counters for health calculations, but do not emit per-upstream Prometheus metrics anymore
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).SelfRateLimitedTotal.Add(1)
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
 		t.getNtwMetrics(nk).SelfRateLimitedTotal.Add(1)
 	}
-
-	var userId, agentName string
-	if req != nil {
-		userId = req.UserId()
-		agentName = req.AgentName()
-	} else {
-		userId = "n/a"
-		agentName = "unknown"
-	}
-
-	t.getSelfRateLimitedCounter(up, method, userId, agentName).Inc()
 }
 
-func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
+func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common.Upstream, method string, req *common.NormalizedRequest) {
 	for _, k := range t.getUpsKeys(up, method) {
 		t.getUpsMetrics(k).RemoteRateLimitedTotal.Add(1)
 	}
@@ -581,16 +571,17 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(up common.Upstream, method str
 		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
 	}
 
-	var userId, agentName string
+	var userId, agentName, finality string
 	if req != nil {
 		userId = req.UserId()
 		agentName = req.AgentName()
+		finality = req.Finality(ctx).String()
 	} else {
 		userId = "n/a"
 		agentName = "unknown"
 	}
 
-	t.getRemoteRateLimitedCounter(up, method, userId, agentName).Inc()
+	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finality).Inc()
 }
 
 // --------------------------------------------

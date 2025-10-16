@@ -927,7 +927,7 @@ func simulateRequestsWithRateLimiting(tracker *health.Tracker, upstream common.U
 			tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
 		}
 		if i >= selfLimited && i < selfLimited+remoteLimited {
-			tracker.RecordUpstreamRemoteRateLimited(upstream, method, nil)
+			tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 		}
 	}
 }
