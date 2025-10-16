@@ -349,6 +349,11 @@ func (d *DynamoDBConnector) Id() string {
 	return d.id
 }
 
+// Initializer returns the connector's initializer for testing and state checking
+func (d *DynamoDBConnector) Initializer() *util.Initializer {
+	return d.initializer
+}
+
 func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Set")
 	defer span.End()
@@ -721,7 +726,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 			case <-done:
 				return
 			case <-ticker.C:
-				value, err := d.getSimpleValue(ctx, key)
+				value, err := d.GetSimpleValue(ctx, key)
 				if err != nil {
 					d.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
 					continue
@@ -738,7 +743,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	}()
 
 	// Get initial value
-	if val, err := d.getSimpleValue(ctx, key); err == nil {
+	if val, err := d.GetSimpleValue(ctx, key); err == nil {
 		updates <- val
 	}
 
@@ -750,7 +755,8 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	return updates, cleanup, nil
 }
 
-func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int64, error) {
+// GetSimpleValue retrieves an int64 counter value from DynamoDB (exported for testing)
+func (d *DynamoDBConnector) GetSimpleValue(ctx context.Context, key string) (int64, error) {
 	ctx, span := common.StartDetailSpan(ctx, "DynamoDBConnector.getSimpleValue",
 		trace.WithAttributes(
 			attribute.String("key", key),
@@ -777,12 +783,51 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int
 
 	var value int64
 
-	if v, ok := result.Item["value"]; ok && v.S != nil {
-		value, _ = strconv.ParseInt(*v.S, 0, 64)
-	} else if v, ok := result.Item["value"]; ok && v.N != nil {
-		value, _ = strconv.ParseInt(*v.N, 0, 64)
+	// Extract the value attribute from the DynamoDB item
+	valueAttr, ok := result.Item["value"]
+	if !ok || valueAttr == nil {
+		// No value attribute found - return 0 (counter not initialized yet)
+		return 0, nil
+	}
+
+	// Try Number type first (preferred format for counters)
+	if valueAttr.N != nil {
+		parsedValue, err := strconv.ParseInt(*valueAttr.N, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse counter value from Number attribute: %w", err)
+		}
+		value = parsedValue
+	} else if valueAttr.S != nil {
+		// Backward compatibility: support String type
+		parsedValue, err := strconv.ParseInt(*valueAttr.S, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse counter value from String attribute: %w", err)
+		}
+		value = parsedValue
+	} else if valueAttr.B != nil {
+		// Backward compatibility: support Binary type (from legacy Set operations)
+		// The binary data should contain the string representation of the number
+		parsedValue, err := strconv.ParseInt(string(valueAttr.B), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse counter value from Binary attribute: %w", err)
+		}
+		value = parsedValue
 	} else {
-		return 0, fmt.Errorf("invalid value type for counter: %T", result.Item["value"])
+		// Log the actual attribute value for debugging
+		d.logger.Debug().
+			Str("key", key).
+			Bool("has_N", valueAttr.N != nil).
+			Bool("has_S", valueAttr.S != nil).
+			Bool("has_B", valueAttr.B != nil).
+			Bool("has_BOOL", valueAttr.BOOL != nil).
+			Bool("has_NULL", valueAttr.NULL != nil).
+			Bool("has_M", valueAttr.M != nil).
+			Bool("has_L", valueAttr.L != nil).
+			Bool("has_SS", valueAttr.SS != nil).
+			Bool("has_NS", valueAttr.NS != nil).
+			Bool("has_BS", valueAttr.BS != nil).
+			Msg("debugging counter value attribute structure")
+		return 0, fmt.Errorf("counter value attribute has neither Number (N), String (S), nor Binary (B) field")
 	}
 
 	return value, nil

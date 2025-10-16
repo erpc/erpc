@@ -681,6 +681,11 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		resultBytes, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey, req)
 	}
 	if err != nil {
+		// Treat both RecordNotFound and RecordExpired as cache miss (return nil, not error)
+		// This allows the system to fetch fresh data instead of serving stale expired data
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound, common.ErrCodeRecordExpired) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if len(resultBytes) == 0 {
