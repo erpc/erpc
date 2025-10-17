@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/matchers"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -24,6 +24,7 @@ import (
 )
 
 type FailsafeExecutor struct {
+	config                 *common.FailsafeConfig
 	method                 string
 	finalities             []common.DataFinalityState
 	executor               failsafe.Executor[*common.NormalizedResponse]
@@ -240,40 +241,47 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
 
-	// First, try to find a specific match for both method and finality
-	for _, fe := range n.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) > 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && slices.Contains(fe.finalities, finality) {
-				return fe
+	for i, fe := range n.failsafeExecutors {
+		if fe.config != nil {
+			// Prefer new matcher-based selection when matchers are provided
+			if len(fe.config.Matchers) > 0 {
+				if matchers.Match(ctx, fe.config.Matchers, req, nil) {
+					n.logger.Debug().
+						Str("method", method).
+						Str("finality", finality.String()).
+						Int("failsafeIndex", i).
+						Interface("matchers", fe.config.Matchers).
+						Msg("matched failsafe executor")
+					return fe
+				}
+				continue
 			}
-		}
-	}
 
-	// Then, try to find a match for method only (empty finalities means any finality)
-	for _, fe := range n.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) == 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched {
-				return fe
+			// Fallback to legacy matching when no matchers are defined
+			method, _ := req.Method()
+			if ok, _ := common.WildcardMatch(fe.method, method); !ok {
+				continue
 			}
-		}
-	}
-
-	// Then, try to find a match for finality only
-	for _, fe := range n.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) > 0 {
-			if slices.Contains(fe.finalities, finality) {
-				return fe
+			if len(fe.finalities) > 0 {
+				reqFinality := req.Finality(ctx)
+				finalityMatched := false
+				for _, f := range fe.finalities {
+					if f == reqFinality {
+						finalityMatched = true
+						break
+					}
+				}
+				if !finalityMatched {
+					continue
+				}
 			}
-		}
-	}
-
-	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
-	for _, fe := range n.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) == 0 {
 			return fe
 		}
+	}
+
+	// If no specific match found, return the default executor (should be the last one)
+	if len(n.failsafeExecutors) > 0 {
+		return n.failsafeExecutors[len(n.failsafeExecutors)-1]
 	}
 
 	return nil

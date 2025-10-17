@@ -33,11 +33,11 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &FailsafeConfig{
-			Timeout: &TimeoutPolicyConfig{
-				Duration: Duration(100 * time.Millisecond),
-			},
-		}, network.Failsafe[0])
+		assert.NotNil(t, network.Failsafe[0].Matchers)
+		assert.Len(t, network.Failsafe[0].Matchers, 1)
+		assert.Equal(t, "*", network.Failsafe[0].Matchers[0].Method)
+		assert.Equal(t, MatcherInclude, network.Failsafe[0].Matchers[0].Action)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Timeout.Duration)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -58,10 +58,10 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &HedgePolicyConfig{
-			Delay:    Duration(100 * time.Millisecond),
-			MaxCount: 10,
-		}, network.Failsafe[0].Hedge)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Hedge.Delay)
+		assert.Equal(t, int(10), network.Failsafe[0].Hedge.MaxCount)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Hedge.MinDelay)
+		assert.Equal(t, Duration(999*time.Second), network.Failsafe[0].Hedge.MaxDelay)
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -81,9 +81,11 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &CircuitBreakerPolicyConfig{
-			FailureThresholdCount: 10,
-		}, network.Failsafe[0].CircuitBreaker)
+		assert.Equal(t, uint(10), network.Failsafe[0].CircuitBreaker.FailureThresholdCount)
+		assert.Equal(t, uint(80), network.Failsafe[0].CircuitBreaker.FailureThresholdCapacity)
+		assert.Equal(t, Duration(300*time.Second), network.Failsafe[0].CircuitBreaker.HalfOpenAfter)
+		assert.Equal(t, uint(8), network.Failsafe[0].CircuitBreaker.SuccessThresholdCount)
+		assert.Equal(t, uint(200), network.Failsafe[0].CircuitBreaker.SuccessThresholdCapacity)
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -101,8 +103,14 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		}
 		network.SetDefaults(nil, nil)
 
-		assert.EqualValues(t, &FailsafeConfig{
-			MatchMethod: "*",
+		expected := &FailsafeConfig{
+			MatchMethod: "",
+			Matchers: []*MatcherConfig{
+				{
+					Method: "*",
+					Action: MatcherInclude,
+				},
+			},
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     12345,
 				Delay:           Duration(0 * time.Millisecond),
@@ -110,7 +118,8 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 				BackoffFactor:   1.2,
 				Jitter:          Duration(0 * time.Millisecond),
 			},
-		}, network.Failsafe[0])
+		}
+		assert.EqualValues(t, expected, network.Failsafe[0])
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)

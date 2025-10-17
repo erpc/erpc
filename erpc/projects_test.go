@@ -174,6 +174,12 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{{
+								Matchers: []*common.MatcherConfig{
+									{
+										Method: "*",
+										Action: common.MatcherInclude,
+									},
+								},
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(10 * time.Second),
 								},
@@ -190,6 +196,12 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							},
 							// Very short upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
+								Matchers: []*common.MatcherConfig{
+									{
+										Method: "*",
+										Action: common.MatcherInclude,
+									},
+								},
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(50 * time.Millisecond),
 								},
@@ -286,6 +298,12 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 								ChainId: 123,
 							},
 							Failsafe: []*common.FailsafeConfig{{
+								Matchers: []*common.MatcherConfig{
+									{
+										Method: "*",
+										Action: common.MatcherInclude,
+									},
+								},
 								// Very short network timeout
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(50 * time.Millisecond),
@@ -303,6 +321,12 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 							},
 							// Higher upstream timeout
 							Failsafe: []*common.FailsafeConfig{{
+								Matchers: []*common.MatcherConfig{
+									{
+										Method: "*",
+										Action: common.MatcherInclude,
+									},
+								},
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: common.Duration(5 * time.Second),
 								},
