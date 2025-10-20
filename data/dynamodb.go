@@ -464,12 +464,14 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			KeyConditionExpression:    aws.String(keyCondition),
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
-			Limit:                     aws.Int64(1),       // return at most one item
-			ProjectionExpression:      aws.String("#val"), // only return the value attribute
+			ScanIndexForward:          aws.Bool(false),
+			Limit:                     aws.Int64(1),
+			ProjectionExpression:      aws.String("#val, #ttl"),
 			Select:                    aws.String("SPECIFIC_ATTRIBUTES"),
 		}
 		// Add alias for value attribute in ProjectionExpression
 		qi.ExpressionAttributeNames["#val"] = aws.String("value")
+		qi.ExpressionAttributeNames["#ttl"] = aws.String(d.ttlAttributeName)
 
 		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
 		defer cancel()
@@ -775,14 +777,62 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int
 		return 0, nil
 	}
 
-	var value int64
+	// Check if value attribute exists
+	v, exists := result.Item["value"]
+	if !exists {
+		d.logger.Debug().Str("key", key).Msg("counter value attribute not found in DynamoDB item")
+		return 0, nil
+	}
 
-	if v, ok := result.Item["value"]; ok && v.S != nil {
-		value, _ = strconv.ParseInt(*v.S, 0, 64)
-	} else if v, ok := result.Item["value"]; ok && v.N != nil {
-		value, _ = strconv.ParseInt(*v.N, 0, 64)
+	// Handle nil AttributeValue
+	if v == nil {
+		d.logger.Debug().Str("key", key).Msg("counter value attribute is nil")
+		return 0, nil
+	}
+
+	var value int64
+	var parseErr error
+
+	// Try to extract value from different attribute types
+	if v.N != nil {
+		// Number type - most common for counters
+		value, parseErr = strconv.ParseInt(*v.N, 10, 64)
+		if parseErr != nil {
+			return 0, fmt.Errorf("failed to parse counter number value '%s': %w", *v.N, parseErr)
+		}
+	} else if v.S != nil {
+		// String type - legacy support
+		value, parseErr = strconv.ParseInt(*v.S, 10, 64)
+		if parseErr != nil {
+			return 0, fmt.Errorf("failed to parse counter string value '%s': %w", *v.S, parseErr)
+		}
+	} else if v.B != nil {
+		// Binary type - try to parse as string
+		value, parseErr = strconv.ParseInt(string(v.B), 10, 64)
+		if parseErr != nil {
+			return 0, fmt.Errorf("failed to parse counter binary value: %w", parseErr)
+		}
 	} else {
-		return 0, fmt.Errorf("invalid value type for counter: %T", result.Item["value"])
+		// Determine what type it actually is for better error message
+		var attrType string
+		if v.BOOL != nil {
+			attrType = "BOOL"
+		} else if v.NULL != nil {
+			attrType = "NULL"
+		} else if v.M != nil {
+			attrType = "MAP"
+		} else if v.L != nil {
+			attrType = "LIST"
+		} else if v.SS != nil {
+			attrType = "STRING_SET"
+		} else if v.NS != nil {
+			attrType = "NUMBER_SET"
+		} else if v.BS != nil {
+			attrType = "BINARY_SET"
+		} else {
+			attrType = "UNKNOWN"
+		}
+		return 0, fmt.Errorf("invalid DynamoDB attribute type for counter value: %s (expected N, S, or B)", attrType)
 	}
 
 	return value, nil

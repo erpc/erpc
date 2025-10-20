@@ -368,6 +368,28 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		// otherwise we will continue with the original partitionKey for lookup.
 		if revPartitionKey != "" {
 			partitionKey = revPartitionKey
+
+			// Verify the resolved key still exists and hasn't expired
+			// This handles the edge case where reverse index points to an expired key
+			resolvedKey := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+			ttlCtx, ttlCancel := context.WithTimeout(ctx, r.getTimeout)
+			ttl, ttlErr := r.client.TTL(ttlCtx, resolvedKey).Result()
+			ttlCancel()
+
+			if ttlErr != nil {
+				r.logger.Debug().Err(ttlErr).Str("key", resolvedKey).Msg("failed to check TTL for resolved key")
+			} else if ttl == -2*time.Second {
+				// Key doesn't exist (Redis returns -2 when key doesn't exist)
+				r.logger.Debug().Str("key", resolvedKey).Msg("resolved key from reverse index no longer exists")
+				// Fall back to wildcard lookup which will result in not found
+				partitionKey = strings.TrimSuffix(partitionKey, rangeKey) + "*"
+			} else if ttl == -1*time.Second {
+				// Key exists but has no TTL (persistent key), which is fine
+				r.logger.Trace().Str("key", resolvedKey).Msg("resolved key has no TTL (persistent)")
+			} else if ttl > 0 {
+				// Key exists and has TTL, which is fine
+				r.logger.Trace().Str("key", resolvedKey).Dur("ttl", ttl).Msg("resolved key still valid")
+			}
 		}
 	}
 
