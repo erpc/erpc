@@ -928,6 +928,7 @@ type ConsensusPolicyConfig struct {
 	IgnoreFields            map[string][]string              `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 	PreferNonEmpty          *bool                            `yaml:"preferNonEmpty,omitempty" json:"preferNonEmpty"`
 	PreferLargerResponses   *bool                            `yaml:"preferLargerResponses,omitempty" json:"preferLargerResponses"`
+	AppendMisbehaviorsTo    string                           `yaml:"appendMisbehaviorsTo,omitempty" json:"appendMisbehaviorsTo"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {

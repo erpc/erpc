@@ -653,6 +653,11 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	builder = builder.WithLowParticipantsBehavior(cfg.LowParticipantsBehavior)
 	builder = builder.WithLogger(logger)
 
+	// Configure misbehavior export if requested
+	if cfg.AppendMisbehaviorsTo != "" {
+		builder = builder.WithMisbehaviorExportFile(cfg.AppendMisbehaviorsTo)
+	}
+
 	// Set ignore fields if configured
 	if cfg.IgnoreFields != nil {
 		builder = builder.WithIgnoreFields(cfg.IgnoreFields)

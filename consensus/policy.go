@@ -26,6 +26,7 @@ type ConsensusPolicyBuilder interface {
 	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder
 	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder
 	WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder
+	WithMisbehaviorExportFile(path string) ConsensusPolicyBuilder
 	OnAgreement(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
 	OnDispute(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
@@ -46,6 +47,7 @@ type config struct {
 	disputeBehavior         common.ConsensusDisputeBehavior
 	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 	punishMisbehavior       *common.PunishMisbehaviorConfig
+	misbehaviorExportPath   string
 	timeout                 time.Duration
 	logger                  *zerolog.Logger
 	disputeLogLevel         zerolog.Level
@@ -72,6 +74,7 @@ type consensusPolicy struct {
 	misbehavingUpstreamsLimiter     *sync.Map // [string, *ratelimiter.Limiter]
 	misbehavingUpstreamsSitoutTimer *sync.Map // [string, *time.Timer]
 	disputeLogLevel                 zerolog.Level
+	exporter                        misbehaviorExporter
 }
 
 var _ ConsensusPolicy = &consensusPolicy{}
@@ -98,6 +101,11 @@ func (c *config) WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) Cons
 
 func (c *config) WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder {
 	c.lowParticipantsBehavior = lowParticipantsBehavior
+	return c
+}
+
+func (c *config) WithMisbehaviorExportFile(path string) ConsensusPolicyBuilder {
+	c.misbehaviorExportPath = path
 	return c
 }
 
@@ -158,12 +166,22 @@ func (c *config) Build() ConsensusPolicy {
 		disputeLevel = zerolog.WarnLevel
 	}
 
+	var exp misbehaviorExporter
+	if c.misbehaviorExportPath != "" {
+		if fe, err := newFileMisbehaviorExporter(c.misbehaviorExportPath, &log); err == nil {
+			exp = fe
+		} else {
+			log.Warn().Str("appendMisbehaviorsTo", c.misbehaviorExportPath).Err(err).Msg("failed to initialize misbehavior exporter; export disabled")
+		}
+	}
+
 	return &consensusPolicy{
 		config:                          &hCopy,
 		logger:                          &log,
 		misbehavingUpstreamsLimiter:     &sync.Map{},
 		misbehavingUpstreamsSitoutTimer: &sync.Map{},
 		disputeLogLevel:                 disputeLevel,
+		exporter:                        exp,
 	}
 }
 

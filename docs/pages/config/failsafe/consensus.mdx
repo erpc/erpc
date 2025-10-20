@@ -34,6 +34,7 @@ projects:
               preferLargerResponses: true
               ignoreFields:
                 eth_getBlockByNumber: ["timestamp"]
+              appendMisbehaviorsTo: /var/log/erpc/misbehaviors.jsonl
               punishMisbehavior: # (optional) To exclude bad upstreams from consensus for a while
                 disputeThreshold: 10 
                 disputeWindow: 10m
@@ -62,6 +63,7 @@ export default createConfig({
               preferNonEmpty: true,
               preferLargerResponses: true,
               ignoreFields: { eth_getBlockByNumber: ["timestamp"] },
+              appendMisbehaviorsTo: "/var/log/erpc/misbehaviors.jsonl",
               punishMisbehavior: {
                 disputeThreshold: 3,
                 disputeWindow: "10s",
@@ -184,6 +186,9 @@ Temporarily removes upstreams that consistently disagree with the consensus:
 - **`disputeThreshold`**: Number of disputes before punishment (e.g., 3 strikes)
 - **`disputeWindow`**: Time window for counting disputes (e.g., 10m)
 - **`sitOutPenalty`**: How long the upstream is cordoned (e.g., 30m)
+
+### `appendMisbehaviorsTo`
+Append full misbehavior events as JSONL to a file. Each line contains the full JSON-RPC request, all participant responses or errors, the analysis summary, the winner, and the policy snapshot. No truncation is applied. Ensure you use external log rotation for large files.
 
 ## Performance
 Consensus increases costs and latency since it waits for multiple responses. Use it selectively for critical workloads and specific methods rather than all requests.
