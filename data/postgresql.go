@@ -736,6 +736,8 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE range_key = $1 AND partition_key LIKE $2
+			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table)
 		args = []interface{}{
@@ -746,6 +748,8 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE partition_key = $1 AND range_key LIKE $2
+			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table)
 		args = []interface{}{

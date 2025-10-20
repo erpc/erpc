@@ -457,19 +457,26 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			}
 		}
 
-		// We only need the first matching item and only its "value" attribute.
+		// Build a query that returns newest first, requesting value and ttl.
+		// We fetch up to 10 items and will pick the first non-expired one.
+		now := time.Now().Unix()
 		qi := &dynamodb.QueryInput{
 			TableName:                 aws.String(d.table),
 			IndexName:                 aws.String(d.reverseIndexName),
 			KeyConditionExpression:    aws.String(keyCondition),
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
-			Limit:                     aws.Int64(1),       // return at most one item
-			ProjectionExpression:      aws.String("#val"), // only return the value attribute
+			ScanIndexForward:          aws.Bool(false), // newest first
+			Limit:                     aws.Int64(10),   // examine a handful to avoid pagination
+			ProjectionExpression:      aws.String("#val, #ttl"),
 			Select:                    aws.String("SPECIFIC_ATTRIBUTES"),
+			FilterExpression:          aws.String("attribute_not_exists(#ttl) OR #ttl = :zero OR #ttl > :now"),
 		}
-		// Add alias for value attribute in ProjectionExpression
+		// Add aliases required by Projection/Filter
 		qi.ExpressionAttributeNames["#val"] = aws.String("value")
+		qi.ExpressionAttributeNames["#ttl"] = aws.String(d.ttlAttributeName)
+		qi.ExpressionAttributeValues[":now"] = &dynamodb.AttributeValue{N: aws.String(strconv.FormatInt(now, 10))}
+		qi.ExpressionAttributeValues[":zero"] = &dynamodb.AttributeValue{N: aws.String("0")}
 
 		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
 		defer cancel()
@@ -480,29 +487,32 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
-		if len(result.Items) == 0 {
+		// Find the first non-expired item from the page (FilterExpression already helps)
+		var chosen map[string]*dynamodb.AttributeValue
+		for _, it := range result.Items {
+			// Extra safeguard: client-side TTL validation
+			if ttl, exists := it[d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
+				expirationTime, perr := strconv.ParseInt(*ttl.N, 10, 64)
+				if perr == nil && now > expirationTime {
+					continue // skip expired
+				}
+			}
+			chosen = it
+			break
+		}
+
+		if chosen == nil {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
 
-		// Check if the item has expired
-		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
-			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
-			now := time.Now().Unix()
-			if err == nil && now > expirationTime {
-				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
-				common.SetTraceSpanError(span, err)
-				return nil, err
-			}
-		}
-
 		// Backward compatibility: check both B and S attributes
-		if result.Items[0]["value"].B != nil {
-			value = result.Items[0]["value"].B
-		} else if result.Items[0]["value"].S != nil {
+		if chosen["value"].B != nil {
+			value = chosen["value"].B
+		} else if chosen["value"].S != nil {
 			// Legacy string value - treat as final decompressed value
-			value = []byte(*result.Items[0]["value"].S)
+			value = []byte(*chosen["value"].S)
 		} else {
 			return nil, fmt.Errorf("value attribute is neither binary nor string")
 		}
@@ -775,14 +785,62 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int
 		return 0, nil
 	}
 
-	var value int64
+	// Check if value attribute exists
+	v, exists := result.Item["value"]
+	if !exists {
+		d.logger.Debug().Str("key", key).Msg("counter value attribute not found in DynamoDB item")
+		return 0, nil
+	}
 
-	if v, ok := result.Item["value"]; ok && v.S != nil {
-		value, _ = strconv.ParseInt(*v.S, 0, 64)
-	} else if v, ok := result.Item["value"]; ok && v.N != nil {
-		value, _ = strconv.ParseInt(*v.N, 0, 64)
+	// Handle nil AttributeValue
+	if v == nil {
+		d.logger.Debug().Str("key", key).Msg("counter value attribute is nil")
+		return 0, nil
+	}
+
+	var value int64
+	var parseErr error
+
+	// Try to extract value from different attribute types
+	if v.N != nil {
+		// Number type - most common for counters
+		value, parseErr = strconv.ParseInt(*v.N, 10, 64)
+		if parseErr != nil {
+			return 0, fmt.Errorf("failed to parse counter number value '%s': %w", *v.N, parseErr)
+		}
+	} else if v.S != nil {
+		// String type - legacy support
+		value, parseErr = strconv.ParseInt(*v.S, 10, 64)
+		if parseErr != nil {
+			return 0, fmt.Errorf("failed to parse counter string value '%s': %w", *v.S, parseErr)
+		}
+	} else if v.B != nil {
+		// Binary type - try to parse as string
+		value, parseErr = strconv.ParseInt(string(v.B), 10, 64)
+		if parseErr != nil {
+			return 0, fmt.Errorf("failed to parse counter binary value: %w", parseErr)
+		}
 	} else {
-		return 0, fmt.Errorf("invalid value type for counter: %T", result.Item["value"])
+		// Determine what type it actually is for better error message
+		var attrType string
+		if v.BOOL != nil {
+			attrType = "BOOL"
+		} else if v.NULL != nil {
+			attrType = "NULL"
+		} else if v.M != nil {
+			attrType = "MAP"
+		} else if v.L != nil {
+			attrType = "LIST"
+		} else if v.SS != nil {
+			attrType = "STRING_SET"
+		} else if v.NS != nil {
+			attrType = "NUMBER_SET"
+		} else if v.BS != nil {
+			attrType = "BINARY_SET"
+		} else {
+			attrType = "UNKNOWN"
+		}
+		return 0, fmt.Errorf("invalid DynamoDB attribute type for counter value: %s (expected N, S, or B)", attrType)
 	}
 
 	return value, nil

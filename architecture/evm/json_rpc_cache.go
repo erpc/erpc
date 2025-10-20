@@ -201,6 +201,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	var jrr *common.JsonRpcResponse
 	var connector data.Connector
 	var policy *data.CachePolicy
+	// Track context for correct miss attribution
+	var lastMissConnectorId, lastMissPolicyStr, lastMissTTL string
+	var lastRejectConnectorId, lastRejectPolicyStr, lastRejectTTL string
 	for _, policy = range policies {
 		connector = policy.GetConnector()
 		policyCtx, policySpan := common.StartDetailSpan(ctx, "Cache.GetForPolicy", trace.WithAttributes(
@@ -234,28 +237,63 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		} else {
 			c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
 		}
+
+		// Record a miss attribution for this attempt if it returned nil without error
+		if err == nil && jrr == nil && policy != nil {
+			lastMissConnectorId = connector.Id()
+			lastMissPolicyStr = policy.String()
+			lastMissTTL = policy.GetTTL().String()
+		}
+
 		policySpan.End()
 		if jrr != nil {
-			break
+			// Validate the cached result's age against the policy's TTL
+			if c.shouldAcceptCachedResult(ctx, req, jrr, policy) {
+				// Result is acceptable, use it
+				break
+			} else {
+				// Result is too old, reject it and try the next policy
+				c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Msg("cached result rejected due to age exceeding TTL")
+				// Record last rejection context to attribute miss correctly
+				lastRejectConnectorId = connector.Id()
+				lastRejectPolicyStr = policy.String()
+				lastRejectTTL = policy.GetTTL().String()
+				jrr = nil
+				continue
+			}
 		}
 	}
 
 	if jrr == nil {
+		// Prefer attributing miss to age-guard rejection if any, otherwise the last miss
+		labelConnectorId := connector.Id()
+		labelPolicyStr := policy.String()
+		labelTTL := policy.GetTTL().String()
+		if lastRejectConnectorId != "" {
+			labelConnectorId = lastRejectConnectorId
+			labelPolicyStr = lastRejectPolicyStr
+			labelTTL = lastRejectTTL
+		} else if lastMissConnectorId != "" {
+			labelConnectorId = lastMissConnectorId
+			labelPolicyStr = lastMissPolicyStr
+			labelTTL = lastMissTTL
+		}
+
 		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
 			rpcReq.Method,
-			connector.Id(),
-			policy.String(),
-			policy.GetTTL().String(),
+			labelConnectorId,
+			labelPolicyStr,
+			labelTTL,
 		).Inc()
 		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
 			rpcReq.Method,
-			connector.Id(),
-			policy.String(),
-			policy.GetTTL().String(),
+			labelConnectorId,
+			labelPolicyStr,
+			labelTTL,
 		).Observe(time.Since(start).Seconds())
 		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, nil
@@ -590,6 +628,74 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
+}
+
+// shouldAcceptCachedResult checks if a cached result should be accepted based on its age
+// It compares the block timestamp against the policy's TTL to ensure freshness
+func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
+	ctx context.Context,
+	req *common.NormalizedRequest,
+	jrr *common.JsonRpcResponse,
+	policy *data.CachePolicy,
+) bool {
+	// If no TTL is set, accept the result
+	ttl := policy.GetTTL()
+	if ttl == nil || *ttl <= 0 {
+		return true
+	}
+
+	// Try to extract block timestamp from the response
+	// We need to create a temporary NormalizedResponse to use the existing extraction logic
+	nr := common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jrr)
+
+	blockTimestamp, err := ExtractBlockTimestampFromResponse(ctx, nr)
+	if err != nil || blockTimestamp <= 0 {
+		// If we can't extract a timestamp (e.g., for methods that don't have block data),
+		// we can't enforce age-based validation, so accept the result
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			method, _ := req.Method()
+			c.logger.Trace().
+				Err(err).
+				Str("method", method).
+				Msg("cannot extract block timestamp for age validation, accepting cached result")
+		}
+		return true
+	}
+
+	// Calculate the age of the block
+	now := time.Now().Unix()
+	age := time.Duration(now-blockTimestamp) * time.Second
+
+	// Check if the age exceeds the TTL
+	if age > *ttl {
+		if c.logger.GetLevel() <= zerolog.DebugLevel {
+			c.logger.Debug().
+				Dur("age", age).
+				Dur("ttl", *ttl).
+				Int64("blockTimestamp", blockTimestamp).
+				Int64("now", now).
+				Str("policy", policy.String()).
+				Msg("rejecting cached result because block age exceeds policy TTL")
+		}
+
+		// Record metric for age-guard rejection
+		method, _ := req.Method()
+		telemetry.MetricCacheGetAgeGuardRejectTotal.WithLabelValues(
+			c.projectId,
+			req.NetworkLabel(),
+			method,
+			policy.GetConnector().Id(),
+			policy.String(),
+			ttl.String(),
+		).Inc()
+
+		return false
+	}
+
+	// Accept the result as it's within the acceptable age
+	return true
 }
 
 func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {

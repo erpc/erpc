@@ -213,13 +213,13 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 			name:          "match on range key with prefix on partition key",
 			rangeKey:      "profile",
 			partitionKey:  "user:*",
-			expectedValue: "user1-profile", // It should return the first matching item
+			expectedValue: "user2-profile", // With DESC ordering, newest (lexicographically highest PK) matches first
 		},
 		{
 			name:          "exact match on range key only",
 			rangeKey:      "settings",
 			partitionKey:  "",
-			expectedValue: "user1-settings", // It should return the first matching item
+			expectedValue: "user2-settings", // With DESC ordering, newest (lexicographically highest PK) matches first
 		},
 		{
 			name:          "non-existent range key",

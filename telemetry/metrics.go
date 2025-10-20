@@ -250,6 +250,12 @@ var (
 		Help:      "Total number of cache get skips (i.e. no matching policy found).",
 	}, []string{"project", "network", "category"})
 
+	MetricCacheGetAgeGuardRejectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_age_guard_reject_total",
+		Help:      "Total number of cached items rejected due to block timestamp age exceeding policy TTL",
+	}, []string{"project", "network", "method", "connector", "policy", "ttl"})
+
 	MetricCacheSetOriginalBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_original_bytes_total",
