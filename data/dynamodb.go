@@ -457,21 +457,26 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			}
 		}
 
-		// We only need the first matching item and only its "value" attribute.
+		// Build a query that returns newest first, requesting value and ttl.
+		// We fetch up to 10 items and will pick the first non-expired one.
+		now := time.Now().Unix()
 		qi := &dynamodb.QueryInput{
 			TableName:                 aws.String(d.table),
 			IndexName:                 aws.String(d.reverseIndexName),
 			KeyConditionExpression:    aws.String(keyCondition),
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
-			ScanIndexForward:          aws.Bool(false),
-			Limit:                     aws.Int64(1),
+			ScanIndexForward:          aws.Bool(false), // newest first
+			Limit:                     aws.Int64(10),   // examine a handful to avoid pagination
 			ProjectionExpression:      aws.String("#val, #ttl"),
 			Select:                    aws.String("SPECIFIC_ATTRIBUTES"),
+			FilterExpression:          aws.String("attribute_not_exists(#ttl) OR #ttl = :zero OR #ttl > :now"),
 		}
-		// Add alias for value attribute in ProjectionExpression
+		// Add aliases required by Projection/Filter
 		qi.ExpressionAttributeNames["#val"] = aws.String("value")
 		qi.ExpressionAttributeNames["#ttl"] = aws.String(d.ttlAttributeName)
+		qi.ExpressionAttributeValues[":now"] = &dynamodb.AttributeValue{N: aws.String(strconv.FormatInt(now, 10))}
+		qi.ExpressionAttributeValues[":zero"] = &dynamodb.AttributeValue{N: aws.String("0")}
 
 		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
 		defer cancel()
@@ -482,29 +487,32 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
-		if len(result.Items) == 0 {
+		// Find the first non-expired item from the page (FilterExpression already helps)
+		var chosen map[string]*dynamodb.AttributeValue
+		for _, it := range result.Items {
+			// Extra safeguard: client-side TTL validation
+			if ttl, exists := it[d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
+				expirationTime, perr := strconv.ParseInt(*ttl.N, 10, 64)
+				if perr == nil && now > expirationTime {
+					continue // skip expired
+				}
+			}
+			chosen = it
+			break
+		}
+
+		if chosen == nil {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
 
-		// Check if the item has expired
-		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
-			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
-			now := time.Now().Unix()
-			if err == nil && now > expirationTime {
-				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
-				common.SetTraceSpanError(span, err)
-				return nil, err
-			}
-		}
-
 		// Backward compatibility: check both B and S attributes
-		if result.Items[0]["value"].B != nil {
-			value = result.Items[0]["value"].B
-		} else if result.Items[0]["value"].S != nil {
+		if chosen["value"].B != nil {
+			value = chosen["value"].B
+		} else if chosen["value"].S != nil {
 			// Legacy string value - treat as final decompressed value
-			value = []byte(*result.Items[0]["value"].S)
+			value = []byte(*chosen["value"].S)
 		} else {
 			return nil, fmt.Errorf("value attribute is neither binary nor string")
 		}
