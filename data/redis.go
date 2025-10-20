@@ -379,10 +379,11 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 			if ttlErr != nil {
 				r.logger.Debug().Err(ttlErr).Str("key", resolvedKey).Msg("failed to check TTL for resolved key")
 			} else if ttl == -2*time.Second {
-				// Key doesn't exist (Redis returns -2 when key doesn't exist)
+				// Key doesn't exist (Redis returns -2 when key doesn't exist); treat as a miss
 				r.logger.Debug().Str("key", resolvedKey).Msg("resolved key from reverse index no longer exists")
-				// Fall back to wildcard lookup which will result in not found
-				partitionKey = strings.TrimSuffix(partitionKey, rangeKey) + "*"
+				err := common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
+				common.SetTraceSpanError(span, err)
+				return nil, err
 			} else if ttl == -1*time.Second {
 				// Key exists but has no TTL (persistent key), which is fine
 				r.logger.Trace().Str("key", resolvedKey).Msg("resolved key has no TTL (persistent)")

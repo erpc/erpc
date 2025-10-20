@@ -139,7 +139,12 @@ func TestConnectorTTLExpiry(t *testing.T) {
 				err := conn.Set(ctx, pk, rk, value, &ttl)
 				require.NoError(t, err)
 
-				// Immediately get - should succeed
+				// Ristretto Set is eventually consistent; ensure visibility for memory connector
+				if mc, ok := conn.(*MemoryConnector); ok {
+					mc.cache.Wait()
+				}
+
+				// Immediately get - should succeed (after ensuring visibility for memory)
 				result, err := conn.Get(ctx, ConnectorMainIndex, pk, rk, nil)
 				assert.NoError(t, err)
 				assert.Equal(t, value, result)

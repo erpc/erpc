@@ -201,6 +201,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	var jrr *common.JsonRpcResponse
 	var connector data.Connector
 	var policy *data.CachePolicy
+	// Track context for correct miss attribution
+	var lastMissConnectorId, lastMissPolicyStr, lastMissTTL string
+	var lastRejectConnectorId, lastRejectPolicyStr, lastRejectTTL string
 	for _, policy = range policies {
 		connector = policy.GetConnector()
 		policyCtx, policySpan := common.StartDetailSpan(ctx, "Cache.GetForPolicy", trace.WithAttributes(
@@ -234,6 +237,14 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		} else {
 			c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
 		}
+
+		// Record a miss attribution for this attempt if it returned nil without error
+		if err == nil && jrr == nil && policy != nil {
+			lastMissConnectorId = connector.Id()
+			lastMissPolicyStr = policy.String()
+			lastMissTTL = policy.GetTTL().String()
+		}
+
 		policySpan.End()
 		if jrr != nil {
 			// Validate the cached result's age against the policy's TTL
@@ -243,6 +254,10 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			} else {
 				// Result is too old, reject it and try the next policy
 				c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Msg("cached result rejected due to age exceeding TTL")
+				// Record last rejection context to attribute miss correctly
+				lastRejectConnectorId = connector.Id()
+				lastRejectPolicyStr = policy.String()
+				lastRejectTTL = policy.GetTTL().String()
 				jrr = nil
 				continue
 			}
@@ -250,21 +265,35 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	if jrr == nil {
+		// Prefer attributing miss to age-guard rejection if any, otherwise the last miss
+		labelConnectorId := connector.Id()
+		labelPolicyStr := policy.String()
+		labelTTL := policy.GetTTL().String()
+		if lastRejectConnectorId != "" {
+			labelConnectorId = lastRejectConnectorId
+			labelPolicyStr = lastRejectPolicyStr
+			labelTTL = lastRejectTTL
+		} else if lastMissConnectorId != "" {
+			labelConnectorId = lastMissConnectorId
+			labelPolicyStr = lastMissPolicyStr
+			labelTTL = lastMissTTL
+		}
+
 		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
 			rpcReq.Method,
-			connector.Id(),
-			policy.String(),
-			policy.GetTTL().String(),
+			labelConnectorId,
+			labelPolicyStr,
+			labelTTL,
 		).Inc()
 		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
 			rpcReq.Method,
-			connector.Id(),
-			policy.String(),
-			policy.GetTTL().String(),
+			labelConnectorId,
+			labelPolicyStr,
+			labelTTL,
 		).Observe(time.Since(start).Seconds())
 		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, nil
