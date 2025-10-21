@@ -6,69 +6,93 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
 
 // misbehaviorExporter appends encoded JSONL lines to a storage backend.
+// Caller must provide method and networkId to avoid parsing overhead in the exporter.
 type misbehaviorExporter interface {
-	Append(line []byte) error
-	Close() error
+	AppendWithMetadata(line []byte, method string, networkId string) error
 }
 
 // file-based exporter implementation
 type fileMisbehaviorExporter struct {
-	mu   sync.Mutex
-	f    *os.File
-	path string
-	log  *zerolog.Logger
+	mu  sync.Mutex
+	cfg *common.MisbehaviorsDestinationConfig
+	log *zerolog.Logger
+	// Map of active file handles by resolved pattern
+	fileHandles map[string]*os.File
 }
 
-func newFileMisbehaviorExporter(path string, log *zerolog.Logger) (*fileMisbehaviorExporter, error) {
-	if path == "" {
-		return nil, fmt.Errorf("empty path")
+func newFileMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) (*fileMisbehaviorExporter, error) {
+	if cfg == nil || cfg.Path == "" {
+		return nil, fmt.Errorf("empty path configuration")
 	}
-	// Clean and validate to avoid unsafe relative traversal
-	cleanPath := filepath.Clean(path)
-	if !filepath.IsAbs(cleanPath) {
-		return nil, fmt.Errorf("export path must be absolute: %s", cleanPath)
+
+	// Validate base path
+	basePath := filepath.Clean(cfg.Path)
+	if !filepath.IsAbs(basePath) {
+		return nil, fmt.Errorf("export path must be absolute: %s", basePath)
 	}
-	// Create directory tree with restrictive permissions
-	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o750); err != nil {
+
+	// Create base directory
+	if err := os.MkdirAll(basePath, 0o750); err != nil {
 		return nil, err
 	}
-	// Open file with restrictive permissions (0600). Path validated above.
-	// #nosec G304 -- path is cleaned and must be absolute; this is operator-provided
-	f, err := os.OpenFile(cleanPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	return &fileMisbehaviorExporter{f: f, path: cleanPath, log: log}, nil
+
+	return &fileMisbehaviorExporter{
+		cfg:         cfg,
+		log:         log,
+		fileHandles: make(map[string]*os.File),
+	}, nil
 }
 
-func (e *fileMisbehaviorExporter) Append(line []byte) error {
+// AppendWithMetadata appends a line with contextual information for file naming
+func (e *fileMisbehaviorExporter) AppendWithMetadata(line []byte, method string, networkId string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.f == nil {
-		return fmt.Errorf("exporter closed")
+
+	// Resolve the file pattern with appropriate defaults
+	fileName := resolveFilePatternWithDefaults(e.cfg, method, networkId, time.Now())
+	fullPath := filepath.Join(e.cfg.Path, fileName)
+
+	// Get or create file handle
+	f, exists := e.fileHandles[fullPath]
+	if !exists {
+		var err error
+		// #nosec G304 -- path is derived from admin-controlled configuration
+		f, err = os.OpenFile(fullPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("failed to open file %s: %w", fullPath, err)
+		}
+		e.fileHandles[fullPath] = f
 	}
-	if _, err := e.f.Write(line); err != nil {
+
+	if _, err := f.Write(line); err != nil {
 		return err
 	}
-	_, err := e.f.Write([]byte("\n"))
+	_, err := f.Write([]byte("\n"))
 	return err
 }
+
+// Note: No Append() without metadata; callers must pass method/networkId explicitly
 
 func (e *fileMisbehaviorExporter) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.f == nil {
-		return nil
+
+	var firstErr error
+	for path, f := range e.fileHandles {
+		if err := f.Close(); err != nil && firstErr == nil {
+			firstErr = err
+			e.log.Warn().Err(err).Str("path", path).Msg("failed to close file handle")
+		}
+		delete(e.fileHandles, path)
 	}
-	err := e.f.Close()
-	e.f = nil
-	return err
+	return firstErr
 }
 
 // --- record shape ---

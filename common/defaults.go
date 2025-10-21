@@ -1982,10 +1982,6 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 }
 
 func (c *ConsensusPolicyConfig) SetDefaults() error {
-	if c.RequiredParticipants > 0 {
-		// @deprecated: use MaxParticipants instead
-		c.MaxParticipants = c.RequiredParticipants
-	}
 	if c.MaxParticipants == 0 {
 		c.MaxParticipants = 5
 	}
@@ -2023,6 +2019,45 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		c.PreferLargerResponses = util.BoolPtr(true)
 	}
 
+	// Destination defaults
+	if c.MisbehaviorsDestination != nil {
+		if err := c.MisbehaviorsDestination.SetDefaults(); err != nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination defaults: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// SetDefaults applies defaults for misbehavior export destination
+func (c *MisbehaviorsDestinationConfig) SetDefaults() error {
+	// Default type: file
+	if c.Type == "" {
+		c.Type = MisbehaviorsDestinationTypeFile
+	}
+	// Default file pattern handled in resolver at use-site; keep here for explicitness
+	if c.FilePattern == "" {
+		c.FilePattern = "{timestampMs}-{method}-{networkId}"
+	}
+	// S3 defaults
+	if c.Type == MisbehaviorsDestinationTypeS3 {
+		if c.S3 == nil {
+			c.S3 = &S3FlushConfig{}
+		}
+		if c.S3.MaxRecords == 0 {
+			c.S3.MaxRecords = 100
+		}
+		if c.S3.MaxSize == 0 {
+			c.S3.MaxSize = 1 * 1024 * 1024 // 1MB
+		}
+		if c.S3.FlushInterval == 0 {
+			c.S3.FlushInterval = Duration(60 * time.Second)
+		}
+		if c.S3.ContentType == "" {
+			c.S3.ContentType = "application/jsonl"
+		}
+		// Region left empty → picked from env/IMDS by SDK; keep as-is
+	}
 	return nil
 }
 

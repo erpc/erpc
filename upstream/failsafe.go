@@ -654,8 +654,8 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	builder = builder.WithLogger(logger)
 
 	// Configure misbehavior export if requested
-	if cfg.AppendMisbehaviorsTo != "" {
-		builder = builder.WithMisbehaviorExportFile(cfg.AppendMisbehaviorsTo)
+	if cfg.MisbehaviorsDestination != nil {
+		builder = builder.WithMisbehaviorsDestination(cfg.MisbehaviorsDestination)
 	}
 
 	// Set ignore fields if configured

@@ -26,7 +26,7 @@ type ConsensusPolicyBuilder interface {
 	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder
 	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder
 	WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder
-	WithMisbehaviorExportFile(path string) ConsensusPolicyBuilder
+	WithMisbehaviorsDestination(cfg *common.MisbehaviorsDestinationConfig) ConsensusPolicyBuilder
 	OnAgreement(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
 	OnDispute(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
@@ -47,7 +47,7 @@ type config struct {
 	disputeBehavior         common.ConsensusDisputeBehavior
 	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 	punishMisbehavior       *common.PunishMisbehaviorConfig
-	misbehaviorExportPath   string
+	misbehaviorsDestination *common.MisbehaviorsDestinationConfig
 	timeout                 time.Duration
 	logger                  *zerolog.Logger
 	disputeLogLevel         zerolog.Level
@@ -104,8 +104,8 @@ func (c *config) WithLowParticipantsBehavior(lowParticipantsBehavior common.Cons
 	return c
 }
 
-func (c *config) WithMisbehaviorExportFile(path string) ConsensusPolicyBuilder {
-	c.misbehaviorExportPath = path
+func (c *config) WithMisbehaviorsDestination(cfg *common.MisbehaviorsDestinationConfig) ConsensusPolicyBuilder {
+	c.misbehaviorsDestination = cfg
 	return c
 }
 
@@ -167,12 +167,8 @@ func (c *config) Build() ConsensusPolicy {
 	}
 
 	var exp misbehaviorExporter
-	if c.misbehaviorExportPath != "" {
-		if fe, err := newFileMisbehaviorExporter(c.misbehaviorExportPath, &log); err == nil {
-			exp = fe
-		} else {
-			log.Warn().Str("appendMisbehaviorsTo", c.misbehaviorExportPath).Err(err).Msg("failed to initialize misbehavior exporter; export disabled")
-		}
+	if c.misbehaviorsDestination != nil {
+		exp = createMisbehaviorExporter(c.misbehaviorsDestination, &log)
 	}
 
 	return &consensusPolicy{
@@ -226,4 +222,37 @@ func (p *consensusPolicy) Build() policy.Executor[*common.NormalizedResponse] {
 		consensusPolicy: p,
 	}
 	return e
+}
+
+// createMisbehaviorExporter creates the appropriate exporter based on configuration
+func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) misbehaviorExporter {
+	if cfg == nil || cfg.Path == "" {
+		return nil
+	}
+
+	switch cfg.Type {
+	case common.MisbehaviorsDestinationTypeS3:
+		exp, err := newS3MisbehaviorExporter(cfg, log)
+		if err != nil {
+			log.Error().
+				Str("path", cfg.Path).
+				Err(err).
+				Msg("failed to initialize S3 misbehavior exporter; export disabled")
+			return nil
+		}
+		return exp
+
+	case common.MisbehaviorsDestinationTypeFile:
+		fallthrough
+	default:
+		exp, err := newFileMisbehaviorExporter(cfg, log)
+		if err != nil {
+			log.Warn().
+				Str("path", cfg.Path).
+				Err(err).
+				Msg("failed to initialize file misbehavior exporter; export disabled")
+			return nil
+		}
+		return exp
+	}
 }

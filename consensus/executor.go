@@ -633,7 +633,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 		// Export full event if configured
 		if e.exporter != nil {
 			if recBytes, err := e.buildMisbehaviorRecord(labels, req, winner, analysis, consensusGroup, allParticipants); err == nil {
-				if err2 := e.exporter.Append(recBytes); err2 != nil {
+				if err2 := e.exporter.AppendWithMetadata(recBytes, labels.method, labels.networkId); err2 != nil {
 					lg.Warn().Err(err2).Msg("failed to append misbehavior record")
 				}
 			} else {
