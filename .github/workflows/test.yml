@@ -10,16 +10,24 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   units:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.23.x'
       - name: Install dependencies
@@ -29,6 +37,6 @@ jobs:
       - name: Test with the Go CLI
         run: make test
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
+        uses: securego/gosec@6b2e6e45a67c8d5e995d849712cd8e895511e495 # master
         with:
           args: -exclude-dir=test -tests=false ./...

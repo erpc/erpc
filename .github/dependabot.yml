@@ -1,0 +1,51 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: daily
+
+  - package-ecosystem: docker
+    directory: /docs
+    schedule:
+      interval: daily
+
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: daily
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+
+  - package-ecosystem: docker
+    directory: /monitoring
+    schedule:
+      interval: daily
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+
+  - package-ecosystem: npm
+    directory: /test/util
+    schedule:
+      interval: daily
+
+  - package-ecosystem: npm
+    directory: /typescript/cli
+    schedule:
+      interval: daily
+
+  - package-ecosystem: npm
+    directory: /typescript/config
+    schedule:
+      interval: daily
