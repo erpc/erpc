@@ -917,9 +917,7 @@ const (
 )
 
 type ConsensusPolicyConfig struct {
-	MaxParticipants int `yaml:"maxParticipants" json:"maxParticipants"`
-	// @deprecated: use MaxParticipants instead
-	RequiredParticipants    int                              `yaml:"requiredParticipants" json:"-"`
+	MaxParticipants         int                              `yaml:"maxParticipants" json:"maxParticipants"`
 	AgreementThreshold      int                              `yaml:"agreementThreshold,omitempty" json:"agreementThreshold"`
 	DisputeBehavior         ConsensusDisputeBehavior         `yaml:"disputeBehavior,omitempty" json:"disputeBehavior"`
 	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`
@@ -928,6 +926,7 @@ type ConsensusPolicyConfig struct {
 	IgnoreFields            map[string][]string              `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 	PreferNonEmpty          *bool                            `yaml:"preferNonEmpty,omitempty" json:"preferNonEmpty"`
 	PreferLargerResponses   *bool                            `yaml:"preferLargerResponses,omitempty" json:"preferLargerResponses"`
+	MisbehaviorsDestination *MisbehaviorsDestinationConfig   `yaml:"misbehaviorsDestination,omitempty" json:"misbehaviorsDestination"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -941,6 +940,10 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		copied.PunishMisbehavior = c.PunishMisbehavior.Copy()
 	}
 
+	if c.MisbehaviorsDestination != nil {
+		copied.MisbehaviorsDestination = c.MisbehaviorsDestination.Copy()
+	}
+
 	if c.IgnoreFields != nil {
 		copied.IgnoreFields = make(map[string][]string, len(c.IgnoreFields))
 		for method, fields := range c.IgnoreFields {
@@ -949,6 +952,82 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		}
 	}
 
+	return copied
+}
+
+type MisbehaviorsDestinationType string
+
+const (
+	MisbehaviorsDestinationTypeFile MisbehaviorsDestinationType = "file"
+	MisbehaviorsDestinationTypeS3   MisbehaviorsDestinationType = "s3"
+)
+
+type MisbehaviorsDestinationConfig struct {
+	// Type of destination: "file" or "s3"
+	Type MisbehaviorsDestinationType `yaml:"type" json:"type" tstype:"'file' | 's3'"`
+
+	// Path for file destination, or S3 URI (s3://bucket/prefix/) for S3 destination
+	Path string `yaml:"path" json:"path"`
+
+	// Pattern for generating file names. Supports placeholders:
+	// {dateByHour} - formatted as 2006-01-02-15
+	// {dateByDay} - formatted as 2006-01-02
+	// {method} - the RPC method name
+	// {networkId} - the network ID with : replaced by _
+	// {instanceId} - unique instance identifier
+	FilePattern string `yaml:"filePattern,omitempty" json:"filePattern"`
+
+	// S3-specific settings for bulk flushing
+	S3 *S3FlushConfig `yaml:"s3,omitempty" json:"s3,omitempty"`
+}
+
+type S3FlushConfig struct {
+	// Maximum number of records to buffer before flushing (default: 100)
+	MaxRecords int `yaml:"maxRecords,omitempty" json:"maxRecords"`
+
+	// Maximum size in bytes to buffer before flushing (default: 1MB)
+	MaxSize int64 `yaml:"maxSize,omitempty" json:"maxSize"`
+
+	// Maximum time to wait before flushing buffered records (default: 60s)
+	FlushInterval Duration `yaml:"flushInterval,omitempty" json:"flushInterval" tstype:"Duration"`
+
+	// AWS region for S3 bucket (defaults to AWS_REGION env var)
+	Region string `yaml:"region,omitempty" json:"region"`
+
+	// AWS credentials config (optional). If not specified, uses standard AWS credential chain:
+	// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+	// 2. IAM role (for EC2/ECS/EKS)
+	// 3. Shared credentials file (~/.aws/credentials)
+	// Supported modes: "env", "file", "secret"
+	Credentials *AwsAuthConfig `yaml:"credentials,omitempty" json:"credentials,omitempty"`
+
+	// Content type for uploaded files (default: "application/jsonl")
+	ContentType string `yaml:"contentType,omitempty" json:"contentType"`
+}
+
+func (c *MisbehaviorsDestinationConfig) Copy() *MisbehaviorsDestinationConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &MisbehaviorsDestinationConfig{
+		Type:        c.Type,
+		Path:        c.Path,
+		FilePattern: c.FilePattern,
+	}
+	if c.S3 != nil {
+		copied.S3 = &S3FlushConfig{
+			MaxRecords:    c.S3.MaxRecords,
+			MaxSize:       c.S3.MaxSize,
+			FlushInterval: c.S3.FlushInterval,
+			Region:        c.S3.Region,
+			ContentType:   c.S3.ContentType,
+		}
+		if c.S3.Credentials != nil {
+			// AwsAuthConfig already exists in the codebase
+			creds := *c.S3.Credentials
+			copied.S3.Credentials = &creds
+		}
+	}
 	return copied
 }
 

@@ -26,6 +26,7 @@ type ConsensusPolicyBuilder interface {
 	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder
 	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder
 	WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder
+	WithMisbehaviorsDestination(cfg *common.MisbehaviorsDestinationConfig) ConsensusPolicyBuilder
 	OnAgreement(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
 	OnDispute(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[*common.NormalizedResponse])) ConsensusPolicyBuilder
@@ -46,6 +47,7 @@ type config struct {
 	disputeBehavior         common.ConsensusDisputeBehavior
 	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 	punishMisbehavior       *common.PunishMisbehaviorConfig
+	misbehaviorsDestination *common.MisbehaviorsDestinationConfig
 	timeout                 time.Duration
 	logger                  *zerolog.Logger
 	disputeLogLevel         zerolog.Level
@@ -72,6 +74,7 @@ type consensusPolicy struct {
 	misbehavingUpstreamsLimiter     *sync.Map // [string, *ratelimiter.Limiter]
 	misbehavingUpstreamsSitoutTimer *sync.Map // [string, *time.Timer]
 	disputeLogLevel                 zerolog.Level
+	exporter                        misbehaviorExporter
 }
 
 var _ ConsensusPolicy = &consensusPolicy{}
@@ -98,6 +101,11 @@ func (c *config) WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) Cons
 
 func (c *config) WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder {
 	c.lowParticipantsBehavior = lowParticipantsBehavior
+	return c
+}
+
+func (c *config) WithMisbehaviorsDestination(cfg *common.MisbehaviorsDestinationConfig) ConsensusPolicyBuilder {
+	c.misbehaviorsDestination = cfg
 	return c
 }
 
@@ -158,12 +166,18 @@ func (c *config) Build() ConsensusPolicy {
 		disputeLevel = zerolog.WarnLevel
 	}
 
+	var exp misbehaviorExporter
+	if c.misbehaviorsDestination != nil {
+		exp = createMisbehaviorExporter(c.misbehaviorsDestination, &log)
+	}
+
 	return &consensusPolicy{
 		config:                          &hCopy,
 		logger:                          &log,
 		misbehavingUpstreamsLimiter:     &sync.Map{},
 		misbehavingUpstreamsSitoutTimer: &sync.Map{},
 		disputeLogLevel:                 disputeLevel,
+		exporter:                        exp,
 	}
 }
 
@@ -208,4 +222,37 @@ func (p *consensusPolicy) Build() policy.Executor[*common.NormalizedResponse] {
 		consensusPolicy: p,
 	}
 	return e
+}
+
+// createMisbehaviorExporter creates the appropriate exporter based on configuration
+func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) misbehaviorExporter {
+	if cfg == nil || cfg.Path == "" {
+		return nil
+	}
+
+	switch cfg.Type {
+	case common.MisbehaviorsDestinationTypeS3:
+		exp, err := newS3MisbehaviorExporter(cfg, log)
+		if err != nil {
+			log.Error().
+				Str("path", cfg.Path).
+				Err(err).
+				Msg("failed to initialize S3 misbehavior exporter; export disabled")
+			return nil
+		}
+		return exp
+
+	case common.MisbehaviorsDestinationTypeFile:
+		fallthrough
+	default:
+		exp, err := newFileMisbehaviorExporter(cfg, log)
+		if err != nil {
+			log.Warn().
+				Str("path", cfg.Path).
+				Err(err).
+				Msg("failed to initialize file misbehavior exporter; export disabled")
+			return nil
+		}
+		return exp
+	}
 }

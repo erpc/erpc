@@ -34,6 +34,24 @@ projects:
               preferLargerResponses: true
               ignoreFields:
                 eth_getBlockByNumber: ["timestamp"]
+              misbehaviorsDestination:
+                type: file        # 'file' | 's3'
+                path: /var/log/erpc/misbehaviors   # absolute directory for file, or s3://bucket/prefix for S3
+                filePattern: "{timestampMs}-{method}-{networkId}"  # default for file; S3 default adds -{instanceId}
+                # s3:
+                #   region: us-west-2
+                #   maxRecords: 100
+                #   maxSize: 1048576        # 1MB
+                #   flushInterval: 60s
+                #   contentType: application/jsonl
+                #   credentials:
+                #     mode: env            # 'env' | 'file' | 'secret'
+                #     # for mode 'file':
+                #     # credentialsFile: ~/.aws/credentials
+                #     # profile: default
+                #     # for mode 'secret':
+                #     # accessKeyID: AKIA...
+                #     # secretAccessKey: ...
               punishMisbehavior: # (optional) To exclude bad upstreams from consensus for a while
                 disputeThreshold: 10 
                 disputeWindow: 10m
@@ -62,6 +80,20 @@ export default createConfig({
               preferNonEmpty: true,
               preferLargerResponses: true,
               ignoreFields: { eth_getBlockByNumber: ["timestamp"] },
+              misbehaviorsDestination: {
+                type: "file",
+                path: "/var/log/erpc/misbehaviors",
+                filePattern: "{timestampMs}-{method}-{networkId}.jsonl",
+                // s3: {
+                //   region: "us-west-2",
+                //   maxRecords: 100,
+                //   maxSize: 1048576,
+                //   flushInterval: "60s",
+                //   contentType: "application/jsonl",
+                //   credentials: { mode: "env" }
+                //   credentials: { mode: "secret", accessKeyID: "...", secretAccessKey: "..." }
+                // }
+              },
               punishMisbehavior: {
                 disputeThreshold: 3,
                 disputeWindow: "10s",
@@ -184,6 +216,29 @@ Temporarily removes upstreams that consistently disagree with the consensus:
 - **`disputeThreshold`**: Number of disputes before punishment (e.g., 3 strikes)
 - **`disputeWindow`**: Time window for counting disputes (e.g., 10m)
 - **`sitOutPenalty`**: How long the upstream is cordoned (e.g., 30m)
+
+### `misbehaviorsDestination`
+Append full misbehavior events (JSONL) to a destination. Each line contains the full JSON-RPC request, all participant responses or errors, the analysis summary, the winner, and the policy snapshot. No truncation is applied.
+
+- **type**: `file` | `s3`
+- **path**:
+  - For `file`: absolute directory path; files are created using `filePattern`.
+  - For `s3`: `s3://bucket/prefix` where files are uploaded using `filePattern`.
+- **filePattern** placeholders:
+  - `{dateByHour}`: UTC hour (`YYYY-MM-DD-HH`)
+  - `{dateByDay}`: UTC day (`YYYY-MM-DD`)
+  - `{method}`: JSON-RPC method
+  - `{networkId}`: network id with `:` replaced by `_`
+  - `{instanceId}`: unique instance ID (auto from env/pod/hostname or generated)
+  - `{timestampMs}`: UTC timestamp in milliseconds (useful to avoid key collisions on S3)
+  - Defaults: `{timestampMs}-{method}-{networkId}.jsonl`
+- **s3** (when type=`s3`):
+  - `region`, `maxRecords`, `maxSize` (bytes), `flushInterval`, `contentType`
+  - `credentials.mode`: `env` | `file` | `secret` (+ required fields per mode)
+
+Notes:
+- File writes use atomic append; use external rotation for large files.
+- S3 uploads are buffered and flushed by size, count, or time.
 
 ## Performance
 Consensus increases costs and latency since it waits for multiple responses. Use it selectively for critical workloads and specific methods rather than all requests.
