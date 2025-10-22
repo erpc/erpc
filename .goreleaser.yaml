@@ -19,7 +19,7 @@ builds:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 
 archives:
-  - format: binary
+  - formats: ['binary']
     name_template: >-
       {{ .ProjectName }}_
       {{- .Os }}_
@@ -74,6 +74,14 @@ release:
         "jsonrpc": "2.0"
     }'
     ```
+
+sboms:
+  - artifacts: binary
+    cmd: syft
+    # some extra environment variables to help with license scanning
+    env:
+      - SYFT_GOLANG_SEARCH_LOCAL_MOD_CACHE_LICENSES=true
+      - SYFT_GOLANG_SEARCH_REMOTE_LICENSES=true
 
 changelog:
   use: github
