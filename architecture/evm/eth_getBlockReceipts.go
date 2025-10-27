@@ -81,32 +81,30 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 		}
 	}
 
-	// Validate global logIndex strict increments if enabled
+	// Validate global logIndex contiguity (start at 0, increment by 1) if enabled
 	if mcfg.CheckLogIndexStrictIncrements != nil && *mcfg.CheckLogIndexStrictIncrements {
-		var last uint64
-		hasLast := false
+		var expected uint64 = 0
 		for i := range receipts {
 			for j := range receipts[i].Logs {
 				lix := receipts[i].Logs[j].LogIndex
 				if lix == "" {
-					continue
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("missing logIndex at receipt %d log %d", i, j), u)
 				}
 				// Ensure lix is ASCII to avoid allocations on weird encodings
 				if !utf8.ValidString(lix) {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid UTF-8 in logIndex"), u)
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid UTF-8 in logIndex at receipt %d log %d", i, j), u)
 				}
 				if !strings.HasPrefix(lix, "0x") {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("logIndex must be hex string"), u)
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("logIndex must be hex string at receipt %d log %d", i, j), u)
 				}
 				v, herr := common.HexToUint64(lix)
 				if herr != nil {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid logIndex hex: %w", herr), u)
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid logIndex hex at receipt %d log %d: %w", i, j, herr), u)
 				}
-				if hasLast && v <= last {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("logIndex not strictly increasing"), u)
+				if v != expected {
+					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("logIndex not contiguous: expected %d got %d at receipt %d log %d", expected, v, i, j), u)
 				}
-				last = v
-				hasLast = true
+				expected++
 			}
 		}
 	}
