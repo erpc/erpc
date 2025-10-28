@@ -449,6 +449,16 @@ projects:
         evm:
           chainId: 1
 
+          # Validate requested block range and ensure upstream has data for both ends.
+          # Enabled by default; set to false to skip availability checks.
+          integrity:
+            enforceGetLogsBlockRange: true
+
+          # Validate requested block range and ensure upstream has data for both ends.
+            integrity: {
+              enforceGetLogsBlockRange: true,
+            },
+
           # Hard limits that reject the request up front (413-style errors):
           getLogsMaxAllowedRange: 10000          # Max number of blocks (inclusive)
           getLogsMaxAllowedAddresses: 10000      # Max length when 'address' is an array
