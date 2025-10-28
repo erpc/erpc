@@ -49,6 +49,12 @@ func (m *mockEvmStatePollerEnhanced) SyncingState() common.EvmSyncingState {
 func (m *mockEvmStatePollerEnhanced) SetSyncingState(state common.EvmSyncingState) {}
 func (m *mockEvmStatePollerEnhanced) LatestBlock() int64                           { return m.latestBlock }
 func (m *mockEvmStatePollerEnhanced) FinalizedBlock() int64                        { return m.finalizedBlock }
+func (m *mockEvmStatePollerEnhanced) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+	return 0, nil
+}
+func (m *mockEvmStatePollerEnhanced) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
+	return 0
+}
 func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, error) {
 	if m.pollError != nil {
 		return false, m.pollError
@@ -598,6 +604,12 @@ func (m *mockEvmStatePollerWithCustomBehavior) LatestBlock() int64 {
 	return m.getLatestBlock()
 }
 func (m *mockEvmStatePollerWithCustomBehavior) FinalizedBlock() int64 { return m.finalizedBlock }
+func (m *mockEvmStatePollerWithCustomBehavior) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+	return 0, nil
+}
+func (m *mockEvmStatePollerWithCustomBehavior) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
+	return 0
+}
 func (m *mockEvmStatePollerWithCustomBehavior) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.finalizedBlock, nil
 }

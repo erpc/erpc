@@ -780,6 +780,31 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 		return false, fmt.Errorf("upstream is not an EVM type")
 	}
 
+	// Resolve configured availability bounds (min/max) and enforce before legacy logic
+	minBound, maxBound, _ := u.resolveAvailabilityBounds(ctx)
+	if minBound != math.MinInt64 && blockNumber < minBound {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkLabel(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+		return false, nil
+	}
+	if maxBound != math.MaxInt64 && blockNumber > maxBound {
+		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkLabel(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+		return false, nil
+	}
+
 	if confidence == common.AvailbilityConfidenceFinalized {
 		//
 		// UPPER BOUND: Check if the block is finalized
@@ -862,6 +887,89 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 	} else {
 		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}
+}
+
+// resolveAvailabilityBounds computes effective [min,max] based on BlockAvailabilityConfig.
+// Returns MinInt64/MaxInt64 when a side is unbounded.
+func (u *Upstream) resolveAvailabilityBounds(ctx context.Context) (int64, int64, error) {
+	cfg := u.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil {
+		return math.MinInt64, math.MaxInt64, nil
+	}
+	latest := int64(0)
+
+	compute := func(bound *common.EvmAvailabilityBoundConfig, isLower bool) (int64, error) {
+		if bound == nil {
+			if isLower {
+				return math.MinInt64, nil
+			}
+			return math.MaxInt64, nil
+		}
+		probe := bound.Probe
+		if probe == "" {
+			probe = common.EvmProbeBlockHeader
+		}
+
+		// Compute new value
+		var val int64
+		if bound.ExactBlock != nil {
+			val = *bound.ExactBlock
+		} else if bound.EarliestBlockPlus != nil {
+			eb := int64(0)
+			if u.evmStatePoller != nil && !u.evmStatePoller.IsObjectNull() {
+				eb = u.evmStatePoller.EarliestBlock(probe)
+			}
+			if eb > 0 {
+				val = eb + *bound.EarliestBlockPlus
+			} else {
+				// If earliest is unknown, treat as unbounded on this side
+				if isLower {
+					val = math.MinInt64
+				} else {
+					val = math.MaxInt64
+				}
+			}
+		} else if bound.LatestBlockMinus != nil {
+			if latest == 0 {
+				if u.evmStatePoller != nil {
+					latest = u.evmStatePoller.LatestBlock()
+				}
+			}
+			if latest > 0 {
+				val = latest - *bound.LatestBlockMinus
+			} else {
+				if isLower {
+					val = math.MinInt64
+				} else {
+					val = math.MaxInt64
+				}
+			}
+		} else {
+			// No-op bound
+			if isLower {
+				val = math.MinInt64
+			} else {
+				val = math.MaxInt64
+			}
+		}
+
+		return val, nil
+	}
+
+	minVal, err := compute(cfg.Evm.BlockAvailability.Lower, true)
+	if err != nil {
+		return 0, 0, err
+	}
+	maxVal, err := compute(cfg.Evm.BlockAvailability.Upper, false)
+	if err != nil {
+		return 0, 0, err
+	}
+	// If both sides are finite and the computed range is invalid (min > max),
+	// fail-open for safety: treat as unbounded to avoid breaking production traffic.
+	if minVal != math.MinInt64 && maxVal != math.MaxInt64 && minVal > maxVal {
+		return math.MinInt64, math.MaxInt64, nil
+	}
+	return minVal, maxVal, nil
 }
 
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
@@ -1055,9 +1163,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		cfg.Evm.ChainId = realChainID
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
 
-		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {
-			cfg.Evm.MaxAvailableRecentBlocks = 128
-		}
+		// @deprecated: NodeType-specific logic removed; availability is handled by blockAvailability bounds.
 
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
 		// TODO evm: detect max eth_getLogs max block range
@@ -1134,19 +1240,17 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	// if block can be determined from request and upstream is only full-node and block is historical skip
-	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
+	// If block can be determined from request, enforce configured bounds early
+	if u.config.Evm != nil {
 		_, bn, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req)
-		if ebn != nil || bn <= 0 {
-			return nil, false
-		}
-
-		if lb := u.evmStatePoller.LatestBlock(); lb > 0 && bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
-			// Allow requests for block numbers greater than the latest known block
-			if bn > lb {
-				return nil, false
+		if ebn == nil && bn > 0 {
+			minBound, maxBound, _ := u.resolveAvailabilityBounds(ctx)
+			if minBound != math.MinInt64 && bn < minBound {
+				return common.NewErrUpstreamRequestSkipped(fmt.Errorf("block below lower availability bound"), u.config.Id), true
 			}
-			return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
+			if maxBound != math.MaxInt64 && bn > maxBound {
+				return common.NewErrUpstreamRequestSkipped(fmt.Errorf("block above upper availability bound"), u.config.Id), true
+			}
 		}
 	}
 

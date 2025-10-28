@@ -1540,10 +1540,29 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		if defaults != nil && defaults.MaxAvailableRecentBlocks != 0 {
 			e.MaxAvailableRecentBlocks = defaults.MaxAvailableRecentBlocks
 		} else {
+			// @deprecated: NodeType-based defaults moved under blockAvailability bounds
+			// Kept for back-compat in config only; runtime logic does not use NodeType.
 			switch e.NodeType {
 			case EvmNodeTypeFull:
 				e.MaxAvailableRecentBlocks = 128
 			}
+		}
+	}
+
+	// Back-compat mapping: if blockAvailability not provided but legacy MaxAvailableRecentBlocks is set,
+	// map it to lower.latestBlockMinus with updateRate=0 (freeze).
+	if e.BlockAvailability == nil && e.MaxAvailableRecentBlocks > 0 {
+		v := e.MaxAvailableRecentBlocks
+		e.BlockAvailability = &EvmBlockAvailabilityConfig{
+			Lower: &EvmAvailabilityBoundConfig{LatestBlockMinus: &v},
+		}
+	}
+
+	// If NodeType==full and no lower bound specified anywhere, set a default window of 128 blocks.
+	if e.BlockAvailability == nil && e.MaxAvailableRecentBlocks == 0 && e.NodeType == EvmNodeTypeFull {
+		v := int64(128)
+		e.BlockAvailability = &EvmBlockAvailabilityConfig{
+			Lower: &EvmAvailabilityBoundConfig{LatestBlockMinus: &v},
 		}
 	}
 
