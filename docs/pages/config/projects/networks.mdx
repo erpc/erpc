@@ -403,6 +403,66 @@ export default createConfig({
 
 This type of network are generic EVM-based chains that support JSON-RPC protocol.
 
+### Integrity Configuration
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          integrity:
+            # Track highest block across upstreams for "latest" and "finalized" tags
+            enforceHighestBlock: true  # default: true
+            
+            # Validate eth_getLogs block range availability on upstreams
+            enforceGetLogsBlockRange: true  # default: true
+            
+            # Convert null responses to errors for eth_getBlockByNumber tagged blocks ("pending", "latest", etc.)
+            # Numeric blocks (0x1234) always error when null regardless of this setting
+            # Set to false to allow null responses for eth_getBlockByNumber tagged blocks (e.g. for zkSync)
+            enforceNonNullTaggedBlocks: true  # default: true
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+    },
+    networks: [
+      {
+        architecture: "evm",
+        evm: {
+          chainId: 1,
+          integrity: {
+            // Track highest block across upstreams for "latest" and "finalized" tags
+            enforceNonNullTaggedBlocks: true, // default: true
+
+            // Validate eth_getLogs block range availability on upstreams
+            enforceHighestBlock: true, // default: true
+
+            // Convert null responses to errors for eth_getBlockByNumber tagged blocks ("pending", "latest", etc.)
+            // Numeric blocks (0x1234) always error when null regardless of this setting
+            // Set to false to allow null responses for eth_getBlockByNumber tagged blocks (e.g. for zkSync)
+            enforceGetLogsBlockRange: true, // default: true
+          },
+        },
+      },
+    ],
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 ### `eth_getLogs`
 
 Network-level controls manage validation, proactive splitting, and error-driven splitting for eth_getLogs. Requests may be split into smaller sub-requests and merged transparently.

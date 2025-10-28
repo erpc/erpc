@@ -240,12 +240,6 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -285,12 +279,6 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -412,6 +400,63 @@ export interface ConsensusPolicyConfig {
     };
     preferNonEmpty?: boolean;
     preferLargerResponses?: boolean;
+    misbehaviorsDestination?: MisbehaviorsDestinationConfig;
+}
+export type MisbehaviorsDestinationType = string;
+export declare const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType;
+export declare const MisbehaviorsDestinationTypeS3: MisbehaviorsDestinationType;
+export interface MisbehaviorsDestinationConfig {
+    /**
+     * Type of destination: "file" or "s3"
+     */
+    type: 'file' | 's3';
+    /**
+     * Path for file destination, or S3 URI (s3://bucket/prefix/) for S3 destination
+     */
+    path: string;
+    /**
+     * Pattern for generating file names. Supports placeholders:
+     * {dateByHour} - formatted as 2006-01-02-15
+     * {dateByDay} - formatted as 2006-01-02
+     * {method} - the RPC method name
+     * {networkId} - the network ID with : replaced by _
+     * {instanceId} - unique instance identifier
+     */
+    filePattern?: string;
+    /**
+     * S3-specific settings for bulk flushing
+     */
+    s3?: S3FlushConfig;
+}
+export interface S3FlushConfig {
+    /**
+     * Maximum number of records to buffer before flushing (default: 100)
+     */
+    maxRecords?: number;
+    /**
+     * Maximum size in bytes to buffer before flushing (default: 1MB)
+     */
+    maxSize?: number;
+    /**
+     * Maximum time to wait before flushing buffered records (default: 60s)
+     */
+    flushInterval?: Duration;
+    /**
+     * AWS region for S3 bucket (defaults to AWS_REGION env var)
+     */
+    region?: string;
+    /**
+     * AWS credentials config (optional). If not specified, uses standard AWS credential chain:
+     * 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+     * 2. IAM role (for EC2/ECS/EKS)
+     * 3. Shared credentials file (~/.aws/credentials)
+     * Supported modes: "env", "file", "secret"
+     */
+    credentials?: AwsAuthConfig;
+    /**
+     * Content type for uploaded files (default: "application/jsonl")
+     */
+    contentType?: string;
 }
 export interface PunishMisbehaviorConfig {
     disputeThreshold: number;
@@ -474,12 +519,6 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -500,6 +539,7 @@ export interface EvmNetworkConfig {
 export interface EvmIntegrityConfig {
     enforceHighestBlock?: boolean;
     enforceGetLogsBlockRange?: boolean;
+    enforceNonNullTaggedBlocks?: boolean;
 }
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;
