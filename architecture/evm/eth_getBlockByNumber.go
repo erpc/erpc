@@ -260,23 +260,35 @@ func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) 
 	if ncfg == nil ||
 		ncfg.Evm == nil ||
 		ncfg.Evm.Integrity == nil ||
-		ncfg.Evm.Integrity.EnforceNonNullBlocks == nil ||
-		!*ncfg.Evm.Integrity.EnforceNonNullBlocks {
+		ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks == nil ||
+		!*ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks {
 		// If enforcement is disabled, return the response as-is (even if null)
 		return nr, nil
 	}
 
-	if nr == nil || nr.IsObjectNull() || nr.IsResultEmptyish() {
-		rq := nr.Request()
-		details := make(map[string]interface{})
-		var bnp string
-		if rq != nil {
-			rqj, _ := rq.JsonRpcRequest()
-			if rqj != nil && len(rqj.Params) > 0 {
-				bnp, _ = rqj.Params[0].(string)
-				details["blockNumber"] = bnp
-			}
+	// Extract the block parameter to check if it's a tag or numeric
+	rq := nr.Request()
+	var bnp string
+	var isTag bool
+	if rq != nil {
+		rqj, _ := rq.JsonRpcRequest()
+		if rqj != nil && len(rqj.Params) > 0 {
+			bnp, _ = rqj.Params[0].(string)
+			// Check if it's a block tag (not a hex number)
+			// Tags: "latest", "pending", "finalized", "safe", "earliest"
+			// Numeric: starts with "0x"
+			isTag = bnp != "" && !strings.HasPrefix(bnp, "0x")
 		}
+	}
+
+	// Only enforce non-null for tagged blocks, not numeric blocks
+	if !isTag {
+		return nr, nil
+	}
+
+	if nr == nil || nr.IsObjectNull() || nr.IsResultEmptyish() {
+		details := make(map[string]interface{})
+		details["blockNumber"] = bnp
 		return nil, common.NewErrEndpointMissingData(
 			common.NewErrJsonRpcExceptionInternal(
 				0,

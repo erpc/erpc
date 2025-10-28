@@ -539,7 +539,7 @@ export interface EvmNetworkConfig {
 export interface EvmIntegrityConfig {
     enforceHighestBlock?: boolean;
     enforceGetLogsBlockRange?: boolean;
-    enforceNonNullBlocks?: boolean;
+    enforceNonNullTaggedBlocks?: boolean;
 }
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;

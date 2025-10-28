@@ -414,27 +414,35 @@ When enabled (default), eRPC tracks the highest block number across all upstream
 - **Default**: `true`
 - **When `false`**: Returns whatever block the upstream provides, even if other upstreams have seen higher blocks
 
-#### `enforceNonNullBlocks`
+#### `enforceNonNullTaggedBlocks`
 
-Controls whether null/empty responses from `eth_getBlockByNumber` should be converted to `ErrEndpointMissingData` errors.
+Controls whether null/empty responses from `eth_getBlockByNumber` with **block tags** (like `"pending"`, `"latest"`, `"finalized"`, `"safe"`, `"earliest"`) should be converted to `ErrEndpointMissingData` errors.
 
-- **Default**: `true` (existing behavior - null responses become errors)
-- **When `false`**: Null responses are returned as-is without conversion to errors
-- **Use case**: Useful for pending blocks that don't exist yet, or when you want to handle null responses at the application level
+- **Default**: `true` (existing behavior - null responses for tagged blocks become errors)
+- **When `false`**: Null responses for tagged blocks are returned as-is without conversion to errors
+- **Scope**: Only applies to block tags, not numeric block numbers (hex values starting with `0x`)
+- **Use case**: Useful for pending blocks that don't exist yet, or when you want to handle null tagged block responses at the application level
 
 **Example:**
 ```yaml
 evm:
   integrity:
-    enforceNonNullBlocks: false  # Allow null block responses
+    enforceNonNullTaggedBlocks: false  # Allow null responses for tagged blocks
 ```
 
-When disabled, requests for non-existent blocks (like pending blocks that haven't been created yet) will return `{"result": null}` instead of an error.
+When disabled, requests for non-existent tagged blocks (like pending blocks that haven't been created yet) will return `{"result": null}` instead of an error.
+
+**Why only tagged blocks?**
+- Numeric blocks (e.g., `0x1234`) rarely return null unless there's a real issue (missing data, pruned data)
+- Tagged blocks (e.g., `"pending"`) can legitimately be null when the chain hasn't produced that block yet
+- The `enforceHighestBlock` setting already protects against stale `"latest"` blocks
+- This keeps the scope narrow and doesn't impact numeric block requests
 
 **Interaction with `retry-empty` directive:**
-- `enforceNonNullBlocks: false` → Returns null, no error, no retry
-- `enforceNonNullBlocks: true` + `retry-empty: false` → Creates error, doesn't retry
-- `enforceNonNullBlocks: true` + `retry-empty: true` → Creates error, retries other upstreams
+- `enforceNonNullTaggedBlocks: false` → Returns null, no error, no retry (for tagged blocks)
+- `enforceNonNullTaggedBlocks: true` + `retry-empty: false` → Creates error, doesn't retry (for tagged blocks)
+- `enforceNonNullTaggedBlocks: true` + `retry-empty: true` → Creates error, retries other upstreams (for tagged blocks)
+- Numeric block requests (e.g., `0x1234`) always enforce non-null regardless of this setting
 
 #### `enforceGetLogsBlockRange`
 
@@ -470,9 +478,9 @@ projects:
           # Validate requested block range and ensure upstream has data for both ends.
           # Enabled by default; set to false to skip availability checks.
           integrity:
-            enforceHighestBlock: true          # Default: true
-            enforceGetLogsBlockRange: true     # Default: true
-            enforceNonNullBlocks: true         # Default: true - Convert null block responses to errors
+            enforceHighestBlock: true              # Default: true
+            enforceGetLogsBlockRange: true         # Default: true
+            enforceNonNullTaggedBlocks: true       # Default: true - Convert null tagged block responses to errors
 
           # Hard limits that reject the request up front (413-style errors):
           getLogsMaxAllowedRange: 10000          # Max number of blocks (inclusive)
@@ -510,9 +518,9 @@ export default createConfig({
 
             // Validate requested block range and ensure upstream has data for both ends.
             integrity: {
-              enforceHighestBlock: true,          // Default: true
-              enforceGetLogsBlockRange: true,     // Default: true
-              enforceNonNullBlocks: true,         // Default: true - Convert null block responses to errors
+              enforceHighestBlock: true,              // Default: true
+              enforceGetLogsBlockRange: true,         // Default: true
+              enforceNonNullTaggedBlocks: true,       // Default: true - Convert null tagged block responses to errors
             },
 
             // Hard limits that reject the request up front (413-style errors):
