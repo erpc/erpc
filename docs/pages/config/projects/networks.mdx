@@ -405,51 +405,25 @@ This type of network are generic EVM-based chains that support JSON-RPC protocol
 
 ### Integrity Configuration
 
-The `integrity` configuration controls validation and enforcement of blockchain data integrity. All settings default to `true` to ensure data consistency.
-
-#### `enforceHighestBlock`
-
-When enabled (default), eRPC tracks the highest block number across all upstreams and ensures responses for `latest` and `finalized` block tags return the most recent data.
-
-- **Default**: `true`
-- **When `false`**: Returns whatever block the upstream provides, even if other upstreams have seen higher blocks
-
-#### `enforceNonNullTaggedBlocks`
-
-Controls whether null/empty responses from `eth_getBlockByNumber` with **block tags** (like `"pending"`, `"latest"`, `"finalized"`, `"safe"`, `"earliest"`) should be converted to `ErrEndpointMissingData` errors.
-
-- **Default**: `true` (existing behavior - null responses for tagged blocks become errors)
-- **When `false`**: Null responses for tagged blocks are returned as-is without conversion to errors
-- **Scope**: Only applies to block tags, not numeric block numbers (hex values starting with `0x`)
-- **Use case**: Useful for pending blocks that don't exist yet, or when you want to handle null tagged block responses at the application level
-
-**Example:**
 ```yaml
-evm:
-  integrity:
-    enforceNonNullTaggedBlocks: false  # Allow null responses for tagged blocks
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          integrity:
+            # Track highest block across upstreams for "latest" and "finalized" tags
+            enforceHighestBlock: true  # default: true
+            
+            # Validate eth_getLogs block range availability on upstreams
+            enforceGetLogsBlockRange: true  # default: true
+            
+            # Convert null responses to errors for eth_getBlockByNumber tagged blocks ("pending", "latest", etc.)
+            # Numeric blocks (0x1234) always error when null regardless of this setting
+            # Set to false to allow null responses for eth_getBlockByNumber tagged blocks (e.g. for zkSync)
+            enforceNonNullTaggedBlocks: true  # default: true
 ```
-
-When disabled, requests for non-existent tagged blocks (like pending blocks that haven't been created yet) will return `{"result": null}` instead of an error.
-
-**Why only tagged blocks?**
-- Numeric blocks (e.g., `0x1234`) rarely return null unless there's a real issue (missing data, pruned data)
-- Tagged blocks (e.g., `"pending"`) can legitimately be null when the chain hasn't produced that block yet
-- The `enforceHighestBlock` setting already protects against stale `"latest"` blocks
-- This keeps the scope narrow and doesn't impact numeric block requests
-
-**Interaction with `retry-empty` directive:**
-- `enforceNonNullTaggedBlocks: false` → Returns null, no error, no retry (for tagged blocks)
-- `enforceNonNullTaggedBlocks: true` + `retry-empty: false` → Creates error, doesn't retry (for tagged blocks)
-- `enforceNonNullTaggedBlocks: true` + `retry-empty: true` → Creates error, retries other upstreams (for tagged blocks)
-- Numeric block requests (e.g., `0x1234`) always enforce non-null regardless of this setting
-
-#### `enforceGetLogsBlockRange`
-
-Validates the block range for `eth_getLogs` requests and ensures the upstream has data for both `fromBlock` and `toBlock`.
-
-- **Default**: `true`
-- **When `false`**: Skips block range availability checks
 
 ### `eth_getLogs`
 
@@ -474,13 +448,6 @@ projects:
       - architecture: evm
         evm:
           chainId: 1
-
-          # Validate requested block range and ensure upstream has data for both ends.
-          # Enabled by default; set to false to skip availability checks.
-          integrity:
-            enforceHighestBlock: true              # Default: true
-            enforceGetLogsBlockRange: true         # Default: true
-            enforceNonNullTaggedBlocks: true       # Default: true - Convert null tagged block responses to errors
 
           # Hard limits that reject the request up front (413-style errors):
           getLogsMaxAllowedRange: 10000          # Max number of blocks (inclusive)
@@ -515,13 +482,6 @@ export default createConfig({
           architecture: "evm",
           evm: {
             chainId: 1,
-
-            // Validate requested block range and ensure upstream has data for both ends.
-            integrity: {
-              enforceHighestBlock: true,              // Default: true
-              enforceGetLogsBlockRange: true,         // Default: true
-              enforceNonNullTaggedBlocks: true,       // Default: true - Convert null tagged block responses to errors
-            },
 
             // Hard limits that reject the request up front (413-style errors):
             getLogsMaxAllowedRange: 10000,          // Max number of blocks (inclusive)

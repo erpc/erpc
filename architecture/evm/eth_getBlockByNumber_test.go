@@ -106,7 +106,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.True(t, result.IsResultEmptyish())
 	})
 
-	t.Run("NumericBlockWithEnforcementDisabled_SkipsEnforcement", func(t *testing.T) {
+	t.Run("NumericBlockWithEnforcementDisabled_StillReturnsError", func(t *testing.T) {
 		// Create a network with enforceNonNullTaggedBlocks disabled
 		network := &testNetwork{
 			cfg: &common.NetworkConfig{
@@ -134,11 +134,11 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		// Call enforceNonNullBlock
 		result, err := enforceNonNullBlock(network, response)
 
-		// Assert: Numeric blocks bypass enforcement - they're returned as-is (null in this case)
-		// This is the key behavior: numeric blocks are NOT enforced even if they're null
-		assert.NoError(t, err)
-		assert.NotNil(t, result)
-		assert.True(t, result.IsResultEmptyish())
+		// Assert: Numeric blocks ALWAYS return error when null, regardless of config
+		// This is the key behavior: numeric null blocks indicate real data problems (pruned/missing)
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "block not found")
 	})
 
 	t.Run("TaggedBlockWithEnforcementEnabled_ReturnsError", func(t *testing.T) {

@@ -255,18 +255,11 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 // enforceNonNullBlock checks if the block result is null/empty and returns an appropriate error
 func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
-	// Check if enforcement is disabled in network config
-	ncfg := network.Config()
-	if ncfg == nil ||
-		ncfg.Evm == nil ||
-		ncfg.Evm.Integrity == nil ||
-		ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks == nil ||
-		!*ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks {
-		// If enforcement is disabled, return the response as-is (even if null)
+	if nr != nil && !nr.IsObjectNull() && !nr.IsResultEmptyish() {
 		return nr, nil
 	}
 
-	// Extract the block parameter to check if it's a tag or numeric
+	// Response is null/empty - extract block parameter to determine if it's a tag or numeric
 	rq := nr.Request()
 	var bnp string
 	var isTag bool
@@ -281,26 +274,34 @@ func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) 
 		}
 	}
 
-	// Only enforce non-null for tagged blocks, not numeric blocks
-	if !isTag {
-		return nr, nil
+	// For tagged blocks, check if enforcement is disabled in config
+	if isTag {
+		ncfg := network.Config()
+		if ncfg == nil ||
+			ncfg.Evm == nil ||
+			ncfg.Evm.Integrity == nil ||
+			ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks == nil ||
+			!*ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks {
+			// Config allows null tagged blocks - return as-is
+			return nr, nil
+		}
 	}
 
-	if nr == nil || nr.IsObjectNull() || nr.IsResultEmptyish() {
-		details := make(map[string]interface{})
-		details["blockNumber"] = bnp
-		return nil, common.NewErrEndpointMissingData(
-			common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorMissingData,
-				"block not found with number "+bnp,
-				nil,
-				details,
-			),
-			nr.Upstream(),
-		)
-	}
-	return nr, nil
+	// Create error for:
+	// 1. Numeric blocks with null result (always an error - indicates missing/pruned data)
+	// 2. Tagged blocks with null result when enforcement is enabled
+	details := make(map[string]interface{})
+	details["blockNumber"] = bnp
+	return nil, common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(
+			0,
+			common.JsonRpcErrorMissingData,
+			"block not found with number "+bnp,
+			nil,
+			details,
+		),
+		nr.Upstream(),
+	)
 }
 
 func pickHighestBlock(ctx context.Context, x *common.NormalizedResponse, y *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
