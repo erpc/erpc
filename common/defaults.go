@@ -116,6 +116,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 						Integrity: &EvmIntegrityConfig{
 							EnforceHighestBlock:      util.BoolPtr(true),
 							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceNonNullBlocks:     util.BoolPtr(true),
 						},
 						GetLogsMaxAllowedRange: 30_000,
 						GetLogsSplitOnError:    util.BoolPtr(true),
@@ -1745,6 +1746,9 @@ func (i *EvmIntegrityConfig) SetDefaults() error {
 	}
 	if i.EnforceGetLogsBlockRange == nil {
 		i.EnforceGetLogsBlockRange = util.BoolPtr(true)
+	}
+	if i.EnforceNonNullBlocks == nil {
+		i.EnforceNonNullBlocks = util.BoolPtr(true)
 	}
 	return nil
 }

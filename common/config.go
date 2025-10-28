@@ -1335,6 +1335,7 @@ type EvmNetworkConfig struct {
 type EvmIntegrityConfig struct {
 	EnforceHighestBlock      *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
 	EnforceGetLogsBlockRange *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	EnforceNonNullBlocks     *bool `yaml:"enforceNonNullBlocks,omitempty" json:"enforceNonNullBlocks"`
 }
 
 type SelectionPolicyConfig struct {

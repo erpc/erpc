@@ -78,7 +78,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		}
 	}
 
-	return enforceNonNullBlock(nr)
+	return enforceNonNullBlock(network, nr)
 }
 
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
@@ -254,7 +254,18 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 }
 
 // enforceNonNullBlock checks if the block result is null/empty and returns an appropriate error
-func enforceNonNullBlock(nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+	// Check if enforcement is disabled in network config
+	ncfg := network.Config()
+	if ncfg == nil ||
+		ncfg.Evm == nil ||
+		ncfg.Evm.Integrity == nil ||
+		ncfg.Evm.Integrity.EnforceNonNullBlocks == nil ||
+		!*ncfg.Evm.Integrity.EnforceNonNullBlocks {
+		// If enforcement is disabled, return the response as-is (even if null)
+		return nr, nil
+	}
+
 	if nr == nil || nr.IsObjectNull() || nr.IsResultEmptyish() {
 		rq := nr.Request()
 		details := make(map[string]interface{})
