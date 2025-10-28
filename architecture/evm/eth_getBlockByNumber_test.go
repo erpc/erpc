@@ -208,4 +208,39 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.NotNil(t, result)
 		assert.True(t, result.IsResultEmptyish())
 	})
+
+	t.Run("TaggedBlockWithFieldNotSet_DefaultsToEnforce", func(t *testing.T) {
+		// Create a network WITHOUT setting enforceNonNullTaggedBlocks (nil)
+		// This tests the CRITICAL default behavior
+		network := &testNetwork{
+			cfg: &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId:   1,
+					Integrity: &common.EvmIntegrityConfig{
+						// EnforceNonNullTaggedBlocks is nil (not set)
+					},
+				},
+			},
+		}
+
+		// Create a request with a tagged block
+		request := common.NewNormalizedRequestFromJsonRpcRequest(
+			common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"pending", true}),
+		)
+
+		// Create a response with null result
+		jsonResp, _ := common.NewJsonRpcResponse(1, nil, nil)
+		response := common.NewNormalizedResponse().
+			WithRequest(request).
+			WithJsonRpcResponse(jsonResp)
+
+		// Call enforceNonNullBlock
+		result, err := enforceNonNullBlock(network, response)
+
+		// Assert: Should enforce by default when field is nil (not explicitly disabled)
+		assert.Error(t, err, "When field is nil, should default to enforce (return error)")
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "block not found")
+	})
 }

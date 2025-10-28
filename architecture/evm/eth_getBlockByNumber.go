@@ -274,15 +274,15 @@ func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) 
 		}
 	}
 
-	// For tagged blocks, check if enforcement is disabled in config
+	// For tagged blocks, check if enforcement is EXPLICITLY disabled in config
 	if isTag {
 		ncfg := network.Config()
-		if ncfg == nil ||
-			ncfg.Evm == nil ||
-			ncfg.Evm.Integrity == nil ||
-			ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks == nil ||
+		if ncfg != nil &&
+			ncfg.Evm != nil &&
+			ncfg.Evm.Integrity != nil &&
+			ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks != nil &&
 			!*ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks {
-			// Config allows null tagged blocks - return as-is
+			// Config EXPLICITLY disables enforcement - allow null tagged blocks
 			return nr, nil
 		}
 	}
