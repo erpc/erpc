@@ -405,6 +405,8 @@ This type of network are generic EVM-based chains that support JSON-RPC protocol
 
 ### Integrity Configuration
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
   - id: main
@@ -457,7 +459,8 @@ export default createConfig({
   ],
 });
 ```
-
+</Tabs.Tab>
+</Tabs>
 
 ### `eth_getLogs`
 
