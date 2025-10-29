@@ -995,8 +995,13 @@ func (e *EvmStatePoller) checkProbe(ctx context.Context, probe common.EvmAvailab
 	case common.EvmProbeBlockHeader:
 		ok, err := e.checkBlockHeaderProbe(ctx, block)
 		return ok, false, err
+	case common.EvmProbeEventLogs:
+		return e.checkEventLogsProbe(ctx, block)
+	case common.EvmProbeCallState:
+		return e.checkCallStateProbe(ctx, block)
+	case common.EvmProbeTraceData:
+		return e.checkTraceDataProbe(ctx, block)
 	default:
-		// For now, only blockHeader is supported; others are unsupported (reserved for future)
 		return false, true, nil
 	}
 }
@@ -1028,6 +1033,209 @@ func (e *EvmStatePoller) checkBlockHeaderProbe(ctx context.Context, block int64)
 		return false, nil
 	}
 	return true, nil
+}
+
+// fetchBlockHashByNumber returns the block hash for the given block number.
+// Returns (hash, ok, err) where ok=false means the block data is not available.
+func (e *EvmStatePoller) fetchBlockHashByNumber(ctx context.Context, block int64) (string, bool, error) {
+	if block < 0 {
+		return "", false, nil
+	}
+	hex := fmt.Sprintf("0x%x", uint64(block))
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`,
+			util.RandomID(), hex,
+		),
+	))
+	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		// Treat transport/server errors as not available for probe decisions
+		return "", false, nil
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil || jrr == nil || jrr.Error != nil {
+		return "", false, nil
+	}
+	if jrr.IsResultEmptyish(ctx) {
+		return "", false, nil
+	}
+	hash, err := jrr.PeekStringByPath(ctx, "hash")
+	if err != nil || hash == "" {
+		return "", false, nil
+	}
+	return hash, true, nil
+}
+
+// checkEventLogsProbe verifies whether the upstream can return at least one log for the given block.
+// An empty logs array is NOT considered available.
+func (e *EvmStatePoller) checkEventLogsProbe(ctx context.Context, block int64) (bool, bool, error) {
+	if block < 0 {
+		return false, false, nil
+	}
+	hash, ok, _ := e.fetchBlockHashByNumber(ctx, block)
+	if !ok {
+		return false, false, nil
+	}
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getLogs","params":[{"blockHash":"%s"}]}`,
+			util.RandomID(), hash,
+		),
+	))
+	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		if common.HasErrorCode(err,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+		) {
+			return false, true, nil
+		}
+		// Treat other errors as not available
+		return false, false, nil
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil || jrr == nil {
+		return false, false, nil
+	}
+	if jrr.Error != nil {
+		// Method not found -> unsupported; otherwise treat as not-available
+		if jrr.Error.Code == -32601 {
+			return false, true, nil
+		}
+		return false, false, nil
+	}
+	// Expect an array of logs; require at least one entry
+	var logs []interface{}
+	if er := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &logs); er == nil {
+		if len(logs) >= 1 {
+			return true, false, nil
+		}
+		return false, false, nil
+	}
+	return false, false, nil
+}
+
+// checkCallStateProbe verifies whether historical state (e.g., balance) is available at the given block.
+// Any non-null result (including "0x0") is considered available.
+func (e *EvmStatePoller) checkCallStateProbe(ctx context.Context, block int64) (bool, bool, error) {
+	if block < 0 {
+		return false, false, nil
+	}
+	hex := fmt.Sprintf("0x%x", uint64(block))
+	pr := common.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","%s"]}`,
+			util.RandomID(), hex,
+		),
+	))
+	resp, err := e.upstream.Forward(ctx, pr, true)
+	if resp != nil {
+		defer resp.Release()
+	}
+	if err != nil {
+		if common.HasErrorCode(err,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+		) {
+			return false, true, nil
+		}
+		return false, false, nil
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil || jrr == nil {
+		return false, false, nil
+	}
+	if jrr.Error != nil {
+		return false, false, nil
+	}
+	// Consider available if result is present and not null
+	res := jrr.GetResultBytes()
+	if len(res) == 0 || string(res) == "null" {
+		return false, false, nil
+	}
+	return true, false, nil
+}
+
+// checkTraceDataProbe verifies tracing availability by attempting multiple engine-specific methods.
+// It tries in order: trace_block, debug_traceBlockByHash, trace_replayBlockTransactions.
+// Availability is true if any method returns a non-empty result.
+func (e *EvmStatePoller) checkTraceDataProbe(ctx context.Context, block int64) (bool, bool, error) {
+	if block < 0 {
+		return false, false, nil
+	}
+	hash, ok, _ := e.fetchBlockHashByNumber(ctx, block)
+	if !ok {
+		return false, false, nil
+	}
+
+	attempts := 0
+	unsupported := 0
+
+	tryCall := func(methodPayload string) (bool, bool) {
+		attempts++
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+
+		pr := common.NewNormalizedRequest([]byte(methodPayload))
+		resp, err := e.upstream.Forward(cctx, pr, true)
+		if resp != nil {
+			defer resp.Release()
+		}
+		if err != nil {
+			if common.HasErrorCode(err,
+				common.ErrCodeUpstreamRequestSkipped,
+				common.ErrCodeUpstreamMethodIgnored,
+				common.ErrCodeEndpointUnsupported,
+			) {
+				unsupported++
+			}
+			return false, false
+		}
+		jrr, jerr := resp.JsonRpcResponse()
+		if jerr != nil || jrr == nil {
+			return false, false
+		}
+		if jrr.Error != nil {
+			if jrr.Error.Code == -32601 {
+				unsupported++
+			}
+			// Otherwise, treat as not available for this attempt
+			return false, false
+		}
+		if jrr.IsResultEmptyish(ctx) {
+			return false, false
+		}
+		return true, false
+	}
+
+	// 1) trace_block(hash)
+	if ok, _ := tryCall(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"trace_block","params":["%s"]}`,
+		util.RandomID(), hash)); ok {
+		return true, false, nil
+	}
+
+	// 2) debug_traceBlockByHash(hash, {})
+	if ok, _ := tryCall(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"debug_traceBlockByHash","params":["%s",{}]}`,
+		util.RandomID(), hash)); ok {
+		return true, false, nil
+	}
+
+	// 3) trace_replayBlockTransactions(hash, ["trace"]) (Parity-style)
+	if ok, _ := tryCall(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"trace_replayBlockTransactions","params":["%s",["trace"]]}`,
+		util.RandomID(), hash)); ok {
+		return true, false, nil
+	}
+
+	if attempts > 0 && unsupported == attempts {
+		return false, true, nil
+	}
+	return false, false, nil
 }
 
 // binarySearchEarliest finds the first available block for the given probe in [low, high].

@@ -161,6 +161,14 @@ func (p *FakeEvmStatePoller) FinalizedBlock() int64 {
 	return p.finalizedBlockNumber
 }
 
+func (p *FakeEvmStatePoller) EarliestBlock(probe EvmAvailabilityProbeType) int64 {
+	return 0
+}
+
+func (p *FakeEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType) (int64, error) {
+	return 0, nil
+}
+
 func (p *FakeEvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= p.finalizedBlockNumber, nil
 }
