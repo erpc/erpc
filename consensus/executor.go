@@ -37,6 +37,18 @@ type metricsLabels struct {
 	finalityStr string
 }
 
+// participantInfo represents a single upstream's participation details in consensus
+type participantInfo struct {
+	upstreamId          string
+	upstream            common.Upstream
+	responseType        ResponseType
+	responseHash        string
+	responseSize        int
+	responseBody        []byte // Full response content for debugging disputes
+	errorMessage        string
+	agreesWithConsensus bool
+}
+
 // ResponseType classifies the type of response for clear decision making.
 type ResponseType int
 
@@ -449,23 +461,14 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 	// Track different types of disagreements
 	consensusSize := consensusGroup.ResponseSize
 
-	// Determine if the dispute log level is enabled; if not, avoid heavy preparation
+	// Determine if the dispute log level would be emitted by the current logger level
 	shouldLog := e.logger.GetLevel() <= e.disputeLogLevel
 
-	// Only define participant tracking structures if we'll actually log
-	type participantInfo struct {
-		upstreamId          string
-		upstream            common.Upstream
-		responseType        ResponseType
-		responseHash        string
-		responseSize        int
-		responseBody        []byte // Full response content for debugging disputes
-		errorMessage        string
-		agreesWithConsensus bool
-	}
+	// Collect participants when either logging is enabled OR exporter is configured
+	collectParticipants := shouldLog || e.exporter != nil
 	var allParticipants []participantInfo
 	misbehavingParticipants := ""
-	if shouldLog {
+	if collectParticipants {
 		allParticipants = make([]participantInfo, 0, analysis.totalParticipants)
 	}
 	var misbehavingCount int
@@ -482,27 +485,31 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 
 			upstreamId := result.Upstream.Id()
 
-			// Only collect participant details if we'll actually log them
-			if shouldLog {
+			// Collect participant details when needed for export or logging
+			if collectParticipants {
 				var responseHash string
 				var responseSize int
 				var responseBody []byte
 				var errorMessage string
 
+				responseHash = result.CachedHash
+				responseSize = result.CachedResponseSize
+
 				if result.Result != nil {
 					if jrr, err := result.Result.JsonRpcResponse(); err == nil && jrr != nil {
-						responseSize = jrr.ResultLength()
-						responseHash = result.CachedHash
-						// Get the full response body for debugging
+						// Full response body for export/logging
 						responseBody = jrr.GetResultBytes()
 
-						// Debug: Log if we have a mismatch between empty response and non-empty type
-						if group.ResponseType == ResponseTypeNonEmpty && jrr.IsResultEmptyish() {
-							lg.Warn().
-								Str("upstream", upstreamId).
-								Str("responseType", group.ResponseType.String()).
-								RawJSON("result", responseBody).
-								Msg("WARN: Response marked as non_empty but IsResultEmptyish returns true")
+						// Only do extra checks/logs if we actually log
+						if shouldLog {
+							// Debug: Log if we have a mismatch between empty response and non-empty type
+							if group.ResponseType == ResponseTypeNonEmpty && jrr.IsResultEmptyish() {
+								lg.Warn().
+									Str("upstream", upstreamId).
+									Str("responseType", group.ResponseType.String()).
+									RawJSON("result", responseBody).
+									Msg("WARN: Response marked as non_empty but IsResultEmptyish returns true")
+							}
 						}
 					} else {
 						// Couldn't extract JsonRpcResponse
@@ -521,7 +528,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					errorMessage = common.ErrorSummary(result.Err)
 				}
 
-				// Add to participants list for logging
+				// Add to participants list for export/logging
 				allParticipants = append(allParticipants, participantInfo{
 					upstreamId:          upstreamId,
 					upstream:            result.Upstream,
@@ -533,7 +540,7 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 					agreesWithConsensus: agreesWithConsensus,
 				})
 
-				if !agreesWithConsensus {
+				if shouldLog && !agreesWithConsensus {
 					if misbehavingParticipants == "" {
 						misbehavingParticipants = upstreamId
 					} else {
@@ -621,62 +628,186 @@ func (e *executor) trackAndPunishMisbehavingUpstreams(lg *zerolog.Logger, req *c
 		}
 	}
 
-	// Log all participants in a single log entry if misbehavior was found and logging is enabled
-	if misbehavingCount > 0 && shouldLog {
-		// Get consensus response data (compact)
-		consensusHash := consensusGroup.Hash
-		consensusSize := consensusGroup.ResponseSize
-		var consensusBody []byte
-
-		// Get the consensus response body for comparison
-		if consensusGroup.LargestResult != nil {
-			if jrr, err := consensusGroup.LargestResult.JsonRpcResponse(); err == nil && jrr != nil {
-				consensusBody = jrr.GetResultBytes()
+	// Export and log participants if misbehavior was found
+	if misbehavingCount > 0 {
+		// Export full event if configured
+		if e.exporter != nil {
+			if recBytes, err := e.buildMisbehaviorRecord(labels, req, winner, analysis, consensusGroup, allParticipants); err == nil {
+				if err2 := e.exporter.AppendWithMetadata(recBytes, labels.method, labels.networkId); err2 != nil {
+					lg.Warn().Err(err2).Msg("failed to append misbehavior record")
+				}
 			} else {
+				lg.Warn().Err(err).Msg("failed to encode misbehavior record")
+			}
+		}
+
+		if shouldLog {
+			// Get consensus response data (compact)
+			consensusHash := consensusGroup.Hash
+			consensusSize := consensusGroup.ResponseSize
+			var consensusBody []byte
+
+			// Get the consensus response body for comparison
+			if consensusGroup.LargestResult != nil {
+				if jrr, err := consensusGroup.LargestResult.JsonRpcResponse(); err == nil && jrr != nil {
+					consensusBody = jrr.GetResultBytes()
+				} else {
+					consensusBody, _ = common.SonicCfg.Marshal(map[string]interface{}{
+						"error": fmt.Sprintf("<error extracting consensus response: %v>", err),
+					})
+				}
+			} else if consensusGroup.FirstError != nil {
 				consensusBody, _ = common.SonicCfg.Marshal(map[string]interface{}{
-					"error": fmt.Sprintf("<error extracting consensus response: %v>", err),
+					"error": fmt.Sprintf("<consensus error: %v>", consensusGroup.FirstError),
 				})
 			}
-		} else if consensusGroup.FirstError != nil {
-			consensusBody, _ = common.SonicCfg.Marshal(map[string]interface{}{
-				"error": fmt.Sprintf("<consensus error: %v>", consensusGroup.FirstError),
-			})
-		}
 
-		logEvent := e.logger.WithLevel(e.disputeLogLevel).
-			Str("projectId", labels.projectId).
-			Str("networkId", labels.networkId).
-			Str("category", labels.category).
-			Str("finality", labels.finalityStr).
-			Int("consensusCount", consensusGroup.Count).
-			Int("totalParticipants", analysis.totalParticipants).
-			Int("validParticipants", analysis.validParticipants).
-			Int("misbehavingCount", misbehavingCount).
-			Str("misbehavingParticipants", misbehavingParticipants).
-			Str("consensusResponseType", consensusGroup.ResponseType.String()).
-			Str("consensusHash", consensusHash).
-			Int("consensusSize", consensusSize).
-			RawJSON("consensusResponse", consensusBody).
-			Object("request", req)
+			logEvent := e.logger.WithLevel(e.disputeLogLevel).
+				Str("projectId", labels.projectId).
+				Str("networkId", labels.networkId).
+				Str("category", labels.category).
+				Str("finality", labels.finalityStr).
+				Int("consensusCount", consensusGroup.Count).
+				Int("totalParticipants", analysis.totalParticipants).
+				Int("validParticipants", analysis.validParticipants).
+				Int("misbehavingCount", misbehavingCount).
+				Str("misbehavingParticipants", misbehavingParticipants).
+				Str("consensusResponseType", consensusGroup.ResponseType.String()).
+				Str("consensusHash", consensusHash).
+				Int("consensusSize", consensusSize).
+				RawJSON("consensusResponse", consensusBody).
+				Object("request", req)
 
-			// Add ALL participants with numbered keys
-		for i, participant := range allParticipants {
-			idx := strconv.Itoa(i + 1)
-			logEvent = logEvent.
-				Str("upstream"+idx, participant.upstreamId).
-				Str("responseType"+idx, participant.responseType.String()).
-				Bool("agreesWithConsensus"+idx, participant.agreesWithConsensus).
-				Str("responseHash"+idx, participant.responseHash).
-				Int("responseSize"+idx, participant.responseSize).
-				RawJSON("response"+idx, participant.responseBody)
+				// Add ALL participants with numbered keys
+			for i, participant := range allParticipants {
+				idx := strconv.Itoa(i + 1)
+				logEvent = logEvent.
+					Str("upstream"+idx, participant.upstreamId).
+					Str("responseType"+idx, participant.responseType.String()).
+					Bool("agreesWithConsensus"+idx, participant.agreesWithConsensus).
+					Str("responseHash"+idx, participant.responseHash).
+					Int("responseSize"+idx, participant.responseSize).
+					RawJSON("response"+idx, participant.responseBody)
 
-			if participant.errorMessage != "" {
-				logEvent = logEvent.Str("error"+idx, participant.errorMessage)
+				if participant.errorMessage != "" {
+					logEvent = logEvent.Str("error"+idx, participant.errorMessage)
+				}
 			}
-		}
 
-		logEvent.Msg("consensus misbehavior detected - upstreams differ from consensus")
+			logEvent.Msg("consensus misbehavior detected - upstreams differ from consensus")
+		}
 	}
+}
+
+// buildMisbehaviorRecord converts current context into JSONL bytes without truncation
+func (e *executor) buildMisbehaviorRecord(labels metricsLabels, req *common.NormalizedRequest, winner *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis, consensusGroup *responseGroup, allParticipants []participantInfo) ([]byte, error) {
+	// Request raw
+	var reqRaw []byte
+	if jrq, _ := req.JsonRpcRequest(); jrq != nil {
+		// Rebuild raw request minimal form
+		m := map[string]interface{}{"jsonrpc": "2.0", "id": jrq.ID, "method": jrq.Method, "params": jrq.Params}
+		b, _ := common.SonicCfg.Marshal(m)
+		reqRaw = b
+	} else if body := req.Body(); len(body) > 0 {
+		reqRaw = body
+	}
+
+	// Winner snapshot
+	var win winnerSnapshot
+	if winner != nil {
+		if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok && wr != nil {
+			if jrr, err := wr.JsonRpcResponse(); err == nil && jrr != nil {
+				size, _ := jrr.Size()
+				hash, _ := jrr.CanonicalHash()
+				rtype := ResponseTypeNonEmpty
+				if jrr.IsResultEmptyish() || wr.IsResultEmptyish() {
+					rtype = ResponseTypeEmpty
+				}
+				win = winnerSnapshot{
+					ResponseType: rtype.String(),
+					Hash:         hash,
+					Size:         size,
+				}
+				if ups := wr.Upstream(); ups != nil {
+					win.UpstreamID = ups.Id()
+				}
+			}
+		} else if winner.Error != nil {
+			// Winner is error
+			win = winnerSnapshot{ResponseType: ResponseTypeConsensusError.String(), Hash: errorToConsensusHash(winner.Error)}
+		}
+	}
+
+	// Analysis snapshot
+	as := analysisSnapshot{
+		TotalParticipants: analysis.totalParticipants,
+		ValidParticipants: analysis.validParticipants,
+		Groups:            make([]groupSnapshot, 0, len(analysis.groups)),
+	}
+	if best := analysis.getBestByCount(); best != nil {
+		as.BestByCount = &groupSnapshot{
+			Hash:         best.Hash,
+			Count:        best.Count,
+			IsTie:        best.IsTie,
+			ResponseType: best.ResponseType.String(),
+			ResponseSize: best.ResponseSize,
+		}
+	}
+	for _, g := range analysis.groups {
+		as.Groups = append(as.Groups, groupSnapshot{
+			Hash:         g.Hash,
+			Count:        g.Count,
+			IsTie:        g.IsTie,
+			ResponseType: g.ResponseType.String(),
+			ResponseSize: g.ResponseSize,
+		})
+	}
+
+	// Participants
+	parts := make([]participantSnapshot, 0, len(allParticipants))
+	for _, p := range allParticipants {
+		ps := participantSnapshot{
+			UpstreamID:   p.upstreamId,
+			ResponseType: p.responseType.String(),
+			ResponseHash: p.responseHash,
+			ResponseSize: p.responseSize,
+		}
+		if p.upstream != nil && p.upstream.Config() != nil {
+			ps.Vendor = p.upstream.Config().VendorName
+		}
+		if len(p.responseBody) > 0 {
+			ps.Response = append([]byte(nil), p.responseBody...)
+		} else if p.errorMessage != "" {
+			ps.Error = p.errorMessage
+		}
+		parts = append(parts, ps)
+	}
+
+	// Policy snapshot
+	pol := policySnapshot{
+		MaxParticipants:         e.maxParticipants,
+		AgreementThreshold:      e.agreementThreshold,
+		DisputeBehavior:         e.disputeBehavior,
+		LowParticipantsBehavior: e.lowParticipantsBehavior,
+		PreferNonEmpty:          e.preferNonEmpty,
+		PreferLargerResponses:   e.preferLargerResponses,
+		IgnoreFields:            e.ignoreFields,
+	}
+
+	rec := misbehaviorRecord{
+		TimestampMs:  time.Now().UnixMilli(),
+		ProjectID:    labels.projectId,
+		NetworkID:    labels.networkId,
+		Method:       labels.method,
+		Finality:     labels.finalityStr,
+		Policy:       pol,
+		Request:      reqRaw,
+		Winner:       win,
+		Analysis:     as,
+		Participants: parts,
+	}
+
+	return common.SonicCfg.Marshal(rec)
 }
 
 // shouldPunishUpstream determines if punishment should be applied based on configuration and consensus strength

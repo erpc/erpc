@@ -95,6 +95,117 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testin
 	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
 }
 
+// Gap in global indices should error (contiguity enforcement)
+func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexGap_Error(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(5 * time.Second),
+			StatePollerDebounce: common.Duration(1 * time.Second),
+			Integrity: &common.UpstreamIntegrityConfig{
+				EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{
+					Enabled:                       true,
+					CheckLogIndexStrictIncrements: util.BoolPtr(true),
+				},
+			},
+		},
+	}
+
+	util.SetupMocksForEvmStatePoller()
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+
+	// 0x0, 0x1, 0xC (gap) -> error
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[
+            {"blockHash":"0xabc","logs":[{"logIndex":"0x0"}]},
+            {"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]},
+            {"blockHash":"0xabc","logs":[{"logIndex":"0xc"}]}
+        ]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.Error(t, hookErr)
+	var mf *common.ErrUpstreamMalformedResponse
+	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+}
+
+// Contiguous indices 0x0,0x1,0x2 should pass when enabled
+func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexContiguous_NoError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
+
+	util.SetupMocksForEvmStatePoller()
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+
+	// 0x0, 0x1, 0x2 -> OK
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0x0"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x2"}]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
 // Inconsistent blockHash across receipts should error (integrity enabled)
 func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *testing.T) {
 	util.ResetGock()
@@ -230,8 +341,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexDecreasing_Error(t *testin
 	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
 }
 
-// Missing logIndex entries are ignored and should not error when others are sequential
-func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_NoError(t *testing.T) {
+func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -274,14 +384,20 @@ func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_NoError(t *
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
 
-	// Missing logIndex in some entries but others sequential
+	// Missing logIndex must error now (contiguity requires presence)
 	gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{}, {"logIndex":"0x0"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]}]}`))
 
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	if resp != nil {
-		resp.Release()
-	}
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.Error(t, hookErr)
+	var mf *common.ErrUpstreamMalformedResponse
+	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
 }
 
 // logsBloom non-zero with zero logs should error when CheckLogsBloom is enabled

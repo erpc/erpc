@@ -935,9 +935,6 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 }
 
 func (c *ConsensusPolicyConfig) Validate() error {
-	if c.RequiredParticipants > 0 {
-		log.Warn().Msg("consensus.requiredParticipants is deprecated, use consensus.maxParticipants instead")
-	}
 	if c.MaxParticipants <= 0 {
 		return fmt.Errorf("consensus.maxParticipants must be greater than 0")
 	}
@@ -953,6 +950,81 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	// Validate misbehavior export destination when provided
+	if c.MisbehaviorsDestination != nil {
+		if err := c.MisbehaviorsDestination.Validate(); err != nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination is invalid: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Validate validates the MisbehaviorsDestinationConfig
+func (c *MisbehaviorsDestinationConfig) Validate() error {
+	t := strings.ToLower(string(c.Type))
+	switch t {
+	case string(MisbehaviorsDestinationTypeFile), "":
+		// File destination requires absolute path
+		if strings.TrimSpace(c.Path) == "" {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path is required for file destination")
+		}
+		if !strings.HasPrefix(c.Path, "/") {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path must be an absolute path for file destination")
+		}
+	case string(MisbehaviorsDestinationTypeS3):
+		if strings.TrimSpace(c.Path) == "" {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path is required for s3 destination (e.g., s3://bucket/prefix)")
+		}
+		if !strings.HasPrefix(strings.ToLower(c.Path), "s3://") {
+			return fmt.Errorf("consensus.misbehaviorsDestination.path must start with s3:// for s3 destination")
+		}
+		// Delegate to S3 config validation
+		if c.S3 == nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination.s3 is required when type is 's3'")
+		}
+		if err := c.S3.Validate(); err != nil {
+			return fmt.Errorf("consensus.misbehaviorsDestination.s3 is invalid: %w", err)
+		}
+	default:
+		return fmt.Errorf("consensus.misbehaviorsDestination.type must be 'file' or 's3'")
+	}
+	return nil
+}
+
+// Validate validates S3 flush configuration
+func (c *S3FlushConfig) Validate() error {
+	if c.MaxRecords < 0 {
+		return fmt.Errorf("s3.maxRecords must be >= 0")
+	}
+	if c.MaxSize < 0 {
+		return fmt.Errorf("s3.maxSize must be >= 0")
+	}
+	if c.FlushInterval < 0 {
+		return fmt.Errorf("s3.flushInterval must be >= 0")
+	}
+	if c.Credentials != nil {
+		mode := strings.ToLower(strings.TrimSpace(c.Credentials.Mode))
+		switch mode {
+		case "env":
+			// ok
+		case "file":
+			if strings.TrimSpace(c.Credentials.CredentialsFile) == "" {
+				return fmt.Errorf("s3.credentials.credentialsFile is required when mode is 'file'")
+			}
+			if strings.TrimSpace(c.Credentials.Profile) == "" {
+				return fmt.Errorf("s3.credentials.profile is required when mode is 'file'")
+			}
+		case "secret":
+			if strings.TrimSpace(c.Credentials.AccessKeyID) == "" || strings.TrimSpace(c.Credentials.SecretAccessKey) == "" {
+				return fmt.Errorf("s3.credentials.accessKeyID and secretAccessKey are required when mode is 'secret'")
+			}
+		case "":
+			// default chain; ok
+		default:
+			return fmt.Errorf("s3.credentials.mode must be one of: env, file, secret")
+		}
+	}
 	return nil
 }
 
