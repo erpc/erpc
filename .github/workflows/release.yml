@@ -15,14 +15,16 @@ on:
       - main
 
 permissions:
+  attestations: write
   contents: write
+  id-token: write
   pull-requests: write
   packages: write
 
 jobs:
   # Create Release PR - only on workflow_dispatch
   prepare-release:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     if: github.event_name == 'workflow_dispatch'
     outputs:
       version: ${{ github.event.inputs.version_tag }}
@@ -125,7 +127,7 @@ jobs:
       github.event_name == 'push' && 
       github.ref == 'refs/heads/main' && 
       contains(github.event.head_commit.message, 'chore: release')
-    runs-on: large
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
@@ -135,6 +137,9 @@ jobs:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0
+
+      - name: Setup Syft
+        uses: anchore/sbom-action/download-syft@aa0e114b2e19480f157109b9922bda359bd98b90 # v0.20.8
 
       # Extract version from commit message
       - name: Extract version
@@ -167,6 +172,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-checksums: ./dist/checksums.txt
 
       # Setup pnpm + node and install dependencies
       - name: Setup pnpm
@@ -235,7 +245,7 @@ jobs:
 
   # Native single-arch builds on matching runners; then compose a multi-arch manifest
   docker-build-amd64:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [prepare-release, release]
     if: always() && github.ref == 'refs/heads/main'
     timeout-minutes: 35
@@ -260,7 +270,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Blacksmith Builder
+        if: github.repository_owner == 'erpc'
         uses: useblacksmith/setup-docker-builder@78f41686563c732ccc097f7baac2f092f67538f0 # v1
+
+      - name: Set up Docker Buildx
+        if: github.repository_owner != 'erpc'
+        uses: docker/setup-buildx-action@v3
 
       - name: Compute repo and short SHA
         id: meta
@@ -286,6 +301,7 @@ jobs:
           build-args: |
             VERSION=main
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
 
       - name: Build+push by digest (release)
@@ -298,10 +314,19 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.VERSION }}
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
+
+      - name: Attest build provenance (Docker Build)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        if: steps.build_release.outputs.digest != '' || steps.build_main.outputs.digest != ''
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.repo }}
+          subject-digest: "${{ contains(github.event.head_commit.message, 'chore: release') && steps.build_release.outputs.digest || steps.build_main.outputs.digest }}"
+          push-to-registry: true
 
   docker-build-arm64:
-    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404-arm' || 'ubuntu-24.04-arm' }}"
     needs: [prepare-release, release]
     if: always() && github.ref == 'refs/heads/main'
     timeout-minutes: 35
@@ -326,7 +351,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Blacksmith Builder
+        if: github.repository_owner == 'erpc'
         uses: useblacksmith/setup-docker-builder@78f41686563c732ccc097f7baac2f092f67538f0 # v1
+
+      - name: Set up Docker Buildx
+        if: github.repository_owner != 'erpc'
+        uses: docker/setup-buildx-action@v3
 
       - name: Compute repo and short SHA
         id: meta
@@ -352,6 +382,7 @@ jobs:
           build-args: |
             VERSION=main
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
 
       - name: Build+push by digest (release)
@@ -364,10 +395,19 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.VERSION }}
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
+      
+      - name: Attest build provenance (Docker Build)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        if: steps.build_release.outputs.digest != '' || steps.build_main.outputs.digest != ''
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.repo }}
+          subject-digest: "${{ contains(github.event.head_commit.message, 'chore: release') && steps.build_release.outputs.digest || steps.build_main.outputs.digest }}"
+          push-to-registry: true
 
   docker-manifest:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [docker-build-amd64, docker-build-arm64]
     if: always() && github.ref == 'refs/heads/main'
     steps:
@@ -397,6 +437,7 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Create multi-arch manifest for main
+        id: main
         if: github.event.inputs.version_tag == ''
         run: |
           docker buildx imagetools create \
@@ -404,14 +445,51 @@ jobs:
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_main }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_main }}
 
+          docker pull ghcr.io/${{ steps.meta.outputs.repo }}:main
+          DIGEST_MAIN=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.repo }}:main)
+          echo "digest_main=${DIGEST_MAIN#*@}" >> "$GITHUB_OUTPUT"
+
       - name: Create multi-arch manifests for release
+        id: release
         if: "contains(github.event.head_commit.message, 'chore: release')"
         run: |
           docker buildx imagetools create \
             -t ghcr.io/${{ steps.meta.outputs.repo }}:${{ steps.version.outputs.VERSION }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_release }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_release }}
+          
           docker buildx imagetools create \
             -t ghcr.io/${{ steps.meta.outputs.repo }}:latest \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_release }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_release }}
+          
+          docker pull ghcr.io/${{ steps.meta.outputs.repo }}:${{ steps.version.outputs.VERSION }}
+          DIGEST_RELEASE=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.repo }}:${{ steps.version.outputs.VERSION }})
+          docker pull ghcr.io/${{ steps.meta.outputs.repo }}:latest
+          DIGEST_LATEST=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.repo }}:latest)
+          echo "digest_release=${DIGEST_RELEASE#*@}" >> "$GITHUB_OUTPUT"
+          echo "digest_latest=${DIGEST_LATEST#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance (Docker Manifest Main)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        if: github.event.inputs.version_tag == ''
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.repo }}
+          subject-digest: "${{ steps.main.outputs.digest_main }}"
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Manifest Release)
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.repo }}
+          subject-digest: "${{ steps.release.outputs.digest_release }}"
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Manifest Latest)
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.repo }}
+          subject-digest: "${{ steps.release.outputs.digest_latest }}"
+          push-to-registry: true
