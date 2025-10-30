@@ -1,4 +1,4 @@
-FROM prom/prometheus:v2.37.0@sha256:56e7f18e05dd567f96c05046519760b356f52450c33f6e0055a110a493a41dc4 as prometheus
+FROM prom/prometheus:v3.7.3@sha256:49214755b6153f90a597adcbff0252cc61069f8ab69ce8411285cd4a560e8038 as prometheus
 FROM grafana/grafana:9.3.2@sha256:2a73ae33c9f0c51af6eced2ef185d5d3682b4c378c4fdd6941a14e8ea4a3e95b as grafana
 
 FROM ubuntu:22.04@sha256:09506232a8004baa32c47d68f1e5c307d648fdd59f5e7eaa42aaf87914100db3
