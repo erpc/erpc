@@ -789,7 +789,8 @@ func (c *EvmBlockAvailabilityConfig) Copy() *EvmBlockAvailabilityConfig {
 
 // EvmBound represents a single bound definition.
 // Exactly one of ExactBlock, LatestMinus, EarliestPlus should be set.
-// UpdateRate applies to both latest- and earliest-based bounds: 0 means freeze at first evaluation; >0 means recompute on that cadence.
+// UpdateRate only applies to earliestBlockPlus bounds: 0 means freeze at first evaluation; >0 means recompute on that cadence.
+// For latestBlockMinus, updateRate is ignored: bounds are computed on-demand using the continuously-updated latest block from evmStatePoller.
 type EvmAvailabilityProbeType string
 
 const (

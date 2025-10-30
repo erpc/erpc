@@ -117,6 +117,8 @@ func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("PollErrorHandling", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
 				Type: common.UpstreamTypeEvm,
@@ -133,13 +135,13 @@ func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 		}
 
 		// Test BlockHead confidence with poll error
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, true, 1050)
+		canHandle, err := upstream.EvmAssertBlockAvailability(ctx, "test_method", common.AvailbilityConfidenceBlockHead, true, 1050)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to poll latest block number")
 
 		// Test Finalized confidence with poll error
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, true, 850)
+		canHandle, err = upstream.EvmAssertBlockAvailability(ctx, "test_method", common.AvailbilityConfidenceFinalized, true, 1050)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to check if block is finalized")

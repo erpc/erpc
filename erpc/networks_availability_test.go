@@ -479,6 +479,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 // Unsupported probe (eventLogs) should fail-open (earliest unknown => unbounded) and allow requests
 func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -500,7 +501,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 	}
 
 	// Forwarded method at 0x0 should succeed due to fail-open
-	gock.New("http://rpc1.localhost").Post("").Times(1).Filter(func(r *http.Request) bool {
+	gock.New("http://rpc1.localhost").Post("").Times(2).Filter(func(r *http.Request) bool {
 		b := util.SafeReadBody(r)
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x0\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x0"}}`))
