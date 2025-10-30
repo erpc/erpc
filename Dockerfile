@@ -9,7 +9,7 @@
 #     - final -> Final stage where we copy the Go binary and the TS files
 
 # Build stage for Go
-FROM golang:1.23-alpine@sha256:383395b794dffa5b53012a212365d40c8e37109a626ca30d6151c8348d380b5f AS go-builder
+FROM golang:1.25-alpine@sha256:aee43c3ccbf24fdffb7295693b6e33b21e01baec1b2a55acc351fde345e9ec34 AS go-builder
 
 WORKDIR /build
 
