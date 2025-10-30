@@ -842,6 +842,7 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if e.StatePollerInterval == 0 {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
 	}
+	// NodeType deprecated; keep syntax validation for back-compat only
 	if e.NodeType != "" {
 		allowed := []EvmNodeType{
 			EvmNodeTypeUnknown,
@@ -851,6 +852,114 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 		if !slices.Contains(allowed, e.NodeType) {
 			return fmt.Errorf("upstream.*.evm.nodeType '%s' is invalid must be one of: %v", e.NodeType, allowed)
 		}
+	}
+
+	// Validate block availability config when provided
+	if e.BlockAvailability != nil {
+		if err := e.BlockAvailability.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Validate block availability config
+func (c *EvmBlockAvailabilityConfig) Validate() error {
+	if c.Lower != nil {
+		if err := c.Lower.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.evm.blockAvailability.lower is invalid: %w", err)
+		}
+	}
+	if c.Upper != nil {
+		if err := c.Upper.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.evm.blockAvailability.upper is invalid: %w", err)
+		}
+	}
+
+	// If both exact blocks are provided, ensure lower <= upper
+	if c.Lower != nil && c.Upper != nil && c.Lower.ExactBlock != nil && c.Upper.ExactBlock != nil {
+		if *c.Lower.ExactBlock > *c.Upper.ExactBlock {
+			return fmt.Errorf("upstream.*.evm.blockAvailability.lower.exactBlock must be <= upper.exactBlock")
+		}
+	}
+
+	// If both are relative to latest, ensure (latest - lower) <= (latest - upper) ⇒ lower.latestBlockMinus >= upper.latestBlockMinus
+	if c.Lower != nil && c.Upper != nil && c.Lower.LatestBlockMinus != nil && c.Upper.LatestBlockMinus != nil {
+		if *c.Lower.LatestBlockMinus < *c.Upper.LatestBlockMinus {
+			return fmt.Errorf("upstream.*.evm.blockAvailability: when both bounds are latestBlockMinus, lower.latestBlockMinus must be >= upper.latestBlockMinus")
+		}
+	}
+
+	// If both are relative to earliest, ensure (earliest + lower) <= (earliest + upper) ⇒ lower.earliestBlockPlus <= upper.earliestBlockPlus
+	if c.Lower != nil && c.Upper != nil && c.Lower.EarliestBlockPlus != nil && c.Upper.EarliestBlockPlus != nil {
+		if *c.Lower.EarliestBlockPlus > *c.Upper.EarliestBlockPlus {
+			return fmt.Errorf("upstream.*.evm.blockAvailability: when both bounds are earliestBlockPlus, lower.earliestBlockPlus must be <= upper.earliestBlockPlus")
+		}
+	}
+
+	return nil
+}
+
+func (b *EvmAvailabilityBoundConfig) Validate() error {
+	setCount := 0
+	if b.ExactBlock != nil {
+		setCount++
+	}
+	if b.LatestBlockMinus != nil {
+		setCount++
+	}
+	if b.EarliestBlockPlus != nil {
+		setCount++
+	}
+	if setCount == 0 {
+		return fmt.Errorf("bound must set exactly one of: exactBlock, latestBlockMinus, earliestBlockPlus")
+	}
+	if setCount > 1 {
+		return fmt.Errorf("bound fields exactBlock, latestBlockMinus, earliestBlockPlus are mutually exclusive")
+	}
+
+	// exactBlock: probe must be empty and updateRate must be 0
+	if b.ExactBlock != nil {
+		if b.Probe != "" {
+			return fmt.Errorf("bound.probe must be empty when exactBlock is set")
+		}
+		if b.UpdateRate != 0 {
+			return fmt.Errorf("bound.updateRate must be 0 when exactBlock is set")
+		}
+		if *b.ExactBlock < 0 {
+			return fmt.Errorf("bound.exactBlock must be >= 0")
+		}
+		return nil
+	}
+
+	// Relative values must be non-negative
+	if b.LatestBlockMinus != nil && *b.LatestBlockMinus < 0 {
+		return fmt.Errorf("bound.latestBlockMinus must be >= 0")
+	}
+	if b.EarliestBlockPlus != nil && *b.EarliestBlockPlus < 0 {
+		return fmt.Errorf("bound.earliestBlockPlus must be >= 0")
+	}
+	if b.UpdateRate < 0 {
+		return fmt.Errorf("bound.updateRate must be >= 0")
+	}
+
+	// Probe validation: allow empty (defaults to blockHeader) or one of the supported values
+	if b.Probe != "" {
+		allowed := []EvmAvailabilityProbeType{
+			EvmProbeBlockHeader,
+			EvmProbeEventLogs,
+			EvmProbeCallState,
+			EvmProbeTraceData,
+		}
+		if !slices.Contains(allowed, b.Probe) {
+			return fmt.Errorf("bound.probe '%s' is invalid must be one of: %v", b.Probe, allowed)
+		}
+	}
+
+	// Warn: updateRate is ignored when latestBlockMinus is used
+	if b.LatestBlockMinus != nil && b.UpdateRate > 0 {
+		log.Warn().Msg("upstream.*.evm.blockAvailability.*.updateRate is ignored when latestBlockMinus is set; remove it or set to 0")
 	}
 
 	return nil

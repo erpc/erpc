@@ -49,6 +49,12 @@ func (m *mockEvmStatePollerEnhanced) SyncingState() common.EvmSyncingState {
 func (m *mockEvmStatePollerEnhanced) SetSyncingState(state common.EvmSyncingState) {}
 func (m *mockEvmStatePollerEnhanced) LatestBlock() int64                           { return m.latestBlock }
 func (m *mockEvmStatePollerEnhanced) FinalizedBlock() int64                        { return m.finalizedBlock }
+func (m *mockEvmStatePollerEnhanced) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+	return 0, nil
+}
+func (m *mockEvmStatePollerEnhanced) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
+	return 0
+}
 func (m *mockEvmStatePollerEnhanced) IsBlockFinalized(blockNumber int64) (bool, error) {
 	if m.pollError != nil {
 		return false, m.pollError
@@ -111,6 +117,8 @@ func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("PollErrorHandling", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
 				Type: common.UpstreamTypeEvm,
@@ -127,13 +135,13 @@ func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 		}
 
 		// Test BlockHead confidence with poll error
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, true, 1050)
+		canHandle, err := upstream.EvmAssertBlockAvailability(ctx, "test_method", common.AvailbilityConfidenceBlockHead, true, 1050)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to poll latest block number")
 
 		// Test Finalized confidence with poll error
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, true, 850)
+		canHandle, err = upstream.EvmAssertBlockAvailability(ctx, "test_method", common.AvailbilityConfidenceFinalized, true, 1050)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to check if block is finalized")
@@ -598,6 +606,12 @@ func (m *mockEvmStatePollerWithCustomBehavior) LatestBlock() int64 {
 	return m.getLatestBlock()
 }
 func (m *mockEvmStatePollerWithCustomBehavior) FinalizedBlock() int64 { return m.finalizedBlock }
+func (m *mockEvmStatePollerWithCustomBehavior) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+	return 0, nil
+}
+func (m *mockEvmStatePollerWithCustomBehavior) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
+	return 0
+}
 func (m *mockEvmStatePollerWithCustomBehavior) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= m.finalizedBlock, nil
 }

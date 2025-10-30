@@ -637,6 +637,141 @@ export default createConfig({
   getLogs limits, splitting on error, and enforcement are now configured at the <strong>network</strong> level. See <a href="/config/projects/networks#evm-networks">EVM Networks</a> → <em>eth_getLogs</em>.
 </Callout>
 
+## Block availability
+
+Define the block window each EVM upstream can serve. You can bound by the chain's earliest or latest block and use different probes to detect real availability on that upstream.
+
+<Callout type='info'>
+  This feature is optional and primarily helps reduce redundant calls and latency. eRPC already maintains
+  correctness by automatically failing over to other healthy upstreams when one node lacks the data. Block
+  availability simply helps skip over such nodes faster without trying them first.
+  <br /><br /> For many setups, method filters are a cheaper and simpler way to control upstream data availability; consider
+  using <code>ignoreMethods</code>/<code>allowMethods</code> first. See <a href="/config/projects/upstreams#config">Config → method filters</a>.
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="BlockAvailabilityTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - id: my-evm
+        endpoint: https://mainnet.example
+        evm:
+          # Limit the highest block this upstream serves to latest-64 (helps avoid reorgs)
+          blockAvailability:
+            upper:
+              latestBlockMinus: 64         # latest - 64 is the upper bound
+              probe: blockHeader           # default probe; can be omitted
+              # updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
+
+            # Auto-detect the earliest block where logs exist on this upstream,
+            # and start serving from there (refresh hourly to follow pruning).
+            lower:
+              earliestBlockPlus: 0         # earliestDetected(eventLogs) + 0
+              probe: eventLogs             # require >=1 log in the block
+              updateRate: 1h               # re-evaluate earliest periodically
+
+        # Example 2: fixed window (serve blocks 17,000,000..latest-128)
+      - id: fixed-window
+        endpoint: https://another
+        evm:
+          blockAvailability:
+            lower:
+              exactBlock: 17000000         # hard lower bound
+              probe: blockHeader
+              updateRate: 0s
+            upper:
+              latestBlockMinus: 128        # rolling upper bound (always uses current latest)
+              probe: blockHeader
+              # updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
+
+        # Example 3: traces-aware lower bound (only serve blocks that have traces)
+      - id: traces
+        endpoint: https://traces.example
+        evm:
+          blockAvailability:
+            lower:
+              earliestBlockPlus: 0         # earliestDetected(traceData)
+              probe: traceData             # tries multiple trace/debug methods
+              updateRate: 24h              # re-check daily in case of pruning
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          id: "my-evm",
+          endpoint: "https://mainnet.example",
+          evm: {
+            blockAvailability: {
+              upper: {
+                latestBlockMinus: 64,     // latest - 64 upper bound
+                probe: "blockHeader",     // default; can be omitted
+                // updateRate is ignored for latestBlockMinus (bound computed on-demand from evmStatePoller's latest block)
+              },
+              lower: {
+                earliestBlockPlus: 0,     // earliestDetected(eventLogs)
+                probe: "eventLogs",       // require >=1 log
+                updateRate: "1h",         // hourly refresh
+              },
+            },
+          },
+        },
+        {
+          id: "fixed-window",
+          endpoint: "https://another",
+          evm: {
+            blockAvailability: {
+              lower: { exactBlock: 17_000_000, probe: "blockHeader", updateRate: "0s" },
+              upper: { latestBlockMinus: 128, probe: "blockHeader" }, // updateRate ignored for latestBlockMinus
+            },
+          },
+        },
+        {
+          id: "traces",
+          endpoint: "https://traces.example",
+          evm: {
+            blockAvailability: {
+              lower: { earliestBlockPlus: 0, probe: "traceData", updateRate: "24h" },
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+- probe values: `blockHeader` (default), `eventLogs`, `callState`, `traceData`
+- lower/upper bounds: choose one of `exactBlock`, `earliestBlockPlus`, `latestBlockMinus`
+- updateRate: only applies to `earliestBlockPlus` bounds. 0 freezes the computed bound; >0 periodically re-evaluates it. For `latestBlockMinus`, updateRate is ignored since bounds are computed on-demand using the evmStatePoller's latest block
+
+Notes on probes:
+- eventLogs: considered available only if querying the block by `blockHash` returns at least 1 log.
+- callState: checks historical state via `eth_getBalance`; any non-null result counts as available.
+- traceData: tries multiple engines in order: `trace_block`, `debug_traceBlockByHash`, `trace_replayBlockTransactions`; available if any returns a non-empty result.
+
+### When block availability is enforced?
+
+Block availability bounds are only enforced when eRPC can extract a block number from the request. If the block number cannot be determined (e.g., certain method calls without explicit block parameters), the request will be forwarded to the upstream regardless of the configured bounds. This ensures availability checks don't block requests where block context is unavailable.
+
+<Callout type='info'>
+  When a probe is unsupported on an upstream (e.g. method ignored/unsupported), eRPC skips that probe for availability decisions. Prefer `blockHeader` or choose a probe the upstream supports.
+</Callout>
+
+<Callout type='info'>
+  <strong>About updateRate:</strong> The `updateRate` field only applies to `earliestBlockPlus` bounds. For `latestBlockMinus`, it is ignored because bounds are computed on-demand using the continuously-updated latest block value maintained by eRPC's state poller. This ensures `latestBlockMinus` bounds always reflect the current latest block without needing a separate update schedule.
+</Callout>
+
 ## Compression
 
 eRPC supports gzip compression at multiple points in the request/response cycle:

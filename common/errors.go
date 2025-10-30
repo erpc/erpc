@@ -1339,6 +1339,10 @@ var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string) error {
 	}
 }
 
+func (e *ErrUpstreamRequestSkipped) ErrorStatusCode() int {
+	return http.StatusNotAcceptable
+}
+
 type ErrUpstreamMethodIgnored struct{ BaseError }
 
 const ErrCodeUpstreamMethodIgnored ErrorCode = "ErrUpstreamMethodIgnored"

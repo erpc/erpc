@@ -91,6 +91,7 @@ type EvmStatePoller interface {
 	Poll(ctx context.Context) error
 	PollLatestBlockNumber(ctx context.Context) (int64, error)
 	PollFinalizedBlockNumber(ctx context.Context) (int64, error)
+	PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType) (int64, error)
 	SyncingState() EvmSyncingState
 	SetSyncingState(state EvmSyncingState)
 	LatestBlock() int64
@@ -100,4 +101,5 @@ type EvmStatePoller interface {
 	SuggestLatestBlock(blockNumber int64)
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
+	EarliestBlock(probe EvmAvailabilityProbeType) int64
 }

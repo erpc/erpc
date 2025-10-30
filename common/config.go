@@ -742,21 +742,91 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                            int64                    `yaml:"chainId" json:"chainId"`
-	NodeType                           EvmNodeType              `yaml:"nodeType,omitempty" json:"nodeType"`
-	StatePollerInterval                Duration                 `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
-	StatePollerDebounce                Duration                 `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
-	MaxAvailableRecentBlocks           int64                    `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
-	GetLogsAutoSplittingRangeThreshold int64                    `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
-	SkipWhenSyncing                    *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	Integrity                          *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+	ChainId                            int64                       `yaml:"chainId" json:"chainId"`
+	StatePollerInterval                Duration                    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
+	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
+	SkipWhenSyncing                    *bool                       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	Integrity                          *UpstreamIntegrityConfig    `yaml:"integrity,omitempty" json:"integrity"`
 
+	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
+	NodeType EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
 	// @deprecated: should be removed in a future release
-	DeprecatedGetLogsMaxAllowedRange     int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"-"`
+	MaxAvailableRecentBlocks int64 `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxAllowedRange int64 `yaml:"getLogsMaxAllowedRange,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
 	DeprecatedGetLogsMaxAllowedAddresses int64 `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"-"`
-	DeprecatedGetLogsMaxAllowedTopics    int64 `yaml:"getLogsMaxAllowedTopics,omitempty" json:"-"`
-	DeprecatedGetLogsSplitOnError        *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
-	DeprecatedGetLogsMaxBlockRange       int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxAllowedTopics int64 `yaml:"getLogsMaxAllowedTopics,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsSplitOnError *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
+	// @deprecated: should be removed in a future release
+	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+}
+
+// EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
+// Presence of lower/upper implies the feature is active. When both are nil, it's effectively off
+type EvmBlockAvailabilityConfig struct {
+	Lower *EvmAvailabilityBoundConfig `yaml:"lower,omitempty" json:"lower,omitempty"`
+	Upper *EvmAvailabilityBoundConfig `yaml:"upper,omitempty" json:"upper,omitempty"`
+}
+
+func (c *EvmBlockAvailabilityConfig) Copy() *EvmBlockAvailabilityConfig {
+	if c == nil {
+		return nil
+	}
+	out := &EvmBlockAvailabilityConfig{}
+	if c.Lower != nil {
+		out.Lower = c.Lower.Copy()
+	}
+	if c.Upper != nil {
+		out.Upper = c.Upper.Copy()
+	}
+	return out
+}
+
+// EvmBound represents a single bound definition.
+// Exactly one of ExactBlock, LatestMinus, EarliestPlus should be set.
+// UpdateRate only applies to earliestBlockPlus bounds: 0 means freeze at first evaluation; >0 means recompute on that cadence.
+// For latestBlockMinus, updateRate is ignored: bounds are computed on-demand using the continuously-updated latest block from evmStatePoller.
+type EvmAvailabilityProbeType string
+
+const (
+	EvmProbeBlockHeader EvmAvailabilityProbeType = "blockHeader"
+	EvmProbeEventLogs   EvmAvailabilityProbeType = "eventLogs"
+	EvmProbeCallState   EvmAvailabilityProbeType = "callState"
+	EvmProbeTraceData   EvmAvailabilityProbeType = "traceData"
+)
+
+type EvmAvailabilityBoundConfig struct {
+	ExactBlock        *int64                   `yaml:"exactBlock,omitempty" json:"exactBlock,omitempty"`
+	LatestBlockMinus  *int64                   `yaml:"latestBlockMinus,omitempty" json:"latestBlockMinus,omitempty"`
+	EarliestBlockPlus *int64                   `yaml:"earliestBlockPlus,omitempty" json:"earliestBlockPlus,omitempty"`
+	Probe             EvmAvailabilityProbeType `yaml:"probe,omitempty" json:"probe,omitempty"`
+	UpdateRate        Duration                 `yaml:"updateRate,omitempty" json:"updateRate,omitempty" tstype:"Duration"`
+}
+
+func (c *EvmAvailabilityBoundConfig) Copy() *EvmAvailabilityBoundConfig {
+	if c == nil {
+		return nil
+	}
+	out := &EvmAvailabilityBoundConfig{UpdateRate: c.UpdateRate}
+	if c.ExactBlock != nil {
+		v := *c.ExactBlock
+		out.ExactBlock = &v
+	}
+	if c.LatestBlockMinus != nil {
+		v := *c.LatestBlockMinus
+		out.LatestBlockMinus = &v
+	}
+	if c.EarliestBlockPlus != nil {
+		v := *c.EarliestBlockPlus
+		out.EarliestBlockPlus = &v
+	}
+	out.Probe = c.Probe
+	return out
 }
 
 func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
@@ -768,6 +838,9 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	*copied = *c
 
 	// Deep copy pointer fields to avoid shared state
+	if c.BlockAvailability != nil {
+		copied.BlockAvailability = c.BlockAvailability.Copy()
+	}
 	if c.SkipWhenSyncing != nil {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v

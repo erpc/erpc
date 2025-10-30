@@ -102,7 +102,9 @@ func NewGenericHttpJsonRpcClient(
 	}
 
 	if util.IsTest() {
-		client.httpClient = &http.Client{}
+		client.httpClient = &http.Client{
+			Transport: http.DefaultTransport,
+		}
 	} else {
 		client.httpClient = &http.Client{
 			Timeout:   60 * time.Second,

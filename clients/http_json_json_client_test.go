@@ -28,6 +28,12 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			Delay(2 * time.Second).
+			JSON(map[string]interface{}{"result": "0x1"})
+
 		dur := 1 * time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), dur)
 		defer cancel()
@@ -37,12 +43,6 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON(map[string]interface{}{"result": "0x1"})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 		_, err = client.SendRequest(ctx, req)
@@ -58,16 +58,16 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(504).
+			BodyString("")
+
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(504).
-			BodyString("")
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 		_, err = client.SendRequest(ctx, req)
@@ -111,6 +111,13 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Times(3).
+			Reply(200).
+			Delay(50 * time.Millisecond).
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"},{"jsonrpc":"2.0","id":4,"result":"0x4"},{"jsonrpc":"2.0","id":5,"result":"0x5"},{"jsonrpc":"2.0","id":6,"result":"0x6"}]`)
+
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
@@ -121,13 +128,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Times(3).
-			Reply(200).
-			Delay(50 * time.Millisecond).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"},{"jsonrpc":"2.0","id":4,"result":"0x4"},{"jsonrpc":"2.0","id":5,"result":"0x5"},{"jsonrpc":"2.0","id":6,"result":"0x6"}]`)
 
 		var wg sync.WaitGroup
 		for i := 0; i < 5; i++ {
@@ -152,17 +152,17 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		ups := common.NewFakeUpstream("rpc1")
-		ups.Config().Type = common.UpstreamTypeEvm
-		ups.Config().Endpoint = "http://rpc1.localhost:8545"
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
-		assert.NoError(t, err)
-
 		gock.New("http://rpc1.localhost:8545").
 			Post("/").
 			Reply(200).
 			Delay(2 * time.Second).
 			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1"})
+
+		ups := common.NewFakeUpstream("rpc1")
+		ups.Config().Type = common.UpstreamTypeEvm
+		ups.Config().Endpoint = "http://rpc1.localhost:8545"
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
+		assert.NoError(t, err)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 
@@ -178,6 +178,15 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			Delay(2 * time.Second).
+			JSON([]map[string]interface{}{
+				{"jsonrpc": "2.0", "id": 1, "result": "0x1"},
+				{"jsonrpc": "2.0", "id": 2, "result": "0x2"},
+			})
+
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
@@ -188,15 +197,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			Delay(2 * time.Second).
-			JSON([]map[string]interface{}{
-				{"jsonrpc": "2.0", "id": 1, "result": "0x1"},
-				{"jsonrpc": "2.0", "id": 2, "result": "0x2"},
-			})
 
 		var wg sync.WaitGroup
 		for i := 0; i < 2; i++ {
@@ -218,6 +218,15 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      nil,
+				"error":   map[string]interface{}{"code": -32000, "message": "Server error"},
+			})
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -231,15 +240,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      nil,
-				"error":   map[string]interface{}{"code": -32000, "message": "Server error"},
-			})
 
 		var wg sync.WaitGroup
 		for i := 0; i < 3; i++ {
@@ -262,6 +262,11 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(503).
+			BodyString("<html><body><h1>503 Service Unavailable</h1></body></html>")
+
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
@@ -272,11 +277,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(503).
-			BodyString("<html><body><h1>503 Service Unavailable</h1></body></html>")
 
 		var wg sync.WaitGroup
 		for i := 0; i < 3; i++ {
@@ -299,6 +299,11 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			BodyString("my random something error")
+
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
@@ -309,11 +314,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			BodyString("my random something error")
 
 		var wg sync.WaitGroup
 		for i := 0; i < 3; i++ {
@@ -336,6 +336,11 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"}]`)
+
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
@@ -346,11 +351,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"}]`)
 
 		var wg sync.WaitGroup
 		results := make([]interface{}, 3)
@@ -382,6 +382,12 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			Delay(1 * time.Second).
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
+
 		ups := common.NewFakeUpstream("rpc1")
 		ups.Config().Type = common.UpstreamTypeEvm
 		ups.Config().Endpoint = "http://rpc1.localhost:8545"
@@ -392,12 +398,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
 		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			Delay(1 * time.Second).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
 
 		var wg sync.WaitGroup
 		for i := 0; i < 3; i++ {
@@ -419,12 +419,20 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		wg.Wait()
 	})
 	t.Run("CustomHeaders", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		logger := zerolog.Nop()
+		// Use Gock to intercept the outbound HTTP request, checking headers
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			MatchHeader("Authorization", "Bearer TEST_TOKEN_123").
+			MatchHeader("X-Custom-Header", "CustomValue").
+			MatchHeader("X-Another-Header", "AnotherValue").
+			Reply(200).
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"}]`)
 
 		// Define custom headers
 		customHeaders := map[string]string{
@@ -457,15 +465,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		)
 		assert.NoError(t, err)
 
-		// Use Gock to intercept the outbound HTTP request, checking headers
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			MatchHeader("Authorization", "Bearer TEST_TOKEN_123").
-			MatchHeader("X-Custom-Header", "CustomValue").
-			MatchHeader("X-Another-Header", "AnotherValue").
-			Reply(200).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"}]`)
-
 		// Create a NormalizedRequest for JSON-RPC
 		req := common.NewNormalizedRequest([]byte(`{
             "jsonrpc": "2.0",
@@ -489,7 +488,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("ProxyPool", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 		logger := zerolog.Nop()
 
 		// build the proxy pool registry
