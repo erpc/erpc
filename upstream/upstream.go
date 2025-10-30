@@ -791,6 +791,12 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			forMethod,
 			confidence.String(),
 		).Inc()
+		u.logger.Debug().
+			Int64("blockNumber", blockNumber).
+			Int64("minBound", minBound).
+			Str("method", forMethod).
+			Str("upstreamId", u.config.Id).
+			Msg("block rejected: below lower availability bound")
 		return false, nil
 	}
 	if maxBound != math.MaxInt64 && blockNumber > maxBound {
@@ -802,6 +808,12 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 			forMethod,
 			confidence.String(),
 		).Inc()
+		u.logger.Debug().
+			Int64("blockNumber", blockNumber).
+			Int64("maxBound", maxBound).
+			Str("method", forMethod).
+			Str("upstreamId", u.config.Id).
+			Msg("block rejected: above upper availability bound")
 		return false, nil
 	}
 
@@ -938,6 +950,11 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 				val = eb + *bound.EarliestBlockPlus
 			} else {
 				// If earliest is unknown, treat as unbounded on this side
+				u.logger.Debug().
+					Str("probe", string(probe)).
+					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
+					Str("upstreamId", u.config.Id).
+					Msg("earliest block not yet determined for bound; treating as unbounded")
 				if isLower {
 					val = math.MinInt64
 				} else {
@@ -952,7 +969,18 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 			}
 			if latest > 0 {
 				val = latest - *bound.LatestBlockMinus
+				u.logger.Debug().
+					Int64("latestBlock", latest).
+					Int64("minus", *bound.LatestBlockMinus).
+					Int64("computedBound", val).
+					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
+					Str("upstreamId", u.config.Id).
+					Msg("computed bound from latest block")
 			} else {
+				u.logger.Debug().
+					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
+					Str("upstreamId", u.config.Id).
+					Msg("latest block not available; treating bound as unbounded")
 				if isLower {
 					val = math.MinInt64
 				} else {
@@ -976,6 +1004,11 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 	// If both sides are finite and the computed range is invalid (min > max),
 	// fail-open for safety: treat as unbounded to avoid breaking production traffic.
 	if minVal != math.MinInt64 && maxVal != math.MaxInt64 && minVal > maxVal {
+		u.logger.Warn().
+			Int64("computedMinBound", minVal).
+			Int64("computedMaxBound", maxVal).
+			Str("upstreamId", u.config.Id).
+			Msg("computed block availability bounds are invalid (min > max); treating as unbounded for safety")
 		return math.MinInt64, math.MaxInt64
 	}
 	return minVal, maxVal
@@ -1255,10 +1288,16 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		if ebn == nil && bn > 0 {
 			minBound, maxBound := u.resolveAvailabilityBounds()
 			if minBound != math.MinInt64 && bn < minBound {
-				return common.NewErrUpstreamRequestSkipped(fmt.Errorf("block below lower availability bound"), u.config.Id), true
+				return common.NewErrUpstreamRequestSkipped(
+					fmt.Errorf("block below lower availability bound: %d < %d", bn, minBound),
+					u.config.Id,
+				), true
 			}
 			if maxBound != math.MaxInt64 && bn > maxBound {
-				return common.NewErrUpstreamRequestSkipped(fmt.Errorf("block above upper availability bound"), u.config.Id), true
+				return common.NewErrUpstreamRequestSkipped(
+					fmt.Errorf("block above upper availability bound: %d > %d", bn, maxBound),
+					u.config.Id,
+				), true
 			}
 		}
 	}

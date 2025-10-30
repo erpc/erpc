@@ -353,6 +353,8 @@ func SetupMocksForUpstream(host string, details map[string]interface{}) int {
 }
 
 func ResetGock() {
+	time.Sleep(100 * time.Millisecond)
+
 	gock.OffAll()
 	gock.Clean()
 	gock.CleanUnmatchedRequest()

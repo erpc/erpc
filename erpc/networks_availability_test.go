@@ -27,6 +27,7 @@ func i64(v int64) *int64 { return &v }
 // Lower bound: exactBlock, request below lower should skip (UpstreamsExhausted)
 func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -76,6 +77,7 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 // Lower bound: latestBlockMinus, skip when below (latest - N)
 func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -125,6 +127,7 @@ func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
 // Lower bound: earliestBlockPlus, initialize earliest via binary search fast-path (block 0 present) then skip for below-bound request
 func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -187,6 +190,7 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 // Mixed invalid range (lower latest-10, upper earliest+0) should fail-open (unbounded) and allow request
 func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 1)
 
@@ -254,11 +258,13 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 	if resp != nil {
 		resp.Release()
 	}
+	cancel()
 }
 
 // Exact window with both bounds: below and above should skip, inside should pass
 func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -339,6 +345,7 @@ func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 // earliestBlockPlus with updateRate=0 (freeze): discover earliest=1 (0 missing, 1 present) and do not advance later
 func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -414,6 +421,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 // earliestBlockPlus with updateRate>0: start with earliest=0 then prune to 1 and verify request at 0 is skipped after scheduler
 func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 2)
 
@@ -532,6 +540,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 // Upper earliest+0: above upper skipped, at earliest OK
 func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 	util.ResetGock()
+	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 2)
 

@@ -99,7 +99,7 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 
 		// Create an error handler for logging export failures
 		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-			logger.Error().Err(err).Msg("open telemetry export error")
+			logger.Trace().Err(err).Msg("open telemetry export error")
 		}))
 
 		tracer = otel.Tracer(instrumentationName)

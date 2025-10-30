@@ -957,6 +957,11 @@ func (b *EvmAvailabilityBoundConfig) Validate() error {
 		}
 	}
 
+	// Warn: updateRate is ignored when latestBlockMinus is used
+	if b.LatestBlockMinus != nil && b.UpdateRate > 0 {
+		log.Warn().Msg("upstream.*.evm.blockAvailability.*.updateRate is ignored when latestBlockMinus is set; remove it or set to 0")
+	}
+
 	return nil
 }
 

@@ -15,7 +15,7 @@
                 "CC": "/usr/bin/cc",
                 "CXX": "/usr/bin/c++",
                 "CGO_ENABLED": "1",
-                "LOG_LEVEL": "trace"
+                "LOG_LEVEL": "debug"
             },
             "envFile": "${workspaceFolder}/.env",
             "cwd": "${workspaceFolder}",
