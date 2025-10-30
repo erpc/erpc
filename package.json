@@ -8,7 +8,7 @@
         "typescript": "5.1.6"
     },
     "dependencies": {
-        "esbuild": "0.24.0",
+        "esbuild": "0.25.11",
         "@erpc-cloud/config": "workspace:*"
     },
     "packageManager": "pnpm@9.10.0",
