@@ -35,7 +35,7 @@ jobs:
 
       # First, for a PR, checkout the base repository's main branch
       - name: Checkout base main
-        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: ${{ github.repo }}
           ref: main
@@ -45,7 +45,7 @@ jobs:
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       - name: Check out PR code (pull_request_target)
-        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           repository: |
             ${{ 
