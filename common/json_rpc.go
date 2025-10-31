@@ -1490,8 +1490,8 @@ func TranslateToJsonRpcException(err error) error {
 	if HasErrorCode(err, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
-			JsonRpcErrorClientSideException,
-			"bad request url and/or body",
+			JsonRpcErrorInvalidArgument,
+			"invalid request url and/or body",
 			err,
 			nil,
 		)

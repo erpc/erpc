@@ -174,7 +174,9 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	jrq.RUnlock()
 
 	if fromBlock > toBlock {
-		return true, nil, errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")")
+		return true, nil, common.NewErrInvalidRequest(
+			errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
+		)
 	}
 
 	ncfg := n.Config()
@@ -314,7 +316,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	jrq.RUnlock()
 
 	if fromBlock > toBlock {
-		return true, nil, errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")")
+		return true, nil, common.NewErrInvalidRequest(
+			errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
+		)
 	}
 
 	statePoller := up.EvmStatePoller()
