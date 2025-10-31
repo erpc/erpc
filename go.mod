@@ -1,6 +1,6 @@
 module github.com/erpc/erpc
 
-go 1.23.9
+go 1.24.0
 
 toolchain go1.24.8
 
@@ -17,7 +17,7 @@ require (
 	github.com/evanw/esbuild v0.24.0
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/go-logr/zerologr v1.2.3
-	github.com/go-redsync/redsync/v4 v4.13.0
+	github.com/go-redsync/redsync/v4 v4.14.0
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/grafana/sobek v0.0.0-20241024150027-d91f02b05e9b
 	github.com/h2non/gock v1.2.0
@@ -26,7 +26,7 @@ require (
 	github.com/klauspost/compress v1.17.9
 	github.com/lyft/gostats v0.4.14
 	github.com/prometheus/client_golang v1.20.5
-	github.com/redis/go-redis/v9 v9.7.3
+	github.com/redis/go-redis/v9 v9.14.0
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/afero v1.11.0
 	github.com/spruceid/siwe-go v0.2.1
@@ -40,7 +40,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.37.0
 	golang.org/x/crypto v0.40.0
 	golang.org/x/net v0.42.0
-	golang.org/x/sync v0.16.0
+	golang.org/x/sync v0.17.0
 	google.golang.org/grpc v1.74.2
 	gopkg.in/yaml.v3 v3.0.1
 )
