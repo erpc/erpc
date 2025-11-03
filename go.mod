@@ -7,7 +7,7 @@ toolchain go1.24.8
 require (
 	github.com/DataDog/sketches-go v1.4.6
 	github.com/IGLOU-EU/go-wildcard/v2 v2.0.2
-	github.com/aws/aws-sdk-go v1.55.5
+	github.com/aws/aws-sdk-go v1.55.8
 	github.com/blockchain-data-standards/manifesto v0.0.0
 	github.com/bytedance/sonic v1.13.2
 	github.com/dgraph-io/ristretto/v2 v2.2.0
