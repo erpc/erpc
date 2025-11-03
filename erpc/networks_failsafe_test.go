@@ -468,7 +468,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		headers := http.Header{
 			"X-ERPC-Retry-Empty": []string{"false"},
 		}
-		req.EnrichFromHttp(headers, nil)
+		req.EnrichFromHttp(headers, nil, common.UserAgentTrackingModeSimplified)
 
 		resp, err := network.Forward(ctx, req)
 
