@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go v1.55.5
 	github.com/blockchain-data-standards/manifesto v0.0.0
 	github.com/bytedance/sonic v1.13.2
-	github.com/dgraph-io/ristretto/v2 v2.2.0
+	github.com/dgraph-io/ristretto/v2 v2.3.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/envoyproxy/go-control-plane/envoy v1.32.4
 	github.com/envoyproxy/ratelimit v1.4.1-0.20250815163327-e74a664aadf9
@@ -159,6 +159,6 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/testcontainers/testcontainers-go v0.35.0
-	golang.org/x/sys v0.34.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0
 )
