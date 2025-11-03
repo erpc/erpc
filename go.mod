@@ -14,7 +14,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/envoyproxy/go-control-plane/envoy v1.32.4
 	github.com/envoyproxy/ratelimit v1.4.1-0.20250815163327-e74a664aadf9
-	github.com/evanw/esbuild v0.24.0
+	github.com/evanw/esbuild v0.25.12
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/go-logr/zerologr v1.2.3
 	github.com/go-redsync/redsync/v4 v4.13.0

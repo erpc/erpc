@@ -115,8 +115,8 @@ github.com/envoyproxy/ratelimit v1.4.1-0.20250815163327-e74a664aadf9 h1:HgF27HtV
 github.com/envoyproxy/ratelimit v1.4.1-0.20250815163327-e74a664aadf9/go.mod h1:toBObxqDFQpAKBvPl1akZt9B8tb+pul5WB0ONyhTpb0=
 github.com/ethereum/go-ethereum v1.14.13 h1:L81Wmv0OUP6cf4CW6wtXsr23RUrDhKs2+Y9Qto+OgHU=
 github.com/ethereum/go-ethereum v1.14.13/go.mod h1:RAC2gVMWJ6FkxSPESfbshrcKpIokgQKsVKmAuqdekDY=
-github.com/evanw/esbuild v0.24.0 h1:GZ78naTLp7FKr+K7eNuM/SLs5maeiHYRPsTg6kmdsSE=
-github.com/evanw/esbuild v0.24.0/go.mod h1:D2vIQZqV/vIf/VRHtViaUtViZmG7o+kKmlBfVQuRi48=
+github.com/evanw/esbuild v0.25.12 h1:7kIg7aG2++vhheW5YCzut1q1AjehYVQU752NcMuGVsw=
+github.com/evanw/esbuild v0.25.12/go.mod h1:D2vIQZqV/vIf/VRHtViaUtViZmG7o+kKmlBfVQuRi48=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/fsnotify/fsnotify v1.4.9/go.mod h1:znqG4EE+3YCdAaPaxE2ZRY/06pZUdp0tY4IgpuI1SZQ=
