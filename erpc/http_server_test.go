@@ -3595,6 +3595,18 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantChain:          "123",
 			wantErr:            false,
 		},
+		{
+			name:            "Architecture-only preselected, global healthcheck",
+			path:            "/healthcheck",
+			method:          "GET",
+			preSelectedArch: "evm",
+			wantProject:     "",
+			wantArch:        "evm",
+			wantChain:       "",
+			wantAdmin:       false,
+			wantHealthcheck: true,
+			wantErr:         false,
+		},
 	}
 
 	for _, tt := range tests {
