@@ -23,7 +23,7 @@ require (
 	github.com/h2non/gock v1.2.0
 	github.com/jackc/pgx/v4 v4.18.3
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.17.9
+	github.com/klauspost/compress v1.18.1
 	github.com/lyft/gostats v0.4.14
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.7.3
