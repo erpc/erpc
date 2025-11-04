@@ -810,6 +810,17 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 			return fmt.Errorf("failed to set defaults for dynamo db connector: %w", err)
 		}
 	}
+	if c.Grpc != nil {
+		c.Driver = DriverGrpc
+	}
+	if c.Driver == DriverGrpc {
+		if c.Grpc == nil {
+			c.Grpc = &GrpcConnectorConfig{}
+		}
+		if c.Grpc.GetTimeout == 0 {
+			c.Grpc.GetTimeout = Duration(200 * time.Millisecond)
+		}
+	}
 
 	return nil
 }
