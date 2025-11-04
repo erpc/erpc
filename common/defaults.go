@@ -2316,6 +2316,9 @@ func (s *DatabaseStrategyConfig) SetDefaults() error {
 	if s.Retry == nil {
 		s.Retry = &DatabaseRetryConfig{}
 	}
+	if s.FailOpen == nil {
+		s.FailOpen = &DatabaseFailOpenConfig{}
+	}
 
 	if s.Cache.TTL == nil {
 		defaultTTL := time.Hour
@@ -2340,6 +2343,13 @@ func (s *DatabaseStrategyConfig) SetDefaults() error {
 	if err := s.Retry.SetDefaults(); err != nil {
 		return fmt.Errorf("failed to set defaults for database retry: %w", err)
 	}
+	if err := s.FailOpen.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for database failOpen: %w", err)
+	}
+
+	if s.MaxWait == 0 {
+		s.MaxWait = Duration(1 * time.Second)
+	}
 
 	return s.Connector.SetDefaults(connectorScopeAuth)
 }
@@ -2350,6 +2360,15 @@ func (r *DatabaseRetryConfig) SetDefaults() error {
 	}
 	if r.BaseBackoff.Duration() == 0 {
 		r.BaseBackoff = Duration(100 * time.Millisecond)
+	}
+	return nil
+}
+
+func (f *DatabaseFailOpenConfig) SetDefaults() error {
+	// Disabled by default
+	// Only set userId default; keep Enabled as-is
+	if f.UserId == "" {
+		f.UserId = "emergency-failopen"
 	}
 	return nil
 }

@@ -124,13 +124,20 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 
 	// Use singleflight to deduplicate concurrent misses per key
 	type authFetchResult struct {
-		user *common.User
-		err  error
-		neg  bool
+		user      *common.User
+		err       error
+		neg       bool
+		skipCache bool
 	}
 	v, sfErr, _ := s.sf.Do(apiKey, func() (interface{}, error) {
 		rangeKey := "*"
-		valueBytes, err := s.getWithRetries(ctx, data.ConnectorMainIndex, apiKey, rangeKey)
+		lookupCtx := ctx
+		if s.cfg != nil && s.cfg.MaxWait.Duration() > 0 {
+			var cancel context.CancelFunc
+			lookupCtx, cancel = context.WithTimeout(ctx, s.cfg.MaxWait.Duration())
+			defer cancel()
+		}
+		valueBytes, err := s.getWithRetries(lookupCtx, data.ConnectorMainIndex, apiKey, rangeKey)
 		if err != nil {
 			if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 				s.recordAuthFailureMetric(req, "invalid_api_key")
@@ -143,6 +150,11 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 				Str("connectorId", s.cfg.Connector.Id).
 				Msg("database query failed during authentication")
 			s.recordAuthFailureMetric(req, s.classifyDbError(err))
+			// Fail-open if configured
+			if u := s.buildFailOpenUser(); u != nil {
+				s.logger.Error().Str("userId", u.Id).Msg("auth DB error; fail-open enabled, granting emergency user")
+				return &authFetchResult{user: u, err: nil, neg: false, skipCache: true}, nil
+			}
 			return &authFetchResult{user: nil, err: common.NewErrAuthUnauthorized("database", fmt.Sprintf("database query failed: %v", err)), neg: false}, nil
 		}
 
@@ -178,6 +190,10 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 	})
 	if sfErr != nil {
 		s.recordAuthFailureMetric(req, "internal_error")
+		if u := s.buildFailOpenUser(); u != nil {
+			s.logger.Warn().Str("userId", u.Id).Err(sfErr).Msg("singleflight error; fail-open enabled, granting emergency user")
+			return u, nil
+		}
 		return nil, sfErr
 	}
 	afr := v.(*authFetchResult)
@@ -189,8 +205,8 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 	}
 	user := afr.user
 
-	// Cache the successful result if cache is available
-	if s.cache != nil && s.cfg.Cache != nil && s.cfg.Cache.TTL != nil {
+	// Cache the successful result if cache is available and not marked to skip
+	if afr.skipCache == false && s.cache != nil && s.cfg.Cache != nil && s.cfg.Cache.TTL != nil {
 		ttl := *s.cfg.Cache.TTL
 		s.cache.SetWithTTL(apiKey, user, 1, ttl)
 		s.logger.Debug().Str("apiKey", apiKey).Dur("ttl", ttl).Msg("cached API key data")
@@ -321,4 +337,17 @@ func (s *DatabaseStrategy) classifyDbError(err error) string {
 		return "db_connection"
 	}
 	return "db_query_error"
+}
+
+// buildFailOpenUser returns the configured emergency user when fail-open is enabled.
+// Returns nil when fail-open is disabled or not configured.
+func (s *DatabaseStrategy) buildFailOpenUser() *common.User {
+	if s.cfg == nil || s.cfg.FailOpen == nil || !s.cfg.FailOpen.Enabled {
+		return nil
+	}
+	u := &common.User{Id: s.cfg.FailOpen.UserId}
+	if s.cfg.FailOpen.RateLimitBudget != "" {
+		u.RateLimitBudget = s.cfg.FailOpen.RateLimitBudget
+	}
+	return u
 }

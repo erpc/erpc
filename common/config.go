@@ -1535,6 +1535,8 @@ type DatabaseStrategyConfig struct {
 	Connector *ConnectorConfig             `yaml:"connector" json:"connector"`
 	Cache     *DatabaseStrategyCacheConfig `yaml:"cache,omitempty" json:"cache,omitempty"`
 	Retry     *DatabaseRetryConfig         `yaml:"retry,omitempty" json:"retry,omitempty"`
+	FailOpen  *DatabaseFailOpenConfig      `yaml:"failOpen,omitempty" json:"failOpen,omitempty"`
+	MaxWait   Duration                     `yaml:"maxWait,omitempty" json:"maxWait" tstype:"Duration"`
 }
 
 type DatabaseStrategyCacheConfig struct {
@@ -1547,6 +1549,12 @@ type DatabaseStrategyCacheConfig struct {
 type DatabaseRetryConfig struct {
 	MaxAttempts int      `yaml:"maxAttempts,omitempty" json:"maxAttempts"`
 	BaseBackoff Duration `yaml:"baseBackoff,omitempty" json:"baseBackoff" tstype:"Duration"`
+}
+
+type DatabaseFailOpenConfig struct {
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	UserId          string `yaml:"userId,omitempty" json:"userId"`
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 }
 
 type JwtStrategyConfig struct {
