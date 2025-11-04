@@ -594,19 +594,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		if isBatch {
-			statusSet := false
-			for _, resp := range responses {
-				statusCode := determineResponseStatusCode(resp)
-				if statusCode != http.StatusOK {
-					if !statusSet {
-						w.WriteHeader(statusCode)
-						statusSet = true
-					}
-				}
-			}
-			if !statusSet {
-				w.WriteHeader(http.StatusOK)
-			}
+			// JSON-RPC 2.0 over HTTP should always return 200 OK at transport level
+			w.WriteHeader(http.StatusOK)
 
 			bw := NewBatchResponseWriter(responses)
 			_, err = bw.WriteTo(w)
@@ -626,6 +615,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		} else {
 			res := responses[0]
 			setResponseHeaders(httpCtx, res, w)
+			// Determine HTTP status code - defaults to 200 for JSON-RPC responses,
+			// but transport-level errors (auth, rate limit, etc.) get appropriate status codes
 			statusCode := determineResponseStatusCode(res)
 			w.WriteHeader(statusCode)
 
@@ -669,6 +660,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							Msgf("unexpected server panic on final error writer")
 					}
 				}()
+				// Keep transport 200 for JSON-RPC POST requests per spec
+				if r.Method == http.MethodPost {
+					statusCode = http.StatusOK
+				}
 				w.WriteHeader(statusCode)
 
 				msg, err := common.SonicCfg.Marshal(err.Error())
@@ -1007,22 +1002,49 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 	}
 }
 
-func determineResponseStatusCode(respOrErr interface{}) int {
-	statusCode := http.StatusOK
-	if err, ok := respOrErr.(error); ok {
-		statusCode = decideErrorStatusCode(err)
-	} else if resp, ok := respOrErr.(map[string]interface{}); ok {
-		if cause, ok := resp["cause"].(error); ok {
-			statusCode = decideErrorStatusCode(cause)
-		}
-	} else if hjrsp, ok := respOrErr.(*HttpJsonRpcErrorResponse); ok {
-		statusCode = decideErrorStatusCode(hjrsp.Cause)
-	} else if resp, ok := respOrErr.(*common.NormalizedResponse); ok && resp.IsObjectNull() {
-		statusCode = http.StatusInternalServerError
-	} else if respOrErr == nil {
-		statusCode = http.StatusInternalServerError
+// determineResponseStatusCode extracts any error from a response and determines
+// the appropriate HTTP status code. Defaults to 200 for JSON-RPC responses,
+// but transport-level errors (auth, rate limit, not found) get appropriate status codes.
+func determineResponseStatusCode(res interface{}) int {
+	var err error
+	switch v := res.(type) {
+	case *HttpJsonRpcErrorResponse:
+		err = v.Cause
+	case error:
+		err = v
+	default:
+		return http.StatusOK
 	}
-	return statusCode
+
+	if err == nil {
+		return http.StatusOK
+	}
+
+	// Transport-level errors get appropriate HTTP status codes
+	switch {
+	// 400 Bad Request - malformed requests
+	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
+		return http.StatusBadRequest
+	// 401 Unauthorized - authentication failures
+	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
+		return http.StatusUnauthorized
+	// 404 Not Found - resource not found
+	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound):
+		return http.StatusNotFound
+	// 413 Request Entity Too Large
+	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge):
+		return http.StatusRequestEntityTooLarge
+	// 429 Too Many Requests - rate limiting
+	case common.HasErrorCode(err,
+		common.ErrCodeAuthRateLimitRuleExceeded,
+		common.ErrCodeProjectRateLimitRuleExceeded,
+		common.ErrCodeNetworkRateLimitRuleExceeded,
+		common.ErrCodeEndpointCapacityExceeded):
+		return http.StatusTooManyRequests
+	}
+
+	// All other errors (JSON-RPC application errors) return 200
+	return http.StatusOK
 }
 
 type HttpJsonRpcErrorResponse struct {
@@ -1130,90 +1152,6 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 }
 
-// statusCodeOrderPreference is a list of status code ranges that are preferred in the order of preference.
-// This is used when multiple upstreams return different status codes for various reasons.
-// We try to pick the "most likely relevant" one based on the status code ranges.
-var statusCodeOrderPreference = []struct {
-	min int
-	max int
-}{
-	{200, 299}, // Successful response from at least one upstream.
-	{429, 429}, // Too Many Requests (rate limiting).
-	{500, 599}, // Upstream/server errors.
-	{405, 428}, // Method/headers/pre-condition related client errors.
-	{430, 499}, // Remaining 4xx client errors.
-	{400, 400}, // Bad Request – generic validation failure.
-	{401, 404}, // Unauthorized / Payment Required / Not Found.
-	{300, 399}, // Redirection responses (should rarely occur).
-}
-
-// preferredStatusCode returns the code that should win between current and cand according to
-// statusCodeOrderPreference.  Lower preference index wins; if both codes fall in the same
-// preference bucket, the numerically smaller code wins (e.g. 200 beats 204, 400 beats 422, etc.).
-// The comparison is allocation-free and intended for hot-path usage.
-func preferredStatusCode(current, cand int) int {
-	if current == cand {
-		return current
-	}
-
-	prefIdx := func(code int) int {
-		for idx, rng := range statusCodeOrderPreference {
-			if code >= rng.min && code <= rng.max {
-				return idx
-			}
-		}
-		// If somehow outside all ranges, treat as lowest priority (after redirects).
-		return len(statusCodeOrderPreference)
-	}
-
-	idxCur := prefIdx(current)
-	idxNew := prefIdx(cand)
-
-	if idxNew < idxCur {
-		return cand
-	}
-	if idxNew > idxCur {
-		return current
-	}
-	// Same bucket – choose smaller numerical code.
-	if cand < current {
-		return cand
-	}
-	return current
-}
-
-func decideErrorStatusCode(err interface{}) int {
-	if se, ok := err.(common.StandardError); ok {
-		return se.ErrorStatusCode()
-	}
-
-	// TODO refactor the logic so we can eliminate this code path.
-	// this is needed because in some scenarios one or more UpstreamsExhausted errors are wrapped
-	// in another UpstreamsExhausted error (e.g. getLogs splits where 1 or more sub-requests fail).
-	// In such case "err" will be an UpstreamsExhausted which carries multiple status codes.
-	// Probably best place to resolve this is in TranslateToJsonRpcException so that
-	// nested UpstreamsExhausted errors are resolved to 1 "most significant" error.
-	if ue, ok := err.(interface{ Unwrap() []error }); ok {
-		bestCode := http.StatusServiceUnavailable // sensible default / fallback
-
-		for _, innerErr := range ue.Unwrap() {
-			se, ok := innerErr.(common.StandardError)
-			if !ok {
-				continue
-			}
-			bestCode = preferredStatusCode(bestCode, se.ErrorStatusCode())
-			// Early exit: cannot get better than 2xx in first bucket.
-			if bestCode >= 200 && bestCode <= 299 {
-				return bestCode
-			}
-		}
-
-		return bestCode
-	}
-
-	return http.StatusInternalServerError
-}
-
 func handleErrorResponse(
 	httpCtx context.Context,
 	logger *zerolog.Logger,
@@ -1226,7 +1164,31 @@ func handleErrorResponse(
 	includeErrorDetails *bool,
 ) {
 	resp := processErrorBody(logger, startedAt, nq, err, includeErrorDetails)
-	statusCode := determineResponseStatusCode(err)
+	// Transport defaults to 200 for JSON-RPC, with limited exceptions.
+	// Non-200 codes are reserved for transport/infrastructure level issues,
+	// not JSON-RPC application errors (which stay 200 with error in body).
+	statusCode := http.StatusOK
+	switch {
+	// 400 Bad Request - malformed requests (not valid JSON-RPC)
+	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
+		statusCode = http.StatusBadRequest
+	// 401 Unauthorized - authentication failures
+	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
+		statusCode = http.StatusUnauthorized
+	// 404 Not Found - resource not found at HTTP level
+	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound):
+		statusCode = http.StatusNotFound
+	// 413 Request Entity Too Large
+	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge):
+		statusCode = http.StatusRequestEntityTooLarge
+	// 429 Too Many Requests - rate limiting (critical for client retry logic)
+	case common.HasErrorCode(err,
+		common.ErrCodeAuthRateLimitRuleExceeded,
+		common.ErrCodeProjectRateLimitRuleExceeded,
+		common.ErrCodeNetworkRateLimitRuleExceeded,
+		common.ErrCodeEndpointCapacityExceeded):
+		statusCode = http.StatusTooManyRequests
+	}
 	w.WriteHeader(statusCode)
 	span := trace.SpanFromContext(httpCtx)
 	span.AddEvent("http.response_write_start")

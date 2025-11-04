@@ -177,7 +177,6 @@ type StandardError interface {
 	DeepestMessage() string
 	DeepSearch(key string) interface{}
 	GetCause() error
-	ErrorStatusCode() int
 	Base() *BaseError
 	MarshalZerologObject(v *zerolog.Event)
 	Error() string
@@ -365,15 +364,6 @@ func (e *BaseError) HasCode(codes ...ErrorCode) bool {
 	}
 
 	return false
-}
-
-func (e *BaseError) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if be, ok := e.Cause.(StandardError); ok {
-			return be.ErrorStatusCode()
-		}
-	}
-	return http.StatusInternalServerError
 }
 
 func (e *BaseError) Base() *BaseError {
@@ -595,12 +585,14 @@ var NewErrProjectAlreadyExists = func(projectId string) error {
 // Networks
 //
 
+const ErrCodeNetworkNotFound ErrorCode = "ErrNetworkNotFound"
+
 type ErrNetworkNotFound struct{ BaseError }
 
 var NewErrNetworkNotFound = func(networkId string) error {
 	return &ErrNetworkNotFound{
 		BaseError{
-			Code:    "ErrNetworkNotFound",
+			Code:    ErrCodeNetworkNotFound,
 			Message: "network not configured in the config",
 			Details: map[string]interface{}{
 				"networkId": networkId,
@@ -906,41 +898,6 @@ func (e *ErrUpstreamsExhausted) Upstreams() []Upstream {
 
 func (e *ErrUpstreamsExhausted) IsObjectNull() bool {
 	return e == nil || e.Code == ""
-}
-
-func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if be, ok := e.Cause.(StandardError); ok {
-			return be.ErrorStatusCode()
-		}
-		// TODO We shouldn't really need this code path, and instead
-		// we should try to find the "most significant" error when sending the result
-		// back to the client, as it's already done in http_server.go.
-		// Refactor to properly handle upstream exhaustion errors (and their nested versions),
-		// then remove ErrorStatusCode() on UpstreamsExhausted altogether as it shouldn't be ever called.
-		if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-			fsc := 503
-			for _, e := range joinedErr.Unwrap() {
-				if be, ok := e.(StandardError); ok {
-					sc := be.ErrorStatusCode()
-					if sc != 503 && sc != 500 {
-						fsc = sc
-					}
-				} else if nje, ok := e.(interface{ Unwrap() []error }); ok {
-					for _, e := range nje.Unwrap() {
-						if be, ok := e.(StandardError); ok {
-							sc := be.ErrorStatusCode()
-							if sc != 503 && sc != 500 {
-								fsc = sc
-							}
-						}
-					}
-				}
-			}
-			return fsc
-		}
-	}
-	return 503
 }
 
 func (e *ErrUpstreamsExhausted) CodeChain() string {
@@ -1655,15 +1612,6 @@ var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time
 	}
 }
 
-func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if se, ok := e.Cause.(StandardError); ok {
-			return se.ErrorStatusCode()
-		}
-	}
-	return http.StatusServiceUnavailable
-}
-
 func (e *ErrFailsafeRetryExceeded) DeepestMessage() string {
 	if e.Cause != nil {
 		if se, ok := e.Cause.(StandardError); ok {
@@ -2205,15 +2153,6 @@ var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonR
 			Cause:   cause,
 		},
 	}
-}
-
-func (e *ErrJsonRpcExceptionInternal) ErrorStatusCode() int {
-	if e.Cause != nil {
-		if er, ok := e.Cause.(StandardError); ok {
-			return er.ErrorStatusCode()
-		}
-	}
-	return http.StatusInternalServerError
 }
 
 func (e *ErrJsonRpcExceptionInternal) CodeChain() string {
