@@ -2313,6 +2313,10 @@ func (s *DatabaseStrategyConfig) SetDefaults() error {
 		s.Cache = &DatabaseStrategyCacheConfig{}
 	}
 
+	if s.Retry == nil {
+		s.Retry = &DatabaseRetryConfig{}
+	}
+
 	if s.Cache.TTL == nil {
 		defaultTTL := time.Hour
 		s.Cache.TTL = &defaultTTL
@@ -2333,7 +2337,21 @@ func (s *DatabaseStrategyConfig) SetDefaults() error {
 		s.Cache.NumCounters = &defaultNumCounters
 	}
 
+	if err := s.Retry.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for database retry: %w", err)
+	}
+
 	return s.Connector.SetDefaults(connectorScopeAuth)
+}
+
+func (r *DatabaseRetryConfig) SetDefaults() error {
+	if r.MaxAttempts <= 0 {
+		r.MaxAttempts = 3
+	}
+	if r.BaseBackoff.Duration() == 0 {
+		r.BaseBackoff = Duration(100 * time.Millisecond)
+	}
+	return nil
 }
 
 func (s *SecretStrategyConfig) SetDefaults() error {

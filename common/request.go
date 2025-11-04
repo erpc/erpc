@@ -812,7 +812,6 @@ func (r *NormalizedRequest) simplifyAgentName(userAgent string) string {
 	return "other"
 }
 
-
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	if r == nil {
 		return nil, fmt.Errorf("unexpected uninitialized request")

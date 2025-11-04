@@ -316,6 +316,13 @@ var (
 		Help:      "Total number of shadow upstream requests that resulted in error.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "error"})
 
+	// Authentication metrics
+	MetricAuthFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "auth_failed_total",
+		Help:      "Total number of failed authentication attempts.",
+	}, []string{"project", "network", "strategy", "reason", "agent_name"})
+
 	MetricConsensusTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_total",

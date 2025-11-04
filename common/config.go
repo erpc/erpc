@@ -1534,6 +1534,7 @@ func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
 type DatabaseStrategyConfig struct {
 	Connector *ConnectorConfig             `yaml:"connector" json:"connector"`
 	Cache     *DatabaseStrategyCacheConfig `yaml:"cache,omitempty" json:"cache,omitempty"`
+	Retry     *DatabaseRetryConfig         `yaml:"retry,omitempty" json:"retry,omitempty"`
 }
 
 type DatabaseStrategyCacheConfig struct {
@@ -1541,6 +1542,11 @@ type DatabaseStrategyCacheConfig struct {
 	MaxSize     *int64         `yaml:"maxSize,omitempty" json:"maxSize,omitempty"`
 	MaxCost     *int64         `yaml:"maxCost,omitempty" json:"maxCost,omitempty"`
 	NumCounters *int64         `yaml:"numCounters,omitempty" json:"numCounters,omitempty"`
+}
+
+type DatabaseRetryConfig struct {
+	MaxAttempts int      `yaml:"maxAttempts,omitempty" json:"maxAttempts"`
+	BaseBackoff Duration `yaml:"baseBackoff,omitempty" json:"baseBackoff" tstype:"Duration"`
 }
 
 type JwtStrategyConfig struct {
