@@ -422,6 +422,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		if r.StatusCode == 401 || r.StatusCode == 403 ||
 			strings.Contains(msg, "not allowed to access") ||
 			strings.Contains(msg, "invalid api key") ||
+			strings.Contains(msg, "key is inactive") ||
 			strings.Contains(msg, "unauthorized") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(
