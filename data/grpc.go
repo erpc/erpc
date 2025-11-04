@@ -38,6 +38,7 @@ type GrpcConnector struct {
 	// headers to apply to all clients
 	headers     map[string]string
 	initializer *util.Initializer
+	getTimeout  time.Duration
 }
 
 var _ Connector = (*GrpcConnector)(nil)
@@ -90,6 +91,7 @@ func NewGrpcConnector(
 		earliestByNetwork: make(map[string]uint64),
 		headers:           map[string]string{},
 		initializer:       util.NewInitializer(ctx, &lg, nil),
+		getTimeout:        cfg.GetTimeout.Duration(),
 	}
 	if cfg.Headers != nil {
 		for k, v := range cfg.Headers {
@@ -205,11 +207,21 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 		}
 	}
 
-	resp, err := cli.SendRequest(ctx, req)
+	// Apply per-request timeout if the existing deadline is longer or absent
+	callCtx := ctx
+	if g.getTimeout > 0 {
+		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > g.getTimeout {
+			var cancel context.CancelFunc
+			callCtx, cancel = context.WithTimeout(ctx, g.getTimeout)
+			defer cancel()
+		}
+	}
+
+	resp, err := cli.SendRequest(callCtx, req)
 	if err != nil || resp == nil {
 		return nil, err
 	}
-	jrr, err := resp.JsonRpcResponse(ctx)
+	jrr, err := resp.JsonRpcResponse(callCtx)
 	if err != nil || jrr == nil {
 		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 	}
