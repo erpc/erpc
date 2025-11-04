@@ -834,6 +834,12 @@ func (s *HttpServer) parseUrlPath(
 
 	case projectId == "" && architecture != "" && chainId == "":
 		switch len(segments) {
+		case 0:
+			// Allow global healthcheck when only architecture is aliased
+			// (e.g., host preselects architecture like "evm" and path is just /healthcheck or /)
+			if !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-only alias must provide /<project>", ps)
+			}
 		case 1:
 			projectId = segments[0]
 		case 2:
