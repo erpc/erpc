@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unicode"
 
 	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
@@ -94,8 +93,7 @@ type NormalizedRequest struct {
 	user atomic.Value
 
 	// Cached agent information to avoid recalculation
-	agentName    atomic.Value // Cached agent name from User-Agent
-	agentVersion atomic.Value // Cached agent version from User-Agent
+	agentName atomic.Value // Cached agent name from User-Agent
 
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
@@ -298,7 +296,7 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	}
 }
 
-func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values) {
+func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -339,11 +337,11 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 
 	// Extract and store user agent information for future use
 	if userAgent := r.getUserAgent(headers, queryArgs); userAgent != "" {
-		simplifiedAgentName := r.simplifyAgentName(userAgent)
-		simplifiedAgentVersion := r.simplifyAgentVersion(userAgent)
-
-		r.agentName.Store(simplifiedAgentName)
-		r.agentVersion.Store(simplifiedAgentVersion)
+		if mode == UserAgentTrackingModeRaw {
+			r.agentName.Store(userAgent)
+		} else {
+			r.agentName.Store(r.simplifyAgentName(userAgent))
+		}
 	}
 }
 
@@ -656,9 +654,6 @@ func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
 	if agentName := source.agentName.Load(); agentName != nil {
 		r.agentName.Store(agentName)
 	}
-	if agentVersion := source.agentVersion.Load(); agentVersion != nil {
-		r.agentVersion.Store(agentVersion)
-	}
 
 	// Also copy the user if it exists
 	if user := source.User(); user != nil {
@@ -817,64 +812,6 @@ func (r *NormalizedRequest) simplifyAgentName(userAgent string) string {
 	return "other"
 }
 
-// simplifyAgentVersion extracts and simplifies the agent version for low cardinality metrics
-func (r *NormalizedRequest) simplifyAgentVersion(userAgent string) string {
-	userAgent = strings.ToLower(strings.TrimSpace(userAgent))
-
-	// Look for version after slash (e.g., "curl/7.68.0")
-	if idx := strings.Index(userAgent, "/"); idx != -1 {
-		versionPart := userAgent[idx+1:]
-		// Extract version numbers
-		parts := strings.FieldsFunc(versionPart, func(r rune) bool {
-			return !unicode.IsDigit(r) && r != '.'
-		})
-		if len(parts) > 0 {
-			version := parts[0]
-			// Simplify version to major.minor only for lower cardinality
-			versionParts := strings.Split(version, ".")
-			if len(versionParts) >= 2 {
-				return versionParts[0] + "." + versionParts[1]
-			} else if len(versionParts) == 1 {
-				return versionParts[0]
-			}
-		}
-	}
-
-	// Look for version in parentheses (e.g., "Mozilla/5.0 (compatible)")
-	if idx := strings.Index(userAgent, "("); idx != -1 {
-		end := strings.Index(userAgent[idx:], ")")
-		if end != -1 {
-			versionPart := userAgent[idx+1 : idx+end]
-			parts := strings.Fields(versionPart)
-			for _, part := range parts {
-				if len(part) > 0 && unicode.IsDigit(rune(part[0])) {
-					// Simplify to major.minor
-					versionParts := strings.Split(part, ".")
-					if len(versionParts) >= 2 {
-						return versionParts[0] + "." + versionParts[1]
-					} else if len(versionParts) == 1 {
-						return versionParts[0]
-					}
-				}
-			}
-		}
-	}
-
-	// Look for version after space (e.g., "Python 3.9.0")
-	parts := strings.Fields(userAgent)
-	for _, part := range parts {
-		if len(part) > 0 && unicode.IsDigit(rune(part[0])) && strings.Contains(part, ".") {
-			versionParts := strings.Split(part, ".")
-			if len(versionParts) >= 2 {
-				return versionParts[0] + "." + versionParts[1]
-			} else if len(versionParts) == 1 {
-				return versionParts[0]
-			}
-		}
-	}
-
-	return "unknown"
-}
 
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	if r == nil {

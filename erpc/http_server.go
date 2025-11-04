@@ -517,7 +517,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				nq.SetNetwork(nw)
 
 				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
-				nq.EnrichFromHttp(headers, queryArgs)
+				// Configure how to store User-Agent (raw vs simplified) based on project config
+				uaMode := common.UserAgentTrackingModeSimplified
+				if project != nil && project.Config.UserAgentMode != "" {
+					uaMode = project.Config.UserAgentMode
+				}
+				nq.EnrichFromHttp(headers, queryArgs, uaMode)
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)

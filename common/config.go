@@ -360,7 +360,21 @@ type ProjectConfig struct {
 	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
 	ScoreRefreshInterval   Duration                            `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
 	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	// Configure user agent tracking at the project level
+	UserAgentMode UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
 }
+
+// UserAgentTrackingMode controls how user agents are recorded for metrics/labels
+type UserAgentTrackingMode string
+
+const (
+	// UserAgentTrackingModeSimplified lowers cardinality by bucketing common user agents
+	UserAgentTrackingModeSimplified UserAgentTrackingMode = "simplified"
+	// UserAgentTrackingModeRaw records the user agent string as-is (high cardinality)
+	UserAgentTrackingModeRaw UserAgentTrackingMode = "raw"
+)
+
+// Removed legacy nested UserAgentConfig; use ProjectConfig.UserAgentMode
 
 type NetworkDefaults struct {
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`

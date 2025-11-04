@@ -3004,7 +3004,7 @@ func TestNetwork_Forward(t *testing.T) {
 			}`))
 		fakeReq.EnrichFromHttp(http.Header{
 			"X-Erpc-Retry-Pending": []string{"true"},
-		}, url.Values{})
+		}, url.Values{}, common.UserAgentTrackingModeSimplified)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -3625,7 +3625,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"X-Erpc-Retry-Pending": []string{"true"},
 		}
 		queryArgs := url.Values{}
-		fakeReq.EnrichFromHttp(headers, queryArgs)
+		fakeReq.EnrichFromHttp(headers, queryArgs, common.UserAgentTrackingModeSimplified)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -3812,7 +3812,7 @@ func TestNetwork_Forward(t *testing.T) {
 		headers := http.Header{}
 		headers.Set("x-erpc-retry-pending", "false")
 		queryArgs := url.Values{}
-		fakeReq.EnrichFromHttp(headers, queryArgs)
+		fakeReq.EnrichFromHttp(headers, queryArgs, common.UserAgentTrackingModeSimplified)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -3964,7 +3964,7 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq2 := common.NewNormalizedRequest(requestBytes)
 		headers := http.Header{}
 		headers.Set("x-erpc-skip-cache-read", "true")
-		fakeReq2.EnrichFromHttp(headers, url.Values{})
+		fakeReq2.EnrichFromHttp(headers, url.Values{}, common.UserAgentTrackingModeSimplified)
 		resp2, err := ntw.Forward(ctx, fakeReq2)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
