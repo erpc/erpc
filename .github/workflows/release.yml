@@ -271,7 +271,7 @@ jobs:
 
       - name: Setup Blacksmith Builder
         if: github.repository_owner == 'erpc'
-        uses: useblacksmith/setup-docker-builder@78f41686563c732ccc097f7baac2f092f67538f0 # v1
+        uses: useblacksmith/setup-docker-builder@affa10db466676f3dfb3e54caeb228ee0691510f # v1
 
       - name: Set up Docker Buildx
         if: github.repository_owner != 'erpc'
@@ -352,7 +352,7 @@ jobs:
 
       - name: Setup Blacksmith Builder
         if: github.repository_owner == 'erpc'
-        uses: useblacksmith/setup-docker-builder@78f41686563c732ccc097f7baac2f092f67538f0 # v1
+        uses: useblacksmith/setup-docker-builder@affa10db466676f3dfb3e54caeb228ee0691510f # v1
 
       - name: Set up Docker Buildx
         if: github.repository_owner != 'erpc'
