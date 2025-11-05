@@ -742,7 +742,14 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 		c.FallbackTimeout = Duration(3 * time.Second)
 	}
 	if c.LockTtl == 0 {
-		c.LockTtl = Duration(30 * time.Second)
+		c.LockTtl = Duration(2 * time.Second)
+	}
+	// Foreground best-effort budgets
+	if c.LockMaxWait == 0 {
+		c.LockMaxWait = Duration(100 * time.Millisecond)
+	}
+	if c.UpdateMaxWait == 0 {
+		c.UpdateMaxWait = Duration(50 * time.Millisecond)
 	}
 	return nil
 }

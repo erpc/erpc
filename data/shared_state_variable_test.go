@@ -256,6 +256,9 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("15"), nil)
+				// After reconciling to 15, the code pushes the current value back to remote
+				c.On("Set", mock.Anything, "test", "value", []byte("15"), mock.Anything).Return(nil)
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(15)).Return(nil)
 			},
 			initialValue:   5,
 			updateValue:    10,
@@ -335,7 +338,6 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("5"), nil)
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -368,6 +370,9 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("15"), nil)
+				// With lock held, reconcile will push the higher value back to remote
+				c.On("Set", mock.Anything, "test", "value", []byte("15"), mock.Anything).Return(nil)
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(15)).Return(nil)
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -382,7 +387,6 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("4"), nil)
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -589,14 +593,15 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			expectedValue:    50,
 		},
 		{
-			name: "remote lock succeeds, remote higher => override local; no Set call for newValue",
+			name: "remote lock succeeds, remote higher => override local; push reconciled value",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
 					Return([]byte("200"), nil)
-				// We do NOT expect a Set call because remote is higher than newValue
-				// so no new remote update is performed.
+				// After reconciling to 200 while holding the lock, code pushes current back to remote
+				conn.On("Set", mock.Anything, "test", "value", []byte("200"), mock.Anything).Return(nil)
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(200)).Return(nil)
 			},
 			initialValue:     100,
 			updateValue:      150,
@@ -925,8 +930,10 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 			logger:          &log.Logger,
 			clusterKey:      "test",
 			connector:       connector,
-			fallbackTimeout: 1 * time.Second, // Short timeout for fast failure
+			fallbackTimeout: 1 * time.Second,
 			lockTtl:         30 * time.Second,
+			lockMaxWait:     200 * time.Millisecond,
+			updateMaxWait:   200 * time.Millisecond,
 			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
 		}
 
@@ -954,7 +961,7 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 		time.Sleep(100 * time.Millisecond) // Allow initialization
 
 		// Test TryUpdateIfStale with a parent context that has enough time for lock wait + operations
-		operationCtx, operationCancel := context.WithTimeout(ctx, 35*time.Second)
+		operationCtx, operationCancel := context.WithTimeout(ctx, 3*time.Second)
 		defer operationCancel()
 
 		executionCount := atomic.Int32{}
@@ -973,16 +980,12 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 
 		elapsed := time.Since(start)
 
-		// The operation should succeed despite lock failure
+		// The operation should succeed quickly within UpdateMaxWait since fn finishes within budget
 		assert.NoError(t, err)
 		assert.Equal(t, int64(42), value)
 		assert.Equal(t, int32(1), executionCount.Load(), "The fetch function should be called exactly once")
-
-		// The total time should be around lock wait time + operation time
-		// With fallbackTimeout=1s, operationBuffer=4s, maxLockWaitTime=30s-4s=26s
-		// So expect ~26s lock wait + 100ms operation = ~26.1s total
-		assert.Less(t, elapsed, 28*time.Second, "Operation should complete within expected time budget")
-		assert.Greater(t, elapsed, 25*time.Second, "Operation should wait for most of the allocated lock time")
+		assert.Less(t, elapsed, 500*time.Millisecond)
+		assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
 	})
 
 	t.Run("TryUpdate respects timeout when remote is down", func(t *testing.T) {

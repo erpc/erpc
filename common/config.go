@@ -171,10 +171,22 @@ type DatabaseConfig struct {
 }
 
 type SharedStateConfig struct {
-	ClusterKey      string           `yaml:"clusterKey,omitempty" json:"clusterKey"`
-	Connector       *ConnectorConfig `yaml:"connector,omitempty" json:"connector"`
-	FallbackTimeout Duration         `yaml:"fallbackTimeout,omitempty" json:"fallbackTimeout" tstype:"Duration"`
-	LockTtl         Duration         `yaml:"lockTtl,omitempty" json:"lockTtl" tstype:"Duration"`
+	// ClusterKey identifies the logical group for shared counters across replicas (multi-tenant friendly)
+	ClusterKey string `yaml:"clusterKey,omitempty" json:"clusterKey"`
+	// Connector contains the storage driver configuration (redis, postgresql, dynamodb, memory)
+	Connector *ConnectorConfig `yaml:"connector,omitempty" json:"connector"`
+	// FallbackTimeout is the timeout for remote storage operations (get/set/publish).
+	// It is a seconds-scale network timeout and NOT a foreground latency budget.
+	FallbackTimeout Duration `yaml:"fallbackTimeout,omitempty" json:"fallbackTimeout" tstype:"Duration"`
+	// LockTtl is the expiration for the distributed lock key in the backing store.
+	// Should comfortably exceed the expected duration of remote writes.
+	LockTtl Duration `yaml:"lockTtl,omitempty" json:"lockTtl" tstype:"Duration"`
+	// LockMaxWait caps how long the foreground path will wait to acquire the lock
+	// before proceeding locally and deferring the remote write to background.
+	LockMaxWait Duration `yaml:"lockMaxWait,omitempty" json:"lockMaxWait" tstype:"Duration"`
+	// UpdateMaxWait caps how long the foreground path will spend computing a new value
+	// (e.g., polling latest block) before returning the current local value.
+	UpdateMaxWait Duration `yaml:"updateMaxWait,omitempty" json:"updateMaxWait" tstype:"Duration"`
 }
 
 type CacheConfig struct {

@@ -29,6 +29,9 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 			ClusterKey:      "test",
 			FallbackTimeout: common.Duration(1 * time.Second),
 			LockTtl:         common.Duration(30 * time.Second),
+			// In this scenario we expect the first update to complete in-foreground.
+			// The refresh function sleeps 100ms, so allow a foreground wait > 100ms.
+			UpdateMaxWait: common.Duration(200 * time.Millisecond),
 			Connector: &common.ConnectorConfig{
 				Id:     "test-memory",
 				Driver: common.DriverMemory,
@@ -83,6 +86,10 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 			ClusterKey:      "test",
 			FallbackTimeout: common.Duration(1 * time.Second),
 			LockTtl:         common.Duration(5 * time.Second), // Shorter for test
+			// Simulate waiting for the lock (held ~1s by another instance)
+			LockMaxWait: common.Duration(1200 * time.Millisecond),
+			// Ensure we wait long enough for refresh work once lock is acquired
+			UpdateMaxWait: common.Duration(500 * time.Millisecond),
 			Connector: &common.ConnectorConfig{
 				Id:     "test-memory",
 				Driver: common.DriverMemory,
@@ -160,7 +167,8 @@ func TestConcurrentPollers(t *testing.T) {
 	ssr, err := NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(1 * time.Second),
-		LockTtl:         common.Duration(2 * time.Second), // Short for test
+		LockTtl:         common.Duration(2 * time.Second),        // Short for test
+		UpdateMaxWait:   common.Duration(300 * time.Millisecond), // > fetch duration (200ms)
 		Connector: &common.ConnectorConfig{
 			Id:     "test-memory",
 			Driver: common.DriverMemory,
