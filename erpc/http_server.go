@@ -24,6 +24,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/erpc/erpc/websocket"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
@@ -48,6 +49,7 @@ type HttpServer struct {
 	trustedForwarderNets    []net.IPNet
 	trustedForwarderIPs     map[string]struct{}
 	trustedIPHeaders        []string
+	wsServer                *websocket.Server
 }
 
 func NewHttpServer(
@@ -126,6 +128,12 @@ func NewHttpServer(
 			}
 			srv.trustedIPHeaders = append(srv.trustedIPHeaders, h)
 		}
+	}
+
+	// Initialize WebSocket server
+	if cfg.WebSocket != nil {
+		wsConfig := convertToWSConfig(cfg.WebSocket)
+		srv.wsServer = websocket.NewServer(logger, wsConfig)
 	}
 
 	h := srv.createRequestHandler()
@@ -212,6 +220,18 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					break
 				}
 			}
+		}
+
+		// Check for WebSocket upgrade BEFORE setting response headers
+		if websocket.IsWebSocketUpgrade(r) && s.wsServer != nil {
+			// Parse URL to get project/network info
+			tempProjectId, tempArchitecture, tempChainId, tempIsAdmin, tempIsHealthCheck, tempErr := s.parseUrlPath(r, projectId, architecture, chainId)
+			if tempErr != nil || tempIsAdmin || tempIsHealthCheck {
+				http.Error(w, "WebSocket upgrade not available for this endpoint", http.StatusBadRequest)
+				return
+			}
+			s.handleWebSocketUpgrade(w, r, tempProjectId, tempArchitecture, tempChainId)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1346,6 +1366,11 @@ func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http servers...")
 
+	// Shutdown WebSocket server first
+	if s.wsServer != nil {
+		s.wsServer.Shutdown()
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -1387,6 +1412,70 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	}
 
 	return lastErr
+}
+
+// convertToWSConfig converts common.WebSocketConfig to websocket.Config
+func convertToWSConfig(cfg *common.WebSocketConfig) *websocket.Config {
+	wsConfig := websocket.DefaultConfig()
+
+	if cfg.Enabled != nil {
+		wsConfig.Enabled = *cfg.Enabled
+	}
+	if cfg.MaxConnectionsPerNetwork > 0 {
+		wsConfig.MaxConnectionsPerNetwork = cfg.MaxConnectionsPerNetwork
+	}
+	if cfg.MaxSubscriptionsPerConnection > 0 {
+		wsConfig.MaxSubscriptionsPerConnection = cfg.MaxSubscriptionsPerConnection
+	}
+	if cfg.PingInterval > 0 {
+		wsConfig.PingInterval = cfg.PingInterval.Duration()
+	}
+	if cfg.PongTimeout > 0 {
+		wsConfig.PongTimeout = cfg.PongTimeout.Duration()
+	}
+	if cfg.ReadBufferSize > 0 {
+		wsConfig.ReadBufferSize = cfg.ReadBufferSize
+	}
+	if cfg.WriteBufferSize > 0 {
+		wsConfig.WriteBufferSize = cfg.WriteBufferSize
+	}
+
+	return wsConfig
+}
+
+// handleWebSocketUpgrade handles WebSocket upgrade requests
+func (s *HttpServer) handleWebSocketUpgrade(
+	w http.ResponseWriter,
+	r *http.Request,
+	projectId, architecture, chainId string,
+) {
+	// Get network
+	networkId := fmt.Sprintf("%s:%s", architecture, chainId)
+	network, err := s.erpc.GetNetwork(r.Context(), projectId, networkId)
+	if err != nil {
+		s.logger.Error().Err(err).
+			Str("projectId", projectId).
+			Str("networkId", networkId).
+			Msg("failed to get network for websocket upgrade")
+		http.Error(w, "Network not found", http.StatusNotFound)
+		return
+	}
+
+	// Create forward function (decouples WebSocket from Network)
+	forwardFunc := func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		return network.Forward(ctx, req)
+	}
+
+	// Upgrade to WebSocket
+	err = s.wsServer.Upgrade(w, r, network, forwardFunc)
+	if err != nil {
+		s.logger.Error().Err(err).
+			Str("projectId", projectId).
+			Str("networkId", networkId).
+			Msg("failed to upgrade to websocket")
+		// Don't send HTTP error here - upgrade already failed
+		return
+	}
 }
 
 type gzipResponseWriter struct {
