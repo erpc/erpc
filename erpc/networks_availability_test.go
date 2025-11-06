@@ -52,7 +52,22 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -102,15 +117,38 @@ func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+
+	// Bootstrap upstreams registry AFTER creating network
+	upr.Bootstrap(ctx)
+
+	// Prepare upstreams for network
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+
+	// Bootstrap network
 	require.NoError(t, network.Bootstrap(ctx))
+
+	// Wait for state poller to initialize and get latest block
+	time.Sleep(1000 * time.Millisecond)
 
 	// Request far below latest-10 should be skipped; we don't register a method mock
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x2",false]}`))
@@ -129,7 +167,7 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	defer util.AssertNoPendingMocks(t, 1) // Expect 1 persist mock for block 0
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -148,23 +186,47 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 		},
 	}
 
-	// Earliest discovery fast-path: block 0 exists
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Times(1).
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			return strings.Contains(body, "\"eth_getBlockByNumber\"") && strings.Contains(body, "\"0x0\"")
-		}).
-		Reply(200).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x0"}}`))
-
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+
+	// Earliest discovery fast-path: block 0 exists
+	// Set up the mock AFTER creating the registry but BEFORE bootstrap
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist(). // Make it persistent since it might be called multiple times or not at all
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			// Match eth_getBlockByNumber with block 0x0 for earliest discovery
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "0x0")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]interface{}{
+				"number": "0x0",
+			},
+		})
+
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
@@ -192,7 +254,7 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 1)
+	defer util.AssertNoPendingMocks(t, 2) // 2 persist mocks for block 0 and block 1
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -212,10 +274,10 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 		},
 	}
 
-	// Earliest fast-path: block 0 exists
+	// Earliest fast-path: block 0 exists - make it persistent
 	gock.New("http://rpc1.localhost").
 		Post("").
-		Times(1).
+		Persist().
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
 			return strings.Contains(body, "\"eth_getBlockByNumber\"") && strings.Contains(body, "\"0x0\"")
@@ -238,7 +300,22 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -300,7 +377,22 @@ func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -347,7 +439,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	defer util.AssertNoPendingMocks(t, 2) // 2 persist mocks for block discovery
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -366,17 +458,17 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 		},
 	}
 
-	// Earliest discovery via binary search: 0 -> empty, 1 -> present
-	gock.New("http://rpc1.localhost").Post("").Times(1).Filter(func(r *http.Request) bool {
+	// Earliest discovery via binary search: 0 -> empty, 1 -> present - make them persistent
+	gock.New("http://rpc1.localhost").Post("").Persist().Filter(func(r *http.Request) bool {
 		b := util.SafeReadBody(r)
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x0\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
-	gock.New("http://rpc1.localhost").Post("").Times(1).Filter(func(r *http.Request) bool {
+	gock.New("http://rpc1.localhost").Post("").Persist().Filter(func(r *http.Request) bool {
 		b := util.SafeReadBody(r)
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x1\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
 
-	// Method mock for block 3
+	// Method mock for block 3 - keep as Times(1) since it's expected to be consumed
 	gock.New("http://rpc1.localhost").Post("").Times(1).Filter(func(r *http.Request) bool {
 		b := util.SafeReadBody(r)
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x3\"")
@@ -386,7 +478,22 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -423,7 +530,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 2)
+	defer util.AssertNoPendingMocks(t, 2) // 2 persist mocks remain after Times(1) is consumed
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -460,7 +567,22 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -489,7 +611,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	defer util.AssertNoPendingMocks(t, 1) // 1 persist mock for block 0
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -508,8 +630,8 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 		},
 	}
 
-	// Forwarded method at 0x0 should succeed due to fail-open
-	gock.New("http://rpc1.localhost").Post("").Times(2).Filter(func(r *http.Request) bool {
+	// Forwarded method at 0x0 should succeed due to fail-open - make it persistent
+	gock.New("http://rpc1.localhost").Post("").Persist().Filter(func(r *http.Request) bool {
 		b := util.SafeReadBody(r)
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x0\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x0"}}`))
@@ -518,7 +640,22 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -542,7 +679,7 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 2)
+	defer util.AssertNoPendingMocks(t, 3) // 3 persist mocks for blocks
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -561,29 +698,45 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 		},
 	}
 
-	// Earliest fast-path: block 0 exists
-	gock.New("http://rpc1.localhost").Post("").Times(1).Filter(func(r *http.Request) bool {
+	// Earliest fast-path and method mocks - make them all persistent to avoid flakiness
+	// Block 0 mock (for earliest discovery and actual request)
+	gock.New("http://rpc1.localhost").Post("").Persist().Filter(func(r *http.Request) bool {
 		b := util.SafeReadBody(r)
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x0\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x0"}}`))
 
-	// Method for 0x0 OK
-	gock.New("http://rpc1.localhost").Post("").Times(1).Filter(func(r *http.Request) bool {
-		b := util.SafeReadBody(r)
-		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x0\"")
-	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x0"}}`))
-	// Method for 0x1 OK (and any eth_getBlockByNumber as fallback)
-	gock.New("http://rpc1.localhost").Post("").Times(1).Filter(func(r *http.Request) bool {
+	// Block 1 mock
+	gock.New("http://rpc1.localhost").Post("").Persist().Filter(func(r *http.Request) bool {
 		b := util.SafeReadBody(r)
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x1\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
-	gock.New("http://rpc1.localhost").Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockByNumber\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
+
+	// General fallback for any other eth_getBlockByNumber
+	gock.New("http://rpc1.localhost").Post("").Persist().Filter(func(r *http.Request) bool {
+		b := util.SafeReadBody(r)
+		return strings.Contains(b, "\"eth_getBlockByNumber\"") && !strings.Contains(b, "\"0x0\"") && !strings.Contains(b, "\"0x1\"")
+	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
 
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}, LockMaxWait: common.Duration(200 * time.Millisecond), UpdateMaxWait: common.Duration(200 * time.Millisecond)})
+	// Create shared state config with proper timeouts for state poller
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)

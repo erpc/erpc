@@ -236,6 +236,14 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 			}
 			// passing task ctx here will cancel the task if the request is finished or the initializer is cancelled/times out
 			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
+			ups := nr.upstreamsRegistry.GetNetworkUpstreams(nr.appCtx, networkId)
+			if len(ups) == 0 {
+				nr.logger.Error().
+					Str("projectId", nr.project.Config.Id).
+					Str("networkId", networkId).
+					Err(err).
+					Msg("network initialization ended with zero upstreams")
+			}
 			if err != nil {
 				return err
 			}

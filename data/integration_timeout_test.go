@@ -25,7 +25,7 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 		defer cancel()
 
 		// Create shared state with memory connector (simulates working Redis)
-		ssr, err := NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		cfg := &common.SharedStateConfig{
 			ClusterKey:      "test",
 			FallbackTimeout: common.Duration(1 * time.Second),
 			LockTtl:         common.Duration(30 * time.Second),
@@ -40,7 +40,9 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 					MaxTotalSize: "10MB",
 				},
 			},
-		})
+		}
+		require.NoError(t, cfg.SetDefaults("test"))
+		ssr, err := NewSharedStateRegistry(ctx, &log.Logger, cfg)
 		require.NoError(t, err)
 
 		counter := ssr.GetCounterInt64("test-flow", 100)
@@ -82,7 +84,7 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		ssr, err := NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		cfg := &common.SharedStateConfig{
 			ClusterKey:      "test",
 			FallbackTimeout: common.Duration(1 * time.Second),
 			LockTtl:         common.Duration(5 * time.Second), // Shorter for test
@@ -98,7 +100,9 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 					MaxTotalSize: "10MB",
 				},
 			},
-		})
+		}
+		require.NoError(t, cfg.SetDefaults("test"))
+		ssr, err := NewSharedStateRegistry(ctx, &log.Logger, cfg)
 		require.NoError(t, err)
 
 		counter := ssr.GetCounterInt64("test-contention", 100)
@@ -140,22 +144,36 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 	})
 
 	t.Run("timeout budget validation", func(t *testing.T) {
-		// Verify our timeout calculations leave enough time for operations
-		lockTtl := 30 * time.Second
-		pollTimeout := lockTtl + 15*time.Second // 45s
+		// Validate budgets using the new best-effort design:
+		// - Foreground waits are bounded by LockMaxWait and UpdateMaxWait (small)
+		// - Background poll timeout should have enough room for remote get+set using FallbackTimeout
+		cfg := &common.SharedStateConfig{
+			ClusterKey:      "test",
+			FallbackTimeout: common.Duration(3 * time.Second),   // typical default
+			LockMaxWait:     common.Duration(100 * time.Millisecond),
+			UpdateMaxWait:   common.Duration(50 * time.Millisecond),
+			// Intentionally leave LockTtl zero to allow defaults to set it (>= FallbackTimeout)
+		}
+		require.NoError(t, cfg.SetDefaults("test"))
 
-		// Worst case: wait full lockTtl for lock
-		remainingAfterLock := pollTimeout - lockTtl // 15s
+		fallback := cfg.FallbackTimeout.Duration()
+		lockTtl := cfg.LockTtl.Duration()
+		lockMaxWait := cfg.LockMaxWait.Duration()
+		updateMaxWait := cfg.UpdateMaxWait.Duration()
 
-		// Operations that need to fit:
-		getRemoteTime := 1 * time.Second
-		fetchBlockTime := 10 * time.Second // Conservative estimate
-		updateRemoteTime := 1 * time.Second
+		// Foreground budgets are small and independent of lockTtl
+		assert.GreaterOrEqual(t, lockTtl, fallback, "LockTtl must be >= FallbackTimeout")
+		assert.Less(t, lockMaxWait, fallback, "LockMaxWait should be less than FallbackTimeout")
+		assert.Less(t, updateMaxWait, fallback, "UpdateMaxWait should be less than FallbackTimeout")
+		assert.LessOrEqual(t, lockMaxWait, 1*time.Second, "LockMaxWait should not exceed 1s")
+		assert.LessOrEqual(t, updateMaxWait, 1*time.Second, "UpdateMaxWait should not exceed 1s")
 
-		totalOperationTime := getRemoteTime + fetchBlockTime + updateRemoteTime // 12s
-
-		assert.Greater(t, remainingAfterLock, totalOperationTime,
-			"Poll timeout should leave enough time for operations after max lock wait")
+		// Background poller timeout derived from LockTtl should have room for remote get+set
+		pollTimeout := lockTtl + 15*time.Second
+		remainingAfterLock := pollTimeout - lockTtl
+		requiredForRemoteGetAndSet := 2 * fallback
+		assert.GreaterOrEqual(t, remainingAfterLock, requiredForRemoteGetAndSet,
+			"Poll timeout should leave enough time (>= 2*fallbackTimeout) for remote get+set after max lock wait")
 	})
 }
 
@@ -164,7 +182,7 @@ func TestConcurrentPollers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ssr, err := NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(1 * time.Second),
 		LockTtl:         common.Duration(2 * time.Second),        // Short for test
@@ -177,7 +195,9 @@ func TestConcurrentPollers(t *testing.T) {
 				MaxTotalSize: "10MB",
 			},
 		},
-	})
+	}
+	require.NoError(t, cfg.SetDefaults("test"))
+	ssr, err := NewSharedStateRegistry(ctx, &log.Logger, cfg)
 	require.NoError(t, err)
 
 	counter := ssr.GetCounterInt64("test-concurrent", 100)

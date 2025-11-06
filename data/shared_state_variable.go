@@ -174,7 +174,6 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	)
 	defer span.End()
 
-	// Quick check if value is not stale using atomic read
 	if !c.IsStale(staleness) {
 		return c.value.Load(), nil
 	}
@@ -182,78 +181,46 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	c.updateMu.Lock()
 	defer c.updateMu.Unlock()
 
-	// Double-check staleness under lock
 	if !c.IsStale(staleness) {
 		return c.value.Load(), nil
 	}
 
-	// Best-effort foreground lock and user-function budgets
-	lockWait := c.registry.lockMaxWait
-	lockCtx, lockCancel := context.WithTimeout(ctx, lockWait)
-	defer lockCancel()
-	unlock := c.tryAcquireLock(lockCtx)
+	initialVal := c.value.Load()
 
-	// Run user refresh in the background; only wait up to updateMaxWait for the caller
-	type res struct {
-		val int64
-		err error
-	}
-	resultCh := make(chan res, 1)
+	lockCtx, lockCancel := context.WithTimeout(ctx, c.registry.lockMaxWait)
+	unlock := c.tryAcquireLock(lockCtx)
+	lockCancel()
+
+	resultCh := make(chan refreshResult, 1)
 	go func() {
-		v, e := executeNewValueFn(c.registry.appCtx)
-		resultCh <- res{val: v, err: e}
+		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+		defer fnCancel()
+		value, err := executeNewValueFn(fnCtx)
+		resultCh <- refreshResult{val: value, err: err}
 	}()
 
-	fnWait := c.registry.updateMaxWait
-	timer := time.NewTimer(fnWait)
+	timer := time.NewTimer(c.registry.updateMaxWait)
 	defer timer.Stop()
+
+	if unlock == nil {
+		select {
+		case r := <-resultCh:
+			return c.handleFollowerResult(initialVal, r)
+		case <-timer.C:
+			c.markFreshAttempt()
+			c.continueAsyncRefresh(resultCh)
+			return initialVal, nil
+		}
+	}
 
 	select {
 	case r := <-resultCh:
-		if r.err != nil {
-			// Debounce to avoid herd on repeated failures
-			c.lastProcessedMu.Lock()
-			c.lastProcessed = time.Now()
-			c.lastProcessedMu.Unlock()
-			if unlock != nil {
-				unlock()
-			}
-			return c.value.Load(), r.err
-		}
-
-		updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
-		if unlock != nil && updated {
-			c.reconcileAndPushWithLockNoLocalLock(unlock)
-		} else if updated {
-			c.scheduleBackgroundPushCurrent()
-		} else if unlock != nil {
-			unlock()
-		}
-		return c.value.Load(), nil
-
+		return c.handleLeaderResult(initialVal, unlock, r)
 	case <-timer.C:
-		// Caller budget exhausted; continue in background and return current local value
-		go func(unlockFn func()) {
-			r := <-resultCh
-			if r.err != nil {
-				if unlockFn != nil {
-					unlockFn()
-				}
-				return
-			}
-			c.updateMu.Lock()
-			updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
-			if unlockFn != nil && updated {
-				c.reconcileAndPushWithLockNoLocalLock(unlockFn)
-			} else if updated {
-				c.scheduleBackgroundPushCurrent()
-			} else if unlockFn != nil {
-				unlockFn()
-			}
-			c.updateMu.Unlock()
-		}(unlock)
-
-		return c.value.Load(), nil
+		c.markFreshAttempt()
+		unlock()
+		c.continueAsyncRefresh(resultCh)
+		return initialVal, nil
 	}
 }
 
@@ -267,6 +234,78 @@ func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
 	c.callbackMu.Lock()
 	defer c.callbackMu.Unlock()
 	c.largeRollbackCallbacks = append(c.largeRollbackCallbacks, cb)
+}
+
+func (c *counterInt64) markFreshAttempt() {
+	c.lastProcessedMu.Lock()
+	c.lastProcessed = time.Now()
+	c.lastProcessedMu.Unlock()
+}
+
+type refreshResult struct {
+	val int64
+	err error
+}
+
+func (c *counterInt64) handleFollowerResult(initialVal int64, r refreshResult) (int64, error) {
+	if r.err != nil {
+		c.markFreshAttempt()
+		return initialVal, r.err
+	}
+	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
+	if updated {
+		c.scheduleBackgroundPushCurrent()
+	}
+	return c.value.Load(), nil
+}
+
+func (c *counterInt64) handleLeaderResult(initialVal int64, unlock func(), r refreshResult) (int64, error) {
+	if r.err != nil {
+		c.markFreshAttempt()
+		unlock()
+		return initialVal, r.err
+	}
+	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
+	if updated {
+		c.reconcileAndPushWithLockNoLocalLock(unlock)
+		return c.value.Load(), nil
+	}
+	unlock()
+	return c.value.Load(), nil
+}
+
+func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult) {
+	if !c.bgUpdateInProgress.TryLock() {
+		go func() {
+			<-resultCh
+		}()
+		return
+	}
+	go func() {
+		defer c.bgUpdateInProgress.Unlock()
+		r, ok := <-resultCh
+		if !ok || r.err != nil {
+			return
+		}
+
+		c.updateMu.Lock()
+		updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
+		c.updateMu.Unlock()
+		if !updated {
+			return
+		}
+
+		lockCtx, lockCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockTtl)
+		unlock := c.tryAcquireLock(lockCtx)
+		lockCancel()
+		if unlock == nil {
+			return
+		}
+
+		c.updateMu.Lock()
+		c.reconcileAndPushWithLockNoLocalLock(unlock)
+		c.updateMu.Unlock()
+	}()
 }
 
 func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
@@ -345,11 +384,11 @@ func (c *counterInt64) reconcileAndPushWithLockNoLocalLock(unlock func()) {
 	getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
 	remoteVal := c.tryGetRemoteValue(getCtx)
 	getCancel()
-	if remoteVal > 0 {
-		_ = c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
-	}
-
 	current := c.value.Load()
+	if remoteVal > current {
+		_ = c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
+		current = c.value.Load()
+	}
 	if current <= 0 {
 		return
 	}
@@ -366,33 +405,47 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 	}
 	go func() {
 		defer c.bgUpdateInProgress.Unlock()
-		// Acquire lock with background budget
+
+		// IMPORTANT: Acquire updateMu FIRST to maintain consistent lock ordering
+		// This prevents deadlock with TryUpdate/TryUpdateIfStale which also acquire
+		// updateMu before distributed lock
+		c.updateMu.Lock()
+
+		// Read current value while holding updateMu
+		current := c.value.Load()
+		if current <= 0 {
+			c.updateMu.Unlock()
+			return
+		}
+
+		// Now acquire distributed lock with background budget
 		lockCtx, lockCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockTtl)
 		unlock := c.tryAcquireLock(lockCtx)
 		lockCancel()
 		if unlock == nil {
+			c.updateMu.Unlock()
 			return
 		}
-		defer unlock()
 
-		// Reconcile with remote before pushing to ensure monotonicity
+		// Reconcile with remote while holding both locks
 		getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		remote := c.tryGetRemoteValue(getCtx)
+		remoteVal := c.tryGetRemoteValue(getCtx)
 		getCancel()
-
-		// Update local with remote if it is ahead
-		c.updateMu.Lock()
-		if remote > 0 {
-			_ = c.processNewValue(UpdateSourceRemoteCheck, remote)
+		if remoteVal > c.value.Load() {
+			_ = c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
 		}
-		current := c.value.Load()
+		current = c.value.Load()
+
+		// Push the reconciled value while still holding both locks
+		// This ensures the value we push is exactly what we reconciled
+		if current > 0 {
+			pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+			c.updateRemoteUpdate(pctx, current)
+			cancel()
+		}
+
+		// Release distributed lock before local lock to respect acquisition order
+		unlock()
 		c.updateMu.Unlock()
-
-		if current <= 0 {
-			return
-		}
-		pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		c.updateRemoteUpdate(pctx, current)
-		cancel()
 	}()
 }
