@@ -1,51 +1,42 @@
 version: 2
+
+multi-ecosystem-groups:
+  infrastructure:
+    schedule:
+      interval: "weekly"
+  service:
+    schedule:
+      interval: "weekly"
+
 updates:
   - package-ecosystem: github-actions
     directory: /
-    schedule:
-      interval: daily
+    multi-ecosystem-group: "infrastructure"
 
   - package-ecosystem: docker
     directory: /
-    schedule:
-      interval: daily
-
-  - package-ecosystem: docker
-    directory: /docs
-    schedule:
-      interval: daily
-
-  - package-ecosystem: npm
-    directory: /docs
-    schedule:
-      interval: daily
-
-  - package-ecosystem: gomod
-    directory: /
-    schedule:
-      interval: daily
+    multi-ecosystem-group: "infrastructure"
 
   - package-ecosystem: docker
     directory: /monitoring
-    schedule:
-      interval: daily
+    multi-ecosystem-group: "infrastructure"
 
+  - package-ecosystem: gomod
+    directory: /
+    multi-ecosystem-group: "service"
+    
   - package-ecosystem: npm
     directory: /
-    schedule:
-      interval: daily
+    multi-ecosystem-group: "service"
 
   - package-ecosystem: npm
     directory: /test/util
-    schedule:
-      interval: daily
+    multi-ecosystem-group: "service"
 
   - package-ecosystem: npm
     directory: /typescript/cli
-    schedule:
-      interval: daily
+    multi-ecosystem-group: "service"
 
   - package-ecosystem: npm
     directory: /typescript/config
-    schedule:
-      interval: daily
+    multi-ecosystem-group: "service"
