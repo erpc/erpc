@@ -23,20 +23,70 @@ updates:
 
   - package-ecosystem: gomod
     directory: /
+    schedule:
+      interval: "weekly"
+    update-types:
+      - major
+
+  - package-ecosystem: gomod
+    directory: /
     multi-ecosystem-group: "service"
+    update-types:
+      - patch
+      - minor
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: "weekly"
+    update-types:
+      - major
     
   - package-ecosystem: npm
     directory: /
     multi-ecosystem-group: "service"
+    update-types:
+      - patch
+      - minor
+
+  - package-ecosystem: npm
+    directory: /test/util
+    schedule:
+      interval: "weekly"
+    update-types:
+      - major
 
   - package-ecosystem: npm
     directory: /test/util
     multi-ecosystem-group: "service"
+    update-types:
+      - patch
+      - minor
+
+  - package-ecosystem: npm
+    directory: /typescript/cli
+    schedule:
+      interval: "weekly"
+    update-types:
+      - major
 
   - package-ecosystem: npm
     directory: /typescript/cli
     multi-ecosystem-group: "service"
+    update-types:
+      - patch
+      - minor
+
+  - package-ecosystem: npm
+    directory: /typescript/cli
+    schedule:
+      interval: "weekly"
+    update-types:
+      - major
 
   - package-ecosystem: npm
     directory: /typescript/config
     multi-ecosystem-group: "service"
+    update-types:
+      - patch
+      - minor
