@@ -789,7 +789,7 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 				nil,
 			)
 		}
-		evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
+		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
 	default:
 		return common.NewErrJsonRpcExceptionInternal(
 			0,
