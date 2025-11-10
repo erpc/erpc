@@ -47,6 +47,9 @@ jobs:
         run: |
           go install github.com/gzuidhof/tygo@latest
           tygo generate
+      
+      - name: Setup Syft
+        uses: anchore/sbom-action/download-syft@aa0e114b2e19480f157109b9922bda359bd98b90 # v0.20.8
 
       # Run goreleaser in snapshot mode to generate checksums
       - name: Run GoReleaser Snapshot
