@@ -281,22 +281,28 @@ func (s *SharedStateConfig) Validate() error {
 		return fmt.Errorf("sharedState.lockTtl should be at least 1s")
 	}
 
-	// Validate timeout relationships to prevent negative calculations in shared state flows
+	// Validate timeout relationships for the best-effort design
 	fallbackTimeout := s.FallbackTimeout.Duration()
 	lockTtl := s.LockTtl.Duration()
+	lockMaxWait := s.LockMaxWait.Duration()
+	updateMaxWait := s.UpdateMaxWait.Duration()
 
-	// TryUpdate uses operationBuffer = fallbackTimeout * 2
-	// Ensure lockTtl provides sufficient buffer for operations after lock acquisition
-	if fallbackTimeout*2 >= lockTtl {
-		return fmt.Errorf("sharedState.lockTtl (%v) must be greater than fallbackTimeout * 2 (%v) to prevent negative timeout calculations",
-			lockTtl, fallbackTimeout*2)
+	// LockTtl should be long enough to complete remote operations (get + set)
+	// It should be at least as long as FallbackTimeout to allow one remote operation
+	if lockTtl < fallbackTimeout {
+		return fmt.Errorf("sharedState.lockTtl (%v) should be at least as long as fallbackTimeout (%v) to complete remote operations",
+			lockTtl, fallbackTimeout)
 	}
 
-	// TryUpdateIfStale uses operationBuffer = fallbackTimeout * 4 (more conservative)
-	// This is the more restrictive constraint and covers both update methods
-	if fallbackTimeout*4 >= lockTtl {
-		return fmt.Errorf("sharedState.lockTtl (%v) must be greater than fallbackTimeout * 4 (%v) to prevent negative timeout calculations",
-			lockTtl, fallbackTimeout*4)
+	// LockMaxWait and UpdateMaxWait are foreground budgets and should be much smaller than network timeouts
+	if lockMaxWait >= fallbackTimeout {
+		return fmt.Errorf("sharedState.lockMaxWait (%v) should be less than fallbackTimeout (%v) as it's a foreground latency budget",
+			lockMaxWait, fallbackTimeout)
+	}
+
+	if updateMaxWait >= fallbackTimeout {
+		return fmt.Errorf("sharedState.updateMaxWait (%v) should be less than fallbackTimeout (%v) as it's a foreground latency budget",
+			updateMaxWait, fallbackTimeout)
 	}
 
 	return nil

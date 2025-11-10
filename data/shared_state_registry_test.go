@@ -34,6 +34,9 @@ func setupTest(clusterKey string) (*sharedStateRegistry, *MockConnector, context
 		logger:          &log.Logger,
 		connector:       connector,
 		fallbackTimeout: 500 * time.Millisecond,
+		lockTtl:         2 * time.Second,
+		lockMaxWait:     100 * time.Millisecond,
+		updateMaxWait:   50 * time.Millisecond,
 		initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
 	}
 	return registry, connector, context.Background()
@@ -174,6 +177,8 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("15"), nil)
+	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("15"), mock.Anything).Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(15)).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,

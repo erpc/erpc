@@ -742,7 +742,18 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 		c.FallbackTimeout = Duration(3 * time.Second)
 	}
 	if c.LockTtl == 0 {
-		c.LockTtl = Duration(30 * time.Second)
+		// Lock TTL should be long enough to complete remote operations
+		// Provides 1s buffer beyond FallbackTimeout for get+set operations
+		c.LockTtl = Duration(4 * time.Second)
+	}
+	// Foreground best-effort budgets
+	if c.LockMaxWait == 0 {
+		// How long the foreground waits to acquire the lock before proceeding locally
+		c.LockMaxWait = Duration(100 * time.Millisecond)
+	}
+	if c.UpdateMaxWait == 0 {
+		// How long the foreground waits for the update function before returning stale
+		c.UpdateMaxWait = Duration(50 * time.Millisecond)
 	}
 	return nil
 }

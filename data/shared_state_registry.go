@@ -27,6 +27,8 @@ type sharedStateRegistry struct {
 	variables       sync.Map // map[string]*counterInt64
 	fallbackTimeout time.Duration
 	lockTtl         time.Duration
+	lockMaxWait     time.Duration
+	updateMaxWait   time.Duration
 	initializer     *util.Initializer
 }
 
@@ -48,6 +50,8 @@ func NewSharedStateRegistry(
 		connector:       connector,
 		fallbackTimeout: cfg.FallbackTimeout.Duration(),
 		lockTtl:         cfg.LockTtl.Duration(),
+		lockMaxWait:     cfg.LockMaxWait.Duration(),
+		updateMaxWait:   cfg.UpdateMaxWait.Duration(),
 		initializer:     util.NewInitializer(appCtx, &lg, nil),
 	}, nil
 }
