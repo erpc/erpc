@@ -183,6 +183,7 @@ export interface GrpcConnectorConfig {
   bootstrap?: string;
   servers?: string[];
   headers?: { [key: string]: string};
+  getTimeout?: Duration;
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
@@ -260,7 +261,23 @@ export interface ProjectConfig {
   scoreMetricsWindowSize?: Duration;
   scoreRefreshInterval?: Duration;
   healthCheck?: DeprecatedProjectHealthCheckConfig;
+  /**
+   * Configure user agent tracking at the project level
+   */
+  userAgentMode?: UserAgentTrackingMode;
 }
+/**
+ * UserAgentTrackingMode controls how user agents are recorded for metrics/labels
+ */
+export type UserAgentTrackingMode = string;
+/**
+ * UserAgentTrackingModeSimplified lowers cardinality by bucketing common user agents
+ */
+export const UserAgentTrackingModeSimplified: UserAgentTrackingMode = "simplified";
+/**
+ * UserAgentTrackingModeRaw records the user agent string as-is (high cardinality)
+ */
+export const UserAgentTrackingModeRaw: UserAgentTrackingMode = "raw";
 export interface NetworkDefaults {
   rateLimitBudget?: string;
   failsafe?: (FailsafeConfig | undefined)[];
@@ -351,13 +368,46 @@ export interface JsonRpcUpstreamConfig {
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
-  nodeType?: EvmNodeType;
   statePollerInterval?: Duration;
   statePollerDebounce?: Duration;
-  maxAvailableRecentBlocks?: number /* int64 */;
+  blockAvailability?: EvmBlockAvailabilityConfig;
   getLogsAutoSplittingRangeThreshold?: number /* int64 */;
   skipWhenSyncing?: boolean;
   integrity?: UpstreamIntegrityConfig;
+  /**
+   * @deprecated: use blockAvailability bounds instead; kept for config back-compat only
+   */
+  nodeType?: EvmNodeType;
+  /**
+   * @deprecated: should be removed in a future release
+   */
+  maxAvailableRecentBlocks?: number /* int64 */;
+}
+/**
+ * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
+ * Presence of lower/upper implies the feature is active. When both are nil, it's effectively off
+ */
+export interface EvmBlockAvailabilityConfig {
+  lower?: EvmAvailabilityBoundConfig;
+  upper?: EvmAvailabilityBoundConfig;
+}
+/**
+ * EvmBound represents a single bound definition.
+ * Exactly one of ExactBlock, LatestMinus, EarliestPlus should be set.
+ * UpdateRate only applies to earliestBlockPlus bounds: 0 means freeze at first evaluation; >0 means recompute on that cadence.
+ * For latestBlockMinus, updateRate is ignored: bounds are computed on-demand using the continuously-updated latest block from evmStatePoller.
+ */
+export type EvmAvailabilityProbeType = string;
+export const EvmProbeBlockHeader: EvmAvailabilityProbeType = "blockHeader";
+export const EvmProbeEventLogs: EvmAvailabilityProbeType = "eventLogs";
+export const EvmProbeCallState: EvmAvailabilityProbeType = "callState";
+export const EvmProbeTraceData: EvmAvailabilityProbeType = "traceData";
+export interface EvmAvailabilityBoundConfig {
+  exactBlock?: number /* int64 */;
+  latestBlockMinus?: number /* int64 */;
+  earliestBlockPlus?: number /* int64 */;
+  probe?: EvmAvailabilityProbeType;
+  updateRate?: Duration;
 }
 export interface FailsafeConfig {
   matchMethod?: string;
@@ -596,12 +646,24 @@ export interface SecretStrategyConfig {
 export interface DatabaseStrategyConfig {
   connector?: ConnectorConfig;
   cache?: DatabaseStrategyCacheConfig;
+  retry?: DatabaseRetryConfig;
+  failOpen?: DatabaseFailOpenConfig;
+  maxWait?: Duration;
 }
 export interface DatabaseStrategyCacheConfig {
   ttl?: number /* time in nanoseconds (time.Duration) */;
   maxSize?: number /* int64 */;
   maxCost?: number /* int64 */;
   numCounters?: number /* int64 */;
+}
+export interface DatabaseRetryConfig {
+  maxAttempts?: number /* int */;
+  baseBackoff?: Duration;
+}
+export interface DatabaseFailOpenConfig {
+  enabled: boolean;
+  userId?: string;
+  rateLimitBudget?: string;
 }
 export interface JwtStrategyConfig {
   allowedIssuers: string[];
