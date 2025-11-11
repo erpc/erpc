@@ -183,8 +183,8 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 	}
 }
 
-// Test "safe" tag translation (should use finalized)
-func TestInterpolation_SafeTag_ToHex(t *testing.T) {
+// Test "safe" tag NOT translated (passed through)
+func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -200,9 +200,9 @@ func TestInterpolation_SafeTag_ToHex(t *testing.T) {
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
+			// Should still have "safe" since we don't translate it
 			return strings.Contains(body, "eth_getCode") &&
-				strings.Contains(body, "\"0x") &&
-				!strings.Contains(body, "\"safe\"")
+				strings.Contains(body, "\"safe\"")
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{
@@ -221,8 +221,7 @@ func TestInterpolation_SafeTag_ToHex(t *testing.T) {
 	params := jrq.Params
 	require.Len(t, params, 2)
 	blockParam := params[1].(string)
-	assert.True(t, strings.HasPrefix(blockParam, "0x"), "Block param should be hex")
-	assert.NotEqual(t, "safe", blockParam, "Should not be 'safe' anymore")
+	assert.Equal(t, "safe", blockParam, "Should still be 'safe' - not translated")
 
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
@@ -231,8 +230,57 @@ func TestInterpolation_SafeTag_ToHex(t *testing.T) {
 	}
 }
 
-// Test "pending" tag translation (should use latest)
-func TestInterpolation_PendingTag_ToHex(t *testing.T) {
+// Test that safe and pending tags preserve their semantic meaning
+func TestInterpolation_PreservesSemanticTags(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	testCases := []struct {
+		name        string
+		tag         string
+		description string
+	}{
+		{
+			name:        "safe_preserved",
+			tag:         "safe",
+			description: "safe tag represents a specific consensus state and should not be altered",
+		},
+		{
+			name:        "pending_preserved",
+			tag:         "pending",
+			description: "pending tag includes mempool state and should not be altered",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","%s"]}`, tc.tag)))
+			req.SetNetwork(network)
+
+			jrq, err := req.JsonRpcRequest()
+			require.NoError(t, err)
+
+			// Apply normalization
+			evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+			// Verify tag is preserved
+			params := jrq.Params
+			require.Len(t, params, 2)
+			blockParam := params[1].(string)
+			assert.Equal(t, tc.tag, blockParam, tc.description)
+		})
+	}
+}
+
+// Test "pending" tag NOT translated (passed through)
+func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -248,9 +296,9 @@ func TestInterpolation_PendingTag_ToHex(t *testing.T) {
 		Times(1).
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
+			// Should still have "pending" since we don't translate it
 			return strings.Contains(body, "eth_getTransactionCount") &&
-				strings.Contains(body, "\"0x") &&
-				!strings.Contains(body, "\"pending\"")
+				strings.Contains(body, "\"pending\"")
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{
@@ -269,8 +317,7 @@ func TestInterpolation_PendingTag_ToHex(t *testing.T) {
 	params := jrq.Params
 	require.Len(t, params, 2)
 	blockParam := params[1].(string)
-	assert.True(t, strings.HasPrefix(blockParam, "0x"), "Block param should be hex")
-	assert.NotEqual(t, "pending", blockParam, "Should not be 'pending' anymore")
+	assert.Equal(t, "pending", blockParam, "Should still be 'pending' - not translated")
 
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
@@ -1096,17 +1143,17 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 		{
 			name:   "eth_getTransactionCount",
 			method: "eth_getTransactionCount",
-			params: `["0xabc","safe"]`,
+			params: `["0xabc","latest"]`,
 			expectedFilter: func(body string) bool {
-				return strings.Contains(body, "eth_getTransactionCount") && !strings.Contains(body, "\"safe\"")
+				return strings.Contains(body, "eth_getTransactionCount") && !strings.Contains(body, "\"latest\"")
 			},
 		},
 		{
 			name:   "eth_getCode",
 			method: "eth_getCode",
-			params: `["0xabc","pending"]`,
+			params: `["0xabc","finalized"]`,
 			expectedFilter: func(body string) bool {
-				return strings.Contains(body, "eth_getCode") && !strings.Contains(body, "\"pending\"")
+				return strings.Contains(body, "eth_getCode") && !strings.Contains(body, "\"finalized\"")
 			},
 		},
 		{

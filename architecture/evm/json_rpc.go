@@ -8,6 +8,8 @@ import (
 )
 
 // resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.
+// IMPORTANT: Only translates tags we can accurately represent. "safe" and "pending" are passed
+// through unchanged as we don't have the necessary state information for accurate translation.
 func resolveBlockTagToHex(ctx context.Context, nrq *common.NormalizedRequest, tag string) (string, bool) {
 	if nrq == nil {
 		return "", false
@@ -17,29 +19,32 @@ func resolveBlockTagToHex(ctx context.Context, nrq *common.NormalizedRequest, ta
 		return "", false
 	}
 	switch tag {
-	case "latest", "pending":
-		// Both "latest" and "pending" resolve to the highest known latest block
-		// since we don't have pending transaction pool visibility
+	case "latest":
+		// Translate "latest" to the highest known latest block
 		if bn := network.EvmHighestLatestBlockNumber(ctx); bn > 0 {
 			if hx, err := common.NormalizeHex(bn); err == nil {
 				return hx, true
 			}
 		}
-	case "finalized", "safe":
-		// Both "finalized" and "safe" resolve to the highest known finalized block
-		// "safe" is typically between finalized and latest, but we use finalized as conservative choice
+	case "finalized":
+		// Translate "finalized" to the highest known finalized block
 		if bn := network.EvmHighestFinalizedBlockNumber(ctx); bn > 0 {
 			if hx, err := common.NormalizeHex(bn); err == nil {
 				return hx, true
 			}
 		}
+		// "safe" and "pending" are intentionally NOT translated here:
+		// - "safe": Represents a specific consensus state between finalized and latest that we don't track
+		// - "pending": Represents state including mempool transactions, which we don't have visibility into
+		// These tags should be passed through to the upstream unchanged
 	}
 	return "", false
 }
 
 // NormalizeHttpJsonRpc normalizes and translates block parameters in JSON-RPC requests.
-// It converts block tags (latest, finalized, safe, pending) to concrete hex block numbers
-// and normalizes hex values. The function minimizes lock contention by:
+// It converts supported block tags (latest, finalized) to concrete hex block numbers
+// and normalizes hex values. Tags like "safe" and "pending" are passed through unchanged.
+// The function minimizes lock contention by:
 // 1. Briefly holding a read lock to extract parameter values
 // 2. Releasing the lock before performing expensive operations (network state lookups)
 // 3. Only acquiring a write lock if modifications are needed
@@ -103,20 +108,22 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 				// Check if it's a block tag that should be translated
 				// This is the expensive operation that calls network methods
 				switch v {
-				case "latest", "pending":
+				case "latest":
 					if translateLatest {
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
 						}
 					}
-				case "finalized", "safe":
+				case "finalized":
 					if translateFinalized {
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
 						}
 					}
+					// "safe" and "pending" are passed through unchanged
+					// We don't have the necessary state information to accurately translate them
 				}
 			}
 		case float64:
