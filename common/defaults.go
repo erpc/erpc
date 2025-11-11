@@ -315,6 +315,15 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_call": {
 		ReqRefs: SecondParam,
 	},
+	"eth_estimateGas": {
+		ReqRefs: SecondParam,
+	},
+	"trace_call": {
+		ReqRefs: SecondParam,
+	},
+	"debug_traceCall": {
+		ReqRefs: SecondParam,
+	},
 	"eth_getProof": {
 		ReqRefs: ThirdParam,
 	},
@@ -325,12 +334,6 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"eth_getAccount": {
-		ReqRefs: SecondParam,
-	},
-	"eth_estimateGas": {
-		ReqRefs: SecondParam,
-	},
-	"debug_traceCall": {
 		ReqRefs: SecondParam,
 	},
 	"eth_simulateV1": {

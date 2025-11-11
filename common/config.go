@@ -208,6 +208,12 @@ type CacheMethodConfig struct {
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
 	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
+	// TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateLatestTag *bool `yaml:"translateLatestTag,omitempty" json:"translateLatestTag,omitempty"`
+	// TranslateFinalizedTag controls whether the method-level tag translation should convert "finalized" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateFinalizedTag *bool `yaml:"translateFinalizedTag,omitempty" json:"translateFinalizedTag,omitempty"`
 }
 
 type CachePolicyConfig struct {
