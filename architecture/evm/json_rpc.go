@@ -37,87 +37,118 @@ func resolveBlockTagToHex(ctx context.Context, nrq *common.NormalizedRequest, ta
 	return "", false
 }
 
+// NormalizeHttpJsonRpc normalizes and translates block parameters in JSON-RPC requests.
+// It converts block tags (latest, finalized, safe, pending) to concrete hex block numbers
+// and normalizes hex values. The function minimizes lock contention by:
+// 1. Briefly holding a read lock to extract parameter values
+// 2. Releasing the lock before performing expensive operations (network state lookups)
+// 3. Only acquiring a write lock if modifications are needed
 func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jrq *common.JsonRpcRequest) {
-	// Generic, config-driven pass: iterate method ReqRefs and translate/normalize values in-place.
+	// First pass: collect parameter values and their paths while holding read lock
+	type paramRef struct {
+		path  []interface{}
+		value interface{}
+	}
+	var paramsToProcess []paramRef
+	var method string
+
+	// Hold read lock only for quick data extraction
 	jrq.RLock()
-	var needsUpdate bool
-	var workingParams []interface{}
-
-	// Get method config (network overrides or defaults)
-	methodCfg := getMethodConfig(jrq.Method, nrq)
+	method = jrq.Method
+	methodCfg := getMethodConfig(method, nrq)
 	if methodCfg != nil && len(methodCfg.ReqRefs) > 0 {
-		translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
-		translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
-
 		for _, ref := range methodCfg.ReqRefs {
 			val, err := jrq.PeekByPath(ref...)
 			if err != nil {
 				continue
 			}
-
-			var newVal interface{}
-			changed := false
-
-			switch v := val.(type) {
-			case string:
-				// Handle string values (hex or block tags)
-				if strings.HasPrefix(v, "0x") {
-					// Normalize hex string
-					if normalized, err := common.NormalizeHex(v); err == nil && normalized != v {
-						newVal = normalized
-						changed = true
-					}
-				} else {
-					// Check if it's a block tag that should be translated
-					switch v {
-					case "latest", "pending":
-						if translateLatest {
-							if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
-								newVal = hx
-								changed = true
-							}
-						}
-					case "finalized", "safe":
-						if translateFinalized {
-							if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
-								newVal = hx
-								changed = true
-							}
-						}
-					}
-				}
-			case float64:
-				// Handle numeric values from JSON (converts to hex)
-				// JSON unmarshaling produces float64 for all numbers
-				if normalized, err := common.NormalizeHex(int64(v)); err == nil {
-					newVal = normalized
-					changed = true
-				}
-			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-				// Handle other numeric types (shouldn't normally occur from JSON, but handle for completeness)
-				if normalized, err := common.NormalizeHex(v); err == nil {
-					newVal = normalized
-					changed = true
-				}
-			default:
-				// Skip unsupported types
-				continue
-			}
-
-			if changed {
-				// Initialize working params on first change
-				if !needsUpdate {
-					workingParams = jrq.Params
-					needsUpdate = true
-				}
-				if np, ok := replaceParamAtPath(workingParams, ref, newVal); ok {
-					workingParams = np
-				}
-			}
+			// Store path and value for processing outside the lock
+			paramsToProcess = append(paramsToProcess, paramRef{
+				path:  ref,
+				value: val,
+			})
 		}
+	}
+	// Make a copy of params for working if we have refs to process
+	var workingParams []interface{}
+	if len(paramsToProcess) > 0 {
+		workingParams = jrq.Params
 	}
 	jrq.RUnlock()
 
+	// If no parameters to process, return early
+	if len(paramsToProcess) == 0 {
+		return
+	}
+
+	// Process parameters outside the lock (expensive operations)
+	var needsUpdate bool
+	translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
+	translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
+
+	for _, param := range paramsToProcess {
+		var newVal interface{}
+		changed := false
+
+		switch v := param.value.(type) {
+		case string:
+			// Handle string values (hex or block tags)
+			if strings.HasPrefix(v, "0x") {
+				// Normalize hex string
+				if normalized, err := common.NormalizeHex(v); err == nil && normalized != v {
+					newVal = normalized
+					changed = true
+				}
+			} else {
+				// Check if it's a block tag that should be translated
+				// This is the expensive operation that calls network methods
+				switch v {
+				case "latest", "pending":
+					if translateLatest {
+						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
+							newVal = hx
+							changed = true
+						}
+					}
+				case "finalized", "safe":
+					if translateFinalized {
+						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
+							newVal = hx
+							changed = true
+						}
+					}
+				}
+			}
+		case float64:
+			// Handle numeric values from JSON (converts to hex)
+			// JSON unmarshaling produces float64 for all numbers
+			if normalized, err := common.NormalizeHex(int64(v)); err == nil {
+				newVal = normalized
+				changed = true
+			}
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			// Handle other numeric types (shouldn't normally occur from JSON, but handle for completeness)
+			if normalized, err := common.NormalizeHex(v); err == nil {
+				newVal = normalized
+				changed = true
+			}
+		default:
+			// Skip unsupported types
+			continue
+		}
+
+		if changed {
+			// Apply changes to working copy
+			if !needsUpdate {
+				needsUpdate = true
+			}
+			if np, ok := replaceParamAtPath(workingParams, param.path, newVal); ok {
+				workingParams = np
+			}
+		}
+	}
+
+	// Only acquire write lock if we need to update
 	if needsUpdate {
 		jrq.Lock()
 		jrq.Params = workingParams
