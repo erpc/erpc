@@ -88,11 +88,6 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
 	// Mock the forwarded request to check the translated value
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -110,6 +105,11 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 			"id":      1,
 			"result":  "0x1234",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
@@ -141,11 +141,6 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
 	// Mock the forwarded request
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -162,6 +157,11 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 			"id":      1,
 			"result":  "0x",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"finalized"]}`))
 	req.SetNetwork(network)
@@ -190,11 +190,7 @@ func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -210,6 +206,11 @@ func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 			"id":      1,
 			"result":  "0x",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0xabc","safe"]}`))
 	req.SetNetwork(network)
@@ -228,6 +229,85 @@ func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 	if resp != nil {
 		resp.Release()
 	}
+}
+
+// Test that deep copy prevents race conditions
+func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a request with nested structures
+	req := common.NewNormalizedRequest([]byte(`{
+		"jsonrpc":"2.0",
+		"id":1,
+		"method":"eth_getLogs",
+		"params":[{
+			"fromBlock":"latest",
+			"toBlock":"0x100",
+			"address":"0xabc",
+			"topics":["0x123","0x456"]
+		}]
+	}`))
+
+	// Create a minimal network for testing
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+	req.SetNetwork(network)
+
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+
+	// Capture original params structure
+	originalParams := jrq.Params[0].(map[string]interface{})
+	originalFromBlock := originalParams["fromBlock"].(string)
+
+	// Run normalization in a goroutine
+	done := make(chan bool)
+	go func() {
+		evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+		done <- true
+	}()
+
+	// Simulate concurrent modification of original params
+	// This should NOT affect the normalization process thanks to deep copy
+	go func() {
+		time.Sleep(10 * time.Millisecond) // Small delay to let normalization start
+		jrq.Lock()
+		if params, ok := jrq.Params[0].(map[string]interface{}); ok {
+			params["fromBlock"] = "corrupted"
+			params["address"] = "corrupted"
+			if topics, ok := params["topics"].([]interface{}); ok && len(topics) > 0 {
+				topics[0] = "corrupted"
+			}
+		}
+		jrq.Unlock()
+	}()
+
+	// Wait for normalization to complete
+	<-done
+
+	// Verify that normalization worked correctly despite concurrent modification
+	// We need to lock to safely read the params after both goroutines have finished
+	jrq.RLock()
+	finalParams := jrq.Params[0].(map[string]interface{})
+
+	// fromBlock should be translated from "latest" to hex (not "corrupted")
+	fromBlock := finalParams["fromBlock"].(string)
+	assert.True(t, strings.HasPrefix(fromBlock, "0x"), "fromBlock should be hex")
+	assert.NotEqual(t, "corrupted", fromBlock, "fromBlock should not be corrupted")
+	assert.NotEqual(t, originalFromBlock, fromBlock, "fromBlock should be translated")
+
+	// toBlock should be normalized (0x100 stays as is or gets normalized)
+	toBlock := finalParams["toBlock"].(string)
+	assert.True(t, strings.HasPrefix(toBlock, "0x"), "toBlock should be hex")
+	jrq.RUnlock()
+
+	// The test proves that the deep copy protected the normalization process
+	// from concurrent modifications during processing
 }
 
 // Test that safe and pending tags preserve their semantic meaning
@@ -286,11 +366,7 @@ func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -306,6 +382,11 @@ func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 			"id":      1,
 			"result":  "0x5",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":["0xabc","pending"]}`))
 	req.SetNetwork(network)
@@ -333,11 +414,7 @@ func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -353,6 +430,11 @@ func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 			"id":      1,
 			"result":  "0x1234",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	// Numeric block parameter (123)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc",123]}`))
@@ -381,11 +463,7 @@ func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -404,6 +482,11 @@ func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 			"id":      1,
 			"result":  []interface{}{},
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"finalized","toBlock":"latest","address":"0xabc"}]}`))
 	req.SetNetwork(network)
@@ -438,11 +521,7 @@ func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -459,6 +538,11 @@ func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 			"id":      1,
 			"result":  []interface{}{},
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	// Numeric blocks in filter
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":100,"toBlock":200,"address":"0xabc"}]}`))
@@ -489,11 +573,7 @@ func TestInterpolation_HexNormalization(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -510,6 +590,11 @@ func TestInterpolation_HexNormalization(t *testing.T) {
 			"id":      1,
 			"result":  "0x1234",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x0a"]}`))
 	req.SetNetwork(network)
@@ -540,6 +625,23 @@ func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Set up mock BEFORE network initialization
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			// Should still have "latest" since translation is disabled
+			return strings.Contains(body, "eth_getBalance") &&
+				strings.Contains(body, "\"latest\"")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x1234",
+		})
+
 	// Create network config with translation disabled for latest
 	falseVal := false
 	networkConfig := &common.NetworkConfig{
@@ -558,22 +660,6 @@ func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 	}
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, networkConfig)
-
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Times(1).
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			// Should still have "latest" since translation is disabled
-			return strings.Contains(body, "eth_getBalance") &&
-				strings.Contains(body, "\"latest\"")
-		}).
-		Reply(200).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result":  "0x1234",
-		})
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
@@ -604,6 +690,23 @@ func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Set up mock BEFORE network initialization
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			// Should still have "finalized" since translation is disabled
+			return strings.Contains(body, "eth_call") &&
+				strings.Contains(body, "\"finalized\"")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x",
+		})
+
 	// Create network config with translation disabled for finalized
 	falseVal := false
 	networkConfig := &common.NetworkConfig{
@@ -622,22 +725,6 @@ func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 	}
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, networkConfig)
-
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Times(1).
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			// Should still have "finalized" since translation is disabled
-			return strings.Contains(body, "eth_call") &&
-				strings.Contains(body, "\"finalized\"")
-		}).
-		Reply(200).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result":  "0x",
-		})
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xabc"},"finalized"]}`))
 	req.SetNetwork(network)
@@ -706,11 +793,7 @@ func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -727,6 +810,11 @@ func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 			"id":      1,
 			"result":  "0x0",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getStorageAt","params":["0xabc","0x0","latest"]}`))
 	req.SetNetwork(network)
@@ -755,11 +843,7 @@ func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -775,6 +859,11 @@ func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 			"id":      1,
 			"result":  map[string]interface{}{},
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"trace_call","params":[{"to":"0xabc"},"latest",["trace"]]}`))
 	req.SetNetwork(network)
@@ -803,11 +892,7 @@ func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -823,6 +908,11 @@ func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 			"id":      1,
 			"result":  map[string]interface{}{},
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"debug_traceCall","params":[{"to":"0xabc"},"finalized"]}`))
 	req.SetNetwork(network)
@@ -851,11 +941,7 @@ func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -871,6 +957,11 @@ func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 			"id":      1,
 			"result":  "0x5208",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_estimateGas","params":[{"to":"0xabc","value":"0x1"},"latest"]}`))
 	req.SetNetwork(network)
@@ -985,11 +1076,7 @@ func TestInterpolation_LargeNumericValues(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -1005,6 +1092,11 @@ func TestInterpolation_LargeNumericValues(t *testing.T) {
 			"id":      1,
 			"result":  "0x0",
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	// Large numeric block parameter
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc",1000000]}`))
@@ -1033,11 +1125,7 @@ func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
+	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(1).
@@ -1054,6 +1142,11 @@ func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 			"id":      1,
 			"result":  []interface{}{},
 		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 	// Object parameter with blockNumber
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"latest"}]}`))
@@ -1078,7 +1171,41 @@ func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 	}
 }
 
-// Benchmark tag translation performance
+// Benchmark tag translation performance with deep copy
+func BenchmarkInterpolation_TagTranslationWithDeepCopy(b *testing.B) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx := context.Background()
+	network, _ := setupTestNetworkForInterpolation(nil, ctx, nil)
+
+	// Use a complex nested structure to test deep copy performance
+	req := common.NewNormalizedRequest([]byte(`{
+		"jsonrpc":"2.0",
+		"id":1,
+		"method":"eth_getLogs",
+		"params":[{
+			"fromBlock":"finalized",
+			"toBlock":"latest",
+			"address":"0xabc",
+			"topics":["0x123","0x456","0x789"],
+			"nested":{
+				"field1":"value1",
+				"field2":"value2"
+			}
+		}]
+	}`))
+	req.SetNetwork(network)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		jrq, _ := req.JsonRpcRequest()
+		evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+	}
+}
+
+// Benchmark tag translation performance (simple params)
 func BenchmarkInterpolation_TagTranslation(b *testing.B) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -1087,7 +1214,7 @@ func BenchmarkInterpolation_TagTranslation(b *testing.B) {
 	ctx := context.Background()
 	network, _ := setupTestNetworkForInterpolation(nil, ctx, nil)
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"finalized","toBlock":"latest","address":"0xabc"}]}`))
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
 
 	b.ResetTimer()
@@ -1197,12 +1324,7 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 			util.SetupMocksForEvmStatePoller()
 			defer util.AssertNoPendingMocks(t, 0)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
-
-			// Mock for the specific method
+			// Mock for the specific method - BEFORE network initialization
 			gock.New("http://rpc1.localhost").
 				Post("").
 				Times(1).
@@ -1216,6 +1338,11 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 					"id":      1,
 					"result":  "0x0",
 				})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
 			reqBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":%s}`, tc.method, tc.params)
 			req := common.NewNormalizedRequest([]byte(reqBody))

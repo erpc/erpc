@@ -143,6 +143,16 @@ func (r *NormalizedResponse) Finality(ctx context.Context) DataFinalityState {
 		return f.(DataFinalityState)
 	}
 
+	// Prefer request's finality if it's already known as realtime.
+	// This preserves metrics semantics when original requests used block tags like "latest"/"finalized"
+	// that may have been translated to concrete numbers later in the pipeline.
+	if r.request != nil {
+		if rf := r.request.Finality(ctx); rf == DataFinalityStateRealtime {
+			r.finality.Store(rf)
+			return rf
+		}
+	}
+
 	// Calculate and cache the finality
 	if r.request != nil && r.request.network != nil {
 		finality := r.request.network.GetFinality(ctx, r.request, r)

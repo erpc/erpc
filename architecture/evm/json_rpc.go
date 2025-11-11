@@ -7,6 +7,52 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+// deepCopyParams creates a deep copy of a params slice to avoid race conditions.
+// It recursively copies slices and maps to ensure complete isolation.
+func deepCopyParams(params []interface{}) []interface{} {
+	if params == nil {
+		return nil
+	}
+
+	result := make([]interface{}, len(params))
+	for i, param := range params {
+		result[i] = deepCopyValue(param)
+	}
+	return result
+}
+
+// deepCopyValue recursively copies a value, handling slices and maps.
+func deepCopyValue(val interface{}) interface{} {
+	if val == nil {
+		return nil
+	}
+
+	switch v := val.(type) {
+	case map[string]interface{}:
+		// Deep copy map
+		newMap := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			newMap[key] = deepCopyValue(value)
+		}
+		return newMap
+	case []interface{}:
+		// Deep copy slice
+		newSlice := make([]interface{}, len(v))
+		for i, item := range v {
+			newSlice[i] = deepCopyValue(item)
+		}
+		return newSlice
+	case string, bool, float64, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, float32:
+		// Primitive types are safe to copy by value
+		return v
+	default:
+		// For any other types (which shouldn't occur in JSON-RPC params),
+		// return as-is. This could be custom types that are immutable.
+		return v
+	}
+}
+
 // resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.
 // IMPORTANT: Only translates tags we can accurately represent. "safe" and "pending" are passed
 // through unchanged as we don't have the necessary state information for accurate translation.
@@ -68,16 +114,20 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 				continue
 			}
 			// Store path and value for processing outside the lock
+			// Note: val itself could be a reference type, but PeekByPath returns
+			// the actual value from the params, not a copy. Since we only read
+			// the value to determine if translation is needed, this is safe.
 			paramsToProcess = append(paramsToProcess, paramRef{
 				path:  ref,
 				value: val,
 			})
 		}
 	}
-	// Make a copy of params for working if we have refs to process
+	// Deep copy params for working if we have refs to process
+	// This prevents race conditions after we release the lock
 	var workingParams []interface{}
 	if len(paramsToProcess) > 0 {
-		workingParams = jrq.Params
+		workingParams = deepCopyParams(jrq.Params)
 	}
 	jrq.RUnlock()
 
@@ -86,10 +136,25 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		return
 	}
 
-	// Process parameters outside the lock (expensive operations)
-	var needsUpdate bool
+	// Decide if we will interpolate any tags for this request and warm up original block ref if needed
 	translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
 	translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
+	willInterpolate := false
+	for _, p := range paramsToProcess {
+		if s, ok := p.value.(string); ok {
+			if (s == "latest" && translateLatest) || (s == "finalized" && translateFinalized) {
+				willInterpolate = true
+				break
+			}
+		}
+	}
+	if willInterpolate && nrq.EvmBlockRef() == nil {
+		// Preserve the original tag before we translate it to a hex number
+		ExtractBlockReferenceFromRequest(ctx, nrq)
+	}
+
+	// Process parameters outside the lock (expensive operations)
+	var needsUpdate bool
 
 	for _, param := range paramsToProcess {
 		var newVal interface{}
@@ -110,6 +175,10 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 				switch v {
 				case "latest":
 					if translateLatest {
+						// Explicitly preserve the original tag on the request if not already set
+						if nrq.EvmBlockRef() == nil {
+							nrq.SetEvmBlockRef("latest")
+						}
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
@@ -117,6 +186,10 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 					}
 				case "finalized":
 					if translateFinalized {
+						// Explicitly preserve the original tag on the request if not already set
+						if nrq.EvmBlockRef() == nil {
+							nrq.SetEvmBlockRef("finalized")
+						}
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
