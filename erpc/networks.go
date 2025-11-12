@@ -548,6 +548,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					Str("selectedUpstream", u.Id()).
 					Msg("selected upstream from list")
 
+				// Network-level per-upstream gating based on block availability (after block tag interpolation)
+				if !n.shouldUseUpstream(ctx, u, effectiveReq, method) {
+					ulg.Debug().Msg("skipping upstream due to block availability gating")
+					loopSpan.End()
+					continue
+				}
+
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
 				if hedges > 0 {
@@ -913,6 +920,54 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 	// If not handled, then fallback to the normal forward
 	resp, err := u.Forward(execSpanCtx, req, false)
 	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+}
+
+// shouldUseUpstream performs per-upstream gating for the request based on block availability.
+// It is invoked just before forwarding to an upstream to avoid copying/filtering the list.
+func (n *Network) shouldUseUpstream(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) bool {
+	if n.cfg.Architecture != common.ArchitectureEvm {
+		return true
+	}
+	// Check config toggles: method-level overrides network-level; default is enabled
+	enforce := true
+	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.EnforceBlockAvailability != nil {
+		enforce = *n.cfg.Evm.EnforceBlockAvailability
+	}
+	// Method-level override from network config
+	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
+		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
+			enforce = *mc.EnforceBlockAvailability
+		}
+	}
+	// If still unset by method config, check default method definitions (common defaults)
+	if enforce && common.DefaultWithBlockCacheMethods != nil {
+		if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil && dmc.EnforceBlockAvailability != nil {
+			enforce = *dmc.EnforceBlockAvailability
+		}
+	}
+	if !enforce {
+		return true
+	}
+	// Use cached block number from normalization to avoid re-extracting from mutated params
+	var bn int64
+	if v := req.EvmBlockNumber(); v != nil {
+		if n64, ok := v.(int64); ok {
+			bn = n64
+		}
+	}
+	if bn <= 0 {
+		// If still unknown, skip gating
+		return true
+	}
+	eu, ok := u.(common.EvmUpstream)
+	if !ok {
+		return true
+	}
+	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, bn)
+	if err != nil {
+		return false
+	}
+	return available
 }
 
 func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.Logger, ups common.Upstream, req *common.NormalizedRequest) error {

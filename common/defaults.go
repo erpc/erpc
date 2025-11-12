@@ -263,6 +263,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 			{0, "toBlock"},
 			{0, "blockHash"},
 		},
+		// evm/eth_getLogs.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"eth_getBlockByHash": {
 		ReqRefs:  FirstParam,
@@ -271,6 +273,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
+		// evm/eth_getBlockByNumber.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"eth_getTransactionByBlockHashAndIndex": {
 		ReqRefs:  FirstParam,
@@ -319,7 +323,7 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"trace_call": {
-		ReqRefs: SecondParam,
+		ReqRefs: ThirdParam,
 	},
 	"debug_traceCall": {
 		ReqRefs: SecondParam,

@@ -1620,3 +1620,238 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 		})
 	}
 }
+
+// When interpolating "latest", only upstreams whose latest >= interpolated block should be used.
+func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create 3 upstreams with different latest blocks via util.SetupMocksForEvmStatePoller
+	upCfgs := []*common.UpstreamConfig{
+		{
+			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			},
+		},
+		{
+			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			},
+		},
+		{
+			Id:       "rpc3",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc3.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			},
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", upCfgs, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId: 123,
+		},
+	}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Only set user mock for rpc3 (highest latest) - this should be used
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x1234",
+		})
+
+	// Build request with 'latest' which will be interpolated to highest latest block (from rpc3)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	req.SetNetwork(network)
+
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	// Ensure the cached EvmBlockRef is preserved as the original tag despite param mutation
+	ref := req.EvmBlockRef()
+	require.NotNil(t, ref)
+	refStr, ok := ref.(string)
+	require.True(t, ok)
+	assert.Equal(t, "latest", refStr, "Normalization must preserve the original tag in EvmBlockRef")
+	// And ensure params changed to hex (no literal 'latest' remains)
+	jrq.RLock()
+	bodyHex := false
+	if len(jrq.Params) > 1 {
+		if s, ok := jrq.Params[1].(string); ok && strings.HasPrefix(s, "0x") {
+			bodyHex = true
+		}
+	}
+	jrq.RUnlock()
+	assert.True(t, bodyHex, "Param should be translated to hex while EvmBlockRef keeps the tag")
+
+	// Forward and ensure rpc3 handled it
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer resp.Release()
+	require.NotNil(t, resp.Upstream())
+	assert.Equal(t, "rpc3", resp.Upstream().Id(), "request should be routed only to the upstream with highest latest block")
+}
+
+// When method-level enforcement is disabled, upstreams are not skipped even if their head is behind interpolated block.
+func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Two upstreams; rpc2 has higher latest (due to poller mocks), but we'll only mock rpc1 user call.
+	upCfgs := []*common.UpstreamConfig{
+		{
+			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			},
+		},
+		{
+			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(200 * time.Millisecond),
+				StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			},
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", upCfgs, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	// Network config disables enforcement for eth_getBalance
+	falseVal := false
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId: 123,
+		},
+		Methods: &common.MethodsConfig{
+			Definitions: map[string]*common.CacheMethodConfig{
+				"eth_getBalance": {
+					ReqRefs:                  [][]interface{}{{1}},
+					EnforceBlockAvailability: &falseVal,
+				},
+			},
+		},
+	}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Mock only rpc1 user call; if enforcement honored the head, this would be skipped,
+	// but with enforcement disabled method-level, it should still be used.
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x99",
+		})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	req.SetNetwork(network)
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer resp.Release()
+	require.NotNil(t, resp.Upstream())
+	assert.Equal(t, "rpc1", resp.Upstream().Id(), "with enforcement disabled for method, upstream should not be skipped")
+}

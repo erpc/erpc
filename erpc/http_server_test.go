@@ -1224,7 +1224,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			"X-ERPC-Skip-Interpolation": "true",
 		}
 		q := map[string]string{
-			"skip-block-tag-interpolation": "true",
+			"skip-interpolation": "true",
 		}
 		statusCode, _, body := sendRequest(requestBody, headers, q)
 
@@ -2939,7 +2939,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			"X-ERPC-Skip-Interpolation": "true",
 		}
 		q := map[string]string{
-			"skip-block-tag-interpolation": "true",
+			"skip-interpolation": "true",
 		}
 		statusCode, _, body := sendRequest(requestBody, headers, q)
 

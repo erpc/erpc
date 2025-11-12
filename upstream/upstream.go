@@ -1302,8 +1302,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	// TODO if block number is extracted from request, check against evm poller's latest block number (force-refresh if stale) and skip if block is after upstream's latest block
-	// TODO then we can remove the similar "eth_getLogs upper-bound" check in eth_getLogs.go PreForward hook.
+	// Upper-bound enforcement against per-upstream latest/finality is handled at network level.
 
 	return nil, false
 }

@@ -214,6 +214,9 @@ type CacheMethodConfig struct {
 	// TranslateFinalizedTag controls whether the method-level tag translation should convert "finalized" to a concrete hex block number.
 	// When nil or true, translation is enabled by default.
 	TranslateFinalizedTag *bool `yaml:"translateFinalizedTag,omitempty" json:"translateFinalizedTag,omitempty"`
+	// EnforceBlockAvailability controls whether per-upstream block availability bounds (upper/lower)
+	// are enforced for this method at the network level. When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 type CachePolicyConfig struct {
@@ -1437,6 +1440,10 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// EnforceBlockAvailability controls whether the network should enforce per-upstream
+	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
+	// When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 type EvmIntegrityConfig struct {
