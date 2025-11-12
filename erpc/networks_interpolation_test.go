@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +132,264 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	require.NoError(t, err)
 	if resp != nil {
 		resp.Release()
+	}
+}
+
+// Mixed tags should collapse EvmBlockRef to "*"
+func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Accept any eth_getLogs call
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getLogs")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  []interface{}{},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"finalized","toBlock":"latest"}]}`))
+	req.SetNetwork(network)
+
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	ref := req.EvmBlockRef()
+	require.NotNil(t, ref)
+	refStr, ok := ref.(string)
+	require.True(t, ok, "EvmBlockRef should be a string")
+	assert.Equal(t, "*", refStr, "Mixed tags should collapse to '*'")
+
+	// Forward to ensure end-to-end works
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Same tags should preserve that tag in EvmBlockRef
+func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Accept any eth_getLogs call
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getLogs")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  []interface{}{},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"latest","toBlock":"latest"}]}`))
+	req.SetNetwork(network)
+
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	ref := req.EvmBlockRef()
+	require.NotNil(t, ref)
+	refStr, ok := ref.(string)
+	require.True(t, ok, "EvmBlockRef should be a string")
+	assert.Equal(t, "latest", refStr, "Same tag should be preserved")
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// SkipInterpolation should keep params unchanged but still warm/collapse EvmBlockRef
+func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Accept any eth_getLogs call (though params should remain as tags)
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getLogs") &&
+				strings.Contains(body, `"fromBlock":"finalized"`) &&
+				strings.Contains(body, `"toBlock":"latest"`)
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  []interface{}{},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"finalized","toBlock":"latest"}]}`))
+	req.SetNetwork(network)
+
+	// Enable skip interpolation
+	req.SetDirectives(&common.RequestDirectives{
+		SkipInterpolation: true,
+	})
+
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+
+	// Keep a copy of original params to compare
+	origParams := make([]interface{}, len(jrq.Params))
+	copy(origParams, jrq.Params)
+
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	// Params should be unchanged
+	assert.Equal(t, origParams, jrq.Params, "Params should remain unchanged when SkipInterpolation is true")
+
+	// EvmBlockRef should be warmed and collapsed to "*"
+	ref := req.EvmBlockRef()
+	require.NotNil(t, ref)
+	refStr, ok := ref.(string)
+	require.True(t, ok, "EvmBlockRef should be a string")
+	assert.Equal(t, "*", refStr, "Mixed tags should collapse to '*' even when skipping interpolation")
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Mixing with semantic tags (safe/pending) should not collapse; preserve known tag
+func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Accept any eth_getLogs call
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getLogs")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  []interface{}{},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	// latest + safe → should preserve "latest"
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"latest","toBlock":"safe"}]}`))
+	req.SetNetwork(network)
+
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	ref := req.EvmBlockRef()
+	require.NotNil(t, ref)
+	refStr, ok := ref.(string)
+	require.True(t, ok, "EvmBlockRef should be a string")
+	assert.Equal(t, "latest", refStr, "Mix with semantic tags should not collapse")
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Ensure EvmBlockRef is cleared per-request (no leak across requests)
+func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Accept any eth_getLogs call twice
+	gock.New("http://rpc1.localhost").Post("").Times(2).Reply(200).JSON(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result":  []interface{}{},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	// First request mixed → "*"
+	req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"finalized","toBlock":"latest"}]}`))
+	req1.SetNetwork(network)
+	jrq1, _ := req1.JsonRpcRequest()
+	evm.NormalizeHttpJsonRpc(ctx, req1, jrq1)
+	ref1 := req1.EvmBlockRef()
+	require.NotNil(t, ref1)
+	assert.Equal(t, "*", ref1.(string))
+	resp1, err := network.Forward(ctx, req1)
+	require.NoError(t, err)
+	if resp1 != nil {
+		resp1.Release()
+	}
+
+	// Second request uniform → "latest"
+	req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"latest","toBlock":"latest"}]}`))
+	req2.SetNetwork(network)
+	jrq2, _ := req2.JsonRpcRequest()
+	// Ensure previous value isn't accidentally reused by initializing a dummy value
+	var dummy atomic.Value
+	dummy.Store("should-not-leak")
+	_ = dummy // silence linter
+	evm.NormalizeHttpJsonRpc(ctx, req2, jrq2)
+	ref2 := req2.EvmBlockRef()
+	require.NotNil(t, ref2)
+	assert.Equal(t, "latest", ref2.(string))
+	resp2, err := network.Forward(ctx, req2)
+	require.NoError(t, err)
+	if resp2 != nil {
+		resp2.Release()
 	}
 }
 

@@ -1221,7 +1221,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}`
 
 		headers := map[string]string{
-			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+			"X-ERPC-Skip-Interpolation": "true",
 		}
 		q := map[string]string{
 			"skip-block-tag-interpolation": "true",
@@ -2936,7 +2936,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		// Send the request
 		headers := map[string]string{
-			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+			"X-ERPC-Skip-Interpolation": "true",
 		}
 		q := map[string]string{
 			"skip-block-tag-interpolation": "true",
@@ -3060,7 +3060,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		}`
 
 		headers := map[string]string{
-			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+			"X-ERPC-Skip-Interpolation": "true",
 		}
 		statusCode, _, body := sendRequest(requestBody, headers, nil)
 
@@ -5568,7 +5568,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		headers := map[string]string{
-			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+			"X-ERPC-Skip-Interpolation": "true",
 		}
 		statusCode, _, body := sendRequest(requestBody, headers, nil)
 

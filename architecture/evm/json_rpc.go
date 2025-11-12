@@ -150,7 +150,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	}
 	if willInterpolate && nrq.EvmBlockRef() == nil {
 		// Preserve the original tag before we translate it to a hex number
-		ExtractBlockReferenceFromRequest(ctx, nrq)
+		_, _, _ = ExtractBlockReferenceFromRequest(ctx, nrq)
 	}
 
 	// If this request opted out of param interpolation, don't mutate params.
@@ -239,6 +239,32 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			if np, ok := replaceParamAtPath(workingParams, param.path, newVal); ok {
 				workingParams = np
 			}
+		}
+	}
+
+	// Reconcile EvmBlockRef based ONLY on translatable tags we observed to avoid collapsing when mixed with semantic tags.
+	// If both "latest" and "finalized" are present → "*".
+	// If only one of them is present → that tag.
+	// If none are present → leave as-is (might be nil or previously set by other logic).
+	if willInterpolate {
+		seenTag := ""
+		needStar := false
+		for _, p := range paramsToProcess {
+			if s, ok := p.value.(string); ok {
+				if (s == "latest" && translateLatest) || (s == "finalized" && translateFinalized) {
+					if seenTag == "" {
+						seenTag = s
+					} else if seenTag != s {
+						needStar = true
+						break
+					}
+				}
+			}
+		}
+		if needStar {
+			nrq.SetEvmBlockRef("*")
+		} else if seenTag != "" {
+			nrq.SetEvmBlockRef(seenTag)
 		}
 	}
 

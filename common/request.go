@@ -326,7 +326,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get("X-ERPC-Use-Upstream"); hv != "" {
 		r.directives.UseUpstream = hv
 	}
-	if hv := headers.Get("X-ERPC-Skip-Block-Tag-Interpolation"); hv != "" {
+	if hv := headers.Get("X-ERPC-Skip-Interpolation"); hv != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
 
