@@ -323,7 +323,13 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"trace_call": {
-		ReqRefs: ThirdParam,
+		// Support both param orderings used in the wild:
+		// - second param as block tag/number (e.g., ["latest"])
+		// - third param as block tag/number when second param is trace types/config
+		ReqRefs: [][]interface{}{
+			{1}, // second param
+			{2}, // third param
+		},
 	},
 	"debug_traceCall": {
 		ReqRefs: SecondParam,

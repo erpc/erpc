@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"math"
 	"strings"
 
 	"github.com/erpc/erpc/common"
@@ -96,263 +95,160 @@ func resolveBlockTagToHex(ctx context.Context, nrq *common.NormalizedRequest, ta
 // 2. Releasing the lock before performing expensive operations (network state lookups)
 // 3. Only acquiring a write lock if modifications are needed
 func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jrq *common.JsonRpcRequest) {
-	// First pass: collect parameter values and their paths while holding read lock
+	// Collect parameter values/paths under read lock
 	type paramRef struct {
 		path  []interface{}
 		value interface{}
 	}
-	var paramsToProcess []paramRef
-	var method string
+	var (
+		paramsToProcess []paramRef
+		method          string
+	)
 
-	// Hold read lock only for quick data extraction
 	jrq.RLock()
 	method = jrq.Method
 	methodCfg := getMethodConfig(method, nrq)
-	// Detect single-ref methods – safe place to cache a numeric block number
-	singleRef := false
-	if methodCfg != nil && len(methodCfg.ReqRefs) == 1 {
-		if len(methodCfg.ReqRefs[0]) == 1 {
-			if _, isStar := methodCfg.ReqRefs[0][0].(string); !isStar || (isStar && methodCfg.ReqRefs[0][0] != "*") {
-				singleRef = true
-			}
-		} else {
-			// Nested path counts as a single logical ref as well
-			singleRef = true
-		}
+	if methodCfg == nil || len(methodCfg.ReqRefs) == 0 {
+		jrq.RUnlock()
+		return
 	}
-	if methodCfg != nil && len(methodCfg.ReqRefs) > 0 {
-		for _, ref := range methodCfg.ReqRefs {
-			val, err := jrq.PeekByPath(ref...)
-			if err != nil {
-				continue
-			}
-			// Store path and value for processing outside the lock
-			// Note: val itself could be a reference type, but PeekByPath returns
-			// the actual value from the params, not a copy. Since we only read
-			// the value to determine if translation is needed, this is safe.
-			paramsToProcess = append(paramsToProcess, paramRef{
-				path:  ref,
-				value: val,
-			})
+	for _, ref := range methodCfg.ReqRefs {
+		val, err := jrq.PeekByPath(ref...)
+		if err != nil {
+			continue
 		}
-	}
-	// Deep copy params for working if we have refs to process
-	// This prevents race conditions after we release the lock
-	var workingParams []interface{}
-	if len(paramsToProcess) > 0 {
-		workingParams = deepCopyParams(jrq.Params)
+		paramsToProcess = append(paramsToProcess, paramRef{
+			path:  ref,
+			value: val,
+		})
 	}
 	jrq.RUnlock()
 
-	// If no parameters to process, return early
 	if len(paramsToProcess) == 0 {
 		return
 	}
 
-	// Decide if we will interpolate any tags for this request and warm up original block ref if needed
+	// Config flags
 	translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
 	translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
-	willInterpolate := false
-	for _, p := range paramsToProcess {
-		if s, ok := p.value.(string); ok {
-			if (s == "latest" && translateLatest) || (s == "finalized" && translateFinalized) {
-				willInterpolate = true
-				break
-			}
+	skipInterpolation := nrq != nil && nrq.Directives() != nil && nrq.Directives().SkipInterpolation
+	singleRef := len(methodCfg.ReqRefs) == 1
+
+	// Aggregators
+	var (
+		needsUpdate   bool
+		seenLatest    bool
+		seenFinalized bool
+	)
+
+	// Helper: cache numeric block number when safe
+	cacheBlockNumber := func(n int64) {
+		if !singleRef {
+			return
+		}
+		if cur := nrq.EvmBlockNumber(); cur == nil {
+			nrq.SetEvmBlockNumber(n)
+			return
+		}
+		if iv, ok := nrq.EvmBlockNumber().(int64); ok && iv == 0 {
+			nrq.SetEvmBlockNumber(n)
 		}
 	}
-	if willInterpolate && nrq.EvmBlockRef() == nil {
-		// Preserve the original tag before we translate it to a hex number
-		_, _, _ = ExtractBlockReferenceFromRequest(ctx, nrq)
+
+	// Prepare list of concrete param changes so we can avoid copying unless needed
+	type change struct {
+		path   []interface{}
+		newVal interface{}
 	}
+	var changes []change
 
-	// If this request opted out of param interpolation, don't mutate params.
-	// We still warmed the original block reference above to preserve semantics.
-	if nrq != nil && nrq.Directives() != nil && nrq.Directives().SkipInterpolation {
-		return
-	}
+	for _, p := range paramsToProcess {
+		var (
+			newVal  interface{}
+			changed bool
+		)
 
-	// Process parameters outside the lock (expensive operations)
-	var needsUpdate bool
-
-	for _, param := range paramsToProcess {
-		var newVal interface{}
-		changed := false
-
-		switch v := param.value.(type) {
+		switch v := p.value.(type) {
 		case string:
-			// Handle string values (hex or block tags)
 			if strings.HasPrefix(v, "0x") {
-				// Normalize hex string
-				if normalized, err := common.NormalizeHex(v); err == nil && normalized != v {
-					newVal = normalized
-					changed = true
+				// Known hex: normalize; also allow caching of numeric value
+				if n, err := common.HexToInt64(v); err == nil {
+					cacheBlockNumber(n)
+				}
+				if !skipInterpolation {
+					if normalized, err := common.NormalizeHex(v); err == nil && normalized != v {
+						newVal = normalized
+						changed = true
+					}
 				}
 			} else {
-				// Check if it's a block tag that should be translated
-				// This is the expensive operation that calls network methods
+				// Block tag handling
 				switch v {
 				case "latest":
-					if translateLatest {
-						// Preserve original tag semantics across multiple block params:
-						// - If no ref yet, set to current tag
-						// - If a different tag was already set, collapse to "*"
-						if cur := nrq.EvmBlockRef(); cur == nil {
-							nrq.SetEvmBlockRef("latest")
-						} else if s, ok := cur.(string); ok && s != "latest" && s != "*" {
-							nrq.SetEvmBlockRef("*")
-						}
+					seenLatest = true
+					if !skipInterpolation && translateLatest {
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
-							// Cache the numeric block number for single-ref methods
-							if singleRef {
-								if nval, err := common.HexToInt64(hx); err == nil {
-									if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-										nrq.SetEvmBlockNumber(nval)
-									}
-								}
+							if n, err := common.HexToInt64(hx); err == nil {
+								cacheBlockNumber(n)
 							}
 						}
 					}
 				case "finalized":
-					if translateFinalized {
-						// Preserve original tag semantics across multiple block params:
-						// - If no ref yet, set to current tag
-						// - If a different tag was already set, collapse to "*"
-						if cur := nrq.EvmBlockRef(); cur == nil {
-							nrq.SetEvmBlockRef("finalized")
-						} else if s, ok := cur.(string); ok && s != "finalized" && s != "*" {
-							nrq.SetEvmBlockRef("*")
-						}
+					seenFinalized = true
+					if !skipInterpolation && translateFinalized {
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
-							// Cache the numeric block number for single-ref methods
-							if singleRef {
-								if nval, err := common.HexToInt64(hx); err == nil {
-									if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-										nrq.SetEvmBlockNumber(nval)
-									}
-								}
+							if n, err := common.HexToInt64(hx); err == nil {
+								cacheBlockNumber(n)
 							}
 						}
 					}
-					// "safe" and "pending" are passed through unchanged
-					// We don't have the necessary state information to accurately translate them
+				default:
+					// "safe", "pending", "earliest" and any other strings are passed through
 				}
 			}
 		case float64:
-			// Handle numeric values from JSON (converts to hex)
-			// JSON unmarshaling produces float64 for all numbers
-			if normalized, err := common.NormalizeHex(int64(v)); err == nil {
-				newVal = normalized
-				changed = true
-				// Cache the numeric block number for single-ref methods
-				if singleRef {
-					if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-						nrq.SetEvmBlockNumber(int64(v))
-					}
-				}
-			}
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			// Handle other numeric types (shouldn't normally occur from JSON, but handle for completeness)
-			if normalized, err := common.NormalizeHex(v); err == nil {
-				newVal = normalized
-				changed = true
-				// Cache the numeric block number for single-ref methods
-				if singleRef {
-					// Convert v to int64 safely where possible
-					switch nv := v.(type) {
-					case int64:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(nv)
-						}
-					case int:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv)) // #nosec G115
-						}
-					case int32:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv))
-						}
-					case uint64:
-						if nv <= math.MaxInt64 {
-							if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-								nrq.SetEvmBlockNumber(int64(nv)) // #nosec G115
-							}
-						}
-					case uint:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv)) // #nosec G115
-						}
-					case uint32:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv))
-						}
-					case int8:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv))
-						}
-					case int16:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv))
-						}
-					case uint8:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv))
-						}
-					case uint16:
-						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
-							nrq.SetEvmBlockNumber(int64(nv))
-						}
-					}
+			// JSON numbers → hex; safe to cache numeric
+			cacheBlockNumber(int64(v))
+			if !skipInterpolation {
+				if normalized, err := common.NormalizeHex(int64(v)); err == nil {
+					newVal = normalized
+					changed = true
 				}
 			}
 		default:
-			// Skip unsupported types
-			continue
+			// Unsupported types: ignore
 		}
 
 		if changed {
-			// Apply changes to working copy
-			if !needsUpdate {
-				needsUpdate = true
-			}
-			if np, ok := replaceParamAtPath(workingParams, param.path, newVal); ok {
+			changes = append(changes, change{path: p.path, newVal: newVal})
+			needsUpdate = true
+		}
+	}
+
+	// Set EvmBlockRef from observed tags: collapse only when both appear
+	if seenLatest && seenFinalized {
+		nrq.SetEvmBlockRef("*")
+	} else if seenLatest {
+		nrq.SetEvmBlockRef("latest")
+	} else if seenFinalized {
+		nrq.SetEvmBlockRef("finalized")
+	}
+
+	// Apply changes
+	if needsUpdate && !skipInterpolation {
+		// Deep copy snapshot only if we actually need to mutate
+		jrq.RLock()
+		workingParams := deepCopyParams(jrq.Params)
+		jrq.RUnlock()
+		for _, ch := range changes {
+			if np, ok := replaceParamAtPath(workingParams, ch.path, ch.newVal); ok {
 				workingParams = np
 			}
 		}
-	}
-
-	// Reconcile EvmBlockRef based ONLY on translatable tags we observed to avoid collapsing when mixed with semantic tags.
-	// If both "latest" and "finalized" are present → "*".
-	// If only one of them is present → that tag.
-	// If none are present → leave as-is (might be nil or previously set by other logic).
-	if willInterpolate {
-		seenTag := ""
-		needStar := false
-		for _, p := range paramsToProcess {
-			if s, ok := p.value.(string); ok {
-				if (s == "latest" && translateLatest) || (s == "finalized" && translateFinalized) {
-					if seenTag == "" {
-						seenTag = s
-					} else if seenTag != s {
-						needStar = true
-						break
-					}
-				}
-			}
-		}
-		if needStar {
-			nrq.SetEvmBlockRef("*")
-		} else if seenTag != "" {
-			nrq.SetEvmBlockRef(seenTag)
-		}
-	}
-
-	// Only acquire write lock if we need to update
-	if needsUpdate {
 		jrq.Lock()
 		jrq.Params = workingParams
 		jrq.Unlock()
