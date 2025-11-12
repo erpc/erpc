@@ -106,7 +106,8 @@ import type {
     | "evm+onfinality"
     | "evm+erpc"
     | "evm+blockpi"
-    | "evm+ankr";
+    | "evm+ankr"
+    | "evm+routemesh";
   
   /**
    * Supported auth type
