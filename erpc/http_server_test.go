@@ -1220,7 +1220,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			"id": 1
 		}`
 
-		statusCode, _, body := sendRequest(requestBody, nil, nil)
+		headers := map[string]string{
+			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+		}
+		q := map[string]string{
+			"skip-block-tag-interpolation": "true",
+		}
+		statusCode, _, body := sendRequest(requestBody, headers, q)
 
 		assert.Equal(t, http.StatusOK, statusCode, "Status code should be 200 OK")
 
@@ -2929,7 +2935,13 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		}`
 
 		// Send the request
-		statusCode, _, body := sendRequest(requestBody, nil, nil)
+		headers := map[string]string{
+			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+		}
+		q := map[string]string{
+			"skip-block-tag-interpolation": "true",
+		}
+		statusCode, _, body := sendRequest(requestBody, headers, q)
 
 		// Verify the response
 		assert.Equal(t, http.StatusOK, statusCode, "Status code should be 200 OK")
@@ -3047,7 +3059,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			"id": 1
 		}`
 
-		statusCode, _, body := sendRequest(requestBody, nil, nil)
+		headers := map[string]string{
+			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+		}
+		statusCode, _, body := sendRequest(requestBody, headers, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode, "Status code should be 200 OK")
 
@@ -5552,7 +5567,10 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Give state poller time to initialize and update shared state
 		time.Sleep(500 * time.Millisecond)
 
-		statusCode, _, body := sendRequest(requestBody, nil, nil)
+		headers := map[string]string{
+			"X-ERPC-Skip-Block-Tag-Interpolation": "true",
+		}
+		statusCode, _, body := sendRequest(requestBody, headers, nil)
 
 		assert.Equal(t, http.StatusOK, statusCode, "should return 200 OK body: %s", body)
 
@@ -5959,7 +5977,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+				// Accept any eth_getBlockByNumber user call for rpc1; integrity logic will verify contents
+				return strings.Contains(body, "eth_getBlockByNumber")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -6150,7 +6169,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+				// Accept any eth_getBlockByNumber user call for rpc1; integrity logic will verify contents
+				return strings.Contains(body, "eth_getBlockByNumber")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{

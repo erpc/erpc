@@ -1420,10 +1420,11 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type DirectiveDefaultsConfig struct {
-	RetryEmpty    *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
-	RetryPending  *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
-	SkipCacheRead *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
-	UseUpstream   *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	RetryEmpty        *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending      *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
 }
 
 type EvmNetworkConfig struct {

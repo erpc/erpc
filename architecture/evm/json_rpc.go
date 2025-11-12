@@ -153,6 +153,12 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		ExtractBlockReferenceFromRequest(ctx, nrq)
 	}
 
+	// If this request opted out of param interpolation, don't mutate params.
+	// We still warmed the original block reference above to preserve semantics.
+	if nrq != nil && nrq.Directives() != nil && nrq.Directives().SkipInterpolation {
+		return
+	}
+
 	// Process parameters outside the lock (expensive operations)
 	var needsUpdate bool
 
@@ -175,9 +181,13 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 				switch v {
 				case "latest":
 					if translateLatest {
-						// Explicitly preserve the original tag on the request if not already set
-						if nrq.EvmBlockRef() == nil {
+						// Preserve original tag semantics across multiple block params:
+						// - If no ref yet, set to current tag
+						// - If a different tag was already set, collapse to "*"
+						if cur := nrq.EvmBlockRef(); cur == nil {
 							nrq.SetEvmBlockRef("latest")
+						} else if s, ok := cur.(string); ok && s != "latest" && s != "*" {
+							nrq.SetEvmBlockRef("*")
 						}
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
@@ -186,9 +196,13 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 					}
 				case "finalized":
 					if translateFinalized {
-						// Explicitly preserve the original tag on the request if not already set
-						if nrq.EvmBlockRef() == nil {
+						// Preserve original tag semantics across multiple block params:
+						// - If no ref yet, set to current tag
+						// - If a different tag was already set, collapse to "*"
+						if cur := nrq.EvmBlockRef(); cur == nil {
 							nrq.SetEvmBlockRef("finalized")
+						} else if s, ok := cur.(string); ok && s != "finalized" && s != "*" {
+							nrq.SetEvmBlockRef("*")
 						}
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx

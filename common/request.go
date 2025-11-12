@@ -47,6 +47,11 @@ type RequestDirectives struct {
 
 	// Instruct the proxy to bypass method exclusion checks.
 	ByPassMethodExclusion bool `json:"-"`
+
+	// Instruct the normalization layer to avoid mutating JSON-RPC params for block tag interpolation.
+	// When true, the system will still compute and cache block references (for finality/metrics),
+	// but will NOT replace tags like "latest"/"finalized" with hex numbers in outbound requests.
+	SkipInterpolation bool `json:"skipInterpolation"`
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
@@ -56,6 +61,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		SkipCacheRead:         d.SkipCacheRead,
 		UseUpstream:           d.UseUpstream,
 		ByPassMethodExclusion: d.ByPassMethodExclusion,
+		SkipInterpolation:     d.SkipInterpolation,
 	}
 }
 
@@ -294,6 +300,9 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	if directiveDefaults.UseUpstream != nil {
 		r.directives.UseUpstream = *directiveDefaults.UseUpstream
 	}
+	if directiveDefaults.SkipInterpolation != nil {
+		r.directives.SkipInterpolation = *directiveDefaults.SkipInterpolation
+	}
 }
 
 func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
@@ -317,6 +326,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get("X-ERPC-Use-Upstream"); hv != "" {
 		r.directives.UseUpstream = hv
 	}
+	if hv := headers.Get("X-ERPC-Skip-Block-Tag-Interpolation"); hv != "" {
+		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
 	if useUpstream := queryArgs.Get("use-upstream"); useUpstream != "" {
@@ -333,6 +345,10 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 
 	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
+	}
+
+	if skipInterpolation := queryArgs.Get("skip-interpolation"); skipInterpolation != "" {
+		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(skipInterpolation)) == "true"
 	}
 
 	// Extract and store user agent information for future use
