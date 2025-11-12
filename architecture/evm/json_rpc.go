@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"math"
 	"strings"
 
 	"github.com/erpc/erpc/common"
@@ -107,6 +108,18 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	jrq.RLock()
 	method = jrq.Method
 	methodCfg := getMethodConfig(method, nrq)
+	// Detect single-ref methods – safe place to cache a numeric block number
+	singleRef := false
+	if methodCfg != nil && len(methodCfg.ReqRefs) == 1 {
+		if len(methodCfg.ReqRefs[0]) == 1 {
+			if _, isStar := methodCfg.ReqRefs[0][0].(string); !isStar || (isStar && methodCfg.ReqRefs[0][0] != "*") {
+				singleRef = true
+			}
+		} else {
+			// Nested path counts as a single logical ref as well
+			singleRef = true
+		}
+	}
 	if methodCfg != nil && len(methodCfg.ReqRefs) > 0 {
 		for _, ref := range methodCfg.ReqRefs {
 			val, err := jrq.PeekByPath(ref...)
@@ -192,6 +205,14 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
+							// Cache the numeric block number for single-ref methods
+							if singleRef {
+								if nval, err := common.HexToInt64(hx); err == nil {
+									if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+										nrq.SetEvmBlockNumber(nval)
+									}
+								}
+							}
 						}
 					}
 				case "finalized":
@@ -207,6 +228,14 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
 							newVal = hx
 							changed = true
+							// Cache the numeric block number for single-ref methods
+							if singleRef {
+								if nval, err := common.HexToInt64(hx); err == nil {
+									if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+										nrq.SetEvmBlockNumber(nval)
+									}
+								}
+							}
 						}
 					}
 					// "safe" and "pending" are passed through unchanged
@@ -219,12 +248,66 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			if normalized, err := common.NormalizeHex(int64(v)); err == nil {
 				newVal = normalized
 				changed = true
+				// Cache the numeric block number for single-ref methods
+				if singleRef {
+					if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+						nrq.SetEvmBlockNumber(int64(v))
+					}
+				}
 			}
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			// Handle other numeric types (shouldn't normally occur from JSON, but handle for completeness)
 			if normalized, err := common.NormalizeHex(v); err == nil {
 				newVal = normalized
 				changed = true
+				// Cache the numeric block number for single-ref methods
+				if singleRef {
+					// Convert v to int64 safely where possible
+					switch nv := v.(type) {
+					case int64:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(nv)
+						}
+					case int:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv)) // #nosec G115
+						}
+					case int32:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv))
+						}
+					case uint64:
+						if nv <= math.MaxInt64 {
+							if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+								nrq.SetEvmBlockNumber(int64(nv)) // #nosec G115
+							}
+						}
+					case uint:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv)) // #nosec G115
+						}
+					case uint32:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv))
+						}
+					case int8:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv))
+						}
+					case int16:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv))
+						}
+					case uint8:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv))
+						}
+					case uint16:
+						if cur := nrq.EvmBlockNumber(); cur == nil || cur.(int64) == 0 {
+							nrq.SetEvmBlockNumber(int64(nv))
+						}
+					}
+				}
 			}
 		default:
 			// Skip unsupported types
