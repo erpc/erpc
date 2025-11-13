@@ -693,6 +693,7 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 type ScoreMultiplierConfig struct {
 	Network         string   `yaml:"network" json:"network"`
 	Method          string   `yaml:"method" json:"method"`
+	Finality        string   `yaml:"finality" json:"finality"`
 	Overall         *float64 `yaml:"overall" json:"overall"`
 	ErrorRate       *float64 `yaml:"errorRate" json:"errorRate"`
 	RespLatency     *float64 `yaml:"respLatency" json:"respLatency"`

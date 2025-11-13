@@ -421,8 +421,11 @@ upstreams:
 
       # (OPTIONAL) The score multipliers to give upstreams different priority.
       scoreMultipliers:
-        - method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
+        - network: '*'  # Network(s) to apply these multipliers to (default: all networks)
+          method: '*'   # Method(s) where you want to apply these multipliers (default: all methods)
           # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
+          finality: '*' # Finality state for this multiplier set (default: all finality states)
+          # Can be: "finalized", "unfinalized", "realtime", "unknown", or "*" (matches all)
 
           # (OPTIONAL) Adjusts the overall score scale.
           # DEFAULT: 1.0
@@ -450,9 +453,11 @@ export default createConfig({
       routing: {
         scoreMultipliers: [
           {
-            network: "*", // Relevant when upstream supports multiple networks (default: all networks)
+            network: "*", // Network(s) to apply these multipliers to (default: all networks)
             method: "*", // Method(s) where you want to apply these multipliers (default: all methods)
             // method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
+            finality: "*", // Finality state for this multiplier set (default: all finality states)
+            // Can be: "finalized", "unfinalized", "realtime", "unknown", or "*" (matches all)
 
             // (OPTIONAL) Adjusts the overall score scale.
             // DEFAULT: 1.0

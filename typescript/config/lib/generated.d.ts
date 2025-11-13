@@ -99,10 +99,34 @@ export interface DatabaseConfig {
     sharedState?: SharedStateConfig;
 }
 export interface SharedStateConfig {
+    /**
+     * ClusterKey identifies the logical group for shared counters across replicas (multi-tenant friendly)
+     */
     clusterKey?: string;
+    /**
+     * Connector contains the storage driver configuration (redis, postgresql, dynamodb, memory)
+     */
     connector?: ConnectorConfig;
+    /**
+     * FallbackTimeout is the timeout for remote storage operations (get/set/publish).
+     * It is a seconds-scale network timeout and NOT a foreground latency budget.
+     */
     fallbackTimeout?: Duration;
+    /**
+     * LockTtl is the expiration for the distributed lock key in the backing store.
+     * Should comfortably exceed the expected duration of remote writes.
+     */
     lockTtl?: Duration;
+    /**
+     * LockMaxWait caps how long the foreground path will wait to acquire the lock
+     * before proceeding locally and deferring the remote write to background.
+     */
+    lockMaxWait?: Duration;
+    /**
+     * UpdateMaxWait caps how long the foreground path will spend computing a new value
+     * (e.g., polling latest block) before returning the current local value.
+     */
+    updateMaxWait?: Duration;
 }
 export interface CacheConfig {
     connectors?: TsConnectorConfig[];
@@ -317,6 +341,7 @@ export interface RoutingConfig {
 export interface ScoreMultiplierConfig {
     network: string;
     method: string;
+    finality: string;
     overall?: number;
     errorRate?: number;
     respLatency?: number;

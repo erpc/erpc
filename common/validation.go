@@ -1289,6 +1289,20 @@ func (c *SelectionPolicyConfig) Validate() error {
 }
 
 func (p *ScoreMultiplierConfig) Validate() error {
+	if p.Finality != "" && p.Finality != "*" {
+		validFinalities := []string{"finalized", "unfinalized", "realtime", "unknown"}
+		valid := false
+		for _, v := range validFinalities {
+			if p.Finality == v {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("priorityMultipliers.*.finality must be one of: finalized, unfinalized, realtime, unknown, * (or empty)")
+		}
+	}
+
 	if p.Overall == nil || *p.Overall <= 0 {
 		return fmt.Errorf("priorityMultipliers.*.overall multiplier must be greater than 0")
 	}

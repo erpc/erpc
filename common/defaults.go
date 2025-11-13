@@ -2145,8 +2145,9 @@ func (r *RoutingConfig) SetDefaults() error {
 }
 
 var DefaultScoreMultiplier = &ScoreMultiplierConfig{
-	Network: "*",
-	Method:  "*",
+	Network:  "*",
+	Method:   "*",
+	Finality: "*",
 
 	ErrorRate:       util.Float64Ptr(4.0),
 	RespLatency:     util.Float64Ptr(8.0),
@@ -2165,6 +2166,9 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	}
 	if s.Method == "" {
 		s.Method = DefaultScoreMultiplier.Method
+	}
+	if s.Finality == "" {
+		s.Finality = DefaultScoreMultiplier.Finality
 	}
 	if s.ErrorRate == nil {
 		s.ErrorRate = DefaultScoreMultiplier.ErrorRate

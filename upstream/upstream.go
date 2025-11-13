@@ -1308,8 +1308,10 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 	return nil, false
 }
 
-func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
+func (u *Upstream) getScoreMultipliers(networkId, method string, finality common.DataFinalityState) *common.ScoreMultiplierConfig {
 	if u.config.Routing != nil {
+		finalityStr := finality.String()
+
 		for _, mul := range u.config.Routing.ScoreMultipliers {
 			matchNet, err := common.WildcardMatch(mul.Network, networkId)
 			if err != nil {
@@ -1319,7 +1321,12 @@ func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMu
 			if err != nil {
 				continue
 			}
-			if matchNet && matchMeth {
+			matchFin, err := common.WildcardMatch(mul.Finality, finalityStr)
+			if err != nil {
+				continue
+			}
+
+			if matchNet && matchMeth && matchFin {
 				return mul
 			}
 		}

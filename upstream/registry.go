@@ -825,10 +825,14 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 	normMisbehaviorRates := normalizeValues(misbehaviorRates)
 	for i, ups := range upsList {
 		upsId := ups.Id()
+		// For periodic scoring, we use DataFinalityStateUnknown since there's no request context to determine finality.
+		// This will match multipliers with finality: "*" (via wildcard matching) or finality: "unknown" (explicit match).
+		// In the future, we could calculate separate scores for each finality state.
 		score := u.calculateScore(
 			ups,
 			networkId,
 			method,
+			common.DataFinalityStateUnknown,
 			normTotalRequests[i],
 			normRespLatencies[i],
 			normErrorRates[i],
@@ -892,6 +896,7 @@ func (u *UpstreamsRegistry) calculateScore(
 	ups *Upstream,
 	networkId,
 	method string,
+	finality common.DataFinalityState,
 	normTotalRequests,
 	normRespLatency,
 	normErrorRate,
@@ -900,7 +905,7 @@ func (u *UpstreamsRegistry) calculateScore(
 	normFinalizationLag,
 	normMisbehaviorRate float64,
 ) float64 {
-	mul := ups.getScoreMultipliers(networkId, method)
+	mul := ups.getScoreMultipliers(networkId, method, finality)
 
 	score := 0.0
 

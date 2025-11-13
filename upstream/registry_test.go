@@ -488,6 +488,7 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 					u,
 					"*",
 					"*",
+					common.DataFinalityStateUnknown,
 					ups.totalRequests,
 					ups.respLatency,
 					ups.errorRate,
@@ -748,18 +749,19 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					},
 				}
 
-				score := registry.calculateScore(
-					u,
-					scenario.networkId,
-					scenario.method,
-					ups.metrics.totalRequests,
-					ups.metrics.respLatency,
-					ups.metrics.errorRate,
-					ups.metrics.throttledRate,
-					ups.metrics.blockHeadLag,
-					ups.metrics.finalizationLag,
-					0, // misbehaviorRate - no misbehavior in this test
-				)
+			score := registry.calculateScore(
+				u,
+				scenario.networkId,
+				scenario.method,
+				common.DataFinalityStateUnknown,
+				ups.metrics.totalRequests,
+				ups.metrics.respLatency,
+				ups.metrics.errorRate,
+				ups.metrics.throttledRate,
+				ups.metrics.blockHeadLag,
+				ups.metrics.finalizationLag,
+				0, // misbehaviorRate - no misbehavior in this test
+			)
 				scores[i] = float64(score)
 				totalScore += float64(score)
 			}
