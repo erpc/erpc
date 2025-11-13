@@ -749,19 +749,19 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					},
 				}
 
-			score := registry.calculateScore(
-				u,
-				scenario.networkId,
-				scenario.method,
-				common.DataFinalityStateUnknown,
-				ups.metrics.totalRequests,
-				ups.metrics.respLatency,
-				ups.metrics.errorRate,
-				ups.metrics.throttledRate,
-				ups.metrics.blockHeadLag,
-				ups.metrics.finalizationLag,
-				0, // misbehaviorRate - no misbehavior in this test
-			)
+				score := registry.calculateScore(
+					u,
+					scenario.networkId,
+					scenario.method,
+					common.DataFinalityStateUnknown,
+					ups.metrics.totalRequests,
+					ups.metrics.respLatency,
+					ups.metrics.errorRate,
+					ups.metrics.throttledRate,
+					ups.metrics.blockHeadLag,
+					ups.metrics.finalizationLag,
+					0, // misbehaviorRate - no misbehavior in this test
+				)
 				scores[i] = float64(score)
 				totalScore += float64(score)
 			}
@@ -774,6 +774,231 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					"Upstream %s percent should be greater than or equal to %f", scenario.upstreams[i].id, scenario.expectedPercents[i].min)
 				assert.LessOrEqual(t, percent, scenario.expectedPercents[i].max,
 					"Upstream %s percent should be less than or equal to %f", scenario.upstreams[i].id, scenario.expectedPercents[i].max)
+			}
+		})
+	}
+}
+
+func TestUpstreamsRegistry_FinalitySpecificScoreMultipliers(t *testing.T) {
+	registry := &UpstreamsRegistry{
+		scoreRefreshInterval: time.Second,
+		logger:               &log.Logger,
+	}
+
+	scenarios := []struct {
+		name      string
+		networkId string
+		method    string
+		finality  common.DataFinalityState
+		upstreams []struct {
+			id         string
+			multiplier *common.ScoreMultiplierConfig
+			metrics    struct {
+				errorRate   float64
+				blockLag    float64
+				respLatency float64
+			}
+		}
+		expectedPercents []struct {
+			min float64
+			max float64
+		}
+		description string
+	}{
+		{
+			name:      "Realtime requests prefer low latency",
+			networkId: "evm:1",
+			method:    "eth_gasPrice",
+			finality:  common.DataFinalityStateRealtime,
+			upstreams: []struct {
+				id         string
+				multiplier *common.ScoreMultiplierConfig
+				metrics    struct{ errorRate, blockLag, respLatency float64 }
+			}{
+				{
+					id: "fast-node",
+					multiplier: &common.ScoreMultiplierConfig{
+						Network:      "*",
+						Method:       "*",
+						Finality:     []common.DataFinalityState{common.DataFinalityStateRealtime},
+						RespLatency:  util.Float64Ptr(10.0), // High weight on latency
+						BlockHeadLag: util.Float64Ptr(2.0),  // Low weight on block lag
+						Overall:      util.Float64Ptr(1.0),
+					},
+					metrics: struct{ errorRate, blockLag, respLatency float64 }{
+						errorRate:   0.02,
+						blockLag:    0.5, // Some lag
+						respLatency: 0.05,
+					},
+				},
+				{
+					id: "synced-node",
+					multiplier: &common.ScoreMultiplierConfig{
+						Network:      "*",
+						Method:       "*",
+						Finality:     []common.DataFinalityState{common.DataFinalityStateRealtime},
+						RespLatency:  util.Float64Ptr(10.0), // High weight on latency
+						BlockHeadLag: util.Float64Ptr(2.0),  // Low weight on block lag
+						Overall:      util.Float64Ptr(1.0),
+					},
+					metrics: struct{ errorRate, blockLag, respLatency float64 }{
+						errorRate:   0.02,
+						blockLag:    0.1,  // Better sync
+						respLatency: 0.25, // Slower response
+					},
+				},
+			},
+			expectedPercents: []struct{ min, max float64 }{
+				{0.55, 0.65}, // Fast node should win for realtime due to latency
+				{0.35, 0.45}, // Synced node gets less despite better block lag
+			},
+			description: "For realtime requests, latency should be weighted more heavily than block lag",
+		},
+		{
+			name:      "Finalized requests prefer low error rate",
+			networkId: "evm:1",
+			method:    "eth_getBlockByNumber",
+			finality:  common.DataFinalityStateFinalized,
+			upstreams: []struct {
+				id         string
+				multiplier *common.ScoreMultiplierConfig
+				metrics    struct{ errorRate, blockLag, respLatency float64 }
+			}{
+				{
+					id: "reliable-node",
+					multiplier: &common.ScoreMultiplierConfig{
+						Network:      "*",
+						Method:       "*",
+						Finality:     []common.DataFinalityState{common.DataFinalityStateFinalized},
+						ErrorRate:    util.Float64Ptr(8.0), // High weight on errors
+						RespLatency:  util.Float64Ptr(2.0), // Low weight on latency
+						BlockHeadLag: util.Float64Ptr(1.0), // Low weight on block lag (finalized)
+						Overall:      util.Float64Ptr(1.0),
+					},
+					metrics: struct{ errorRate, blockLag, respLatency float64 }{
+						errorRate:   0.01, // Very reliable
+						blockLag:    0.8,  // Lagging behind
+						respLatency: 0.3,  // Slower
+					},
+				},
+				{
+					id: "fast-node",
+					multiplier: &common.ScoreMultiplierConfig{
+						Network:      "*",
+						Method:       "*",
+						Finality:     []common.DataFinalityState{common.DataFinalityStateFinalized},
+						ErrorRate:    util.Float64Ptr(8.0), // High weight on errors
+						RespLatency:  util.Float64Ptr(2.0), // Low weight on latency
+						BlockHeadLag: util.Float64Ptr(1.0), // Low weight on block lag
+						Overall:      util.Float64Ptr(1.0),
+					},
+					metrics: struct{ errorRate, blockLag, respLatency float64 }{
+						errorRate:   0.08, // Much higher error rate
+						blockLag:    0.2,  // Better sync
+						respLatency: 0.1,  // Faster
+					},
+				},
+			},
+			expectedPercents: []struct{ min, max float64 }{
+				{0.45, 0.55}, // Reliable node roughly equal despite higher error weight
+				{0.45, 0.55}, // Fast node roughly equal due to better latency/sync offsetting errors
+			},
+			description: "For finalized requests, error rate weight competes with other metrics creating balanced scoring",
+		},
+		{
+			name:      "Different finality states use different multipliers",
+			networkId: "evm:1",
+			method:    "eth_call",
+			finality:  common.DataFinalityStateUnfinalized,
+			upstreams: []struct {
+				id         string
+				multiplier *common.ScoreMultiplierConfig
+				metrics    struct{ errorRate, blockLag, respLatency float64 }
+			}{
+				{
+					id: "multi-config-node",
+					multiplier: &common.ScoreMultiplierConfig{
+						Network:      "*",
+						Method:       "*",
+						Finality:     []common.DataFinalityState{common.DataFinalityStateUnfinalized},
+						BlockHeadLag: util.Float64Ptr(10.0), // Very high weight on block lag for unfinalized
+						ErrorRate:    util.Float64Ptr(2.0),
+						Overall:      util.Float64Ptr(1.0),
+					},
+					metrics: struct{ errorRate, blockLag, respLatency float64 }{
+						errorRate:   0.02,
+						blockLag:    0.1, // Well synced
+						respLatency: 0.3,
+					},
+				},
+				{
+					id: "lagging-node",
+					multiplier: &common.ScoreMultiplierConfig{
+						Network:      "*",
+						Method:       "*",
+						Finality:     []common.DataFinalityState{common.DataFinalityStateUnfinalized},
+						BlockHeadLag: util.Float64Ptr(10.0), // Very high weight on block lag
+						ErrorRate:    util.Float64Ptr(2.0),
+						Overall:      util.Float64Ptr(1.0),
+					},
+					metrics: struct{ errorRate, blockLag, respLatency float64 }{
+						errorRate:   0.01, // Better error rate
+						blockLag:    0.9,  // Significantly lagging
+						respLatency: 0.1,  // Faster
+					},
+				},
+			},
+			expectedPercents: []struct{ min, max float64 }{
+				{0.75, 0.90}, // Well-synced node should dominate for unfinalized
+				{0.10, 0.25}, // Lagging node penalized heavily despite better metrics elsewhere
+			},
+			description: "Unfinalized requests should heavily prioritize block synchronization",
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			scores := make([]float64, len(scenario.upstreams))
+			totalScore := 0.0
+
+			for i, ups := range scenario.upstreams {
+				u := &Upstream{
+					config: &common.UpstreamConfig{
+						Id: ups.id,
+						Routing: &common.RoutingConfig{
+							ScoreMultipliers: []*common.ScoreMultiplierConfig{ups.multiplier},
+						},
+					},
+				}
+
+				score := registry.calculateScore(
+					u,
+					scenario.networkId,
+					scenario.method,
+					scenario.finality,
+					0,                       // normTotalRequests
+					ups.metrics.respLatency, // normalized values
+					ups.metrics.errorRate,
+					0,                    // normThrottledRate
+					ups.metrics.blockLag, // normBlockHeadLag
+					0,                    // normFinalizationLag
+					0,                    // normMisbehaviorRate
+				)
+				scores[i] = score
+				totalScore += score
+			}
+
+			for i, score := range scores {
+				percent := score / totalScore
+				t.Logf("%s - Upstream %s: Score: %f, Percent: %.2f%%",
+					scenario.description, scenario.upstreams[i].id, score, percent*100)
+
+				assert.GreaterOrEqual(t, percent, scenario.expectedPercents[i].min,
+					"Upstream %s percent should be >= %f, got %f",
+					scenario.upstreams[i].id, scenario.expectedPercents[i].min, percent)
+				assert.LessOrEqual(t, percent, scenario.expectedPercents[i].max,
+					"Upstream %s percent should be <= %f, got %f",
+					scenario.upstreams[i].id, scenario.expectedPercents[i].max, percent)
 			}
 		})
 	}
