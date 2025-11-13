@@ -488,6 +488,7 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 					u,
 					"*",
 					"*",
+					nil, // No finality context for this test
 					ups.totalRequests,
 					ups.respLatency,
 					ups.errorRate,
@@ -752,6 +753,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					u,
 					scenario.networkId,
 					scenario.method,
+					nil, // No finality context for this test
 					ups.metrics.totalRequests,
 					ups.metrics.respLatency,
 					ups.metrics.errorRate,
@@ -772,6 +774,113 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					"Upstream %s percent should be greater than or equal to %f", scenario.upstreams[i].id, scenario.expectedPercents[i].min)
 				assert.LessOrEqual(t, percent, scenario.expectedPercents[i].max,
 					"Upstream %s percent should be less than or equal to %f", scenario.upstreams[i].id, scenario.expectedPercents[i].max)
+			}
+		})
+	}
+}
+
+func TestUpstreamsRegistry_FinalitySpecificScoreMultipliers(t *testing.T) {
+	registry := &UpstreamsRegistry{
+		scoreRefreshInterval: time.Second,
+		logger:               &log.Logger,
+	}
+
+	scenarios := []struct {
+		name        string
+		networkId   string
+		method      string
+		finality    common.DataFinalityState
+		description string
+	}{
+		{
+			name:        "Realtime/Unfinalized prefer lowest block lag",
+			networkId:   "evm:1",
+			method:      "eth_blockNumber",
+			finality:    common.DataFinalityStateRealtime,
+			description: "For realtime/unfinalized data, the node with lowest block lag should win even if slower",
+		},
+		{
+			name:        "Finalized requests prefer fastest response",
+			networkId:   "evm:1",
+			method:      "eth_getBalance",
+			finality:    common.DataFinalityStateFinalized,
+			description: "For finalized data, the fastest node should win even if lagging",
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			// Create empty routing config - SetDefaults will add finality-aware defaults
+			routingConfig := &common.RoutingConfig{}
+			err := routingConfig.SetDefaults()
+			assert.NoError(t, err)
+
+			// Verify we got the finality-aware defaults (2 configs)
+			assert.Len(t, routingConfig.ScoreMultipliers, 2, "Should have 2 finality-aware default configs")
+
+			// Create two upstreams using these defaults
+			syncedNode := &Upstream{
+				config: &common.UpstreamConfig{
+					Id:      "synced-node",
+					Routing: routingConfig, // Uses finality-aware defaults
+				},
+			}
+
+			fastNode := &Upstream{
+				config: &common.UpstreamConfig{
+					Id:      "fast-node",
+					Routing: routingConfig, // Uses same finality-aware defaults
+				},
+			}
+
+			// Calculate scores with opposite trade-offs:
+			// Synced node: low lag (good for realtime), high latency (bad)
+			// Fast node: high lag (bad for realtime), low latency (good)
+			syncedScore := registry.calculateScore(
+				syncedNode,
+				scenario.networkId,
+				scenario.method,
+				[]common.DataFinalityState{scenario.finality},
+				0.5,  // normTotalRequests (same for both)
+				0.9,  // normRespLatency (slow)
+				0.05, // normErrorRate (same for both)
+				0.0,  // normThrottledRate
+				0.1,  // normBlockHeadLag (low - synced)
+				0.0,  // normFinalizationLag
+				0.0,  // normMisbehaviorRate
+			)
+
+			fastScore := registry.calculateScore(
+				fastNode,
+				scenario.networkId,
+				scenario.method,
+				[]common.DataFinalityState{scenario.finality},
+				0.5,  // normTotalRequests (same for both)
+				0.1,  // normRespLatency (fast)
+				0.05, // normErrorRate (same for both)
+				0.0,  // normThrottledRate
+				0.9,  // normBlockHeadLag (high - lagging)
+				0.0,  // normFinalizationLag
+				0.0,  // normMisbehaviorRate
+			)
+
+			totalScore := syncedScore + fastScore
+			syncedPercent := (syncedScore / totalScore) * 100
+			fastPercent := (fastScore / totalScore) * 100
+
+			t.Logf("%s", scenario.description)
+			t.Logf("  Synced node (low lag, slow): Score=%.2f, Percent=%.1f%%", syncedScore, syncedPercent)
+			t.Logf("  Fast node (high lag, fast): Score=%.2f, Percent=%.1f%%", fastScore, fastPercent)
+
+			// Assert based on finality expectations
+			if scenario.finality == common.DataFinalityStateRealtime || scenario.finality == common.DataFinalityStateUnfinalized {
+				// For realtime/unfinalized: synced node should WIN (block lag is prioritized)
+				assert.Greater(t, syncedScore, fastScore,
+					"For %s requests: synced node should beat fast node", scenario.finality)
+			} else {
+				// For finalized: fast node should WIN (latency is prioritized)
+				assert.Greater(t, fastScore, syncedScore,
+					"For %s requests: fast node should beat synced node", scenario.finality)
 			}
 		})
 	}
