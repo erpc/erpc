@@ -36,11 +36,11 @@ func (p *pooledBufferReadCloser) Read(b []byte) (int, error) {
 
 func (p *pooledBufferReadCloser) Close() error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.buf != nil {
 		ReturnBuf(p.buf)
 		p.buf = nil
 	}
 	p.reader = nil
-	p.mu.Unlock()
 	return nil
 }
