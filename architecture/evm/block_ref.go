@@ -103,7 +103,12 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 		r.SetEvmBlockNumber(blockNumber)
 	}
 	if blockRef != "" {
-		r.SetEvmBlockRef(blockRef)
+		// Only set request blockRef when it's not already set.
+		// Preserve original non-wildcard tag refs ("latest", "finalized", "safe", "pending", "earliest")
+		// and "*" (composite cases) that may already be present on the request.
+		if cur := r.EvmBlockRef(); cur == nil || cur == "" {
+			r.SetEvmBlockRef(blockRef)
+		}
 	}
 
 	return blockRef, blockNumber, nil
@@ -354,7 +359,8 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 			}
 		}
 
-		if blockNumber > 0 {
+		// Only use numeric ref if a specific ref has not been determined yet or was composite "*"
+		if blockNumber > 0 && (blockRef == "" || blockRef == "*") {
 			blockRef = strconv.FormatInt(blockNumber, 10)
 		}
 

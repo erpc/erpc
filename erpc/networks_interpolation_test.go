@@ -164,6 +164,12 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 	require.NotNil(t, resp)
 	defer resp.Release()
 
+	// Ensure original tag intent was recorded on the request
+	ref := req.EvmBlockRef()
+	rs, ok := ref.(string)
+	require.True(t, ok, "EvmBlockRef should be a string")
+	require.Equal(t, "latest", rs, "EvmBlockRef should preserve 'latest'")
+
 	// Get the poller that served this response
 	ups := resp.Upstream()
 	require.NotNil(t, ups)
@@ -177,10 +183,14 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 	// it should call SuggestLatestBlock and update the poller's latest block to 0x22222222.
 	jrr := common.MustNewJsonRpcResponse(1, map[string]interface{}{"number": "0x22222222"}, nil)
 	resp2 := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).SetUpstream(ups)
-	network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)
-
-	// Allow async SuggestLatestBlock to propagate if it was called
-	time.Sleep(150 * time.Millisecond)
+	// Retry a few times to avoid racing with background poller updates that may hold the Suggest lock
+	for i := 0; i < 10; i++ {
+		network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)
+		time.Sleep(50 * time.Millisecond)
+		if poller.LatestBlock() >= int64(0x22222222) {
+			break
+		}
+	}
 
 	latest := poller.LatestBlock()
 	// Expect enrichment to have updated to 0x22222222 (572662306)
@@ -1801,6 +1811,21 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 		},
 	}
 
+	// Only set user mock for rpc3 (highest latest) - this should be used
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x1234",
+		})
+
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
@@ -1834,21 +1859,6 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", networkConfig, rlr, upr, mt)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
-
-	// Only set user mock for rpc3 (highest latest) - this should be used
-	gock.New("http://rpc3.localhost").
-		Post("").
-		Times(1).
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
-		}).
-		Reply(200).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result":  "0x1234",
-		})
 
 	// Build request with 'latest' which will be interpolated to highest latest block (from rpc3)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))

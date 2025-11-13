@@ -1122,31 +1122,66 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 	case common.ArchitectureEvm:
 		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
-			jrq, err := req.JsonRpcRequest(ctx)
+			// Prefer the original block reference preserved by normalization.
+			// This stays "latest"/"finalized" even if params were interpolated to hex.
+			var blkTag string
+			if ref := req.EvmBlockRef(); ref != nil {
+				if s, ok := ref.(string); ok && (s == "latest" || s == "finalized") {
+					blkTag = s
+				}
+			}
+			if lg := n.logger; lg != nil && lg.GetLevel() <= zerolog.TraceLevel {
+				lg.Trace().
+					Str("blkTagFromEvmBlockRef", blkTag).
+					Interface("evmBlockRefRaw", req.EvmBlockRef()).
+					Msg("enrichStatePoller: resolved block tag from request EvmBlockRef")
+			}
+			// Fallback to inspecting the request param only if we couldn't resolve from EvmBlockRef
+			if blkTag == "" {
+				jrq, err := req.JsonRpcRequest(ctx)
+				if err != nil {
+					return
+				}
+				jrq.RLock()
+				if len(jrq.Params) > 0 {
+					if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
+						blkTag = s
+					}
+				}
+				jrq.RUnlock()
+				if lg := n.logger; lg != nil {
+					lg.Trace().
+						Str("blkTagFromParams", blkTag).
+						Msg("enrichStatePoller: resolved block tag from request params")
+				}
+			}
+			if blkTag == "" {
+				return
+			}
+			jrs, _ := resp.JsonRpcResponse(ctx)
+			bnh, err := jrs.PeekStringByPath(ctx, "number")
 			if err != nil {
 				return
 			}
-			jrq.RLock()
-			defer jrq.RUnlock()
-			if blkTag, ok := jrq.Params[0].(string); ok {
-				if blkTag == "finalized" || blkTag == "latest" {
-					jrs, _ := resp.JsonRpcResponse(ctx)
-					bnh, err := jrs.PeekStringByPath(ctx, "number")
-					if err == nil {
-						blockNumber, err := common.HexToInt64(bnh)
-						if err == nil {
-							if ups := resp.Upstream(); ups != nil {
-								if ups, ok := ups.(common.EvmUpstream); ok {
-									// These methods are non-blocking and handle async updates internally
-									switch blkTag {
-									case "finalized":
-										ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
-									case "latest":
-										ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
-									}
-								}
-							}
-						}
+			blockNumber, err := common.HexToInt64(bnh)
+			if err != nil {
+				return
+			}
+			if lg := n.logger; lg != nil {
+				lg.Trace().
+					Str("blkTag", blkTag).
+					Int64("blockNumber", blockNumber).
+					Str("method", method).
+					Msg("enrichStatePoller: suggesting block number to state poller")
+			}
+			if ups := resp.Upstream(); ups != nil {
+				if ups, ok := ups.(common.EvmUpstream); ok {
+					// These methods are non-blocking and handle async updates internally
+					switch blkTag {
+					case "finalized":
+						ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+					case "latest":
+						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 					}
 				}
 			}
