@@ -488,7 +488,7 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 					u,
 					"*",
 					"*",
-					common.DataFinalityStateUnknown,
+					nil, // No finality context for this test
 					ups.totalRequests,
 					ups.respLatency,
 					ups.errorRate,
@@ -753,7 +753,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					u,
 					scenario.networkId,
 					scenario.method,
-					common.DataFinalityStateUnknown,
+					nil, // No finality context for this test
 					ups.metrics.totalRequests,
 					ups.metrics.respLatency,
 					ups.metrics.errorRate,
@@ -975,7 +975,7 @@ func TestUpstreamsRegistry_FinalitySpecificScoreMultipliers(t *testing.T) {
 					u,
 					scenario.networkId,
 					scenario.method,
-					scenario.finality,
+					[]common.DataFinalityState{scenario.finality}, // Wrap single finality in array
 					0,                       // normTotalRequests
 					ups.metrics.respLatency, // normalized values
 					ups.metrics.errorRate,
