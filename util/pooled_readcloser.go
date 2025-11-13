@@ -2,11 +2,14 @@ package util
 
 import (
 	"bytes"
+	"io"
+	"sync"
 )
 
 // pooledBufferReadCloser wraps a pooled *bytes.Buffer and exposes it as an io.ReadCloser.
 // On Close, it returns the buffer to the pool via ReturnBuf.
 type pooledBufferReadCloser struct {
+	mu     sync.Mutex
 	reader *bytes.Reader
 	buf    *bytes.Buffer
 }
@@ -21,14 +24,23 @@ func NewPooledBufferReadCloser(buf *bytes.Buffer) *pooledBufferReadCloser {
 }
 
 func (p *pooledBufferReadCloser) Read(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.reader == nil {
+		// closed or not initialized
+		return 0, io.EOF
+	}
 	return p.reader.Read(b)
 }
 
 func (p *pooledBufferReadCloser) Close() error {
+	p.mu.Lock()
 	if p.buf != nil {
 		ReturnBuf(p.buf)
 		p.buf = nil
 	}
 	p.reader = nil
+	p.mu.Unlock()
 	return nil
 }
