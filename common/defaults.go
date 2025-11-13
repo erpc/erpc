@@ -14,9 +14,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// matchFinalities checks if two finality arrays match.
+// MatchFinalities checks if two finality arrays match.
 // Empty arrays (nil or len=0) match any finality.
-func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
+func MatchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	// If either is empty, they match any finality
 	if len(finalities1) == 0 || len(finalities2) == 0 {
 		return true
@@ -1449,7 +1449,7 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 					}
 
 					// Match finality (empty array means any finality)
-					finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+					finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
 					if methodMatch && finalityMatch {
 						defaultFs = dfs
@@ -1631,7 +1631,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 						}
 
 						// Match finality (empty array means any finality)
-						finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
 						if methodMatch && finalityMatch {
 							defaultFs = dfs
@@ -2145,9 +2145,9 @@ func (r *RoutingConfig) SetDefaults() error {
 }
 
 var DefaultScoreMultiplier = &ScoreMultiplierConfig{
-	Network:  "*",
-	Method:   "*",
-	Finality: "*",
+	Network: "*",
+	Method:  "*",
+	// Finality: nil means match all finality states
 
 	ErrorRate:       util.Float64Ptr(4.0),
 	RespLatency:     util.Float64Ptr(8.0),
@@ -2167,9 +2167,7 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	if s.Method == "" {
 		s.Method = DefaultScoreMultiplier.Method
 	}
-	if s.Finality == "" {
-		s.Finality = DefaultScoreMultiplier.Finality
-	}
+	// Finality: nil/empty means match all finality states (no default needed)
 	if s.ErrorRate == nil {
 		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
 	}

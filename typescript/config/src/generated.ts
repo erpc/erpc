@@ -363,7 +363,7 @@ export interface RoutingConfig {
 export interface ScoreMultiplierConfig {
   network: string;
   method: string;
-  finality: string;
+  finality?: DataFinalityState[];
   overall?: number /* float64 */;
   errorRate?: number /* float64 */;
   respLatency?: number /* float64 */;

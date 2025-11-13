@@ -1310,8 +1310,6 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 
 func (u *Upstream) getScoreMultipliers(networkId, method string, finality common.DataFinalityState) *common.ScoreMultiplierConfig {
 	if u.config.Routing != nil {
-		finalityStr := finality.String()
-
 		for _, mul := range u.config.Routing.ScoreMultipliers {
 			matchNet, err := common.WildcardMatch(mul.Network, networkId)
 			if err != nil {
@@ -1321,10 +1319,9 @@ func (u *Upstream) getScoreMultipliers(networkId, method string, finality common
 			if err != nil {
 				continue
 			}
-			matchFin, err := common.WildcardMatch(mul.Finality, finalityStr)
-			if err != nil {
-				continue
-			}
+
+			// Use the same matching logic as caching: empty array matches all
+			matchFin := common.MatchFinalities(mul.Finality, []common.DataFinalityState{finality})
 
 			if matchNet && matchMeth && matchFin {
 				return mul

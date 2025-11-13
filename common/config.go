@@ -691,17 +691,17 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 }
 
 type ScoreMultiplierConfig struct {
-	Network         string   `yaml:"network" json:"network"`
-	Method          string   `yaml:"method" json:"method"`
-	Finality        string   `yaml:"finality" json:"finality"`
-	Overall         *float64 `yaml:"overall" json:"overall"`
-	ErrorRate       *float64 `yaml:"errorRate" json:"errorRate"`
-	RespLatency     *float64 `yaml:"respLatency" json:"respLatency"`
-	TotalRequests   *float64 `yaml:"totalRequests" json:"totalRequests"`
-	ThrottledRate   *float64 `yaml:"throttledRate" json:"throttledRate"`
-	BlockHeadLag    *float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
-	FinalizationLag *float64 `yaml:"finalizationLag" json:"finalizationLag"`
-	Misbehaviors    *float64 `yaml:"misbehaviors" json:"misbehaviors"`
+	Network         string              `yaml:"network" json:"network"`
+	Method          string              `yaml:"method" json:"method"`
+	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
+	Overall         *float64            `yaml:"overall" json:"overall"`
+	ErrorRate       *float64            `yaml:"errorRate" json:"errorRate"`
+	RespLatency     *float64            `yaml:"respLatency" json:"respLatency"`
+	TotalRequests   *float64            `yaml:"totalRequests" json:"totalRequests"`
+	ThrottledRate   *float64            `yaml:"throttledRate" json:"throttledRate"`
+	BlockHeadLag    *float64            `yaml:"blockHeadLag" json:"blockHeadLag"`
+	FinalizationLag *float64            `yaml:"finalizationLag" json:"finalizationLag"`
+	Misbehaviors    *float64            `yaml:"misbehaviors" json:"misbehaviors"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
@@ -710,6 +710,11 @@ func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
 	}
 	copied := &ScoreMultiplierConfig{}
 	*copied = *c
+	// Deep copy the Finality array
+	if c.Finality != nil {
+		copied.Finality = make([]DataFinalityState, len(c.Finality))
+		copy(copied.Finality, c.Finality)
+	}
 	return copied
 }
 
