@@ -549,7 +549,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					Msg("selected upstream from list")
 
 				// Network-level per-upstream gating based on block availability (after block tag interpolation)
-				if !n.shouldUseUpstream(ctx, u, effectiveReq, method) {
+				if !n.shouldUseUpstream(loopCtx, u, effectiveReq, method) {
 					ulg.Debug().Msg("skipping upstream due to block availability gating")
 					loopSpan.End()
 					continue

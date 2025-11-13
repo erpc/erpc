@@ -133,7 +133,6 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
 	translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
 	skipInterpolation := nrq != nil && nrq.Directives() != nil && nrq.Directives().SkipInterpolation
-	singleRef := len(methodCfg.ReqRefs) == 1
 
 	// Aggregators
 	var (
@@ -144,14 +143,10 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 
 	// Helper: cache numeric block number when safe
 	cacheBlockNumber := func(n int64) {
-		if !singleRef {
-			return
-		}
-		if cur := nrq.EvmBlockNumber(); cur == nil {
-			nrq.SetEvmBlockNumber(n)
-			return
-		}
-		if iv, ok := nrq.EvmBlockNumber().(int64); ok && iv == 0 {
+		// Best-effort: always cache the last seen numeric block number.
+		// Ordering of ReqRefs should ensure higher bounds (e.g., toBlock) appear later,
+		// so the final cached value represents the upper bound when ranges are present.
+		if nrq != nil && n > 0 {
 			nrq.SetEvmBlockNumber(n)
 		}
 	}
