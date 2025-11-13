@@ -1289,7 +1289,6 @@ func (c *SelectionPolicyConfig) Validate() error {
 }
 
 func (p *ScoreMultiplierConfig) Validate() error {
-
 	if p.Overall == nil || *p.Overall <= 0 {
 		return fmt.Errorf("priorityMultipliers.*.overall multiplier must be greater than 0")
 	}

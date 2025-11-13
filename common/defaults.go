@@ -2167,7 +2167,6 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	if s.Method == "" {
 		s.Method = DefaultScoreMultiplier.Method
 	}
-	// Finality: nil/empty means match all finality states (no default needed)
 	if s.ErrorRate == nil {
 		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
 	}
