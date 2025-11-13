@@ -55,11 +55,7 @@ func deepCopyValue(val interface{}) interface{} {
 // resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.
 // IMPORTANT: Only translates tags we can accurately represent. "safe" and "pending" are passed
 // through unchanged as we don't have the necessary state information for accurate translation.
-func resolveBlockTagToHex(ctx context.Context, nrq *common.NormalizedRequest, tag string) (string, bool) {
-	if nrq == nil {
-		return "", false
-	}
-	network := nrq.Network()
+func resolveBlockTagToHex(ctx context.Context, network common.Network, tag string) (string, bool) {
 	if network == nil {
 		return "", false
 	}
@@ -102,11 +98,17 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	var (
 		paramsToProcess []paramRef
 		method          string
+		reqId           interface{}
 	)
 
 	jrq.RLock()
 	method = jrq.Method
-	methodCfg := getMethodConfig(method, nrq)
+	reqId = jrq.ID
+	var network common.Network
+	if nrq != nil {
+		network = nrq.Network()
+	}
+	methodCfg := getMethodConfig(method, network)
 	if methodCfg == nil || len(methodCfg.ReqRefs) == 0 {
 		jrq.RUnlock()
 		return
@@ -192,26 +194,78 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 				case "latest":
 					seenLatest = true
 					if !skipInterpolation && translateLatest {
-						if hx, ok := resolveBlockTagToHex(ctx, nrq, blockRef); ok {
+						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
 							newVal = hx
 							changed = true
+							var resolvedNum int64
 							if n, herr := common.HexToInt64(hx); herr == nil {
+								resolvedNum = n
 								cacheBlockNumber(n)
+							}
+							// Debug log interpolation
+							if network != nil && network.Logger() != nil {
+								lg := network.Logger()
+								ev := lg.Debug().
+									Str("component", "evm").
+									Str("method", method).
+									Interface("requestId", reqId).
+									Str("tag", blockRef).
+									Str("resolvedHex", hx).
+									Int64("resolvedNumber", resolvedNum).
+									Interface("path", p.path).
+									Str("networkId", network.Id()).
+									Str("networkLabel", network.Label()).
+									Bool("translateLatest", translateLatest).
+									Bool("translateFinalized", translateFinalized).
+									Bool("skipInterpolation", skipInterpolation)
+								ev.Msg("interpolated block tag to concrete block number")
 							}
 						}
 					}
 				case "finalized":
 					seenFinalized = true
 					if !skipInterpolation && translateFinalized {
-						if hx, ok := resolveBlockTagToHex(ctx, nrq, blockRef); ok {
+						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
 							newVal = hx
 							changed = true
+							var resolvedNum int64
 							if n, herr := common.HexToInt64(hx); herr == nil {
+								resolvedNum = n
 								cacheBlockNumber(n)
+							}
+							// Debug log interpolation
+							if network != nil && network.Logger() != nil {
+								lg := network.Logger()
+								ev := lg.Debug().
+									Str("component", "evm").
+									Str("method", method).
+									Interface("requestId", reqId).
+									Str("tag", blockRef).
+									Str("resolvedHex", hx).
+									Int64("resolvedNumber", resolvedNum).
+									Interface("path", p.path).
+									Str("networkId", network.Id()).
+									Str("networkLabel", network.Label()).
+									Bool("translateLatest", translateLatest).
+									Bool("translateFinalized", translateFinalized).
+									Bool("skipInterpolation", skipInterpolation)
+								ev.Msg("interpolated block tag to concrete block number")
 							}
 						}
 					}
 				default:
+					if network != nil && network.Logger() != nil {
+						lg := network.Logger()
+						lg.Trace().
+							Str("component", "evm").
+							Str("method", method).
+							Interface("requestId", reqId).
+							Str("blockRef", blockRef).
+							Interface("path", p.path).
+							Str("networkId", network.Id()).
+							Str("networkLabel", network.Label()).
+							Msg("passed through block tag")
+					}
 					// "safe", "pending", "earliest" and any other strings or a hash "0x..." are passed through unchanged.
 				}
 			}
