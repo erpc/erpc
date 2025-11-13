@@ -2148,6 +2148,9 @@ func (r *RoutingConfig) SetDefaults() error {
 				Overall:         util.Float64Ptr(1.0),
 			},
 			// For finalized/unknown: prioritize latency (block lag doesn't matter)
+			// Even though "unknown" might include requests for tx hashes or block hashes
+			// of tip-of-chain range, they'll be retried due to retryEmpty logic if
+			//  an upstream doesn't have the data. This is not ideal for numeric getBlockByNumber calls.
 			{
 				Network:  "*",
 				Method:   "*",
