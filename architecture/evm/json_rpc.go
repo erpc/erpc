@@ -2,7 +2,6 @@ package evm
 
 import (
 	"context"
-	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -168,29 +167,35 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			changed bool
 		)
 
-		switch v := p.value.(type) {
-		case string:
-			if strings.HasPrefix(v, "0x") {
-				// Known hex: normalize; also allow caching of numeric value
-				if n, err := common.HexToInt64(v); err == nil {
-					cacheBlockNumber(n)
-				}
-				if !skipInterpolation {
-					if normalized, err := common.NormalizeHex(v); err == nil && normalized != v {
+		// Use composite parser to distinguish block numbers, tags, and hashes.
+		blockRef, blockNum, err := parseCompositeBlockParam(p.value)
+		if err == nil {
+			// Cache numeric block number (for single-ref methods)
+			if blockNum > 0 {
+				cacheBlockNumber(blockNum)
+				// Normalize numeric representations to canonical hex
+				if normalized, nerr := common.NormalizeHex(blockNum); nerr == nil {
+					// Only mark as changed when representation actually differs
+					if sv, ok := p.value.(string); ok {
+						if normalized != sv {
+							newVal = normalized
+							changed = true
+						}
+					} else {
 						newVal = normalized
 						changed = true
 					}
 				}
-			} else {
-				// Block tag handling
-				switch v {
+			} else if blockRef != "" {
+				// Handle tags; do not mutate when blockRef is a hash.
+				switch blockRef {
 				case "latest":
 					seenLatest = true
 					if !skipInterpolation && translateLatest {
-						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
+						if hx, ok := resolveBlockTagToHex(ctx, nrq, blockRef); ok {
 							newVal = hx
 							changed = true
-							if n, err := common.HexToInt64(hx); err == nil {
+							if n, herr := common.HexToInt64(hx); herr == nil {
 								cacheBlockNumber(n)
 							}
 						}
@@ -198,29 +203,18 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 				case "finalized":
 					seenFinalized = true
 					if !skipInterpolation && translateFinalized {
-						if hx, ok := resolveBlockTagToHex(ctx, nrq, v); ok {
+						if hx, ok := resolveBlockTagToHex(ctx, nrq, blockRef); ok {
 							newVal = hx
 							changed = true
-							if n, err := common.HexToInt64(hx); err == nil {
+							if n, herr := common.HexToInt64(hx); herr == nil {
 								cacheBlockNumber(n)
 							}
 						}
 					}
 				default:
-					// "safe", "pending", "earliest" and any other strings are passed through
+					// "safe", "pending", "earliest" and any other strings or a hash "0x..." are passed through unchanged.
 				}
 			}
-		case float64:
-			// JSON numbers → hex; safe to cache numeric
-			cacheBlockNumber(int64(v))
-			if !skipInterpolation {
-				if normalized, err := common.NormalizeHex(int64(v)); err == nil {
-					newVal = normalized
-					changed = true
-				}
-			}
-		default:
-			// Unsupported types: ignore
 		}
 
 		if changed {

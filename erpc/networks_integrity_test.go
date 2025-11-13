@@ -457,9 +457,27 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(false)}}}}
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(5 * time.Second),
+			StatePollerDebounce: common.Duration(1 * time.Second),
+			Integrity: &common.UpstreamIntegrityConfig{
+				EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(false)},
+			},
+		},
+	}
 
 	util.SetupMocksForEvmStatePoller()
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]} ]}`))
 
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -477,12 +495,6 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
-
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
-		Reply(200).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]} ]}`))
 
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)

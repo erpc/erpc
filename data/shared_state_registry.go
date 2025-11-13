@@ -43,15 +43,32 @@ func NewSharedStateRegistry(
 		return nil, fmt.Errorf("failed to create connector: %w", err)
 	}
 
+	fallbackTimeout := cfg.FallbackTimeout.Duration()
+	if fallbackTimeout <= 0 {
+		fallbackTimeout = 3 * time.Second
+	}
+	lockTtl := cfg.LockTtl.Duration()
+	if lockTtl <= 0 {
+		lockTtl = 4 * time.Second
+	}
+	lockMaxWait := cfg.LockMaxWait.Duration()
+	if lockMaxWait <= 0 {
+		lockMaxWait = 100 * time.Millisecond
+	}
+	updateMaxWait := cfg.UpdateMaxWait.Duration()
+	if updateMaxWait <= 0 {
+		updateMaxWait = 50 * time.Millisecond
+	}
+
 	return &sharedStateRegistry{
 		appCtx:          appCtx,
 		logger:          &lg,
 		clusterKey:      cfg.ClusterKey,
 		connector:       connector,
-		fallbackTimeout: cfg.FallbackTimeout.Duration(),
-		lockTtl:         cfg.LockTtl.Duration(),
-		lockMaxWait:     cfg.LockMaxWait.Duration(),
-		updateMaxWait:   cfg.UpdateMaxWait.Duration(),
+		fallbackTimeout: fallbackTimeout,
+		lockTtl:         lockTtl,
+		lockMaxWait:     lockMaxWait,
+		updateMaxWait:   updateMaxWait,
 		initializer:     util.NewInitializer(appCtx, &lg, nil),
 	}, nil
 }
