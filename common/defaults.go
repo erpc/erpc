@@ -2130,7 +2130,40 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 }
 
 func (r *RoutingConfig) SetDefaults() error {
-	if r.ScoreMultipliers != nil {
+	if r.ScoreMultipliers == nil || len(r.ScoreMultipliers) == 0 {
+		r.ScoreMultipliers = []*ScoreMultiplierConfig{
+			// For realtime/unfinalized: prioritize block lag (need fresh data)
+			{
+				Network:  "*",
+				Method:   "*",
+				Finality: []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized},
+
+				ErrorRate:       util.Float64Ptr(4.0),
+				RespLatency:     util.Float64Ptr(6.0),
+				TotalRequests:   util.Float64Ptr(1.0),
+				ThrottledRate:   util.Float64Ptr(3.0),
+				BlockHeadLag:    util.Float64Ptr(8.0),
+				FinalizationLag: util.Float64Ptr(2.0),
+				Misbehaviors:    util.Float64Ptr(5.0),
+				Overall:         util.Float64Ptr(1.0),
+			},
+			// For finalized/unknown: prioritize latency (block lag doesn't matter)
+			{
+				Network:  "*",
+				Method:   "*",
+				Finality: []DataFinalityState{DataFinalityStateFinalized, DataFinalityStateUnknown},
+
+				ErrorRate:       util.Float64Ptr(4.0),
+				RespLatency:     util.Float64Ptr(8.0),
+				TotalRequests:   util.Float64Ptr(1.0),
+				ThrottledRate:   util.Float64Ptr(3.0),
+				BlockHeadLag:    util.Float64Ptr(2.0),
+				FinalizationLag: util.Float64Ptr(1.0),
+				Misbehaviors:    util.Float64Ptr(5.0),
+				Overall:         util.Float64Ptr(1.0),
+			},
+		}
+	} else {
 		for _, multiplier := range r.ScoreMultipliers {
 			if err := multiplier.SetDefaults(); err != nil {
 				return fmt.Errorf("failed to set defaults for score multiplier: %w", err)
