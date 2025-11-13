@@ -135,6 +135,142 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 	}
 }
 
+// After tag interpolation to hex, enrichStatePoller must still enrich using the original tag intent.
+// This test forces a forwarded eth_getBlockByNumber (latest) call to return a higher block number than the poller's background value,
+// and expects the poller's LatestBlock to be updated to that higher number via enrichment.
+// With the current bug (checking mutated params instead of original tag), enrichment won't run and the value won't update.
+func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	// Build request with tag "latest" which will be interpolated to "0x11118888"
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+	req.SetNetwork(network)
+
+	// Normalize and forward
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer resp.Release()
+
+	// Get the poller that served this response
+	ups := resp.Upstream()
+	require.NotNil(t, ups)
+	eups, ok := ups.(common.EvmUpstream)
+	require.True(t, ok)
+	poller := eups.EvmStatePoller()
+	require.NotNil(t, poller)
+
+	// Now directly invoke enrichStatePoller with a synthetic response that has a higher block number (0x22222222).
+	// If enrichment uses the original tag intent (from req.EvmBlockRef) rather than mutated params,
+	// it should call SuggestLatestBlock and update the poller's latest block to 0x22222222.
+	jrr := common.MustNewJsonRpcResponse(1, map[string]interface{}{"number": "0x22222222"}, nil)
+	resp2 := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).SetUpstream(ups)
+	network.enrichStatePoller(ctx, "eth_getBlockByNumber", req, resp2)
+
+	// Allow async SuggestLatestBlock to propagate if it was called
+	time.Sleep(150 * time.Millisecond)
+
+	latest := poller.LatestBlock()
+	// Expect enrichment to have updated to 0x22222222 (572662306)
+	assert.Equal(t, int64(0x22222222), latest, "LatestBlock should be enriched to the block from response when original tag was 'latest'")
+}
+
+// When using EIP-1898 object params for eth_getBlockReceipts, we must preserve the object
+// and only update the nested blockNumber. Current implementation replaces the whole object
+// due to conflicting refs ({0} and {0,"blockNumber"}).
+func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesObject(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	// Expect object param to be preserved with translated nested blockNumber, not replaced by a bare string
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockReceipts") &&
+				strings.Contains(body, "\"params\":[{\"blockNumber\":\"0x") && // object with translated hex
+				!strings.Contains(body, "\"params\":[\"0x") // not a bare string param
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  []interface{}{},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	// EIP-1898 object param with tag
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"latest"}]}`))
+	req.SetNetwork(network)
+
+	// Normalize then forward; with bug present, this will replace the object and fail to match mock
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	// Forward to verify request shape; this should fail with current bug (no matching mock)
+	_, err = network.Forward(ctx, req)
+	require.NoError(t, err)
+}
+
+// Same as above but with "finalized" tag; should still preserve object shape and translate nested field.
+func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_PreservesObject(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockReceipts") &&
+				strings.Contains(body, "\"params\":[{\"blockNumber\":\"0x") &&
+				!strings.Contains(body, "\"params\":[\"0x")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  []interface{}{},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"finalized"}]}`))
+	req.SetNetwork(network)
+
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	_, err = network.Forward(ctx, req)
+	require.NoError(t, err)
+}
+
 // Mixed tags should collapse EvmBlockRef to "*"
 func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
 	util.ResetGock()
@@ -1782,6 +1918,22 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 		},
 	}
 
+	// Mock only rpc1 user call; if enforcement honored the head, this would be skipped,
+	// but with enforcement disabled method-level, it should still be used.
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x99",
+		})
+
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
@@ -1826,27 +1978,13 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
-	// Mock only rpc1 user call; if enforcement honored the head, this would be skipped,
-	// but with enforcement disabled method-level, it should still be used.
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Times(1).
-		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "\"0x") && !strings.Contains(body, "\"latest\"")
-		}).
-		Reply(200).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result":  "0x99",
-		})
-
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
 	req.SetNetwork(network)
 	jrq, err := req.JsonRpcRequest()
 	require.NoError(t, err)
 	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	upstream.ReorderUpstreams(upr, "rpc1", "rpc2")
 
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)

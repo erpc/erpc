@@ -146,6 +146,11 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		// Best-effort: always cache the last seen numeric block number.
 		// Ordering of ReqRefs should ensure higher bounds (e.g., toBlock) appear later,
 		// so the final cached value represents the upper bound when ranges are present.
+		// Respect method-level override to disable block availability enforcement:
+		// when enforcement is disabled, do not cache the number to avoid influencing selection.
+		if methodCfg != nil && methodCfg.EnforceBlockAvailability != nil && !*methodCfg.EnforceBlockAvailability {
+			return
+		}
 		if nrq != nil && n > 0 {
 			nrq.SetEvmBlockNumber(n)
 		}
@@ -163,6 +168,15 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 			newVal  interface{}
 			changed bool
 		)
+		// Avoid replacing entire object params; prefer leaf updates when refs include nested keys.
+		isTopLevelParamOfMap := false
+		if len(p.path) == 1 {
+			if _, ok := p.path[0].(int); ok {
+				if _, ok := p.value.(map[string]interface{}); ok {
+					isTopLevelParamOfMap = true
+				}
+			}
+		}
 
 		// Use composite parser to distinguish block numbers, tags, and hashes.
 		blockRef, blockNum, err := parseCompositeBlockParam(p.value)
@@ -175,12 +189,18 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 					// Only mark as changed when representation actually differs
 					if sv, ok := p.value.(string); ok {
 						if normalized != sv {
+							// Only replace when not a top-level object param
+							if !isTopLevelParamOfMap {
+								newVal = normalized
+								changed = true
+							}
+						}
+					} else {
+						// Only replace when not a top-level object param
+						if !isTopLevelParamOfMap {
 							newVal = normalized
 							changed = true
 						}
-					} else {
-						newVal = normalized
-						changed = true
 					}
 				}
 			} else if blockRef != "" {
@@ -190,8 +210,11 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 					seenLatest = true
 					if !skipInterpolation && translateLatest {
 						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
-							newVal = hx
-							changed = true
+							// Only replace when not a top-level object param
+							if !isTopLevelParamOfMap {
+								newVal = hx
+								changed = true
+							}
 							var resolvedNum int64
 							if n, herr := common.HexToInt64(hx); herr == nil {
 								resolvedNum = n
@@ -221,8 +244,11 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 					seenFinalized = true
 					if !skipInterpolation && translateFinalized {
 						if hx, ok := resolveBlockTagToHex(ctx, network, blockRef); ok {
-							newVal = hx
-							changed = true
+							// Only replace when not a top-level object param
+							if !isTopLevelParamOfMap {
+								newVal = hx
+								changed = true
+							}
 							var resolvedNum int64
 							if n, herr := common.HexToInt64(hx); herr == nil {
 								resolvedNum = n
