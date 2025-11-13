@@ -149,7 +149,7 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 		// - Background poll timeout should have enough room for remote get+set using FallbackTimeout
 		cfg := &common.SharedStateConfig{
 			ClusterKey:      "test",
-			FallbackTimeout: common.Duration(3 * time.Second),   // typical default
+			FallbackTimeout: common.Duration(3 * time.Second), // typical default
 			LockMaxWait:     common.Duration(100 * time.Millisecond),
 			UpdateMaxWait:   common.Duration(50 * time.Millisecond),
 			// Intentionally leave LockTtl zero to allow defaults to set it (>= FallbackTimeout)

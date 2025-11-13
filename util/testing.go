@@ -60,7 +60,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "latest") || strings.Contains(body, "\"0x11118888\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x11118888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
@@ -69,7 +69,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "finalized") || strings.Contains(body, "\"0x11117777\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x11117777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
@@ -94,7 +94,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "latest") || strings.Contains(body, "\"0x22228888\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x22228888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
@@ -103,7 +103,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "finalized") || strings.Contains(body, "\"0x22227777\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x22227777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
@@ -130,7 +130,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "latest") || strings.Contains(body, "\"0x33338888\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
@@ -139,7 +139,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "finalized") || strings.Contains(body, "\"0x33337777\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
@@ -166,7 +166,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "latest") || strings.Contains(body, "\"0x33338888\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
@@ -175,7 +175,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "finalized") || strings.Contains(body, "\"0x33337777\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
@@ -202,7 +202,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "latest") || strings.Contains(body, "\"0x33338888\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
@@ -211,7 +211,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "finalized") || strings.Contains(body, "\"0x33337777\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
@@ -238,7 +238,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "latest") || strings.Contains(body, "\"0x33338888\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
@@ -247,7 +247,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "finalized") || strings.Contains(body, "\"0x33337777\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
@@ -274,7 +274,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "latest") || strings.Contains(body, "\"0x33338888\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33338888","timestamp":"0x6702a8f0"},"_note":"evm state poller expected mock for latest block"}`))
@@ -283,7 +283,7 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, "finalized") || strings.Contains(body, "\"0x33337777\""))
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x33337777","timestamp":"0x6702a8e0"},"_note":"evm state poller expected mock for finalized block"}`))
@@ -320,7 +320,7 @@ func SetupMocksForUpstream(host string, details map[string]interface{}) int {
 		Post("").
 		Persist().
 		Filter(func(request *http.Request) bool {
-			return strings.Contains(SafeReadBody(request), "eth_getBlockByNumber") && strings.Contains(SafeReadBody(request), "latest")
+			return strings.Contains(SafeReadBody(request), "eth_getBlockByNumber") && (strings.Contains(SafeReadBody(request), "latest") || strings.Contains(SafeReadBody(request), details["latestBlock"].(string)))
 		}).
 		Reply(200).
 		JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s"},"_note":"evm state poller expected mock for latest block"}`, details["latestBlock"])))
@@ -332,7 +332,7 @@ func SetupMocksForUpstream(host string, details map[string]interface{}) int {
 		Post("").
 		Persist().
 		Filter(func(request *http.Request) bool {
-			return strings.Contains(SafeReadBody(request), "eth_getBlockByNumber") && strings.Contains(SafeReadBody(request), "finalized")
+			return strings.Contains(SafeReadBody(request), "eth_getBlockByNumber") && (strings.Contains(SafeReadBody(request), "finalized") || strings.Contains(SafeReadBody(request), details["finalizedBlock"].(string)))
 		}).
 		Reply(200).
 		JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s"},"_note":"evm state poller expected mock for finalized block"}`, details["finalizedBlock"])))

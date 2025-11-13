@@ -208,6 +208,15 @@ type CacheMethodConfig struct {
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
 	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
+	// TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateLatestTag *bool `yaml:"translateLatestTag,omitempty" json:"translateLatestTag,omitempty"`
+	// TranslateFinalizedTag controls whether the method-level tag translation should convert "finalized" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateFinalizedTag *bool `yaml:"translateFinalizedTag,omitempty" json:"translateFinalizedTag,omitempty"`
+	// EnforceBlockAvailability controls whether per-upstream block availability bounds (upper/lower)
+	// are enforced for this method at the network level. When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 type CachePolicyConfig struct {
@@ -1420,10 +1429,11 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type DirectiveDefaultsConfig struct {
-	RetryEmpty    *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
-	RetryPending  *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
-	SkipCacheRead *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
-	UseUpstream   *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	RetryEmpty        *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending      *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
 }
 
 type EvmNetworkConfig struct {
@@ -1436,6 +1446,10 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// EnforceBlockAvailability controls whether the network should enforce per-upstream
+	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
+	// When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 type EvmIntegrityConfig struct {

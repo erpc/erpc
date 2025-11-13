@@ -359,7 +359,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, req *co
 		return nil, fmt.Errorf("invalid block hash parameter")
 	}
 
-	blockHash, err := parseHexBytes(blockHashStr)
+	blockHash, err := util.ParseBlockHashHexToBytes(blockHashStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse block hash: %w", err)
 	}

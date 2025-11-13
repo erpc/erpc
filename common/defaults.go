@@ -263,6 +263,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 			{0, "toBlock"},
 			{0, "blockHash"},
 		},
+		// evm/eth_getLogs.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"eth_getBlockByHash": {
 		ReqRefs:  FirstParam,
@@ -271,6 +273,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
+		// evm/eth_getBlockByNumber.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"eth_getTransactionByBlockHashAndIndex": {
 		ReqRefs:  FirstParam,
@@ -315,6 +319,21 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_call": {
 		ReqRefs: SecondParam,
 	},
+	"eth_estimateGas": {
+		ReqRefs: SecondParam,
+	},
+	"trace_call": {
+		// Support both param orderings used in the wild:
+		// - second param as block tag/number (e.g., ["latest"])
+		// - third param as block tag/number when second param is trace types/config
+		ReqRefs: [][]interface{}{
+			{1}, // second param
+			{2}, // third param
+		},
+	},
+	"debug_traceCall": {
+		ReqRefs: SecondParam,
+	},
 	"eth_getProof": {
 		ReqRefs: ThirdParam,
 	},
@@ -325,12 +344,6 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"eth_getAccount": {
-		ReqRefs: SecondParam,
-	},
-	"eth_estimateGas": {
-		ReqRefs: SecondParam,
-	},
-	"debug_traceCall": {
 		ReqRefs: SecondParam,
 	},
 	"eth_simulateV1": {

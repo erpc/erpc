@@ -103,7 +103,12 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 		r.SetEvmBlockNumber(blockNumber)
 	}
 	if blockRef != "" {
-		r.SetEvmBlockRef(blockRef)
+		// Only set request blockRef when it's not already set.
+		// Preserve original non-wildcard tag refs ("latest", "finalized", "safe", "pending", "earliest")
+		// and "*" (composite cases) that may already be present on the request.
+		if cur := r.EvmBlockRef(); cur == nil || cur == "" {
+			r.SetEvmBlockRef(blockRef)
+		}
 	}
 
 	return blockRef, blockNumber, nil
@@ -240,7 +245,11 @@ func extractRefFromJsonRpcRequest(ctx context.Context, req *common.NormalizedReq
 		common.SetTraceSpanError(span, err)
 		return "", 0, err
 	}
-	methodConfig := getMethodConfig(r.Method, req)
+	var network common.Network
+	if req != nil {
+		network = req.Network()
+	}
+	methodConfig := getMethodConfig(r.Method, network)
 	if methodConfig == nil {
 		common.SetTraceSpanError(span, errors.New("method config not found for "+r.Method+" when extracting block reference from json-rpc request"))
 		// For unknown methods blockRef and/or blockNumber will be empty therefore such data will not be cached despite any caching policies.
@@ -316,7 +325,11 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 		return "", 0, err
 	}
 
-	methodConfig := getMethodConfig(rpcReq.Method, req)
+	var network common.Network
+	if req != nil {
+		network = req.Network()
+	}
+	methodConfig := getMethodConfig(rpcReq.Method, network)
 	if methodConfig == nil {
 		common.SetTraceSpanError(span, errors.New("method config not found for "+rpcReq.Method+" when extracting block reference from json-rpc response"))
 		return "", 0, nil
@@ -346,7 +359,8 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 			}
 		}
 
-		if blockNumber > 0 {
+		// Only use numeric ref if a specific ref has not been determined yet or was composite "*"
+		if blockNumber > 0 && (blockRef == "" || blockRef == "*") {
 			blockRef = strconv.FormatInt(blockNumber, 10)
 		}
 
@@ -356,10 +370,9 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 	return "", 0, nil
 }
 
-func getMethodConfig(method string, req *common.NormalizedRequest) (cfg *common.CacheMethodConfig) {
+func getMethodConfig(method string, network common.Network) (cfg *common.CacheMethodConfig) {
 	// Try to get method config from network if available
-	if req != nil && req.Network() != nil {
-		network := req.Network()
+	if network != nil {
 		networkCfg := network.Config()
 		if networkCfg != nil && networkCfg.Methods != nil && networkCfg.Methods.Definitions != nil {
 			if methodCfg, ok := networkCfg.Methods.Definitions[method]; ok {
