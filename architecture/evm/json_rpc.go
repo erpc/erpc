@@ -104,10 +104,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	jrq.RLock()
 	method = jrq.Method
 	reqId = jrq.ID
-	var network common.Network
-	if nrq != nil {
-		network = nrq.Network()
-	}
+	network := nrq.Network()
 	methodCfg := getMethodConfig(method, network)
 	if methodCfg == nil || len(methodCfg.ReqRefs) == 0 {
 		jrq.RUnlock()
@@ -132,7 +129,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	// Config flags
 	translateLatest := methodCfg.TranslateLatestTag == nil || *methodCfg.TranslateLatestTag
 	translateFinalized := methodCfg.TranslateFinalizedTag == nil || *methodCfg.TranslateFinalizedTag
-	skipInterpolation := nrq != nil && nrq.Directives() != nil && nrq.Directives().SkipInterpolation
+	skipInterpolation := nrq.Directives() != nil && nrq.Directives().SkipInterpolation
 
 	// Aggregators
 	var (
@@ -151,7 +148,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		if methodCfg != nil && methodCfg.EnforceBlockAvailability != nil && !*methodCfg.EnforceBlockAvailability {
 			return
 		}
-		if nrq != nil && n > 0 {
+		if n > 0 {
 			nrq.SetEvmBlockNumber(n)
 		}
 	}
