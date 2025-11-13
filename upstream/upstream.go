@@ -1320,7 +1320,6 @@ func (u *Upstream) getScoreMultipliers(networkId, method string, finality common
 				continue
 			}
 
-			// Use the same matching logic as caching: empty array matches all
 			matchFin := common.MatchFinalities(mul.Finality, []common.DataFinalityState{finality})
 
 			if matchNet && matchMeth && matchFin {
