@@ -922,29 +922,37 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
+// resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability
+// using strict precedence: method-level > network-level > default method config > fallback (true).
+func (n *Network) resolveEnforceBlockAvailability(method string) bool {
+	// Highest precedence: method-level override from network config
+	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
+		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
+			return *mc.EnforceBlockAvailability
+		}
+	}
+	// Next: network-level default
+	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.EnforceBlockAvailability != nil {
+		return *n.cfg.Evm.EnforceBlockAvailability
+	}
+	// Lowest: common default method config
+	if common.DefaultWithBlockCacheMethods != nil {
+		if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil && dmc.EnforceBlockAvailability != nil {
+			return *dmc.EnforceBlockAvailability
+		}
+	}
+	// Fallback default: enabled
+	return true
+}
+
 // shouldUseUpstream performs per-upstream gating for the request based on block availability.
 // It is invoked just before forwarding to an upstream to avoid copying/filtering the list.
 func (n *Network) shouldUseUpstream(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) bool {
 	if n.cfg.Architecture != common.ArchitectureEvm {
 		return true
 	}
-	// Check config toggles: method-level overrides network-level; default is enabled
-	enforce := true
-	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.EnforceBlockAvailability != nil {
-		enforce = *n.cfg.Evm.EnforceBlockAvailability
-	}
-	// Method-level override from network config
-	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
-		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
-			enforce = *mc.EnforceBlockAvailability
-		}
-	}
-	// If still unset by method config, check default method definitions (common defaults)
-	if enforce && common.DefaultWithBlockCacheMethods != nil {
-		if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil && dmc.EnforceBlockAvailability != nil {
-			enforce = *dmc.EnforceBlockAvailability
-		}
-	}
+	// Resolve enforcement using strict precedence
+	enforce := n.resolveEnforceBlockAvailability(method)
 	if !enforce {
 		return true
 	}
