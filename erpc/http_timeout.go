@@ -96,7 +96,12 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		switch err {
 		case context.DeadlineExceeded, ErrHandlerTimeout:
-			w.WriteHeader(http.StatusGatewayTimeout)
+			code := http.StatusGatewayTimeout
+			// JSON-RPC (POST) should keep transport 200 and return error in body
+			if r.Method == http.MethodPost {
+				code = http.StatusOK
+			}
+			w.WriteHeader(code)
 			// TODO When other architectures are implemented we should return appropriate structure (currently only evm json-rpc)
 			_, err := io.WriteString(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"http request handling timeout"}}`)
 			if err != nil {
@@ -107,7 +112,12 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			util.ReturnBuf(tw.wbuf)
 			tw.wbuf = nil
 		default:
-			w.WriteHeader(http.StatusServiceUnavailable)
+			code := http.StatusServiceUnavailable
+			// JSON-RPC (POST) should keep transport 200 and return error in body
+			if r.Method == http.MethodPost {
+				code = http.StatusOK
+			}
+			w.WriteHeader(code)
 			tw.err = err
 		}
 	}

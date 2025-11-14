@@ -235,8 +235,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should fail immediately with error from rpc1 (no waiting for hedges)
-		assert.Equal(t, http.StatusInternalServerError, statusCode)
+		// Should fail immediately but transport stays 200 per JSON-RPC over HTTP
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "internal server error")
 	})
 
@@ -1102,7 +1102,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		// Should fail immediately with primary error
-		assert.Equal(t, http.StatusInternalServerError, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "internal server error")
 	})
 
@@ -1398,7 +1398,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		// Should fail immediately with primary error (500)
-		assert.Equal(t, http.StatusInternalServerError, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "internal server error")
 	})
 
@@ -1497,7 +1497,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		// Should wait for both to complete and return error
-		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "error")
 	})
 
@@ -2519,7 +2519,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, ErrHandlerTimeout.Error())
 	})
 
