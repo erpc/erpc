@@ -604,6 +604,9 @@ func (c *TracingConfig) SetDefaults() error {
 	if c.SampleRate == 0 {
 		c.SampleRate = 1.0
 	}
+	if c.ServiceName == "" {
+		c.ServiceName = "erpc"
+	}
 
 	return nil
 }

@@ -49,6 +49,7 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 		logger.Info().
 			Str("endpoint", cfg.Endpoint).
 			Str("protocol", string(cfg.Protocol)).
+			Str("serviceName", cfg.ServiceName).
 			Float64("sampleRate", cfg.SampleRate).
 			Bool("detailed", cfg.Detailed).
 			Msg("initializing OpenTelemetry tracing")
@@ -71,7 +72,7 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 
 		res, err := resource.New(ctx,
 			resource.WithAttributes(
-				semconv.ServiceNameKey.String("erpc"),
+				semconv.ServiceNameKey.String(cfg.ServiceName),
 				semconv.ServiceVersionKey.String(ErpcVersion),
 				attribute.String("commit.sha", ErpcCommitSha),
 			),
@@ -156,10 +157,15 @@ func createTracingGRPCExporter(ctx context.Context, cfg *TracingConfig) (*otlptr
 		secureOption = otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig))
 	}
 
-	return otlptracegrpc.New(ctx,
+	opts := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(cfg.Endpoint),
 		secureOption,
-	)
+	}
+	if len(cfg.Headers) > 0 {
+		opts = append(opts, otlptracegrpc.WithHeaders(cfg.Headers))
+	}
+
+	return otlptracegrpc.New(ctx, opts...)
 }
 
 func createTracingHTTPExporter(ctx context.Context, cfg *TracingConfig) (*otlptrace.Exporter, error) {
@@ -172,10 +178,15 @@ func createTracingHTTPExporter(ctx context.Context, cfg *TracingConfig) (*otlptr
 		secureOption = otlptracehttp.WithTLSClientConfig(tlsConfig)
 	}
 
-	return otlptracehttp.New(ctx,
+	opts := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(cfg.Endpoint),
 		secureOption,
-	)
+	}
+	if len(cfg.Headers) > 0 {
+		opts = append(opts, otlptracehttp.WithHeaders(cfg.Headers))
+	}
+
+	return otlptracehttp.New(ctx, opts...)
 }
 
 func createTracingSampler(cfg *TracingConfig) sdktrace.Sampler {
