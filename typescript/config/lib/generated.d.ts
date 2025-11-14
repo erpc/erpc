@@ -79,6 +79,10 @@ export interface TracingConfig {
     protocol?: TracingProtocol;
     sampleRate?: number;
     detailed?: boolean;
+    serviceName?: string;
+    headers?: {
+        [key: string]: string;
+    };
     tls?: TLSConfig;
 }
 export interface AdminConfig {
@@ -145,6 +149,21 @@ export interface CacheMethodConfig {
     finalized: boolean;
     realtime: boolean;
     stateful?: boolean;
+    /**
+     * TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
+     * When nil or true, translation is enabled by default.
+     */
+    translateLatestTag?: boolean;
+    /**
+     * TranslateFinalizedTag controls whether the method-level tag translation should convert "finalized" to a concrete hex block number.
+     * When nil or true, translation is enabled by default.
+     */
+    translateFinalizedTag?: boolean;
+    /**
+     * EnforceBlockAvailability controls whether per-upstream block availability bounds (upper/lower)
+     * are enforced for this method at the network level. When nil or true, enforcement is enabled.
+     */
+    enforceBlockAvailability?: boolean;
 }
 export interface CachePolicyConfig {
     connector: string;
@@ -281,6 +300,12 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -320,6 +345,12 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -594,11 +625,18 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
     skipCacheRead?: boolean;
     useUpstream?: string;
+    skipInterpolation?: boolean;
 }
 export interface EvmNetworkConfig {
     chainId: number;
@@ -610,6 +648,12 @@ export interface EvmNetworkConfig {
     getLogsMaxAllowedTopics?: number;
     getLogsSplitOnError?: boolean;
     getLogsSplitConcurrency?: number;
+    /**
+     * EnforceBlockAvailability controls whether the network should enforce per-upstream
+     * block availability bounds (upper/lower) for methods by default. Method-level config may override.
+     * When nil or true, enforcement is enabled.
+     */
+    enforceBlockAvailability?: boolean;
 }
 export interface EvmIntegrityConfig {
     enforceHighestBlock?: boolean;
