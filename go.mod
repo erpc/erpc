@@ -30,8 +30,8 @@ require (
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/afero v1.11.0
 	github.com/spruceid/siwe-go v0.2.1
-	github.com/stretchr/testify v1.10.0
-	github.com/urfave/cli/v3 v3.0.0-beta1
+	github.com/stretchr/testify v1.11.1
+	github.com/urfave/cli/v3 v3.6.1
 	go.opentelemetry.io/otel v1.37.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.28.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.28.0
