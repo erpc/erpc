@@ -1284,6 +1284,19 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"repositoryUrl": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/") + "?" + endpoint.RawQuery,
 		}, nil
+	case "routemesh", "evm+routemesh":
+		settings := VendorSettings{
+			"baseURL": endpoint.Host,
+		}
+		// Extract apiKey from path: /rpc/<chainId>/<apiKey>
+		// Path segments: ["", "rpc", "<chainId>", "<apiKey>"]
+		pathParts := strings.Split(strings.TrimPrefix(endpoint.Path, "/"), "/")
+		if len(pathParts) >= 3 && pathParts[0] == "rpc" {
+			settings["apiKey"] = pathParts[2] // apiKey is the 3rd segment (index 2)
+		} else {
+			return nil, fmt.Errorf("routemesh endpoint path must be in format /rpc/<chainId>/<apiKey>, got: %s", endpoint.Path)
+		}
+		return settings, nil
 	}
 
 	return nil, fmt.Errorf("unsupported vendor name in vendor.settings: %s", vendorName)
