@@ -829,6 +829,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 			ups,
 			networkId,
 			method,
+			nil,
 			normTotalRequests[i],
 			normRespLatencies[i],
 			normErrorRates[i],
@@ -892,6 +893,7 @@ func (u *UpstreamsRegistry) calculateScore(
 	ups *Upstream,
 	networkId,
 	method string,
+	finalities []common.DataFinalityState,
 	normTotalRequests,
 	normRespLatency,
 	normErrorRate,
@@ -900,7 +902,7 @@ func (u *UpstreamsRegistry) calculateScore(
 	normFinalizationLag,
 	normMisbehaviorRate float64,
 ) float64 {
-	mul := ups.getScoreMultipliers(networkId, method)
+	mul := ups.getScoreMultipliers(networkId, method, finalities)
 
 	score := 0.0
 

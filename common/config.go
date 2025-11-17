@@ -141,12 +141,14 @@ const (
 )
 
 type TracingConfig struct {
-	Enabled    bool            `yaml:"enabled,omitempty" json:"enabled"`
-	Endpoint   string          `yaml:"endpoint,omitempty" json:"endpoint"`
-	Protocol   TracingProtocol `yaml:"protocol,omitempty" json:"protocol"`
-	SampleRate float64         `yaml:"sampleRate,omitempty" json:"sampleRate"`
-	Detailed   bool            `yaml:"detailed,omitempty" json:"detailed"`
-	TLS        *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
+	Enabled     bool              `yaml:"enabled,omitempty" json:"enabled"`
+	Endpoint    string            `yaml:"endpoint,omitempty" json:"endpoint"`
+	Protocol    TracingProtocol   `yaml:"protocol,omitempty" json:"protocol"`
+	SampleRate  float64           `yaml:"sampleRate,omitempty" json:"sampleRate"`
+	Detailed    bool              `yaml:"detailed,omitempty" json:"detailed"`
+	ServiceName string            `yaml:"serviceName,omitempty" json:"serviceName"`
+	Headers     map[string]string `yaml:"headers,omitempty" json:"headers"`
+	TLS         *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
 }
 
 type AdminConfig struct {
@@ -208,6 +210,15 @@ type CacheMethodConfig struct {
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
 	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
+	// TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateLatestTag *bool `yaml:"translateLatestTag,omitempty" json:"translateLatestTag,omitempty"`
+	// TranslateFinalizedTag controls whether the method-level tag translation should convert "finalized" to a concrete hex block number.
+	// When nil or true, translation is enabled by default.
+	TranslateFinalizedTag *bool `yaml:"translateFinalizedTag,omitempty" json:"translateFinalizedTag,omitempty"`
+	// EnforceBlockAvailability controls whether per-upstream block availability bounds (upper/lower)
+	// are enforced for this method at the network level. When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 type CachePolicyConfig struct {
@@ -691,16 +702,17 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 }
 
 type ScoreMultiplierConfig struct {
-	Network         string   `yaml:"network" json:"network"`
-	Method          string   `yaml:"method" json:"method"`
-	Overall         *float64 `yaml:"overall" json:"overall"`
-	ErrorRate       *float64 `yaml:"errorRate" json:"errorRate"`
-	RespLatency     *float64 `yaml:"respLatency" json:"respLatency"`
-	TotalRequests   *float64 `yaml:"totalRequests" json:"totalRequests"`
-	ThrottledRate   *float64 `yaml:"throttledRate" json:"throttledRate"`
-	BlockHeadLag    *float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
-	FinalizationLag *float64 `yaml:"finalizationLag" json:"finalizationLag"`
-	Misbehaviors    *float64 `yaml:"misbehaviors" json:"misbehaviors"`
+	Network         string              `yaml:"network" json:"network"`
+	Method          string              `yaml:"method" json:"method"`
+	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
+	Overall         *float64            `yaml:"overall" json:"overall"`
+	ErrorRate       *float64            `yaml:"errorRate" json:"errorRate"`
+	RespLatency     *float64            `yaml:"respLatency" json:"respLatency"`
+	TotalRequests   *float64            `yaml:"totalRequests" json:"totalRequests"`
+	ThrottledRate   *float64            `yaml:"throttledRate" json:"throttledRate"`
+	BlockHeadLag    *float64            `yaml:"blockHeadLag" json:"blockHeadLag"`
+	FinalizationLag *float64            `yaml:"finalizationLag" json:"finalizationLag"`
+	Misbehaviors    *float64            `yaml:"misbehaviors" json:"misbehaviors"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
@@ -709,6 +721,11 @@ func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
 	}
 	copied := &ScoreMultiplierConfig{}
 	*copied = *c
+	// Deep copy the Finality array
+	if c.Finality != nil {
+		copied.Finality = make([]DataFinalityState, len(c.Finality))
+		copy(copied.Finality, c.Finality)
+	}
 	return copied
 }
 
@@ -1414,10 +1431,11 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type DirectiveDefaultsConfig struct {
-	RetryEmpty    *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
-	RetryPending  *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
-	SkipCacheRead *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
-	UseUpstream   *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	RetryEmpty        *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending      *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
 }
 
 type EvmNetworkConfig struct {
@@ -1430,6 +1448,10 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// EnforceBlockAvailability controls whether the network should enforce per-upstream
+	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
+	// When nil or true, enforcement is enabled.
+	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
 type EvmIntegrityConfig struct {

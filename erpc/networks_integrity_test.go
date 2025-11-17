@@ -457,9 +457,27 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(false)}}}}
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(5 * time.Second),
+			StatePollerDebounce: common.Duration(1 * time.Second),
+			Integrity: &common.UpstreamIntegrityConfig{
+				EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(false)},
+			},
+		},
+	}
 
 	util.SetupMocksForEvmStatePoller()
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]} ]}`))
 
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -477,12 +495,6 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
-
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
-		Reply(200).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]} ]}`))
 
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
@@ -587,12 +599,10 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream_Bloom(t 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upBad := &common.UpstreamConfig{Id: "rpc-bad", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc-bad.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true)}}}}
-	upGood := &common.UpstreamConfig{Id: "rpc-good", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc-good.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true)}}}}
+	upBad := &common.UpstreamConfig{Id: "rpc-bad", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true)}}}}
+	upGood := &common.UpstreamConfig{Id: "rpc-good", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true)}}}}
 
 	util.SetupMocksForEvmStatePoller()
-	gock.New("http://rpc-bad.localhost").Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_chainId\"") }).Reply(200).JSON([]byte(`{"result":"0x7b"}`))
-	gock.New("http://rpc-good.localhost").Post("").Persist().Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_chainId\"") }).Reply(200).JSON([]byte(`{"result":"0x7b"}`))
 
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -612,9 +622,9 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream_Bloom(t 
 	req.SetNetwork(network)
 
 	// Bad upstream -> non-zero bloom with zero logs
-	gock.New("http://rpc-bad.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]} ]}`))
+	gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]} ]}`))
 	// Good upstream -> zero bloom with zero logs
-	gock.New("http://rpc-good.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]} ]}`))
+	gock.New("http://rpc2.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]} ]}`))
 
 	resp, err := network.Forward(ctx, req)
 	require.NoError(t, err)
@@ -677,18 +687,18 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upBad := &common.UpstreamConfig{Id: "rpc-bad", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc-bad.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
-	upGood := &common.UpstreamConfig{Id: "rpc-good", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc-good.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
+	upBad := &common.UpstreamConfig{Id: "rpc-bad", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
+	upGood := &common.UpstreamConfig{Id: "rpc-good", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
 
 	// Required poller mocks + chainId mocks for both upstreams
 	util.SetupMocksForEvmStatePoller()
-	gock.New("http://rpc-bad.localhost").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Persist().
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_chainId\"") }).
 		Reply(200).
 		JSON([]byte(`{"result":"0x7b"}`))
-	gock.New("http://rpc-good.localhost").
+	gock.New("http://rpc2.localhost").
 		Post("").
 		Persist().
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_chainId\"") }).
@@ -724,14 +734,14 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 	req.SetNetwork(network)
 
 	// Bad upstream returns non-sequential indices
-	gock.New("http://rpc-bad.localhost").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0x0"},{"logIndex":"0x1"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]}]}`))
 
 	// Good upstream returns sequential indices
-	gock.New("http://rpc-good.localhost").
+	gock.New("http://rpc2.localhost").
 		Post("").
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
 		Reply(200).

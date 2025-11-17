@@ -548,6 +548,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					Str("selectedUpstream", u.Id()).
 					Msg("selected upstream from list")
 
+				// Network-level per-upstream gating based on block availability (after block tag interpolation)
+				if !n.shouldUseUpstream(loopCtx, u, effectiveReq, method) {
+					ulg.Debug().Msg("skipping upstream due to block availability gating")
+					loopSpan.End()
+					continue
+				}
+
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
 				if hedges > 0 {
@@ -789,7 +796,7 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 				nil,
 			)
 		}
-		evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
+		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
 	default:
 		return common.NewErrJsonRpcExceptionInternal(
 			0,
@@ -913,6 +920,62 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 	// If not handled, then fallback to the normal forward
 	resp, err := u.Forward(execSpanCtx, req, false)
 	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+}
+
+// resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability
+// using strict precedence: method-level > network-level > default method config > fallback (true).
+func (n *Network) resolveEnforceBlockAvailability(method string) bool {
+	// Highest precedence: method-level override from network config
+	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
+		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
+			return *mc.EnforceBlockAvailability
+		}
+	}
+	// Next: network-level default
+	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.EnforceBlockAvailability != nil {
+		return *n.cfg.Evm.EnforceBlockAvailability
+	}
+	// Lowest: common default method config
+	if common.DefaultWithBlockCacheMethods != nil {
+		if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil && dmc.EnforceBlockAvailability != nil {
+			return *dmc.EnforceBlockAvailability
+		}
+	}
+	// Fallback default: enabled
+	return true
+}
+
+// shouldUseUpstream performs per-upstream gating for the request based on block availability.
+// It is invoked just before forwarding to an upstream to avoid copying/filtering the list.
+func (n *Network) shouldUseUpstream(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) bool {
+	if n.cfg.Architecture != common.ArchitectureEvm {
+		return true
+	}
+	// Resolve enforcement using strict precedence
+	enforce := n.resolveEnforceBlockAvailability(method)
+	if !enforce {
+		return true
+	}
+	// Use cached block number from normalization to avoid re-extracting from mutated params
+	var bn int64
+	if v := req.EvmBlockNumber(); v != nil {
+		if n64, ok := v.(int64); ok {
+			bn = n64
+		}
+	}
+	if bn <= 0 {
+		// If still unknown, skip gating
+		return true
+	}
+	eu, ok := u.(common.EvmUpstream)
+	if !ok {
+		return true
+	}
+	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, bn)
+	if err != nil {
+		return false
+	}
+	return available
 }
 
 func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.Logger, ups common.Upstream, req *common.NormalizedRequest) error {
@@ -1067,31 +1130,66 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 	case common.ArchitectureEvm:
 		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
-			jrq, err := req.JsonRpcRequest(ctx)
+			// Prefer the original block reference preserved by normalization.
+			// This stays "latest"/"finalized" even if params were interpolated to hex.
+			var blkTag string
+			if ref := req.EvmBlockRef(); ref != nil {
+				if s, ok := ref.(string); ok && (s == "latest" || s == "finalized") {
+					blkTag = s
+				}
+			}
+			if lg := n.logger; lg != nil && lg.GetLevel() <= zerolog.TraceLevel {
+				lg.Trace().
+					Str("blkTagFromEvmBlockRef", blkTag).
+					Interface("evmBlockRefRaw", req.EvmBlockRef()).
+					Msg("enrichStatePoller: resolved block tag from request EvmBlockRef")
+			}
+			// Fallback to inspecting the request param only if we couldn't resolve from EvmBlockRef
+			if blkTag == "" {
+				jrq, err := req.JsonRpcRequest(ctx)
+				if err != nil {
+					return
+				}
+				jrq.RLock()
+				if len(jrq.Params) > 0 {
+					if s, ok := jrq.Params[0].(string); ok && (s == "latest" || s == "finalized") {
+						blkTag = s
+					}
+				}
+				jrq.RUnlock()
+				if lg := n.logger; lg != nil {
+					lg.Trace().
+						Str("blkTagFromParams", blkTag).
+						Msg("enrichStatePoller: resolved block tag from request params")
+				}
+			}
+			if blkTag == "" {
+				return
+			}
+			jrs, _ := resp.JsonRpcResponse(ctx)
+			bnh, err := jrs.PeekStringByPath(ctx, "number")
 			if err != nil {
 				return
 			}
-			jrq.RLock()
-			defer jrq.RUnlock()
-			if blkTag, ok := jrq.Params[0].(string); ok {
-				if blkTag == "finalized" || blkTag == "latest" {
-					jrs, _ := resp.JsonRpcResponse(ctx)
-					bnh, err := jrs.PeekStringByPath(ctx, "number")
-					if err == nil {
-						blockNumber, err := common.HexToInt64(bnh)
-						if err == nil {
-							if ups := resp.Upstream(); ups != nil {
-								if ups, ok := ups.(common.EvmUpstream); ok {
-									// These methods are non-blocking and handle async updates internally
-									switch blkTag {
-									case "finalized":
-										ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
-									case "latest":
-										ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
-									}
-								}
-							}
-						}
+			blockNumber, err := common.HexToInt64(bnh)
+			if err != nil {
+				return
+			}
+			if lg := n.logger; lg != nil {
+				lg.Trace().
+					Str("blkTag", blkTag).
+					Int64("blockNumber", blockNumber).
+					Str("method", method).
+					Msg("enrichStatePoller: suggesting block number to state poller")
+			}
+			if ups := resp.Upstream(); ups != nil {
+				if ups, ok := ups.(common.EvmUpstream); ok {
+					// These methods are non-blocking and handle async updates internally
+					switch blkTag {
+					case "finalized":
+						ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+					case "latest":
+						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 					}
 				}
 			}

@@ -470,12 +470,19 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 				Msg("skipping latest block update as it's not newer")
 			return
 		}
+		e.logger.Trace().
+			Int64("blockNumber", blockNumber).
+			Int64("currentValue", currentValue).
+			Msg("accepting latest block suggestion")
 
 		// Create a timeout context to avoid blocking forever on Redis operations
 		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
 		defer cancel()
 
 		e.latestBlockShared.TryUpdate(ctx, blockNumber)
+		e.logger.Trace().
+			Int64("blockNumber", blockNumber).
+			Msg("latest block suggestion applied")
 	}()
 }
 
@@ -583,12 +590,19 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 				Msg("skipping finalized block update as it's not newer")
 			return
 		}
+		e.logger.Trace().
+			Int64("blockNumber", blockNumber).
+			Int64("currentValue", currentValue).
+			Msg("accepting finalized block suggestion")
 
 		// Create a timeout context to avoid blocking forever on Redis operations
 		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
 		defer cancel()
 
 		e.finalizedBlockShared.TryUpdate(ctx, blockNumber)
+		e.logger.Trace().
+			Int64("blockNumber", blockNumber).
+			Msg("finalized block suggestion applied")
 	}()
 }
 

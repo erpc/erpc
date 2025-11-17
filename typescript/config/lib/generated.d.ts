@@ -79,6 +79,10 @@ export interface TracingConfig {
     protocol?: TracingProtocol;
     sampleRate?: number;
     detailed?: boolean;
+    serviceName?: string;
+    headers?: {
+        [key: string]: string;
+    };
     tls?: TLSConfig;
 }
 export interface AdminConfig {
@@ -99,10 +103,34 @@ export interface DatabaseConfig {
     sharedState?: SharedStateConfig;
 }
 export interface SharedStateConfig {
+    /**
+     * ClusterKey identifies the logical group for shared counters across replicas (multi-tenant friendly)
+     */
     clusterKey?: string;
+    /**
+     * Connector contains the storage driver configuration (redis, postgresql, dynamodb, memory)
+     */
     connector?: ConnectorConfig;
+    /**
+     * FallbackTimeout is the timeout for remote storage operations (get/set/publish).
+     * It is a seconds-scale network timeout and NOT a foreground latency budget.
+     */
     fallbackTimeout?: Duration;
+    /**
+     * LockTtl is the expiration for the distributed lock key in the backing store.
+     * Should comfortably exceed the expected duration of remote writes.
+     */
     lockTtl?: Duration;
+    /**
+     * LockMaxWait caps how long the foreground path will wait to acquire the lock
+     * before proceeding locally and deferring the remote write to background.
+     */
+    lockMaxWait?: Duration;
+    /**
+     * UpdateMaxWait caps how long the foreground path will spend computing a new value
+     * (e.g., polling latest block) before returning the current local value.
+     */
+    updateMaxWait?: Duration;
 }
 export interface CacheConfig {
     connectors?: TsConnectorConfig[];
@@ -121,6 +149,21 @@ export interface CacheMethodConfig {
     finalized: boolean;
     realtime: boolean;
     stateful?: boolean;
+    /**
+     * TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
+     * When nil or true, translation is enabled by default.
+     */
+    translateLatestTag?: boolean;
+    /**
+     * TranslateFinalizedTag controls whether the method-level tag translation should convert "finalized" to a concrete hex block number.
+     * When nil or true, translation is enabled by default.
+     */
+    translateFinalizedTag?: boolean;
+    /**
+     * EnforceBlockAvailability controls whether per-upstream block availability bounds (upper/lower)
+     * are enforced for this method at the network level. When nil or true, enforcement is enabled.
+     */
+    enforceBlockAvailability?: boolean;
 }
 export interface CachePolicyConfig {
     connector: string;
@@ -257,6 +300,12 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -296,6 +345,12 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -317,6 +372,7 @@ export interface RoutingConfig {
 export interface ScoreMultiplierConfig {
     network: string;
     method: string;
+    finality?: DataFinalityState[];
     overall?: number;
     errorRate?: number;
     respLatency?: number;
@@ -569,11 +625,18 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
     skipCacheRead?: boolean;
     useUpstream?: string;
+    skipInterpolation?: boolean;
 }
 export interface EvmNetworkConfig {
     chainId: number;
@@ -585,6 +648,12 @@ export interface EvmNetworkConfig {
     getLogsMaxAllowedTopics?: number;
     getLogsSplitOnError?: boolean;
     getLogsSplitConcurrency?: number;
+    /**
+     * EnforceBlockAvailability controls whether the network should enforce per-upstream
+     * block availability bounds (upper/lower) for methods by default. Method-level config may override.
+     * When nil or true, enforcement is enabled.
+     */
+    enforceBlockAvailability?: boolean;
 }
 export interface EvmIntegrityConfig {
     enforceHighestBlock?: boolean;

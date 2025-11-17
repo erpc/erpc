@@ -767,3 +767,287 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 		resp.Release()
 	}
 }
+
+// bool pointer helper
+func b(v bool) *bool { return &v }
+
+// Default should NOT override method-level true (method > defaults)
+func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideMethod(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Temporarily force default for eth_getBalance to disable enforcement
+	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
+	common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = b(false)
+	defer func() {
+		common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = orig
+	}()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
+			},
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Methods: &common.MethodsConfig{Definitions: map[string]*common.CacheMethodConfig{
+			// method-level true; carry over ReqRefs/RespRefs from defaults so normalization works
+			"eth_getBalance": {
+				ReqRefs:                  common.DefaultWithBlockCacheMethods["eth_getBalance"].ReqRefs,
+				RespRefs:                 common.DefaultWithBlockCacheMethods["eth_getBalance"].RespRefs,
+				EnforceBlockAvailability: b(true),
+			},
+		}},
+	}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Request below lower bound; with enforcement=true we should skip (UpstreamsExhausted)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
+	req.SetNetwork(network)
+	resp, err := network.Forward(ctx, req)
+	require.Error(t, err)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted))
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Default should NOT override network-level true (network > defaults)
+func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Temporarily force default for eth_getBalance to disable enforcement
+	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
+	common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = b(false)
+	defer func() {
+		common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = orig
+	}()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
+			},
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}, // network-level true
+	}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Request below lower bound; with enforcement=true we should skip (UpstreamsExhausted)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
+	req.SetNetwork(network)
+	resp, err := network.Forward(ctx, req)
+	require.Error(t, err)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted))
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// When nothing is set, default (false for eth_getBalance via override) should disable enforcement and allow forward
+func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Temporarily force default for eth_getBalance to disable enforcement
+	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
+	common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = b(false)
+	defer func() {
+		common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = orig
+	}()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
+			},
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Build request and verify network-level gating returns true (no enforcement)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
+	req.SetNetwork(network)
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+	allowed := network.shouldUseUpstream(ctx, ups, req, "eth_getBalance")
+	require.True(t, allowed)
+}
+
+// Network-level false should disable enforcement regardless of defaults
+func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Regardless of defaults, network-level false should disable enforcement
+	// Ensure default for eth_getBalance does not counteract (set to true to prove network false wins)
+	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
+	common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = b(true)
+	defer func() {
+		common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = orig
+	}()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(100)},
+			},
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(false)}}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Build request and verify network-level gating returns true (no enforcement)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
+	req.SetNetwork(network)
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+	allowed := network.shouldUseUpstream(ctx, ups, req, "eth_getBalance")
+	require.True(t, allowed)
+}

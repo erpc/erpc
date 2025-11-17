@@ -14,9 +14,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// matchFinalities checks if two finality arrays match.
+// MatchFinalities checks if two finality arrays match.
 // Empty arrays (nil or len=0) match any finality.
-func matchFinalities(finalities1, finalities2 []DataFinalityState) bool {
+func MatchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	// If either is empty, they match any finality
 	if len(finalities1) == 0 || len(finalities2) == 0 {
 		return true
@@ -263,6 +263,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 			{0, "toBlock"},
 			{0, "blockHash"},
 		},
+		// evm/eth_getLogs.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"eth_getBlockByHash": {
 		ReqRefs:  FirstParam,
@@ -271,6 +273,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
+		// evm/eth_getBlockByNumber.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		EnforceBlockAvailability: util.BoolPtr(false),
 	},
 	"eth_getTransactionByBlockHashAndIndex": {
 		ReqRefs:  FirstParam,
@@ -315,6 +319,21 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_call": {
 		ReqRefs: SecondParam,
 	},
+	"eth_estimateGas": {
+		ReqRefs: SecondParam,
+	},
+	"trace_call": {
+		// Support both param orderings used in the wild:
+		// - second param as block tag/number (e.g., ["latest"])
+		// - third param as block tag/number when second param is trace types/config
+		ReqRefs: [][]interface{}{
+			{1}, // second param
+			{2}, // third param
+		},
+	},
+	"debug_traceCall": {
+		ReqRefs: SecondParam,
+	},
 	"eth_getProof": {
 		ReqRefs: ThirdParam,
 	},
@@ -325,12 +344,6 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"eth_getAccount": {
-		ReqRefs: SecondParam,
-	},
-	"eth_estimateGas": {
-		ReqRefs: SecondParam,
-	},
-	"debug_traceCall": {
 		ReqRefs: SecondParam,
 	},
 	"eth_simulateV1": {
@@ -590,6 +603,9 @@ func (c *TracingConfig) SetDefaults() error {
 	}
 	if c.SampleRate == 0 {
 		c.SampleRate = 1.0
+	}
+	if c.ServiceName == "" {
+		c.ServiceName = "erpc"
 	}
 
 	return nil
@@ -1462,7 +1478,7 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 					}
 
 					// Match finality (empty array means any finality)
-					finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+					finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
 					if methodMatch && finalityMatch {
 						defaultFs = dfs
@@ -1644,7 +1660,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 						}
 
 						// Match finality (empty array means any finality)
-						finalityMatch := matchFinalities(dfs.MatchFinality, fs.MatchFinality)
+						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
 						if methodMatch && finalityMatch {
 							defaultFs = dfs
@@ -2143,7 +2159,43 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 }
 
 func (r *RoutingConfig) SetDefaults() error {
-	if r.ScoreMultipliers != nil {
+	if r.ScoreMultipliers == nil || len(r.ScoreMultipliers) == 0 {
+		r.ScoreMultipliers = []*ScoreMultiplierConfig{
+			// For realtime/unfinalized: prioritize block lag (need fresh data)
+			{
+				Network:  "*",
+				Method:   "*",
+				Finality: []DataFinalityState{DataFinalityStateRealtime, DataFinalityStateUnfinalized},
+
+				ErrorRate:       util.Float64Ptr(4.0),
+				RespLatency:     util.Float64Ptr(6.0),
+				TotalRequests:   util.Float64Ptr(1.0),
+				ThrottledRate:   util.Float64Ptr(3.0),
+				BlockHeadLag:    util.Float64Ptr(8.0),
+				FinalizationLag: util.Float64Ptr(2.0),
+				Misbehaviors:    util.Float64Ptr(5.0),
+				Overall:         util.Float64Ptr(1.0),
+			},
+			// For finalized/unknown: prioritize latency (block lag doesn't matter)
+			// Even though "unknown" might include requests for tx hashes or block hashes
+			// of tip-of-chain range, they'll be retried due to retryEmpty logic if
+			//  an upstream doesn't have the data. This is not ideal for numeric getBlockByNumber calls.
+			{
+				Network:  "*",
+				Method:   "*",
+				Finality: []DataFinalityState{DataFinalityStateFinalized, DataFinalityStateUnknown},
+
+				ErrorRate:       util.Float64Ptr(4.0),
+				RespLatency:     util.Float64Ptr(8.0),
+				TotalRequests:   util.Float64Ptr(1.0),
+				ThrottledRate:   util.Float64Ptr(3.0),
+				BlockHeadLag:    util.Float64Ptr(2.0),
+				FinalizationLag: util.Float64Ptr(1.0),
+				Misbehaviors:    util.Float64Ptr(5.0),
+				Overall:         util.Float64Ptr(1.0),
+			},
+		}
+	} else {
 		for _, multiplier := range r.ScoreMultipliers {
 			if err := multiplier.SetDefaults(); err != nil {
 				return fmt.Errorf("failed to set defaults for score multiplier: %w", err)
@@ -2160,6 +2212,7 @@ func (r *RoutingConfig) SetDefaults() error {
 var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	Network: "*",
 	Method:  "*",
+	// Finality: nil means match all finality states
 
 	ErrorRate:       util.Float64Ptr(4.0),
 	RespLatency:     util.Float64Ptr(8.0),

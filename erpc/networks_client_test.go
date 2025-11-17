@@ -40,7 +40,9 @@ func TestNetwork_TraceExecutionTimeout(t *testing.T) {
 		Reply(200).
 		BodyString(`{"jsonrpc":"2.0","id":1,"result":[{"error":"execution timeout"}]}`)
 
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"debug_traceBlockByNumber","params":["0x226AECC",{"tracer":"callTracer","timeout":"1ms"}],"id":1}`))
+	time.Sleep(100 * time.Millisecond)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"debug_traceBlockByNumber","params":["0x226AE",{"tracer":"callTracer","timeout":"1ms"}],"id":1}`))
 	resp, err := network.Forward(ctx, req)
 
 	require.Error(t, err)
