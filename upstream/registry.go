@@ -368,6 +368,10 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 			u.sortedUpstreams[networkId]["*"] = cpUps
 		}
 
+		// Ensure wildcard map exists before writing into it
+		if _, ok := u.sortedUpstreams["*"]; !ok {
+			u.sortedUpstreams["*"] = make(map[string][]*Upstream)
+		}
 		if u.sortedUpstreams["*"][method] == nil {
 			cpUps := make([]*Upstream, len(methodUpsList))
 			copy(cpUps, methodUpsList)
@@ -385,6 +389,9 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 			}
 			if _, ok := u.upstreamScores[upid][networkId][method]; !ok {
 				u.upstreamScores[upid][networkId][method] = 0
+			}
+			if _, ok := u.upstreamScores[upid]["*"]; !ok {
+				u.upstreamScores[upid]["*"] = make(map[string]float64)
 			}
 			if _, ok := u.upstreamScores[upid]["*"][method]; !ok {
 				u.upstreamScores[upid]["*"][method] = 0
@@ -802,20 +809,10 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	}
 
 	// Initialize wildcard sorted upstreams
-	if _, ok := u.sortedUpstreams["*"]; !ok {
-		u.sortedUpstreams["*"] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
-		u.sortedUpstreams["*"]["*"] = []*Upstream{}
-	}
+	// (removed: avoid mutating sortedUpstreams during registration; refresh owns ordering)
 
 	// Initialize network-specific sorted upstreams
-	if _, ok := u.sortedUpstreams[networkId]; !ok {
-		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
-		u.sortedUpstreams[networkId]["*"] = []*Upstream{}
-	}
+	// (removed: avoid mutating sortedUpstreams during registration; refresh owns ordering)
 
 	// Add to network upstreams map
 	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
@@ -839,56 +836,6 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		}
 		if !exists {
 			u.networkUpstreams[networkId] = append(u.networkUpstreams[networkId], ups)
-		}
-	}
-
-	// Add to wildcard sorted upstreams if not already present
-	found := false
-	for _, existingUps := range u.sortedUpstreams["*"]["*"] {
-		if existingUps.Id() == cfg.Id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		u.sortedUpstreams["*"]["*"] = append(u.sortedUpstreams["*"]["*"], ups)
-	}
-
-	for method, netUps := range u.sortedUpstreams["*"] {
-		methodUpsFound := false
-		for _, existingUps := range netUps {
-			if existingUps.Id() == cfg.Id {
-				methodUpsFound = true
-				break
-			}
-		}
-		if !methodUpsFound {
-			u.sortedUpstreams["*"][method] = append(u.sortedUpstreams["*"][method], ups)
-		}
-	}
-
-	// Add to network-specific sorted upstreams if not already present
-	found = false
-	for _, existingUps := range u.sortedUpstreams[networkId]["*"] {
-		if existingUps.Id() == cfg.Id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		u.sortedUpstreams[networkId]["*"] = append(u.sortedUpstreams[networkId]["*"], ups)
-	} else {
-		for method, netUps := range u.sortedUpstreams[networkId] {
-			methodUpsFound := false
-			for _, existingUps := range netUps {
-				if existingUps.Id() == cfg.Id {
-					methodUpsFound = true
-					break
-				}
-			}
-			if !methodUpsFound {
-				u.sortedUpstreams[networkId][method] = append(u.sortedUpstreams[networkId][method], ups)
-			}
 		}
 	}
 
