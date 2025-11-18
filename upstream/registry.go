@@ -42,6 +42,8 @@ type UpstreamsRegistry struct {
 	// map of network => upstreams
 	networkUpstreams       map[string][]*Upstream
 	networkShadowUpstreams map[string][]*Upstream
+	// lock-free snapshot for hot path reads (key: networkId, val: []*Upstream copy)
+	networkUpstreamsAtomic sync.Map
 	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
 	// map of upstream -> network (or *) -> method (or *) => score
@@ -298,9 +300,26 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.GetNetworkUpstreams")
 	defer span.End()
 
+	// Fast path: lock-free atomic snapshot
+	if v, ok := u.networkUpstreamsAtomic.Load(networkId); ok {
+		if arr, ok2 := v.([]*Upstream); ok2 {
+			return arr
+		}
+	}
+
+	// Fallback: read under lock and populate snapshot for future reads
 	u.upstreamsMu.RLock()
-	defer u.upstreamsMu.RUnlock()
-	return u.networkUpstreams[networkId]
+	ups := u.networkUpstreams[networkId]
+	if ups == nil {
+		u.upstreamsMu.RUnlock()
+		return nil
+	}
+	cp := make([]*Upstream, len(ups))
+	copy(cp, ups)
+	// Populate snapshot while still holding RLock to avoid stale overwrite after a writer runs
+	u.networkUpstreamsAtomic.Store(networkId, cp)
+	u.upstreamsMu.RUnlock()
+	return cp
 }
 
 func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {
@@ -349,6 +368,10 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 			u.sortedUpstreams[networkId]["*"] = cpUps
 		}
 
+		// Ensure wildcard map exists before writing into it
+		if _, ok := u.sortedUpstreams["*"]; !ok {
+			u.sortedUpstreams["*"] = make(map[string][]*Upstream)
+		}
 		if u.sortedUpstreams["*"][method] == nil {
 			cpUps := make([]*Upstream, len(methodUpsList))
 			copy(cpUps, methodUpsList)
@@ -366,6 +389,9 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 			}
 			if _, ok := u.upstreamScores[upid][networkId][method]; !ok {
 				u.upstreamScores[upid][networkId][method] = 0
+			}
+			if _, ok := u.upstreamScores[upid]["*"]; !ok {
+				u.upstreamScores[upid]["*"] = make(map[string]float64)
 			}
 			if _, ok := u.upstreamScores[upid]["*"][method]; !ok {
 				u.upstreamScores[upid]["*"][method] = 0
@@ -451,38 +477,156 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 }
 
 func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
-	ctx, span := common.StartDetailSpan(u.appCtx, "UpstreamsRegistry.RefreshUpstreamNetworkMethodScores")
+	_, span := common.StartDetailSpan(u.appCtx, "UpstreamsRegistry.RefreshUpstreamNetworkMethodScores")
 	defer span.End()
 
-	u.upstreamsMu.Lock()
-	defer u.upstreamsMu.Unlock()
-
+	// Snapshot current workset under read lock
+	u.upstreamsMu.RLock()
 	if len(u.allUpstreams) == 0 {
+		u.upstreamsMu.RUnlock()
 		u.logger.Trace().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
 		return nil
 	}
-
-	ln := len(u.sortedUpstreams)
-
-	allNetworks := make([]string, 0, ln)
-	for networkId := range u.sortedUpstreams {
-		allNetworks = append(allNetworks, networkId)
-	}
-
-	for _, networkId := range allNetworks {
-		for method := range u.sortedUpstreams[networkId] {
-			// Create a copy of all the the upstreams so we can re-add
-			// previously cordoned upstreams that might have become healthy and uncordoned.
-			var upsList []*Upstream
+	type key struct{ network, method string }
+	work := make(map[key][]*Upstream)
+	for networkId, methods := range u.sortedUpstreams {
+		for method := range methods {
 			if networkId == "*" {
-				// This branch means we want to sort and score all upstreams for all their networks
-				upsList = append([]*Upstream{}, u.allUpstreams...)
+				cp := make([]*Upstream, len(u.allUpstreams))
+				copy(cp, u.allUpstreams)
+				work[key{networkId, method}] = cp
 			} else {
-				upsList = append([]*Upstream{}, u.networkUpstreams[networkId]...)
+				src := u.networkUpstreams[networkId]
+				cp := make([]*Upstream, len(src))
+				copy(cp, src)
+				work[key{networkId, method}] = cp
 			}
-			u.updateScoresAndSort(ctx, networkId, method, upsList)
 		}
 	}
+	u.upstreamsMu.RUnlock()
+
+	// Compute scores and ordering outside the lock
+	type pairResult struct {
+		network string
+		method  string
+		scores  map[string]float64
+		sorted  []*Upstream
+	}
+	results := make([]pairResult, 0, len(work))
+	for km, upsList := range work {
+		// Gather metrics
+		var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags, misbehaviorRates []float64
+		qByUps := make([]float64, len(upsList))
+		for i, ups := range upsList {
+			qn := 0.70
+			cfg := ups.Config()
+			if cfg != nil && cfg.Routing != nil && cfg.Routing.ScoreLatencyQuantile != 0 {
+				qn = cfg.Routing.ScoreLatencyQuantile
+			}
+			qByUps[i] = qn
+			metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, km.method)
+			latency := metrics.ResponseQuantiles.GetQuantile(qn).Seconds()
+			if latency == 0.0 && metrics.ErrorRate() > 0.5 {
+				latency = -1.0
+			}
+			respLatencies = append(respLatencies, latency)
+			blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
+			finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
+			errorRates = append(errorRates, metrics.ErrorRate())
+			throttledRates = append(throttledRates, metrics.ThrottledRate())
+			totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
+			misbehaviorRates = append(misbehaviorRates, metrics.MisbehaviorRate())
+		}
+		normRespLatencies := normalizeValuesLogWithInvalid(respLatencies)
+		normErrorRates := normalizeValues(errorRates)
+		normThrottledRates := normalizeValues(throttledRates)
+		normTotalRequests := normalizeValues(totalRequests)
+		normBlockHeadLags := normalizeValuesLog(blockHeadLags)
+		normFinalizationLags := normalizeValuesLog(finalizationLags)
+		normMisbehaviorRates := normalizeValues(misbehaviorRates)
+
+		scores := make(map[string]float64, len(upsList))
+		for i, ups := range upsList {
+			upsId := ups.Id()
+			score := u.calculateScore(
+				ups,
+				km.network,
+				km.method,
+				nil,
+				normTotalRequests[i],
+				normRespLatencies[i],
+				normErrorRates[i],
+				normThrottledRates[i],
+				normBlockHeadLags[i],
+				normFinalizationLags[i],
+				normMisbehaviorRates[i],
+			)
+			scores[upsId] = score
+			telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, km.method).Set(score)
+		}
+
+		// Filter disabled by cordon and sort by computed scores desc
+		active := make([]*Upstream, 0, len(upsList))
+		for _, ups := range upsList {
+			if !u.metricsTracker.IsCordoned(ups, km.method) {
+				active = append(active, ups)
+			}
+		}
+		// If all scores are 0, shuffle randomly
+		total := 0.0
+		for _, ups := range active {
+			if s, ok := scores[ups.Id()]; ok && s > 0 {
+				total += s
+			}
+		}
+		if total == 0 {
+			rand.Shuffle(len(active), func(i, j int) {
+				active[i], active[j] = active[j], active[i]
+			})
+		} else {
+			sort.Slice(active, func(i, j int) bool {
+				si := scores[active[i].Id()]
+				sj := scores[active[j].Id()]
+				if si < 0 {
+					si = 0
+				}
+				if sj < 0 {
+					sj = 0
+				}
+				if si != sj {
+					return si > sj
+				}
+				return active[i].Id() < active[j].Id()
+			})
+		}
+		results = append(results, pairResult{
+			network: km.network,
+			method:  km.method,
+			scores:  scores,
+			sorted:  active,
+		})
+	}
+
+	// Commit under a short write lock
+	u.upstreamsMu.Lock()
+	for _, res := range results {
+		// Ensure maps exist
+		if _, ok := u.sortedUpstreams[res.network]; !ok {
+			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
+		}
+		u.sortedUpstreams[res.network][res.method] = res.sorted
+
+		for upsId, sc := range res.scores {
+			if _, ok := u.upstreamScores[upsId]; !ok {
+				u.upstreamScores[upsId] = make(map[string]map[string]float64)
+			}
+			if _, ok := u.upstreamScores[upsId][res.network]; !ok {
+				u.upstreamScores[upsId][res.network] = make(map[string]float64)
+			}
+			u.upstreamScores[upsId][res.network][res.method] = sc
+		}
+	}
+	u.upstreamsMu.Unlock()
 
 	return nil
 }
@@ -665,20 +809,10 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	}
 
 	// Initialize wildcard sorted upstreams
-	if _, ok := u.sortedUpstreams["*"]; !ok {
-		u.sortedUpstreams["*"] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
-		u.sortedUpstreams["*"]["*"] = []*Upstream{}
-	}
+	// (removed: avoid mutating sortedUpstreams during registration; refresh owns ordering)
 
 	// Initialize network-specific sorted upstreams
-	if _, ok := u.sortedUpstreams[networkId]; !ok {
-		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
-		u.sortedUpstreams[networkId]["*"] = []*Upstream{}
-	}
+	// (removed: avoid mutating sortedUpstreams during registration; refresh owns ordering)
 
 	// Add to network upstreams map
 	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
@@ -705,54 +839,11 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		}
 	}
 
-	// Add to wildcard sorted upstreams if not already present
-	found := false
-	for _, existingUps := range u.sortedUpstreams["*"]["*"] {
-		if existingUps.Id() == cfg.Id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		u.sortedUpstreams["*"]["*"] = append(u.sortedUpstreams["*"]["*"], ups)
-	}
-
-	for method, netUps := range u.sortedUpstreams["*"] {
-		methodUpsFound := false
-		for _, existingUps := range netUps {
-			if existingUps.Id() == cfg.Id {
-				methodUpsFound = true
-				break
-			}
-		}
-		if !methodUpsFound {
-			u.sortedUpstreams["*"][method] = append(u.sortedUpstreams["*"][method], ups)
-		}
-	}
-
-	// Add to network-specific sorted upstreams if not already present
-	found = false
-	for _, existingUps := range u.sortedUpstreams[networkId]["*"] {
-		if existingUps.Id() == cfg.Id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		u.sortedUpstreams[networkId]["*"] = append(u.sortedUpstreams[networkId]["*"], ups)
-	} else {
-		for method, netUps := range u.sortedUpstreams[networkId] {
-			methodUpsFound := false
-			for _, existingUps := range netUps {
-				if existingUps.Id() == cfg.Id {
-					methodUpsFound = true
-					break
-				}
-			}
-			if !methodUpsFound {
-				u.sortedUpstreams[networkId][method] = append(u.sortedUpstreams[networkId][method], ups)
-			}
-		}
+	// Refresh atomic snapshot for this network's upstreams
+	if !isShadow {
+		cp := make([]*Upstream, len(u.networkUpstreams[networkId]))
+		copy(cp, u.networkUpstreams[networkId])
+		u.networkUpstreamsAtomic.Store(networkId, cp)
 	}
 
 	u.logger.Debug().

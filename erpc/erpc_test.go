@@ -173,9 +173,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	}
 
 	nw.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx1, "evm:123")
-	time.Sleep(100 * time.Millisecond)
-	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
-	time.Sleep(100 * time.Millisecond)
+	// Pre-warm the (network, method) entry so refresh includes it deterministically
+	_, _ = nw.upstreamsRegistry.GetSortedUpstreams(ctx1, "evm:123", "eth_getTransactionReceipt")
+	_ = nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}
@@ -191,10 +191,20 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	wg.Wait()
 
 	// Recalculate scores after the workload so ordering reflects latest metrics
-	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+	// Poll until ordering flips to rpc2 or timeout to avoid timing races
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_ = nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+		sorted, _ := nw.upstreamsRegistry.GetSortedUpstreams(context.Background(), "evm:123", "eth_getTransactionReceipt")
+		if len(sorted) >= 2 && sorted[0].Id() == "rpc2" {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
-	// wait until scores are calculated and erpc is shutdown down properly
-	time.Sleep(1 * time.Second)
 	cancel1()
 	cancel2()
 
