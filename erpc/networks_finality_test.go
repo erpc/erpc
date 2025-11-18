@@ -85,7 +85,7 @@ func TestNetworkGetFinality(t *testing.T) {
 		req.SetEvmBlockRef("*")
 		req.SetEvmBlockNumber(int64(0))
 		finality := network.GetFinality(ctx, req, nil)
-		assert.Equal(t, common.DataFinalityStateUnfinalized, finality)
+		assert.Equal(t, common.DataFinalityStateUnknown, finality)
 	})
 
 	t.Run("FinalityCachingBehavior", func(t *testing.T) {

@@ -849,7 +849,7 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	blockRef, blockNumber, _ := evm.ExtractBlockReferenceFromRequest(ctx, req)
 
 	if blockRef == "*" && blockNumber == 0 {
-		finality = common.DataFinalityStateUnfinalized
+		finality = common.DataFinalityStateUnknown
 		return finality
 	} else if blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
 		finality = common.DataFinalityStateRealtime

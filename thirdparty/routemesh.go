@@ -165,4 +165,3 @@ func (v *RoutemeshVendor) getOrCreateClient(ctx context.Context, logger *zerolog
 	v.headlessClients.Store(clientKey, client)
 	return client, nil
 }
-

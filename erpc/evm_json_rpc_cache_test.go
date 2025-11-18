@@ -624,7 +624,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				params:         `["0x123"]`,
 				result:         `"result":{"hash":"0x123","blockNumber":null}`,
 				expectedCache:  true, // wildcard '*' → Unfinalized
-				expectedPolicy: unfinalizedPolicy,
+				expectedPolicy: unknownPolicy,
 			},
 			{
 				name:           "UnknownAccount_Cache",
@@ -669,8 +669,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				method:         "eth_getTransactionReceipt",
 				params:         `["0xdead"]`,
 				result:         `"result":{"hash":"0xdead","blockNumber":null}`,
-				expectedCache:  true, // Pending ⇒ wildcard '*' ⇒ Unfinalized
-				expectedPolicy: unfinalizedPolicy,
+				expectedCache:  true, // Pending ⇒ wildcard '*' ⇒ Unknown
+				expectedPolicy: unknownPolicy,
 			},
 			{
 				name:           "HighBlockBalance_Cache",
