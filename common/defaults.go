@@ -1678,6 +1678,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 					}
 				}
 			}
+		} else if len(n.Failsafe) > 0 {
+			// Apply system default to each failsafe config
+			for i, fs := range n.Failsafe {
+				if err := fs.SetDefaults(nil); err != nil {
+					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+				}
+			}
 		}
 		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
 			n.SelectionPolicy = &SelectionPolicyConfig{}
