@@ -1081,10 +1081,10 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	mlx.mu.Lock()
 	defer mlx.mu.Unlock()
 
-	if mlx.resp != nil {
-		mlx.resp.Release()
-		mlx.resp = nil
-	}
+	// Intentionally do not release or nil the stored response here.
+	// Waiters may still need to read and copy it after the leader closes the multiplexer.
+	// We only remove the multiplexer from the inFlightRequests map; GC will reclaim
+	// the multiplexer and its response once no waiters hold references.
 
 	n.inFlightRequests.Delete(mlx.hash)
 }
