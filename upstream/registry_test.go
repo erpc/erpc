@@ -963,6 +963,264 @@ func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
 	assert.Less(t, workingRank, failingRank, "Working upstream should be ranked higher (lower index) than failing upstream")
 }
 
+func TestUpstreamsRegistry_EMASmoothingPreventsImmediateFlip(t *testing.T) {
+	// This test verifies that EMA smoothing (prev weight 0.7) prevents a small
+	// performance change from flipping the leader immediately; it should flip on
+	// the second refresh when new metrics are sustained.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_getBalance"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := log.Logger
+	// Use a generous window so initial samples remain in window across refreshes
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Get upstreams
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+	u1 := upsList[0] // rpc1
+	u2 := upsList[1] // rpc2
+
+	// Phase 1: rpc2 slightly faster than rpc1 (establish initial leader = rpc2)
+	simulateRequestsWithLatency(metricsTracker, u1, method, 10, 0.060) // 60ms
+	simulateRequestsWithLatency(metricsTracker, u2, method, 10, 0.050) // 50ms
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	ordered, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.Equal(t, "rpc2", ordered[0].Id(), "rpc2 should lead after initial refresh")
+
+	// Phase 2: rpc1 becomes just slightly faster than rpc2
+	// Without smoothing, a small advantage might instantly flip to rpc1.
+	// With smoothing (prev weight 0.7), rpc2 should remain leader for this refresh.
+	simulateRequestsWithLatency(metricsTracker, u1, method, 10, 0.048) // 48ms
+	simulateRequestsWithLatency(metricsTracker, u2, method, 10, 0.050) // 50ms
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	ordered, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.Equal(t, "rpc2", ordered[0].Id(), "EMA smoothing should keep rpc2 leading on first post-change refresh")
+
+	// Phase 3: sustain the new advantage with more samples; after extra refreshes, rpc1 should take lead
+	simulateRequestsWithLatency(metricsTracker, u1, method, 15, 0.045) // strengthen rpc1 advantage
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	// One more refresh to let EMA converge
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	ordered, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.Equal(t, "rpc1", ordered[0].Id(), "After sustained improvement, rpc1 should take the lead")
+}
+
+func TestUpstreamsRegistry_ColdStartConfidenceWeighting(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_call"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Get upstreams
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+	u1 := upsList[0] // rpc1
+	u2 := upsList[1] // rpc2
+	u3 := upsList[2] // rpc3 (cold)
+
+	// Phase 1: rpc1 is faster than rpc2, rpc3 has no samples (cold start)
+	simulateRequestsWithLatency(metricsTracker, u1, method, 10, 0.050) // 50ms
+	simulateRequestsWithLatency(metricsTracker, u2, method, 10, 0.080) // 80ms
+	// u3: no requests
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	ordered, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.Equal(t, "rpc1", ordered[0].Id(), "Cold upstream should not win with zero samples")
+
+	// Phase 2: u3 gathers a few samples but below confidence threshold
+	simulateRequestsWithLatency(metricsTracker, u3, method, 3, 0.030) // 30ms, but only 3 samples
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	ordered, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.Equal(t, "rpc1", ordered[0].Id(), "Below confidence threshold, cold upstream should still not lead")
+
+	// Phase 3: u3 reaches/exceeds confidence samples with very fast latency, then allow smoothing to catch up
+	simulateRequestsWithLatency(metricsTracker, u3, method, 10, 0.030) // now >= 10 samples
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	ordered, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.Equal(t, "rpc3", ordered[0].Id(), "After enough samples, the fast upstream should lead")
+}
+
+func TestUpstreamsRegistry_PerMethodIsolation(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	methodA := "eth_call"
+	methodB := "eth_getBalance"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Pre-warm both methods
+	lA, _ := registry.GetSortedUpstreams(ctx, networkID, methodA)
+	lB, _ := registry.GetSortedUpstreams(ctx, networkID, methodB)
+	upsA := getUpsByID(lA, "rpc1", "rpc2", "rpc3")
+	upsB := getUpsByID(lB, "rpc1", "rpc2", "rpc3")
+
+	// Method A: rpc1 fastest
+	simulateRequestsWithLatency(metricsTracker, upsA[0], methodA, 10, 0.040) // rpc1 40ms
+	simulateRequestsWithLatency(metricsTracker, upsA[1], methodA, 10, 0.070) // rpc2 70ms
+	simulateRequestsWithLatency(metricsTracker, upsA[2], methodA, 10, 0.060) // rpc3 60ms
+
+	// Method B: rpc2 fastest
+	simulateRequestsWithLatency(metricsTracker, upsB[0], methodB, 10, 0.070) // rpc1 70ms
+	simulateRequestsWithLatency(metricsTracker, upsB[1], methodB, 10, 0.040) // rpc2 40ms
+	simulateRequestsWithLatency(metricsTracker, upsB[2], methodB, 10, 0.060) // rpc3 60ms
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	orderedA, _ := registry.GetSortedUpstreams(ctx, networkID, methodA)
+	orderedB, _ := registry.GetSortedUpstreams(ctx, networkID, methodB)
+	assert.Equal(t, "rpc1", orderedA[0].Id(), "Method A ordering should be independent and prefer rpc1")
+	assert.Equal(t, "rpc2", orderedB[0].Id(), "Method B ordering should be independent and prefer rpc2")
+}
+
+func TestUpstreamsRegistry_ThrottlingPenalty(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_getLogs"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+	u1 := upsList[0]
+	u2 := upsList[1]
+
+	// Equal latency for both
+	simulateRequestsWithLatency(metricsTracker, u1, method, 10, 0.060)
+	simulateRequestsWithLatency(metricsTracker, u2, method, 10, 0.060)
+	// Apply throttling to u1 significantly more than u2
+	simulateRequestsWithRateLimiting(metricsTracker, u1, method, 20, 10, 5) // more throttling
+	simulateRequestsWithRateLimiting(metricsTracker, u2, method, 20, 1, 1)  // less throttling
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	ordered, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	// We only assert relative ordering between u2 and u1 to avoid interference from other peers
+	var i1, i2 int
+	for i, u := range ordered {
+		if u.Id() == u1.Id() {
+			i1 = i
+		}
+		if u.Id() == u2.Id() {
+			i2 = i
+		}
+	}
+	assert.Less(t, i2, i1, "Higher throttling should demote an upstream with equal latency")
+}
+
+func TestUpstreamsRegistry_AllPeersNoSamplesNeutral(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_maxPriorityFeePerGas"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, _ := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Do not record any metric samples
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	ordered, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.Len(t, ordered, 3)
+	// With all-equal effective metrics, ordering may be arbitrary; assert membership
+	ids := []string{ordered[0].Id(), ordered[1].Id(), ordered[2].Id()}
+	assert.ElementsMatch(t, []string{"rpc1", "rpc2", "rpc3"}, ids)
+}
+
+func TestUpstreamsRegistry_EMAFromZero_IncreasesOnSecondRefresh(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_chainId"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Get upstreams and set two distinct latencies so instant score > 0 for the faster one
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	upsList := getUpsByID(l, "rpc1", "rpc2")
+	faster := upsList[0]
+	slower := upsList[1]
+
+	// Assign latencies: faster < slower
+	simulateRequestsWithLatency(metricsTracker, faster, method, 10, 0.040) // 40ms
+	simulateRequestsWithLatency(metricsTracker, slower, method, 10, 0.100) // 100ms
+
+	// First refresh → first smoothed score with prev==0
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	registry.upstreamsMu.RLock()
+	s1 := registry.upstreamScores[faster.Id()][networkID][method]
+	registry.upstreamsMu.RUnlock()
+	assert.Greater(t, s1, 0.0, "first score should be > 0 for faster upstream")
+
+	// Second refresh (same metrics) → EMA should increase compared to first
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	registry.upstreamsMu.RLock()
+	s2 := registry.upstreamScores[faster.Id()][networkID][method]
+	registry.upstreamsMu.RUnlock()
+	assert.Greater(t, s2, s1, "EMA should increase on the second refresh with identical metrics (prev==0 applied)")
+}
+
 func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
 	metricsTracker := health.NewTracker(logger, projectID, windowSize)
 	metricsTracker.Bootstrap(ctx)
