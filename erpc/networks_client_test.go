@@ -244,8 +244,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// Hack for test only: make params differ so cache hash differs and requests aren't multiplexed
-				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[null]}`))
+				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[]}`))
 				resp6, err6 := network.Forward(ctx, req6)
 				assert.NoError(t, err6)
 				require.NotNil(t, resp6)
