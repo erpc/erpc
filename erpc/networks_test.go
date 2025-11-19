@@ -7499,7 +7499,6 @@ func TestNetwork_Forward(t *testing.T) {
 				wg.Add(1)
 				go func(method string) {
 					defer wg.Done()
-					upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
 					req.SetNetwork(ntw)
 					oups, err := upstreamsRegistry.GetSortedUpstreams(context.Background(), networkID, method)
@@ -7518,8 +7517,11 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		wg.Wait()
 
-		time.Sleep(2 * time.Second)
-		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+		// Stabilize EMA/confidence-weighted scores after heavy concurrent traffic
+		for i := 0; i < 5; i++ {
+			upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+			time.Sleep(100 * time.Millisecond)
+		}
 
 		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_getLogs")
 		assert.NoError(t, err)

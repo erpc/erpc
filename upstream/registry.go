@@ -22,10 +22,24 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// Scoring tunables (kept local to this file for now)
+const (
+	// Number of requests after which we fully trust an upstream's per-method metrics
+	scoreMinSamplesForConfidence = 10.0
+	// Exponential moving average factor for previous score weight (0..1).
+	// Higher means more inertia (favor stability over reactivity).
+	scoreEMAPreviousWeight = 0.7
+	// Neutral fallback latency (seconds) when no peers have valid samples; chosen conservatively
+	scoreNeutralLatencySeconds = 0.2
+)
+
 type UpstreamsRegistry struct {
 	appCtx               context.Context
 	prjId                string
 	scoreRefreshInterval time.Duration
+	// Serializes score refresh to avoid concurrent refresh goroutines racing
+	// on shared maps even when read-write locks are held in different phases.
+	refreshMu            sync.Mutex
 	logger               *zerolog.Logger
 	metricsTracker       *health.Tracker
 	sharedStateRegistry  data.SharedStateRegistry
@@ -413,70 +427,11 @@ func (u *UpstreamsRegistry) RUnlockUpstreams() {
 	u.upstreamsMu.RUnlock()
 }
 
-func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, upstreams []*Upstream) []*Upstream {
-	activeUpstreams := make([]*Upstream, 0)
-	for _, ups := range upstreams {
-		if !u.metricsTracker.IsCordoned(ups, method) {
-			activeUpstreams = append(activeUpstreams, ups)
-		}
-	}
-	// Calculate total score
-	totalScore := 0.0
-	for _, ups := range activeUpstreams {
-		score := u.upstreamScores[ups.Id()][networkId][method]
-		if score > 0 {
-			totalScore += score
-		}
-	}
-
-	// If all scores are 0, fall back to random shuffle
-	if totalScore == 0 {
-		rand.Shuffle(len(activeUpstreams), func(i, j int) {
-			activeUpstreams[i], activeUpstreams[j] = activeUpstreams[j], activeUpstreams[i]
-		})
-		return activeUpstreams
-	}
-
-	sort.Slice(activeUpstreams, func(i, j int) bool {
-		scoreI := u.upstreamScores[activeUpstreams[i].Id()][networkId][method]
-		scoreJ := u.upstreamScores[activeUpstreams[j].Id()][networkId][method]
-
-		if scoreI < 0 {
-			scoreI = 0
-		}
-		if scoreJ < 0 {
-			scoreJ = 0
-		}
-
-		if scoreI != scoreJ {
-			return scoreI > scoreJ
-		}
-
-		// If values are equal, sort by upstream ID for consistency
-		return activeUpstreams[i].Id() < activeUpstreams[j].Id()
-	})
-
-	if u.logger.Trace().Enabled() {
-		ids := make([]string, len(activeUpstreams))
-		for i, ups := range activeUpstreams {
-			ids[i] = ups.Id()
-		}
-		scores := make([]float64, len(activeUpstreams))
-		for i, ups := range activeUpstreams {
-			scores[i] = u.upstreamScores[ups.Id()][networkId][method]
-		}
-		// u.logger.Trace().
-		// 	Str("networkId", networkId).
-		// 	Str("method", method).
-		// 	Strs("upstreams", ids).
-		// 	Floats64("scores", scores).
-		// 	Msgf("sorted upstreams")
-	}
-
-	return activeUpstreams
-}
-
 func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
+	// Avoid concurrent refreshers racing on shared maps by serializing this function.
+	u.refreshMu.Lock()
+	defer u.refreshMu.Unlock()
+
 	_, span := common.StartDetailSpan(u.appCtx, "UpstreamsRegistry.RefreshUpstreamNetworkMethodScores")
 	defer span.End()
 
@@ -489,17 +444,46 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	}
 	type key struct{ network, method string }
 	work := make(map[key][]*Upstream)
+	prevScores := make(map[key]map[string]float64) // per (network,method) -> upstreamId -> prev score
 	for networkId, methods := range u.sortedUpstreams {
 		for method := range methods {
 			if networkId == "*" {
 				cp := make([]*Upstream, len(u.allUpstreams))
 				copy(cp, u.allUpstreams)
-				work[key{networkId, method}] = cp
+				k := key{networkId, method}
+				work[k] = cp
+				// capture previous scores under lock
+				if _, ok := prevScores[k]; !ok {
+					prevScores[k] = make(map[string]float64)
+				}
+				for _, ups := range cp {
+					if upsc, ok := u.upstreamScores[ups.Id()]; ok {
+						if nwsc, ok := upsc[networkId]; ok {
+							if p, ok := nwsc[method]; ok {
+								prevScores[k][ups.Id()] = p
+							}
+						}
+					}
+				}
 			} else {
 				src := u.networkUpstreams[networkId]
 				cp := make([]*Upstream, len(src))
 				copy(cp, src)
-				work[key{networkId, method}] = cp
+				k := key{networkId, method}
+				work[k] = cp
+				// capture previous scores under lock
+				if _, ok := prevScores[k]; !ok {
+					prevScores[k] = make(map[string]float64)
+				}
+				for _, ups := range cp {
+					if upsc, ok := u.upstreamScores[ups.Id()]; ok {
+						if nwsc, ok := upsc[networkId]; ok {
+							if p, ok := nwsc[method]; ok {
+								prevScores[k][ups.Id()] = p
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -514,41 +498,71 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	}
 	results := make([]pairResult, 0, len(work))
 	for km, upsList := range work {
-		// Gather metrics
-		var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags, misbehaviorRates []float64
-		qByUps := make([]float64, len(upsList))
+		// Gather metrics (measured) and per-upstream quantiles
+		var (
+			respLatencies    = make([]float64, len(upsList))
+			errorRates       = make([]float64, len(upsList))
+			totalRequests    = make([]float64, len(upsList))
+			throttledRates   = make([]float64, len(upsList))
+			blockHeadLags    = make([]float64, len(upsList))
+			finalizationLags = make([]float64, len(upsList))
+			misbehaviorRates = make([]float64, len(upsList))
+		)
 		for i, ups := range upsList {
 			qn := 0.70
 			cfg := ups.Config()
 			if cfg != nil && cfg.Routing != nil && cfg.Routing.ScoreLatencyQuantile != 0 {
 				qn = cfg.Routing.ScoreLatencyQuantile
 			}
-			qByUps[i] = qn
-			metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, km.method)
-			latency := metrics.ResponseQuantiles.GetQuantile(qn).Seconds()
-			if latency == 0.0 && metrics.ErrorRate() > 0.5 {
-				latency = -1.0
-			}
-			respLatencies = append(respLatencies, latency)
-			blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
-			finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
-			errorRates = append(errorRates, metrics.ErrorRate())
-			throttledRates = append(throttledRates, metrics.ThrottledRate())
-			totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
-			misbehaviorRates = append(misbehaviorRates, metrics.MisbehaviorRate())
+			mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, km.method)
+			respLatencies[i] = mt.ResponseQuantiles.GetQuantile(qn).Seconds()
+			errorRates[i] = mt.ErrorRate()
+			throttledRates[i] = mt.ThrottledRate()
+			totalRequests[i] = float64(mt.RequestsTotal.Load())
+			blockHeadLags[i] = float64(mt.BlockHeadLag.Load())
+			finalizationLags[i] = float64(mt.FinalizationLag.Load())
+			misbehaviorRates[i] = mt.MisbehaviorRate()
 		}
-		normRespLatencies := normalizeValuesLogWithInvalid(respLatencies)
-		normErrorRates := normalizeValues(errorRates)
-		normThrottledRates := normalizeValues(throttledRates)
+
+		// Compute peer baselines for confidence-weighted mixing
+		baselineLatency := medianPositive(respLatencies)
+		if baselineLatency == 0 {
+			baselineLatency = scoreNeutralLatencySeconds
+		}
+		baselineError := median(errorRates)
+		baselineThrottle := median(throttledRates)
+
+		// Build effective metrics using confidence weighting by sample size
+		effLat := make([]float64, len(upsList))
+		effErr := make([]float64, len(upsList))
+		effThr := make([]float64, len(upsList))
+		for i := range upsList {
+			w := clamp01(totalRequests[i] / scoreMinSamplesForConfidence)
+			lat := respLatencies[i]
+			if lat <= 0 {
+				// No successful samples for latency quantile: trust baseline only.
+				effLat[i] = baselineLatency
+			} else {
+				effLat[i] = w*lat + (1.0-w)*baselineLatency
+			}
+			effErr[i] = w*errorRates[i] + (1.0-w)*baselineError
+			effThr[i] = w*throttledRates[i] + (1.0-w)*baselineThrottle
+		}
+
+		// Normalize effective metrics for scoring
+		normRespLatencies := normalizeValuesLog(effLat)
+		normErrorRates := normalizeValues(effErr)
+		normThrottledRates := normalizeValues(effThr)
 		normTotalRequests := normalizeValues(totalRequests)
 		normBlockHeadLags := normalizeValuesLog(blockHeadLags)
 		normFinalizationLags := normalizeValuesLog(finalizationLags)
 		normMisbehaviorRates := normalizeValues(misbehaviorRates)
 
+		// Calculate instantaneous scores, then apply EMA smoothing using previous scores
 		scores := make(map[string]float64, len(upsList))
 		for i, ups := range upsList {
 			upsId := ups.Id()
-			score := u.calculateScore(
+			instant := u.calculateScore(
 				ups,
 				km.network,
 				km.method,
@@ -561,8 +575,14 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 				normFinalizationLags[i],
 				normMisbehaviorRates[i],
 			)
-			scores[upsId] = score
-			telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, km.method).Set(score)
+			// Previous smoothed score captured during snapshot
+			prev := prevScores[km][upsId]
+			// Apply EMA smoothing even when previous score is zero.
+			// Using prev==0 for first-time entries only scales all scores uniformly,
+			// preserving ordering while ensuring consistent EMA application.
+			smoothed := scoreEMAPreviousWeight*prev + (1.0-scoreEMAPreviousWeight)*instant
+			scores[upsId] = smoothed
+			telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, km.method).Set(smoothed)
 		}
 
 		// Filter disabled by cordon and sort by computed scores desc
@@ -874,111 +894,9 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 	}()
 }
 
-func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, method string, upsList []*Upstream) {
-	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.UpdateScoresAndSort")
-	defer span.End()
-
-	var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags, misbehaviorRates []float64
-
-	for _, ups := range upsList {
-		qn := 0.70
-		cfg := ups.Config()
-		if cfg != nil && cfg.Routing != nil && cfg.Routing.ScoreLatencyQuantile != 0 {
-			qn = cfg.Routing.ScoreLatencyQuantile
-		}
-		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, method)
-		latency := metrics.ResponseQuantiles.GetQuantile(qn).Seconds()
-
-		// Handle zero latency values: if an upstream has zero latency, it likely means
-		// it has no successful requests (100% error rate), so we should treat this as
-		// invalid data rather than the best possible latency.
-		// We'll use a sentinel value that will be handled in normalization.
-		if latency == 0.0 && metrics.ErrorRate() > 0.5 {
-			// If latency is zero and error rate is high, treat as invalid latency
-			latency = -1.0 // Sentinel value for invalid latency
-		}
-
-		respLatencies = append(respLatencies, latency)
-		blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
-		finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
-		errorRates = append(errorRates, metrics.ErrorRate())
-		throttledRates = append(throttledRates, metrics.ThrottledRate())
-		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
-		misbehaviorRates = append(misbehaviorRates, metrics.MisbehaviorRate())
-	}
-
-	normRespLatencies := normalizeValuesLogWithInvalid(respLatencies)
-	normErrorRates := normalizeValues(errorRates)
-	normThrottledRates := normalizeValues(throttledRates)
-	normTotalRequests := normalizeValues(totalRequests)
-	normBlockHeadLags := normalizeValuesLog(blockHeadLags)
-	normFinalizationLags := normalizeValuesLog(finalizationLags)
-	normMisbehaviorRates := normalizeValues(misbehaviorRates)
-	for i, ups := range upsList {
-		upsId := ups.Id()
-		score := u.calculateScore(
-			ups,
-			networkId,
-			method,
-			nil,
-			normTotalRequests[i],
-			normRespLatencies[i],
-			normErrorRates[i],
-			normThrottledRates[i],
-			normBlockHeadLags[i],
-			normFinalizationLags[i],
-			normMisbehaviorRates[i],
-		)
-		// Upstream might not have scores initialized yet (especially when networkId is *)
-		// TODO add a test case to send request to network A when network B is defined in config but no requests sent yet
-		if upsc, ok := u.upstreamScores[upsId]; ok {
-			if _, ok := upsc[networkId]; ok {
-				upsc[networkId][method] = score
-			}
-		}
-		ups.logger.Trace().
-			Str("method", method).
-			Float64("score", score).
-			Float64("normalizedTotalRequests", normTotalRequests[i]).
-			Float64("normalizedRespLatency", normRespLatencies[i]).
-			Float64("normalizedErrorRate", normErrorRates[i]).
-			Float64("normalizedThrottledRate", normThrottledRates[i]).
-			Float64("normalizedBlockHeadLag", normBlockHeadLags[i]).
-			Float64("normalizedFinalizationLag", normFinalizationLags[i]).
-			Msg("score updated")
-		telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, method).Set(score)
-	}
-
-	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)
-	u.sortedUpstreams[networkId][method] = upsList
-
-	if method == "*" && u.logger.GetLevel() <= zerolog.DebugLevel {
-		scoresArr := make([]float64, len(upsList))
-		upstreamNames := make([]string, len(upsList))
-		for i, ups := range upsList {
-			upstreamNames[i] = ups.Id()
-			scoresArr[i] = u.upstreamScores[ups.Id()][networkId][method]
-		}
-		u.logger.Debug().
-			Str("networkId", networkId).
-			Floats64("scores", scoresArr).
-			Strs("orderedUpstreams", upstreamNames).
-			Msg("sorted upstreams for network")
-	} else if u.logger.GetLevel() <= zerolog.TraceLevel {
-		scoresArr := make([]float64, len(upsList))
-		upstreamNames := make([]string, len(upsList))
-		for i, ups := range upsList {
-			upstreamNames[i] = ups.Id()
-			scoresArr[i] = u.upstreamScores[ups.Id()][networkId][method]
-		}
-		u.logger.Trace().
-			Str("networkId", networkId).
-			Str("method", method).
-			Floats64("scores", scoresArr).
-			Strs("orderedUpstreams", upstreamNames).
-			Msg("sorted upstreams for method")
-	}
-}
+// updateScoresAndSort has been removed in favor of a single scoring path
+// implemented in RefreshUpstreamNetworkMethodScores, which computes and commits
+// scores and ordering for all (network, method) pairs in a batch.
 
 func (u *UpstreamsRegistry) calculateScore(
 	ups *Upstream,
@@ -1131,89 +1049,46 @@ func normalizeValuesLog(values []float64) []float64 {
 	return normalized
 }
 
-func normalizeValuesLogWithInvalid(values []float64) []float64 {
-	if len(values) == 0 {
-		return []float64{}
+// normalizeValuesLogWithInvalid was removed; effective metrics avoid generating
+// invalid latencies and are normalized via normalizeValuesLog instead.
+
+// clamp01 clamps a float64 to the [0,1] interval.
+func clamp01(x float64) float64 {
+	if x < 0 {
+		return 0
 	}
+	if x > 1 {
+		return 1
+	}
+	return x
+}
 
-	// Separate valid and invalid values
-	var validValues []float64
-	var invalidIndices []int
+// median computes median of a slice (copying and sorting).
+// Returns 0.0 for empty input.
+func median(vals []float64) float64 {
+	if len(vals) == 0 {
+		return 0.0
+	}
+	cp := make([]float64, len(vals))
+	copy(cp, vals)
+	sort.Float64s(cp)
+	n := len(cp)
+	if n%2 == 1 {
+		return cp[n/2]
+	}
+	return (cp[n/2-1] + cp[n/2]) / 2.0
+}
 
-	for i, v := range values {
-		if v < 0 {
-			// Negative values are our sentinel for invalid latency
-			invalidIndices = append(invalidIndices, i)
-		} else {
-			validValues = append(validValues, v)
+// medianPositive computes the median of strictly positive values.
+// If no positive values exist, returns 0.0.
+func medianPositive(vals []float64) float64 {
+	pos := make([]float64, 0, len(vals))
+	for _, v := range vals {
+		if v > 0 {
+			pos = append(pos, v)
 		}
 	}
-
-	normalized := make([]float64, len(values))
-
-	// If all values are invalid, return all 1.0 (worst possible score)
-	if len(validValues) == 0 {
-		for i := range normalized {
-			normalized[i] = 1.0
-		}
-		return normalized
-	}
-
-	// If all values are valid, use standard log normalization
-	if len(invalidIndices) == 0 {
-		return normalizeValuesLog(values)
-	}
-
-	// Mixed case: normalize valid values and assign worst score to invalid ones
-	dataMin := validValues[0]
-	dataMax := validValues[0]
-	for i := 1; i < len(validValues); i++ {
-		if validValues[i] < dataMin {
-			dataMin = validValues[i]
-		}
-		if validValues[i] > dataMax {
-			dataMax = validValues[i]
-		}
-	}
-
-	// If all valid values are the same
-	if dataMin == dataMax {
-		for i, v := range values {
-			if v < 0 {
-				normalized[i] = 1.0 // Worst score for invalid values
-			} else if dataMin == 0.0 {
-				normalized[i] = 0.0 // All valid values are 0
-			} else {
-				normalized[i] = 0.5 // All valid values are the same positive value
-			}
-		}
-		return normalized
-	}
-
-	// Apply log(v+1) transformation and scale to [0, 1] for valid values
-	logMinOffset := math.Log(dataMin + 1.0)
-	logMaxOffset := math.Log(dataMax + 1.0)
-	denom := logMaxOffset - logMinOffset
-
-	for i, v := range values {
-		if v < 0 {
-			// Invalid latency gets worst possible score
-			normalized[i] = 1.0
-		} else {
-			logVOffset := math.Log(v + 1.0)
-			norm := (logVOffset - logMinOffset) / denom
-
-			// Clamp to [0, 1] as a safeguard
-			if norm < 0.0 {
-				norm = 0.0
-			} else if norm > 1.0 {
-				norm = 1.0
-			}
-			normalized[i] = norm
-		}
-	}
-
-	return normalized
+	return median(pos)
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
