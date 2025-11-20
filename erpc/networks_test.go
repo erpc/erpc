@@ -161,7 +161,7 @@ func TestNetwork_Forward(t *testing.T) {
 		var lastResp *common.NormalizedResponse
 
 		for i := 0; i < 5; i++ {
-			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_call","params":[]}`))
 			lastResp, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 

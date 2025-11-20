@@ -178,6 +178,12 @@ var (
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
 	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user", "agent_name"})
 
+	MetricNetworkHedgeQuantileMilliseconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_hedge_quantile_milliseconds",
+		Help:      "Effective hedge resolved quantile used for hedge delay in milliseconds.",
+	}, []string{"project", "network", "category", "finality"})
+
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",

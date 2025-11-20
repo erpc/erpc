@@ -9,6 +9,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
@@ -273,6 +274,10 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 									if dr > maxDelay {
 										dr = maxDelay
 									}
+									finality := req.Finality(ctx)
+									telemetry.GaugeHandle(telemetry.MetricNetworkHedgeQuantileMilliseconds,
+										ntw.ProjectId(), req.NetworkLabel(), m, finality.String(),
+									).Set(float64(dr.Milliseconds()))
 									logger.Trace().Object("request", req).Dur("delay", dr).Msgf("calculated hedge delay")
 									return dr
 								}

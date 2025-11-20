@@ -819,7 +819,6 @@ func checkEvmChainId(ctx context.Context, upstreams []*upstream.Upstream, upstre
 
 			reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-
 			upChainId, err := ups.EvmGetChainId(reqCtx)
 
 			if err != nil {
