@@ -496,3 +496,47 @@ jobs:
           subject-name: ghcr.io/${{ steps.meta.outputs.repo }}
           subject-digest: "${{ steps.release.outputs.digest_latest }}"
           push-to-registry: true
+
+  # Cleanup sha256-* tags that are created when pushing by digest.
+  # We keep only meaningful tags like "main", "latest" and semver releases.
+  docker-cleanup-sha256-tags:
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
+    needs: [docker-manifest]
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Delete sha256-* GHCR tags (keep main/latest/semver)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          OWNER="${REPO%%/*}"
+          NAME="${REPO#*/}"
+          PACKAGE="${NAME,,}" # lower-case
+
+          if [[ "${{ github.repository_owner }}" == "erpc" ]]; then
+            SCOPE_PATH="orgs/$OWNER"
+          else
+            SCOPE_PATH="users/$OWNER"
+          fi
+
+          echo "Scanning GHCR package '$PACKAGE' under $SCOPE_PATH for sha256-only versions to delete..."
+
+          gh api --paginate "/$SCOPE_PATH/packages/container/$PACKAGE/versions?per_page=100" \
+            -H "Accept: application/vnd.github+json" \
+          | jq -r '
+              .[] 
+              | select(.metadata.container.tags | length == 1)
+              | select((.metadata.container.tags | map(startswith("sha256-")) | all))
+              | .id
+            ' \
+          | while read -r VERSION_ID; do
+              echo "Deleting version ${VERSION_ID} (sha256-only tags)..."
+              gh api --method DELETE "/$SCOPE_PATH/packages/container/$PACKAGE/versions/${VERSION_ID}" \
+                -H "Accept: application/vnd.github+json" || true
+            done
