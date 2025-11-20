@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -20,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
+func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
 	var policies = map[string]failsafe.Policy[*common.NormalizedResponse]{}
 
@@ -73,7 +74,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
-		p, err := createHedgePolicy(&lg, fsCfg.Hedge)
+		p, err := createHedgePolicy(appCtx, &lg, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
 		}
@@ -243,8 +244,10 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(appCtx context.Context, logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	var builder hedgepolicy.HedgePolicyBuilder[*common.NormalizedResponse]
+
+	// Observe hedge delay via histogram; no background publisher.
 
 	delay := cfg.Delay.Duration()
 	if cfg.Quantile > 0 {
@@ -275,9 +278,13 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 										dr = maxDelay
 									}
 									finality := req.Finality(ctx)
-									telemetry.GaugeHandle(telemetry.MetricNetworkHedgeQuantileMilliseconds,
-										ntw.ProjectId(), req.NetworkLabel(), m, finality.String(),
-									).Set(float64(dr.Milliseconds()))
+									telemetry.ObserverHandle(
+										telemetry.MetricNetworkHedgeDelaySeconds,
+										ntw.ProjectId(),
+										req.NetworkLabel(),
+										m,
+										finality.String(),
+									).Observe(dr.Seconds())
 									logger.Trace().Object("request", req).Dur("delay", dr).Msgf("calculated hedge delay")
 									return dr
 								}

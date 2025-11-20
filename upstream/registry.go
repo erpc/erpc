@@ -64,6 +64,8 @@ type UpstreamsRegistry struct {
 	upstreamScores map[string]map[string]map[string]float64
 
 	onUpstreamRegistered func(ups *Upstream) error
+	// scoreMetricsMode controls the labeling granularity for score metrics for this registry.
+	scoreMetricsMode telemetry.ScoreMetricsMode
 }
 
 type UpstreamsHealth struct {
@@ -112,6 +114,20 @@ func NewUpstreamsRegistry(
 		networkMu:              &sync.Map{},
 		initializer:            util.NewInitializer(appCtx, &lg, nil),
 		onUpstreamRegistered:   onUpstreamRegistered,
+		scoreMetricsMode:       telemetry.ScoreModeCompact,
+	}
+}
+
+// SetScoreMetricsMode sets the emission mode for upstream score metrics.
+// Any value other than ScoreModeDetailed or ScoreModeNone is treated as ScoreModeCompact.
+func (u *UpstreamsRegistry) SetScoreMetricsMode(mode telemetry.ScoreMetricsMode) {
+	switch mode {
+	case telemetry.ScoreModeDetailed:
+		u.scoreMetricsMode = telemetry.ScoreModeDetailed
+	case telemetry.ScoreModeNone:
+		u.scoreMetricsMode = telemetry.ScoreModeNone
+	default:
+		u.scoreMetricsMode = telemetry.ScoreModeCompact
 	}
 }
 
@@ -582,7 +598,22 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 			// preserving ordering while ensuring consistent EMA application.
 			smoothed := scoreEMAPreviousWeight*prev + (1.0-scoreEMAPreviousWeight)*instant
 			scores[upsId] = smoothed
-			telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, km.method).Set(smoothed)
+			// Emit score metric according to configured mode.
+			// compact: collapse upstream and category into 'n/a' to reduce cardinality
+			// detailed: include full upstream and category
+			// Respect emission mode
+			if u.scoreMetricsMode == telemetry.ScoreModeNone {
+				// Do not emit anything in 'none' mode
+				// Continue to compute and store scores, but skip metric emission
+			} else {
+				upLabel := "n/a"
+				catLabel := "n/a"
+				if u.scoreMetricsMode == telemetry.ScoreModeDetailed {
+					upLabel = upsId
+					catLabel = km.method
+				}
+				telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel).Set(smoothed)
+			}
 		}
 
 		// Filter disabled by cordon and sort by computed scores desc

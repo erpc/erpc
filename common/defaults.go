@@ -1115,6 +1115,10 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
 	}
+	// Default score metrics mode to compact when not provided
+	if strings.TrimSpace(p.ScoreMetricsMode) == "" {
+		p.ScoreMetricsMode = "compact"
+	}
 
 	return nil
 }

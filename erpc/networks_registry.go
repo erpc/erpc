@@ -93,7 +93,7 @@ func NewNetwork(
 	var failsafeExecutors []*FailsafeExecutor
 	if len(nwCfg.Failsafe) > 0 {
 		for _, fsCfg := range nwCfg.Failsafe {
-			pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, fsCfg)
+			pls, err := upstream.CreateFailSafePolicies(appCtx, &lg, common.ScopeNetwork, key, fsCfg)
 			if err != nil {
 				return nil, err
 			}
