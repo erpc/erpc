@@ -1080,7 +1080,6 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 		}
 		return out, mlx.err
 	case <-ctx.Done():
-		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime), err)
