@@ -556,6 +556,14 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
 	}
+	if p.ScoreMetricsMode != "" {
+		switch strings.ToLower(strings.TrimSpace(p.ScoreMetricsMode)) {
+		case "compact", "detailed", "none":
+			// ok
+		default:
+			return fmt.Errorf("project.*.scoreMetricsMode must be one of: compact, detailed, none")
+		}
+	}
 	if len(p.Providers) > 0 {
 		existingIds := make(map[string]bool)
 		for _, provider := range p.Providers {

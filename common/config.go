@@ -371,18 +371,23 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 }
 
 type ProjectConfig struct {
-	Id                     string                              `yaml:"id" json:"id"`
-	Auth                   *AuthConfig                         `yaml:"auth,omitempty" json:"auth"`
-	CORS                   *CORSConfig                         `yaml:"cors,omitempty" json:"cors"`
-	Providers              []*ProviderConfig                   `yaml:"providers,omitempty" json:"providers"`
-	UpstreamDefaults       *UpstreamConfig                     `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
-	Upstreams              []*UpstreamConfig                   `yaml:"upstreams,omitempty" json:"upstreams"`
-	NetworkDefaults        *NetworkDefaults                    `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
-	Networks               []*NetworkConfig                    `yaml:"networks,omitempty" json:"networks"`
-	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
-	ScoreRefreshInterval   Duration                            `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
-	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	Id                     string            `yaml:"id" json:"id"`
+	Auth                   *AuthConfig       `yaml:"auth,omitempty" json:"auth"`
+	CORS                   *CORSConfig       `yaml:"cors,omitempty" json:"cors"`
+	Providers              []*ProviderConfig `yaml:"providers,omitempty" json:"providers"`
+	UpstreamDefaults       *UpstreamConfig   `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
+	Upstreams              []*UpstreamConfig `yaml:"upstreams,omitempty" json:"upstreams"`
+	NetworkDefaults        *NetworkDefaults  `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks               []*NetworkConfig  `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget        string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	ScoreMetricsWindowSize Duration          `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
+	ScoreRefreshInterval   Duration          `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
+	// ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
+	// Allowed values:
+	// - "compact": emit compact series by setting upstream and category labels to 'n/a'
+	// - "detailed": emit full project/vendor/network/upstream/category series
+	ScoreMetricsMode      string                              `yaml:"scoreMetricsMode,omitempty" json:"scoreMetricsMode"`
+	DeprecatedHealthCheck *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 	// Configure user agent tracking at the project level
 	UserAgentMode UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
 }

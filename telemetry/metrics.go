@@ -430,6 +430,35 @@ var (
 	MetricConsensusDuration *prometheus.HistogramVec
 )
 
+// ScoreMetricsMode controls how score metrics are emitted.
+// "compact": emit compact series by setting upstream and category to 'n/a'
+// "detailed": emit full project/vendor/network/upstream/category series
+// "none": do not emit score metrics
+type ScoreMetricsMode string
+
+const (
+	ScoreModeCompact  ScoreMetricsMode = "compact"
+	ScoreModeDetailed ScoreMetricsMode = "detailed"
+	ScoreModeNone     ScoreMetricsMode = "none"
+)
+
+var currentScoreMetricsMode = ScoreModeCompact
+
+func SetScoreMetricsMode(v string) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "detailed":
+		currentScoreMetricsMode = ScoreModeDetailed
+	case "none":
+		currentScoreMetricsMode = ScoreModeNone
+	default:
+		currentScoreMetricsMode = ScoreModeCompact
+	}
+}
+
+func GetScoreMetricsMode() ScoreMetricsMode {
+	return currentScoreMetricsMode
+}
+
 func SetHistogramBuckets(bucketsStr string) error {
 	buckets, err := ParseHistogramBuckets(bucketsStr)
 	if err != nil {
