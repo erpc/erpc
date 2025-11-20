@@ -77,7 +77,7 @@ func NewUpstream(
 	var failsafeExecutors []*FailsafeExecutor
 	if len(cfg.Failsafe) > 0 {
 		for _, fsCfg := range cfg.Failsafe {
-			policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, fsCfg)
+			policiesMap, err := CreateFailSafePolicies(appCtx, &lg, common.ScopeUpstream, cfg.Id, fsCfg)
 			if err != nil {
 				return nil, err
 			}
