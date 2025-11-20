@@ -1047,11 +1047,17 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	mlx.mu.Lock()
 	if mlx.resp != nil || mlx.err != nil {
 		// Clone the stored response while holding the lock to avoid races with cleanup
+		if mlx.resp != nil {
+			mlx.resp.AddRef()
+		}
 		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		if mlx.resp != nil {
+			mlx.resp.DoneRef()
+		}
+		mlx.mu.Unlock()
 		if err != nil {
 			return nil, err
 		}
-		mlx.mu.Unlock()
 		return out, mlx.err
 	}
 	mlx.mu.Unlock()
@@ -1061,11 +1067,17 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	case <-mlx.done:
 		// Need to lock when accessing mlx.resp to avoid race with cleanupMultiplexer
 		mlx.mu.Lock()
+		if mlx.resp != nil {
+			mlx.resp.AddRef()
+		}
 		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+		if mlx.resp != nil {
+			mlx.resp.DoneRef()
+		}
+		mlx.mu.Unlock()
 		if err != nil {
 			return nil, err
 		}
-		mlx.mu.Unlock()
 		return out, mlx.err
 	case <-ctx.Done():
 		n.cleanupMultiplexer(mlx)
@@ -1082,6 +1094,8 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	defer mlx.mu.Unlock()
 
 	if mlx.resp != nil {
+		// Balance the AddRef performed by the leader in Multiplexer.Close
+		mlx.resp.DoneRef()
 		mlx.resp.Release()
 		mlx.resp = nil
 	}

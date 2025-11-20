@@ -62,6 +62,10 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					multiplexerResp.WithJsonRpcResponse(cloned)
 					resp = multiplexerResp
 				}
+				// Hold a ref so cleanup waits for followers to finish cloning
+				if resp != nil {
+					resp.AddRef()
+				}
 			}
 		}
 

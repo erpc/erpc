@@ -69,6 +69,12 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case <-done:
 		tw.mu.Lock()
 		defer tw.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			log.Debug().Err(err).Msg("context canceled before writing response")
+			util.ReturnBuf(tw.wbuf)
+			tw.wbuf = nil
+			return
+		}
 		dst := w.Header()
 		for k, vv := range tw.h {
 			dst[k] = vv

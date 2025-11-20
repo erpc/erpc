@@ -56,6 +56,8 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
+	chainIdValidated atomic.Bool
 }
 
 func NewUpstream(
@@ -676,6 +678,14 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 
 // TODO move to evm package
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
+	// If chainId has already been validated during bootstrap and exists in config,
+	// avoid a network call and serve from config. This eliminates unnecessary
+	// upstream RPS for eth_chainId driven by internal probes or health checks.
+	cfg := u.Config()
+	if u.chainIdValidated.Load() && cfg != nil && cfg.Evm != nil && cfg.Evm.ChainId > 0 {
+		return strconv.FormatInt(cfg.Evm.ChainId, 10), nil
+	}
+
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
 	resp, err := u.Forward(ctx, pr, true)
@@ -1204,6 +1214,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		}
 		cfg.Evm.ChainId = realChainID
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))
+		u.chainIdValidated.Store(true)
 
 		// @deprecated: NodeType-specific logic removed; availability is handled by blockAvailability bounds.
 
