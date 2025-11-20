@@ -678,13 +678,8 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 
 // TODO move to evm package
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
-	// If chainId has already been validated during bootstrap and exists in config,
-	// avoid a network call and serve from config. This eliminates unnecessary
-	// upstream RPS for eth_chainId driven by internal probes or health checks.
-	cfg := u.Config()
-	if u.chainIdValidated.Load() && cfg != nil && cfg.Evm != nil && cfg.Evm.ChainId > 0 {
-		return strconv.FormatInt(cfg.Evm.ChainId, 10), nil
-	}
+	// Always make a real upstream call here. End-user requests can be short-circuited
+	// via higher-level hooks (e.g. project/network pre-forward for eth_chainId).
 
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
