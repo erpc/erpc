@@ -210,8 +210,6 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 	return actual.(prometheus.Observer)
 }
 
-// Removed upstream self rate-limited counter; consolidated under budget decision metric elsewhere.
-
 // Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
 type rrltKey struct {
 	project   string
