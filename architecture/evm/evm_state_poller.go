@@ -740,7 +740,7 @@ func (e *EvmStatePoller) pollEarliest(ctx context.Context) {
 					Int64("earliestBlock", earliest).
 					Str("probe", string(probe)).
 					Str("upstreamId", e.upstream.Config().Id).
-					Msg("initialized earliest block availability bound")
+					Msg("fetched earliest block availability bound")
 			}
 		}
 		// Start scheduler per probe if updateRate>0 and not started yet
