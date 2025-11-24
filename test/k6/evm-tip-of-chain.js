@@ -40,14 +40,22 @@ const CHAINS = {
   //     transactions: []
   //   }
   // },
-  POLYGON: {
-    id: '137',
+  MONAD: {
+    id: '143',
     cached: {
       latestBlock: null,
       latestBlockTimestamp: 0,
       transactions: []
     }
   },
+  // POLYGON: {
+  //   id: '137',
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0,
+  //     transactions: []
+  //   }
+  // },
   // ARBITRUM: {
   //   id: '42161',
   //   cached: {

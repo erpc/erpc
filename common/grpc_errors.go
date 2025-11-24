@@ -84,7 +84,9 @@ func ExtractGrpcErrorFromGrpcStatus(st *status.Status, upstream Upstream) error 
 				),
 			)
 		case bdscommon.ErrorCode_TIMEOUT_ERROR:
-			return NewErrEndpointServerSideException(
+			// Map BDS timeout to upstream request timeout (not server-side error)
+			return NewErrEndpointRequestTimeout(
+				0,
 				NewErrJsonRpcExceptionInternal(
 					int(JsonRpcErrorNodeTimeout),
 					JsonRpcErrorNodeTimeout,
@@ -92,8 +94,6 @@ func ExtractGrpcErrorFromGrpcStatus(st *status.Status, upstream Upstream) error 
 					nil,
 					details,
 				),
-				nil,
-				0,
 			)
 		case bdscommon.ErrorCode_RANGE_TOO_LARGE:
 			return NewErrEndpointRequestTooLarge(
@@ -122,6 +122,18 @@ func ExtractGrpcErrorFromGrpcStatus(st *status.Status, upstream Upstream) error 
 	}
 
 	switch code {
+	case codes.Canceled:
+		// Cancellation typically indicates client-side or hedging cancellation.
+		// Preserve gRPC details in the nested cause for observability.
+		return NewErrEndpointRequestCanceled(
+			NewErrJsonRpcExceptionInternal(
+				0, // no original json-rpc code
+				0, // no normalized json-rpc code
+				msg,
+				nil,
+				details,
+			),
+		)
 	case codes.Unimplemented:
 		return NewErrEndpointUnsupported(
 			NewErrJsonRpcExceptionInternal(
@@ -153,7 +165,9 @@ func ExtractGrpcErrorFromGrpcStatus(st *status.Status, upstream Upstream) error 
 			),
 		)
 	case codes.DeadlineExceeded:
-		return NewErrEndpointServerSideException(
+		// Treat upstream deadline exceeded as request timeout rather than server-side error
+		return NewErrEndpointRequestTimeout(
+			0,
 			NewErrJsonRpcExceptionInternal(
 				int(JsonRpcErrorNodeTimeout),
 				JsonRpcErrorNodeTimeout,
@@ -161,8 +175,6 @@ func ExtractGrpcErrorFromGrpcStatus(st *status.Status, upstream Upstream) error 
 				nil,
 				details,
 			),
-			nil,
-			0,
 		)
 	case codes.Unauthenticated, codes.PermissionDenied:
 		return NewErrEndpointUnauthorized(
