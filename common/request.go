@@ -66,24 +66,20 @@ type RequestDirectives struct {
 	ValidateTxHashUniqueness        bool `json:"validateTxHashUniqueness,omitempty"`
 	ValidateTransactionIndex        bool `json:"validateTransactionIndex,omitempty"`
 
-	// Validation: numeric checks (use -1 for unset)
-	ReceiptsCountExact   int64 `json:"receiptsCountExact,omitempty"`
-	ReceiptsCountAtLeast int64 `json:"receiptsCountAtLeast,omitempty"`
+	// Validation: numeric checks (nil means unset/don't check)
+	ReceiptsCountExact   *int64 `json:"receiptsCountExact,omitempty"`
+	ReceiptsCountAtLeast *int64 `json:"receiptsCountAtLeast,omitempty"`
 
-	// Validation: Expected Ground Truths
+	// Validation: Expected Ground Truths (nil means unset/don't check)
 	ValidationExpectedBlockHash   string `json:"validationExpectedBlockHash,omitempty"`
-	ValidationExpectedBlockNumber int64  `json:"validationExpectedBlockNumber,omitempty"`
+	ValidationExpectedBlockNumber *int64 `json:"validationExpectedBlockNumber,omitempty"`
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
 	if d == nil {
-		return &RequestDirectives{
-			ReceiptsCountExact:            -1,
-			ReceiptsCountAtLeast:          -1,
-			ValidationExpectedBlockNumber: -1,
-		}
+		return &RequestDirectives{}
 	}
-	return &RequestDirectives{
+	cloned := &RequestDirectives{
 		RetryEmpty:                      d.RetryEmpty,
 		RetryPending:                    d.RetryPending,
 		SkipCacheRead:                   d.SkipCacheRead,
@@ -98,11 +94,22 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		ValidateLogsBloom:               d.ValidateLogsBloom,
 		ValidateTxHashUniqueness:        d.ValidateTxHashUniqueness,
 		ValidateTransactionIndex:        d.ValidateTransactionIndex,
-		ReceiptsCountExact:              d.ReceiptsCountExact,
-		ReceiptsCountAtLeast:            d.ReceiptsCountAtLeast,
 		ValidationExpectedBlockHash:     d.ValidationExpectedBlockHash,
-		ValidationExpectedBlockNumber:   d.ValidationExpectedBlockNumber,
 	}
+	// Deep copy pointer fields
+	if d.ReceiptsCountExact != nil {
+		v := *d.ReceiptsCountExact
+		cloned.ReceiptsCountExact = &v
+	}
+	if d.ReceiptsCountAtLeast != nil {
+		v := *d.ReceiptsCountAtLeast
+		cloned.ReceiptsCountAtLeast = &v
+	}
+	if d.ValidationExpectedBlockNumber != nil {
+		v := *d.ValidationExpectedBlockNumber
+		cloned.ValidationExpectedBlockNumber = &v
+	}
+	return cloned
 }
 
 type NormalizedRequest struct {
@@ -322,11 +329,7 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	defer r.Unlock()
 
 	if r.directives == nil {
-		r.directives = &RequestDirectives{
-			ReceiptsCountExact:            -1,
-			ReceiptsCountAtLeast:          -1,
-			ValidationExpectedBlockNumber: -1,
-		}
+		r.directives = &RequestDirectives{}
 	}
 
 	if directiveDefaults.RetryEmpty != nil {
@@ -373,12 +376,14 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 		r.directives.ValidateTransactionIndex = *directiveDefaults.ValidateTransactionIndex
 	}
 
-	// Validation: numeric checks
+	// Validation: numeric checks (copy pointer values)
 	if directiveDefaults.ReceiptsCountExact != nil {
-		r.directives.ReceiptsCountExact = *directiveDefaults.ReceiptsCountExact
+		v := *directiveDefaults.ReceiptsCountExact
+		r.directives.ReceiptsCountExact = &v
 	}
 	if directiveDefaults.ReceiptsCountAtLeast != nil {
-		r.directives.ReceiptsCountAtLeast = *directiveDefaults.ReceiptsCountAtLeast
+		v := *directiveDefaults.ReceiptsCountAtLeast
+		r.directives.ReceiptsCountAtLeast = &v
 	}
 
 	// Validation: Expected Ground Truths
@@ -386,7 +391,8 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 		r.directives.ValidationExpectedBlockHash = *directiveDefaults.ValidationExpectedBlockHash
 	}
 	if directiveDefaults.ValidationExpectedBlockNumber != nil {
-		r.directives.ValidationExpectedBlockNumber = *directiveDefaults.ValidationExpectedBlockNumber
+		v := *directiveDefaults.ValidationExpectedBlockNumber
+		r.directives.ValidationExpectedBlockNumber = &v
 	}
 }
 
@@ -458,11 +464,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	// Copy-On-Write: If we have existing (likely shared) directives, clone them.
 	// If nil, create new.
 	if r.directives == nil {
-		r.directives = &RequestDirectives{
-			ReceiptsCountExact:            -1,
-			ReceiptsCountAtLeast:          -1,
-			ValidationExpectedBlockNumber: -1,
-		}
+		r.directives = &RequestDirectives{}
 	} else {
 		r.directives = r.directives.Clone()
 	}
@@ -512,12 +514,12 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 
 	if hv := headers.Get("X-ERPC-Receipts-Count-Exact"); hv != "" {
 		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
-			r.directives.ReceiptsCountExact = v
+			r.directives.ReceiptsCountExact = &v
 		}
 	}
 	if hv := headers.Get("X-ERPC-Receipts-Count-At-Least"); hv != "" {
 		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
-			r.directives.ReceiptsCountAtLeast = v
+			r.directives.ReceiptsCountAtLeast = &v
 		}
 	}
 	if hv := headers.Get("X-ERPC-Validation-Expected-Block-Hash"); hv != "" {
@@ -525,7 +527,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if hv := headers.Get("X-ERPC-Validation-Expected-Block-Number"); hv != "" {
 		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
-			r.directives.ValidationExpectedBlockNumber = v
+			r.directives.ValidationExpectedBlockNumber = &v
 		}
 	}
 
@@ -577,12 +579,12 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if v := queryArgs.Get("receipts-count-exact"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			r.directives.ReceiptsCountExact = n
+			r.directives.ReceiptsCountExact = &n
 		}
 	}
 	if v := queryArgs.Get("receipts-count-at-least"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			r.directives.ReceiptsCountAtLeast = n
+			r.directives.ReceiptsCountAtLeast = &n
 		}
 	}
 	if v := queryArgs.Get("validation-expected-block-hash"); v != "" {
@@ -590,7 +592,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if v := queryArgs.Get("validation-expected-block-number"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			r.directives.ValidationExpectedBlockNumber = n
+			r.directives.ValidationExpectedBlockNumber = &n
 		}
 	}
 }

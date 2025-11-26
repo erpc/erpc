@@ -1797,6 +1797,23 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	if n.DirectiveDefaults == nil {
 		n.DirectiveDefaults = &DirectiveDefaultsConfig{}
 	}
+
+	// Backward compatibility: migrate old EvmIntegrityConfig to DirectiveDefaultsConfig
+	// User's explicit old config values take precedence over defaults
+	if n.Evm != nil && n.Evm.Integrity != nil {
+		integrity := n.Evm.Integrity
+		// Only migrate if the user hasn't explicitly set the new directive
+		if n.DirectiveDefaults.EnforceHighestBlock == nil && integrity.EnforceHighestBlock != nil {
+			n.DirectiveDefaults.EnforceHighestBlock = integrity.EnforceHighestBlock
+		}
+		if n.DirectiveDefaults.EnforceGetLogsBlockRange == nil && integrity.EnforceGetLogsBlockRange != nil {
+			n.DirectiveDefaults.EnforceGetLogsBlockRange = integrity.EnforceGetLogsBlockRange
+		}
+		if n.DirectiveDefaults.EnforceNonNullTaggedBlocks == nil && integrity.EnforceNonNullTaggedBlocks != nil {
+			n.DirectiveDefaults.EnforceNonNullTaggedBlocks = integrity.EnforceNonNullTaggedBlocks
+		}
+	}
+
 	if err := n.DirectiveDefaults.SetDefaults(); err != nil {
 		return err
 	}

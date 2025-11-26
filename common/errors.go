@@ -2661,15 +2661,17 @@ type ErrEndpointContentValidation struct {
 const ErrCodeEndpointContentValidation ErrorCode = "ErrEndpointContentValidation"
 
 var NewErrEndpointContentValidation = func(cause error, upstream Upstream) error {
+	details := map[string]interface{}{}
+	if upstream != nil {
+		details["upstreamId"] = upstream.Id()
+	}
 	return &ErrEndpointContentValidation{
 		UpstreamAwareError: UpstreamAwareError{upstream: upstream},
 		BaseError: BaseError{
 			Code:    ErrCodeEndpointContentValidation,
 			Message: "upstream response failed validation content check",
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"upstreamId": upstream.Id(),
-			},
+			Details: details,
 		},
 	}
 }

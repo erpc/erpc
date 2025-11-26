@@ -33,13 +33,9 @@ func createTestUpstreamConfig(id string) *common.UpstreamConfig {
 	}
 }
 
-// Helper to create properly initialized directives with numeric fields set to -1 (unset)
+// Helper to create properly initialized directives (numeric pointer fields are nil by default = unset)
 func newTestDirectives() *common.RequestDirectives {
-	return &common.RequestDirectives{
-		ReceiptsCountExact:            -1,
-		ReceiptsCountAtLeast:          -1,
-		ValidationExpectedBlockNumber: -1,
-	}
+	return &common.RequestDirectives{}
 }
 
 // Helper to setup test network for integrity tests

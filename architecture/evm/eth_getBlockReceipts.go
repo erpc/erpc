@@ -94,19 +94,19 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 
 	count := int64(len(receipts))
 
-	// 1. Count Validations
-	if dirs.ReceiptsCountExact != -1 {
-		if count != dirs.ReceiptsCountExact {
+	// 1. Count Validations (nil means unset/don't check)
+	if dirs.ReceiptsCountExact != nil {
+		if count != *dirs.ReceiptsCountExact {
 			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("receipts count mismatch: expected %d got %d", dirs.ReceiptsCountExact, count),
+				fmt.Errorf("receipts count mismatch: expected %d got %d", *dirs.ReceiptsCountExact, count),
 				u,
 			)
 		}
 	}
-	if dirs.ReceiptsCountAtLeast != -1 {
-		if count < dirs.ReceiptsCountAtLeast {
+	if dirs.ReceiptsCountAtLeast != nil {
+		if count < *dirs.ReceiptsCountAtLeast {
 			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("receipts count insufficient: expected at least %d got %d", dirs.ReceiptsCountAtLeast, count),
+				fmt.Errorf("receipts count insufficient: expected at least %d got %d", *dirs.ReceiptsCountAtLeast, count),
 				u,
 			)
 		}
@@ -126,7 +126,8 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 		}
 	}
 
-	if expectedNum := dirs.ValidationExpectedBlockNumber; expectedNum != -1 {
+	if dirs.ValidationExpectedBlockNumber != nil {
+		expectedNum := *dirs.ValidationExpectedBlockNumber
 		for i, r := range receipts {
 			if r.BlockNumber == "" {
 				continue
