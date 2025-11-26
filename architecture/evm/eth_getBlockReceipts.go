@@ -14,35 +14,58 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// upstreamPostForward_eth_getBlockReceipts validates receipts structure per Upstream integrity config.
-// It runs as a post-upstream hook and never imports go-ethereum. It inspects the JSON result directly.
+// upstreamPostForward_eth_getBlockReceipts validates receipts based on request directives.
+// It runs as a post-upstream hook after the response is received.
 func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
-	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_getBlockReceipts", trace.WithAttributes(
-		attribute.String("network.id", n.Id()),
-		attribute.String("upstream.id", u.Id()),
-	))
-	defer span.End()
-
 	if re != nil || rs == nil {
 		return rs, re
 	}
 
-	cfg := u.Config()
-	if cfg == nil || cfg.Evm == nil || cfg.Evm.Integrity == nil || cfg.Evm.Integrity.EthGetBlockReceipts == nil || !cfg.Evm.Integrity.EthGetBlockReceipts.Enabled {
+	var networkId, upstreamId string
+	if n != nil {
+		networkId = n.Id()
+	}
+	if u != nil {
+		upstreamId = u.Id()
+	}
+	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_getBlockReceipts", trace.WithAttributes(
+		attribute.String("network.id", networkId),
+		attribute.String("upstream.id", upstreamId),
+	))
+	defer span.End()
+
+	// Skip validation if response is empty
+	if rs.IsObjectNull() || rs.IsResultEmptyish() {
 		return rs, re
 	}
-	mcfg := cfg.Evm.Integrity.EthGetBlockReceipts
 
-	// Parse JSON-RPC response
-	jrr, err := rs.JsonRpcResponse(ctx)
-	if err != nil || jrr == nil {
+	// Get directives - if nil, no validation needed
+	dirs := rq.Directives()
+	if dirs == nil {
+		return rs, re
+	}
+
+	// Run directive-based validation
+	if err := validateGetBlockReceipts(ctx, u, dirs, rs); err != nil {
 		return rs, err
 	}
-	if jrr.Error != nil {
-		return rs, re
-	}
-	if rs.IsResultEmptyish(ctx) || jrr.IsResultEmptyish() {
-		return rs, re
+
+	return rs, re
+}
+
+// validateGetBlockReceipts validates eth_getBlockReceipts responses based on request directives.
+// It checks:
+// - ReceiptsCountExact / ReceiptsCountAtLeast
+// - ValidationExpectedBlockHash / ValidationExpectedBlockNumber
+// - ValidateTxHashUniqueness
+// - ValidateTransactionIndex
+// - EnforceNonEmptyLogsBloom
+// - EnforceLogIndexStrictIncrements
+// - ValidateLogsBloom
+func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rs *common.NormalizedResponse) error {
+	jrr, err := rs.JsonRpcResponse(ctx)
+	if err != nil {
+		return err
 	}
 
 	// Minimal JSON model for validation
@@ -52,116 +75,182 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 		Topics   []string `json:"topics"`
 	}
 	type receiptLite struct {
-		BlockHash string    `json:"blockHash"`
-		LogsBloom string    `json:"logsBloom"`
-		Logs      []logLite `json:"logs"`
+		BlockHash        string    `json:"blockHash"`
+		BlockNumber      string    `json:"blockNumber"`
+		TransactionHash  string    `json:"transactionHash"`
+		TransactionIndex string    `json:"transactionIndex"`
+		LogsBloom        string    `json:"logsBloom"`
+		Logs             []logLite `json:"logs"`
 	}
 
 	var receipts []receiptLite
 	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &receipts); err != nil {
-		return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid JSON result for eth_getBlockReceipts: %w", err), u)
+		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid JSON result for receipts validation: %w", err), u)
 	}
 
-	// Quick sanity: ensure decoded array
 	if receipts == nil {
 		receipts = []receiptLite{}
 	}
 
-	// Validate blockHash consistency across receipts (when present)
-	var expectedBlockHash string
-	for i := range receipts {
-		bh := strings.ToLower(strings.TrimPrefix(receipts[i].BlockHash, "0x"))
-		if bh == "" {
-			continue
+	count := int64(len(receipts))
+
+	// 1. Count Validations
+	if dirs.ReceiptsCountExact != -1 {
+		if count != dirs.ReceiptsCountExact {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("receipts count mismatch: expected %d got %d", dirs.ReceiptsCountExact, count),
+				u,
+			)
 		}
-		if expectedBlockHash == "" {
-			expectedBlockHash = bh
-		} else if bh != expectedBlockHash {
-			return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("inconsistent receipt.blockHash in array"), u)
+	}
+	if dirs.ReceiptsCountAtLeast != -1 {
+		if count < dirs.ReceiptsCountAtLeast {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("receipts count insufficient: expected at least %d got %d", dirs.ReceiptsCountAtLeast, count),
+				u,
+			)
 		}
 	}
 
-	// Validate global logIndex contiguity (start at 0, increment by 1) if enabled
-	if mcfg.CheckLogIndexStrictIncrements != nil && *mcfg.CheckLogIndexStrictIncrements {
-		var expected uint64 = 0
-		for i := range receipts {
-			for j := range receipts[i].Logs {
-				lix := receipts[i].Logs[j].LogIndex
+	// 2. Expected Ground Truths
+	if expectedHash := dirs.ValidationExpectedBlockHash; expectedHash != "" {
+		expectedHash = strings.ToLower(strings.TrimPrefix(expectedHash, "0x"))
+		for i, r := range receipts {
+			gotHash := strings.ToLower(strings.TrimPrefix(r.BlockHash, "0x"))
+			if gotHash != "" && gotHash != expectedHash {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("receipts block hash mismatch at index %d: expected %s got %s", i, expectedHash, gotHash),
+					u,
+				)
+			}
+		}
+	}
+
+	if expectedNum := dirs.ValidationExpectedBlockNumber; expectedNum != -1 {
+		for i, r := range receipts {
+			if r.BlockNumber == "" {
+				continue
+			}
+			bn, err := common.HexToInt64(r.BlockNumber)
+			if err != nil {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid blockNumber hex at index %d: %w", i, err), u)
+			}
+			if bn != expectedNum {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("receipts block number mismatch at index %d: expected %d got %d", i, expectedNum, bn),
+					u,
+				)
+			}
+		}
+	}
+
+	// 3. Tx Hash Uniqueness
+	if dirs.ValidateTxHashUniqueness {
+		seen := make(map[string]struct{}, count)
+		for i, r := range receipts {
+			if r.TransactionHash == "" {
+				continue
+			}
+			if _, exists := seen[r.TransactionHash]; exists {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("duplicate transaction hash %s at index %d", r.TransactionHash, i), u)
+			}
+			seen[r.TransactionHash] = struct{}{}
+		}
+	}
+
+	// 4. Transaction Index Consistency
+	if dirs.ValidateTransactionIndex {
+		for i, r := range receipts {
+			if r.TransactionIndex == "" {
+				continue
+			}
+			idx, err := common.HexToInt64(r.TransactionIndex)
+			if err != nil {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid transactionIndex hex at index %d: %w", i, err), u)
+			}
+			if idx != int64(i) {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("transaction index mismatch at array index %d: got %d", i, idx),
+					u,
+				)
+			}
+		}
+	}
+
+	// 5. Deep Receipt Validation (Logs, Bloom)
+	var expectedLogIndex uint64 = 0
+
+	for i, r := range receipts {
+		// EnforceNonEmptyLogsBloom
+		if dirs.EnforceNonEmptyLogsBloom {
+			lb := strings.TrimLeft(strings.TrimPrefix(r.LogsBloom, "0x"), "0")
+			if lb != "" && len(r.Logs) == 0 {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("non-zero receipt.logsBloom but 0 logs at receipt %d", i), u)
+			}
+		}
+
+		// EnforceLogIndexStrictIncrements
+		if dirs.EnforceLogIndexStrictIncrements {
+			for j, log := range r.Logs {
+				lix := log.LogIndex
 				if lix == "" {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("missing logIndex at receipt %d log %d", i, j), u)
+					return common.NewErrEndpointContentValidation(fmt.Errorf("missing logIndex at receipt %d log %d", i, j), u)
 				}
-				// Ensure lix is ASCII to avoid allocations on weird encodings
 				if !utf8.ValidString(lix) {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid UTF-8 in logIndex at receipt %d log %d", i, j), u)
-				}
-				if !strings.HasPrefix(lix, "0x") {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("logIndex must be hex string at receipt %d log %d", i, j), u)
+					return common.NewErrEndpointContentValidation(fmt.Errorf("invalid UTF-8 in logIndex at receipt %d log %d", i, j), u)
 				}
 				v, herr := common.HexToUint64(lix)
 				if herr != nil {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid logIndex hex at receipt %d log %d: %w", i, j, herr), u)
+					return common.NewErrEndpointContentValidation(fmt.Errorf("invalid logIndex hex at receipt %d log %d: %w", i, j, herr), u)
 				}
-				if v != expected {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("logIndex not contiguous: expected %d got %d at receipt %d log %d", expected, v, i, j), u)
+				if v != expectedLogIndex {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("logIndex not contiguous: expected %d got %d at receipt %d log %d", expectedLogIndex, v, i, j), u)
 				}
-				expected++
+				expectedLogIndex++
+			}
+		}
+
+		// ValidateLogsBloom
+		if dirs.ValidateLogsBloom && len(r.Logs) > 0 {
+			providedBloom, perr := evm.HexToBytes(r.LogsBloom)
+			if perr != nil {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid receipt.logsBloom hex: %w", perr), u)
+			}
+			if len(providedBloom) != evm.BloomLength {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid receipt.logsBloom length: %d", len(providedBloom)), u)
+			}
+
+			expected := make([]byte, evm.BloomLength)
+			for j, log := range r.Logs {
+				if addr := strings.TrimSpace(log.Address); addr != "" {
+					ab, aerr := evm.HexToBytes(addr)
+					if aerr != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("invalid log.address hex in receipt %d log %d: %w", i, j, aerr), u)
+					}
+					if len(ab) != evm.AddressLength {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("invalid log.address length in receipt %d log %d: %d", i, j, len(ab)), u)
+					}
+					bloomAdd(expected, ab)
+				}
+				for k, topic := range log.Topics {
+					tb, terr := evm.HexToBytes(topic)
+					if terr != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("invalid log.topic hex in receipt %d log %d idx %d: %w", i, j, k, terr), u)
+					}
+					if len(tb) != evm.TopicLength {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("invalid log.topic length in receipt %d log %d idx %d: %d", i, j, k, len(tb)), u)
+					}
+					bloomAdd(expected, tb)
+				}
+			}
+
+			if !bytes.Equal(expected, providedBloom) {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("receipt.logsBloom does not match logs content at receipt %d", i), u)
 			}
 		}
 	}
 
-	// Optional receipt-level bloom vs logs sanity (cannot check block header bloom here)
-	if mcfg.CheckLogsBloom != nil && *mcfg.CheckLogsBloom {
-		for i := range receipts {
-			lb := strings.TrimLeft(strings.TrimPrefix(receipts[i].LogsBloom, "0x"), "0")
-			if lb != "" && len(receipts[i].Logs) == 0 {
-				return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("non-zero receipt.logsBloom but 0 logs"), u)
-			}
-
-			// Recompute receipt bloom from logs (address + topics) and compare
-			if len(receipts[i].Logs) > 0 {
-				providedBloom, perr := evm.HexToBytes(receipts[i].LogsBloom)
-				if perr != nil {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid receipt.logsBloom hex: %w", perr), u)
-				}
-				if len(providedBloom) != evm.BloomLength {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid receipt.logsBloom length: %d", len(providedBloom)), u)
-				}
-
-				expected := make([]byte, evm.BloomLength)
-				for j := range receipts[i].Logs {
-					// address
-					if addr := strings.TrimSpace(receipts[i].Logs[j].Address); addr != "" {
-						ab, aerr := evm.HexToBytes(addr)
-						if aerr != nil {
-							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.address hex in receipt %d log %d: %w", i, j, aerr), u)
-						}
-						if len(ab) != evm.AddressLength {
-							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.address length in receipt %d log %d: %d", i, j, len(ab)), u)
-						}
-						bloomAdd(expected, ab)
-					}
-					// topics
-					for k := range receipts[i].Logs[j].Topics {
-						tb, terr := evm.HexToBytes(receipts[i].Logs[j].Topics[k])
-						if terr != nil {
-							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.topic hex in receipt %d log %d idx %d: %w", i, j, k, terr), u)
-						}
-						if len(tb) != evm.TopicLength {
-							return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("invalid log.topic length in receipt %d log %d idx %d: %d", i, j, k, len(tb)), u)
-						}
-						bloomAdd(expected, tb)
-					}
-				}
-
-				// Compare recomputed vs provided bloom
-				if !bytes.Equal(expected, providedBloom) {
-					return nil, common.NewErrUpstreamMalformedResponse(fmt.Errorf("receipt.logsBloom does not match logs content"), u)
-				}
-			}
-		}
-	}
-
-	return rs, re
+	return nil
 }
 
 // bloomAdd sets the three keccak-derived bit positions for value into bloom (2048-bit, 256 bytes, big-endian)

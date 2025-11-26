@@ -1278,7 +1278,7 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	dirs := req.Directives()
-	if dirs.UseUpstream != "" {
+	if dirs != nil && dirs.UseUpstream != "" {
 		match, err := common.WildcardMatch(dirs.UseUpstream, u.config.Id)
 		if err != nil {
 			return err, true

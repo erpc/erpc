@@ -1334,6 +1334,18 @@ func (n *NetworkDefaults) SetDefaults() error {
 }
 
 func (d *DirectiveDefaultsConfig) SetDefaults() error {
+	if d == nil {
+		return nil
+	}
+	if d.EnforceHighestBlock == nil {
+		d.EnforceHighestBlock = util.BoolPtr(true)
+	}
+	if d.EnforceGetLogsBlockRange == nil {
+		d.EnforceGetLogsBlockRange = util.BoolPtr(true)
+	}
+	if d.EnforceNonNullTaggedBlocks == nil {
+		d.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
+	}
 	return nil
 }
 
@@ -1781,10 +1793,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		}
 	}
 
-	if n.DirectiveDefaults != nil {
-		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
-			return err
-		}
+	// Always ensure DirectiveDefaults exists and has proper defaults
+	if n.DirectiveDefaults == nil {
+		n.DirectiveDefaults = &DirectiveDefaultsConfig{}
+	}
+	if err := n.DirectiveDefaults.SetDefaults(); err != nil {
+		return err
 	}
 
 	return nil
@@ -2170,7 +2184,7 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 }
 
 func (r *RoutingConfig) SetDefaults() error {
-	if r.ScoreMultipliers == nil || len(r.ScoreMultipliers) == 0 {
+	if len(r.ScoreMultipliers) == 0 {
 		r.ScoreMultipliers = []*ScoreMultiplierConfig{
 			// For realtime/unfinalized: prioritize block lag (need fresh data)
 			{

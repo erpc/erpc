@@ -98,16 +98,30 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook")
 	defer span.End()
 
+	// If there's already an error, skip validation
+	if re != nil {
+		return rs, re
+	}
+
 	method, err := rq.Method()
 	if err != nil {
 		return rs, err
 	}
 
+	// Method-specific post-forward hooks with directive-based validation
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
 		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
+
 	case "eth_getblockreceipts":
+		// First check for unexpected empty
+		rs, re = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+		if re != nil {
+			return rs, re
+		}
+		// Then apply directive-based validation
 		return upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
+
 	case // Block lookups
 		"eth_getblockbynumber",
 		"eth_getblockbyhash",

@@ -78,7 +78,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		}
 	}
 
-	return enforceNonNullBlock(network, nr)
+	return enforceNonNullBlock(nq, nr)
 }
 
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
@@ -86,13 +86,9 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
-	ncfg := network.Config()
-	if ncfg == nil ||
-		ncfg.Evm == nil ||
-		ncfg.Evm.Integrity == nil ||
-		ncfg.Evm.Integrity.EnforceHighestBlock == nil ||
-		!*ncfg.Evm.Integrity.EnforceHighestBlock {
-		// If integrity check for highest block is disabled, skip this hook.
+	// Check directive - this is the new way to control this behavior
+	dirs := nq.Directives()
+	if dirs == nil || !dirs.EnforceHighestBlock {
 		return nr, re
 	}
 
@@ -254,7 +250,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 }
 
 // enforceNonNullBlock checks if the block result is null/empty and returns an appropriate error
-func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+// This is now controlled by the EnforceNonNullTaggedBlocks directive
+func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
 	if nr != nil && !nr.IsObjectNull() && !nr.IsResultEmptyish() {
 		return nr, nil
 	}
@@ -274,15 +271,11 @@ func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) 
 		}
 	}
 
-	// For tagged blocks, check if enforcement is EXPLICITLY disabled in config
+	// For tagged blocks, check directive
 	if isTag {
-		ncfg := network.Config()
-		if ncfg != nil &&
-			ncfg.Evm != nil &&
-			ncfg.Evm.Integrity != nil &&
-			ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks != nil &&
-			!*ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks {
-			// Config EXPLICITLY disables enforcement - allow null tagged blocks
+		dirs := nq.Directives()
+		if dirs == nil || !dirs.EnforceNonNullTaggedBlocks {
+			// Directive disabled - allow null tagged blocks
 			return nr, nil
 		}
 	}

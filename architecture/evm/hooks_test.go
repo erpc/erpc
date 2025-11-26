@@ -13,6 +13,8 @@ func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 		// Blocks
 		"eth_getBlockByNumber",
 		"eth_getBlockByHash",
+		// Receipts
+		"eth_getBlockReceipts",
 		// Transactions
 		"eth_getTransactionByHash",
 		"eth_getTransactionReceipt",
@@ -32,9 +34,9 @@ func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 		// Build a minimal request with method m
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + m + `","params":["0x1"]}`))
 		// Enable retryEmpty so the hook converts empty results to errors
-		if dirs := req.Directives(); dirs != nil {
-			dirs.RetryEmpty = true
-		}
+		req.SetDirectives(&common.RequestDirectives{
+			RetryEmpty: true,
+		})
 		jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`"1"`), []byte("null"), nil)
 		assert.NoError(t, err)
 		resp := common.NewNormalizedResponse().
@@ -60,6 +62,8 @@ func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 func TestUpstreamPostForward_UnexpectedEmpty_RetryEmptyFalse(t *testing.T) {
 	methods := []string{
 		"eth_getBlockByNumber",
+		"eth_getBlockByHash",
+		"eth_getBlockReceipts",
 		"eth_getTransactionByHash",
 		"eth_getTransactionReceipt",
 		"debug_traceTransaction",
@@ -69,10 +73,10 @@ func TestUpstreamPostForward_UnexpectedEmpty_RetryEmptyFalse(t *testing.T) {
 	for _, m := range methods {
 		// Build a minimal request with method m
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + m + `","params":["0x1"]}`))
-		// retryEmpty is false by default, but let's be explicit
-		if dirs := req.Directives(); dirs != nil {
-			dirs.RetryEmpty = false
-		}
+		// Explicitly set retryEmpty to false - should NOT convert empty to error
+		req.SetDirectives(&common.RequestDirectives{
+			RetryEmpty: false,
+		})
 		jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`"1"`), []byte("null"), nil)
 		assert.NoError(t, err)
 		resp := common.NewNormalizedResponse().
@@ -108,9 +112,9 @@ func TestUpstreamPostForward_UnexpectedEmpty_NonListedMethods(t *testing.T) {
 		// Build a minimal request with method m
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + m + `","params":["0x1"]}`))
 		// Enable retryEmpty - but these methods should still not convert to errors
-		if dirs := req.Directives(); dirs != nil {
-			dirs.RetryEmpty = true
-		}
+		req.SetDirectives(&common.RequestDirectives{
+			RetryEmpty: true,
+		})
 		jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`"1"`), []byte("null"), nil)
 		assert.NoError(t, err)
 		resp := common.NewNormalizedResponse().

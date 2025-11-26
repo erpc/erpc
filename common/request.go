@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,16 +53,55 @@ type RequestDirectives struct {
 	// When true, the system will still compute and cache block references (for finality/metrics),
 	// but will NOT replace tags like "latest"/"finalized" with hex numbers in outbound requests.
 	SkipInterpolation bool `json:"skipInterpolation"`
+
+	// Validation: Block Integrity
+	EnforceHighestBlock        bool `json:"enforceHighestBlock,omitempty"`
+	EnforceGetLogsBlockRange   bool `json:"enforceGetLogsBlockRange,omitempty"`
+	EnforceNonNullTaggedBlocks bool `json:"enforceNonNullTaggedBlocks,omitempty"`
+
+	// Validation: Receipts & Logs
+	EnforceLogIndexStrictIncrements bool `json:"enforceLogIndexStrictIncrements,omitempty"`
+	EnforceNonEmptyLogsBloom        bool `json:"enforceNonEmptyLogsBloom,omitempty"`
+	ValidateLogsBloom               bool `json:"validateLogsBloom,omitempty"`
+	ValidateTxHashUniqueness        bool `json:"validateTxHashUniqueness,omitempty"`
+	ValidateTransactionIndex        bool `json:"validateTransactionIndex,omitempty"`
+
+	// Validation: numeric checks (use -1 for unset)
+	ReceiptsCountExact   int64 `json:"receiptsCountExact,omitempty"`
+	ReceiptsCountAtLeast int64 `json:"receiptsCountAtLeast,omitempty"`
+
+	// Validation: Expected Ground Truths
+	ValidationExpectedBlockHash   string `json:"validationExpectedBlockHash,omitempty"`
+	ValidationExpectedBlockNumber int64  `json:"validationExpectedBlockNumber,omitempty"`
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
+	if d == nil {
+		return &RequestDirectives{
+			ReceiptsCountExact:            -1,
+			ReceiptsCountAtLeast:          -1,
+			ValidationExpectedBlockNumber: -1,
+		}
+	}
 	return &RequestDirectives{
-		RetryEmpty:            d.RetryEmpty,
-		RetryPending:          d.RetryPending,
-		SkipCacheRead:         d.SkipCacheRead,
-		UseUpstream:           d.UseUpstream,
-		ByPassMethodExclusion: d.ByPassMethodExclusion,
-		SkipInterpolation:     d.SkipInterpolation,
+		RetryEmpty:                      d.RetryEmpty,
+		RetryPending:                    d.RetryPending,
+		SkipCacheRead:                   d.SkipCacheRead,
+		UseUpstream:                     d.UseUpstream,
+		ByPassMethodExclusion:           d.ByPassMethodExclusion,
+		SkipInterpolation:               d.SkipInterpolation,
+		EnforceHighestBlock:             d.EnforceHighestBlock,
+		EnforceGetLogsBlockRange:        d.EnforceGetLogsBlockRange,
+		EnforceNonNullTaggedBlocks:      d.EnforceNonNullTaggedBlocks,
+		EnforceLogIndexStrictIncrements: d.EnforceLogIndexStrictIncrements,
+		EnforceNonEmptyLogsBloom:        d.EnforceNonEmptyLogsBloom,
+		ValidateLogsBloom:               d.ValidateLogsBloom,
+		ValidateTxHashUniqueness:        d.ValidateTxHashUniqueness,
+		ValidateTransactionIndex:        d.ValidateTransactionIndex,
+		ReceiptsCountExact:              d.ReceiptsCountExact,
+		ReceiptsCountAtLeast:            d.ReceiptsCountAtLeast,
+		ValidationExpectedBlockHash:     d.ValidationExpectedBlockHash,
+		ValidationExpectedBlockNumber:   d.ValidationExpectedBlockNumber,
 	}
 }
 
@@ -107,10 +147,8 @@ type NormalizedRequest struct {
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
 	nr := &NormalizedRequest{
-		body: body,
-		directives: &RequestDirectives{
-			RetryEmpty: false,
-		},
+		body:       body,
+		directives: nil,
 	}
 	nr.compositeType.Store(CompositeTypeNone)
 	return nr
@@ -118,9 +156,7 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 
 func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *NormalizedRequest {
 	nr := &NormalizedRequest{
-		directives: &RequestDirectives{
-			RetryEmpty: false,
-		},
+		directives: nil,
 	}
 	nr.jsonRpcRequest.Store(jsonRpcRequest)
 	nr.compositeType.Store(CompositeTypeNone)
@@ -277,6 +313,7 @@ func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
 	r.directives = directives
 }
 
+// ApplyDirectiveDefaults applies the default directives from the network configuration.
 func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveDefaultsConfig) {
 	if directiveDefaults == nil {
 		return
@@ -285,7 +322,11 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	defer r.Unlock()
 
 	if r.directives == nil {
-		r.directives = &RequestDirectives{}
+		r.directives = &RequestDirectives{
+			ReceiptsCountExact:            -1,
+			ReceiptsCountAtLeast:          -1,
+			ValidationExpectedBlockNumber: -1,
+		}
 	}
 
 	if directiveDefaults.RetryEmpty != nil {
@@ -303,14 +344,127 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	if directiveDefaults.SkipInterpolation != nil {
 		r.directives.SkipInterpolation = *directiveDefaults.SkipInterpolation
 	}
+
+	// Validation: Block Integrity
+	if directiveDefaults.EnforceHighestBlock != nil {
+		r.directives.EnforceHighestBlock = *directiveDefaults.EnforceHighestBlock
+	}
+	if directiveDefaults.EnforceGetLogsBlockRange != nil {
+		r.directives.EnforceGetLogsBlockRange = *directiveDefaults.EnforceGetLogsBlockRange
+	}
+	if directiveDefaults.EnforceNonNullTaggedBlocks != nil {
+		r.directives.EnforceNonNullTaggedBlocks = *directiveDefaults.EnforceNonNullTaggedBlocks
+	}
+
+	// Validation: Receipts & Logs
+	if directiveDefaults.EnforceLogIndexStrictIncrements != nil {
+		r.directives.EnforceLogIndexStrictIncrements = *directiveDefaults.EnforceLogIndexStrictIncrements
+	}
+	if directiveDefaults.EnforceNonEmptyLogsBloom != nil {
+		r.directives.EnforceNonEmptyLogsBloom = *directiveDefaults.EnforceNonEmptyLogsBloom
+	}
+	if directiveDefaults.ValidateLogsBloom != nil {
+		r.directives.ValidateLogsBloom = *directiveDefaults.ValidateLogsBloom
+	}
+	if directiveDefaults.ValidateTxHashUniqueness != nil {
+		r.directives.ValidateTxHashUniqueness = *directiveDefaults.ValidateTxHashUniqueness
+	}
+	if directiveDefaults.ValidateTransactionIndex != nil {
+		r.directives.ValidateTransactionIndex = *directiveDefaults.ValidateTransactionIndex
+	}
+
+	// Validation: numeric checks
+	if directiveDefaults.ReceiptsCountExact != nil {
+		r.directives.ReceiptsCountExact = *directiveDefaults.ReceiptsCountExact
+	}
+	if directiveDefaults.ReceiptsCountAtLeast != nil {
+		r.directives.ReceiptsCountAtLeast = *directiveDefaults.ReceiptsCountAtLeast
+	}
+
+	// Validation: Expected Ground Truths
+	if directiveDefaults.ValidationExpectedBlockHash != nil {
+		r.directives.ValidationExpectedBlockHash = *directiveDefaults.ValidationExpectedBlockHash
+	}
+	if directiveDefaults.ValidationExpectedBlockNumber != nil {
+		r.directives.ValidationExpectedBlockNumber = *directiveDefaults.ValidationExpectedBlockNumber
+	}
 }
 
 func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+	hasDirectives := false
+
+	// 1. Check if any directive headers/params are present before locking/cloning
+	if headers != nil {
+		if headers.Get("X-ERPC-Retry-Empty") != "" ||
+			headers.Get("X-ERPC-Retry-Pending") != "" ||
+			headers.Get("X-ERPC-Skip-Cache-Read") != "" ||
+			headers.Get("X-ERPC-Use-Upstream") != "" ||
+			headers.Get("X-ERPC-Skip-Interpolation") != "" ||
+			headers.Get("X-ERPC-Enforce-Highest-Block") != "" ||
+			headers.Get("X-ERPC-Enforce-GetLogs-Range") != "" ||
+			headers.Get("X-ERPC-Enforce-Non-Null-Tagged-Blocks") != "" ||
+			headers.Get("X-ERPC-Enforce-Log-Index-Strict-Increments") != "" ||
+			headers.Get("X-ERPC-Enforce-Non-Empty-Logs-Bloom") != "" ||
+			headers.Get("X-ERPC-Validate-Logs-Bloom") != "" ||
+			headers.Get("X-ERPC-Validate-Tx-Hash-Uniqueness") != "" ||
+			headers.Get("X-ERPC-Validate-Transaction-Index") != "" ||
+			headers.Get("X-ERPC-Receipts-Count-Exact") != "" ||
+			headers.Get("X-ERPC-Receipts-Count-At-Least") != "" ||
+			headers.Get("X-ERPC-Validation-Expected-Block-Hash") != "" ||
+			headers.Get("X-ERPC-Validation-Expected-Block-Number") != "" {
+			hasDirectives = true
+		}
+	}
+
+	if !hasDirectives && queryArgs != nil {
+		if queryArgs.Get("use-upstream") != "" ||
+			queryArgs.Get("retry-empty") != "" ||
+			queryArgs.Get("retry-pending") != "" ||
+			queryArgs.Get("skip-cache-read") != "" ||
+			queryArgs.Get("skip-interpolation") != "" ||
+			queryArgs.Get("enforce-highest-block") != "" ||
+			queryArgs.Get("enforce-getlogs-range") != "" ||
+			queryArgs.Get("enforce-non-null-tagged-blocks") != "" ||
+			queryArgs.Get("enforce-log-index-strict-increments") != "" ||
+			queryArgs.Get("enforce-non-empty-logs-bloom") != "" ||
+			queryArgs.Get("validate-logs-bloom") != "" ||
+			queryArgs.Get("validate-tx-hash-uniqueness") != "" ||
+			queryArgs.Get("validate-transaction-index") != "" ||
+			queryArgs.Get("receipts-count-exact") != "" ||
+			queryArgs.Get("receipts-count-at-least") != "" ||
+			queryArgs.Get("validation-expected-block-hash") != "" ||
+			queryArgs.Get("validation-expected-block-number") != "" {
+			hasDirectives = true
+		}
+	}
+
+	// Extract user agent (always needed)
+	userAgent := r.getUserAgent(headers, queryArgs)
+	if userAgent != "" {
+		if mode == UserAgentTrackingModeRaw {
+			r.agentName.Store(userAgent)
+		} else {
+			r.agentName.Store(r.simplifyAgentName(userAgent))
+		}
+	}
+
+	if !hasDirectives {
+		return
+	}
+
 	r.Lock()
 	defer r.Unlock()
 
+	// Copy-On-Write: If we have existing (likely shared) directives, clone them.
+	// If nil, create new.
 	if r.directives == nil {
-		r.directives = &RequestDirectives{}
+		r.directives = &RequestDirectives{
+			ReceiptsCountExact:            -1,
+			ReceiptsCountAtLeast:          -1,
+			ValidationExpectedBlockNumber: -1,
+		}
+	} else {
+		r.directives = r.directives.Clone()
 	}
 
 	// Headers have precedence over directive defaults, but should only override when explicitly provided.
@@ -328,6 +482,51 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 	if hv := headers.Get("X-ERPC-Skip-Interpolation"); hv != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+
+	// Validation Headers
+	if hv := headers.Get("X-ERPC-Enforce-Highest-Block"); hv != "" {
+		r.directives.EnforceHighestBlock = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Enforce-GetLogs-Range"); hv != "" {
+		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Enforce-Non-Null-Tagged-Blocks"); hv != "" {
+		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Enforce-Log-Index-Strict-Increments"); hv != "" {
+		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Enforce-Non-Empty-Logs-Bloom"); hv != "" {
+		r.directives.EnforceNonEmptyLogsBloom = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Validate-Logs-Bloom"); hv != "" {
+		r.directives.ValidateLogsBloom = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Validate-Tx-Hash-Uniqueness"); hv != "" {
+		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Validate-Transaction-Index"); hv != "" {
+		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+
+	if hv := headers.Get("X-ERPC-Receipts-Count-Exact"); hv != "" {
+		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
+			r.directives.ReceiptsCountExact = v
+		}
+	}
+	if hv := headers.Get("X-ERPC-Receipts-Count-At-Least"); hv != "" {
+		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
+			r.directives.ReceiptsCountAtLeast = v
+		}
+	}
+	if hv := headers.Get("X-ERPC-Validation-Expected-Block-Hash"); hv != "" {
+		r.directives.ValidationExpectedBlockHash = hv
+	}
+	if hv := headers.Get("X-ERPC-Validation-Expected-Block-Number"); hv != "" {
+		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
+			r.directives.ValidationExpectedBlockNumber = v
+		}
 	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
@@ -351,12 +550,47 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(skipInterpolation)) == "true"
 	}
 
-	// Extract and store user agent information for future use
-	if userAgent := r.getUserAgent(headers, queryArgs); userAgent != "" {
-		if mode == UserAgentTrackingModeRaw {
-			r.agentName.Store(userAgent)
-		} else {
-			r.agentName.Store(r.simplifyAgentName(userAgent))
+	// Validation query parameters
+	if v := queryArgs.Get("enforce-highest-block"); v != "" {
+		r.directives.EnforceHighestBlock = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("enforce-getlogs-range"); v != "" {
+		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("enforce-non-null-tagged-blocks"); v != "" {
+		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("enforce-log-index-strict-increments"); v != "" {
+		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("enforce-non-empty-logs-bloom"); v != "" {
+		r.directives.EnforceNonEmptyLogsBloom = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("validate-logs-bloom"); v != "" {
+		r.directives.ValidateLogsBloom = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("validate-tx-hash-uniqueness"); v != "" {
+		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("validate-transaction-index"); v != "" {
+		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get("receipts-count-exact"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.directives.ReceiptsCountExact = n
+		}
+	}
+	if v := queryArgs.Get("receipts-count-at-least"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.directives.ReceiptsCountAtLeast = n
+		}
+	}
+	if v := queryArgs.Get("validation-expected-block-hash"); v != "" {
+		r.directives.ValidationExpectedBlockHash = v
+	}
+	if v := queryArgs.Get("validation-expected-block-number"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.directives.ValidationExpectedBlockNumber = n
 		}
 	}
 }

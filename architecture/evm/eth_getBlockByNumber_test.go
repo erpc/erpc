@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )
@@ -73,23 +72,13 @@ func (t *testNetwork) GetFinality(ctx context.Context, req *common.NormalizedReq
 
 func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 	t.Run("TaggedBlockWithEnforcementDisabled_ReturnsNull", func(t *testing.T) {
-		// Create a network with enforceNonNullTaggedBlocks disabled
-		network := &testNetwork{
-			cfg: &common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 1,
-					Integrity: &common.EvmIntegrityConfig{
-						EnforceNonNullTaggedBlocks: util.BoolPtr(false),
-					},
-				},
-			},
-		}
-
-		// Create a request with a block tag ("pending")
+		// Create a request with a block tag ("pending") and directive disabled
 		request := common.NewNormalizedRequestFromJsonRpcRequest(
 			common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"pending", true}),
 		)
+		request.SetDirectives(&common.RequestDirectives{
+			EnforceNonNullTaggedBlocks: false,
+		})
 
 		// Create a response with null result
 		jsonResp, _ := common.NewJsonRpcResponse(1, nil, nil)
@@ -98,7 +87,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(network, response)
+		result, err := enforceNonNullBlock(request, response)
 
 		// Assert: Should return null without error for tagged blocks when enforcement is disabled
 		assert.NoError(t, err)
@@ -107,23 +96,13 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 	})
 
 	t.Run("NumericBlockWithEnforcementDisabled_StillReturnsError", func(t *testing.T) {
-		// Create a network with enforceNonNullTaggedBlocks disabled
-		network := &testNetwork{
-			cfg: &common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 1,
-					Integrity: &common.EvmIntegrityConfig{
-						EnforceNonNullTaggedBlocks: util.BoolPtr(false),
-					},
-				},
-			},
-		}
-
-		// Create a request with a numeric block (hex number)
+		// Create a request with a numeric block (hex number) and directive disabled
 		request := common.NewNormalizedRequestFromJsonRpcRequest(
 			common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"0x1234", true}),
 		)
+		request.SetDirectives(&common.RequestDirectives{
+			EnforceNonNullTaggedBlocks: false,
+		})
 
 		// Create a response with null result
 		jsonResp, _ := common.NewJsonRpcResponse(1, nil, nil)
@@ -132,9 +111,9 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(network, response)
+		result, err := enforceNonNullBlock(request, response)
 
-		// Assert: Numeric blocks ALWAYS return error when null, regardless of config
+		// Assert: Numeric blocks ALWAYS return error when null, regardless of directive
 		// This is the key behavior: numeric null blocks indicate real data problems (pruned/missing)
 		assert.Error(t, err)
 		assert.Nil(t, result)
@@ -142,23 +121,13 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 	})
 
 	t.Run("TaggedBlockWithEnforcementEnabled_ReturnsError", func(t *testing.T) {
-		// Create a network with enforceNonNullTaggedBlocks enabled (default)
-		network := &testNetwork{
-			cfg: &common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 1,
-					Integrity: &common.EvmIntegrityConfig{
-						EnforceNonNullTaggedBlocks: util.BoolPtr(true),
-					},
-				},
-			},
-		}
-
-		// Create a request with a block tag ("pending")
+		// Create a request with a block tag ("pending") and directive enabled
 		request := common.NewNormalizedRequestFromJsonRpcRequest(
 			common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"pending", true}),
 		)
+		request.SetDirectives(&common.RequestDirectives{
+			EnforceNonNullTaggedBlocks: true,
+		})
 
 		// Create a response with null result
 		jsonResp, _ := common.NewJsonRpcResponse(1, nil, nil)
@@ -167,7 +136,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(network, response)
+		result, err := enforceNonNullBlock(request, response)
 
 		// Assert: Should return error for tagged blocks when enforcement is enabled
 		assert.Error(t, err)
@@ -176,23 +145,13 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 	})
 
 	t.Run("LatestTagWithEnforcementDisabled_ReturnsNull", func(t *testing.T) {
-		// Create a network with enforceNonNullTaggedBlocks disabled
-		network := &testNetwork{
-			cfg: &common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 1,
-					Integrity: &common.EvmIntegrityConfig{
-						EnforceNonNullTaggedBlocks: util.BoolPtr(false),
-					},
-				},
-			},
-		}
-
-		// Create a request with "latest" tag
+		// Create a request with "latest" tag and directive disabled
 		request := common.NewNormalizedRequestFromJsonRpcRequest(
 			common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"latest", true}),
 		)
+		request.SetDirectives(&common.RequestDirectives{
+			EnforceNonNullTaggedBlocks: false,
+		})
 
 		// Create a response with null result
 		jsonResp, _ := common.NewJsonRpcResponse(1, nil, nil)
@@ -201,7 +160,7 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(network, response)
+		result, err := enforceNonNullBlock(request, response)
 
 		// Assert: Should return null without error for "latest" tag when enforcement is disabled
 		assert.NoError(t, err)
@@ -209,25 +168,13 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.True(t, result.IsResultEmptyish())
 	})
 
-	t.Run("TaggedBlockWithFieldNotSet_DefaultsToEnforce", func(t *testing.T) {
-		// Create a network WITHOUT setting enforceNonNullTaggedBlocks (nil)
-		// This tests the CRITICAL default behavior
-		network := &testNetwork{
-			cfg: &common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId:   1,
-					Integrity: &common.EvmIntegrityConfig{
-						// EnforceNonNullTaggedBlocks is nil (not set)
-					},
-				},
-			},
-		}
-
-		// Create a request with a tagged block
+	t.Run("TaggedBlockWithNilDirectives_DefaultsToNoEnforce", func(t *testing.T) {
+		// Create a request WITHOUT setting directives (nil)
+		// This tests the behavior when directives are not set
 		request := common.NewNormalizedRequestFromJsonRpcRequest(
 			common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"pending", true}),
 		)
+		// Note: directives are nil by default
 
 		// Create a response with null result
 		jsonResp, _ := common.NewJsonRpcResponse(1, nil, nil)
@@ -236,11 +183,12 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 			WithJsonRpcResponse(jsonResp)
 
 		// Call enforceNonNullBlock
-		result, err := enforceNonNullBlock(network, response)
+		result, err := enforceNonNullBlock(request, response)
 
-		// Assert: Should enforce by default when field is nil (not explicitly disabled)
-		assert.Error(t, err, "When field is nil, should default to enforce (return error)")
-		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "block not found")
+		// Assert: When directives are nil, should NOT enforce (allow null)
+		// The defaults are applied at network level via DirectiveDefaults.SetDefaults()
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.True(t, result.IsResultEmptyish())
 	})
 }

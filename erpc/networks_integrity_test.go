@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,6 +19,47 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Helper to create a basic upstream config for tests
+func createTestUpstreamConfig(id string) *common.UpstreamConfig {
+	return &common.UpstreamConfig{
+		Id:       id,
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://" + id + ".localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(5 * time.Second),
+			StatePollerDebounce: common.Duration(1 * time.Second),
+		},
+	}
+}
+
+// Helper to create properly initialized directives with numeric fields set to -1 (unset)
+func newTestDirectives() *common.RequestDirectives {
+	return &common.RequestDirectives{
+		ReceiptsCountExact:            -1,
+		ReceiptsCountAtLeast:          -1,
+		ValidationExpectedBlockNumber: -1,
+	}
+}
+
+// Helper to setup test network for integrity tests
+func setupIntegrityTestNetwork(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig, ntwCfg *common.NetworkConfig) (*Network, *upstream.UpstreamsRegistry) {
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", upstreams, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	return network, upr
+}
+
 // Network-level integrity test for eth_getBlockReceipts: strict logIndex increments
 func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testing.T) {
 	util.ResetGock()
@@ -28,48 +68,21 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Upstream config with integrity enabled
-	upCfg := &common.UpstreamConfig{
-		Id:       "rpc1",
-		Type:     common.UpstreamTypeEvm,
-		Endpoint: "http://rpc1.localhost",
-		Evm: &common.EvmUpstreamConfig{
-			ChainId:             123,
-			StatePollerInterval: common.Duration(5 * time.Second),
-			StatePollerDebounce: common.Duration(1 * time.Second),
-			Integrity: &common.UpstreamIntegrityConfig{
-				EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{
-					Enabled:                       true,
-					CheckLogIndexStrictIncrements: util.BoolPtr(true),
-				},
-			},
-		},
-	}
-
-	// Minimal required mocks for poller and chainId
 	util.SetupMocksForEvmStatePoller()
 
-	// Registry plumbing
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
 	}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
-	// Build request
+	// Build request with validation directive enabled
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = true
+	req.SetDirectives(dirs)
 
 	// Stub eth_getBlockReceipts with non-sequential global logIndex
 	gock.New("http://rpc1.localhost").
@@ -81,7 +94,6 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testin
 			{"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]}
 		]}`))
 
-	// Use real upstream object from registry, forward once, then run post-forward hook
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	require.GreaterOrEqual(t, len(ups), 1)
 	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
@@ -91,8 +103,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testin
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
 // Gap in global indices should error (contiguity enforcement)
@@ -103,41 +114,17 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexGap_Error(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{
-		Id:       "rpc1",
-		Type:     common.UpstreamTypeEvm,
-		Endpoint: "http://rpc1.localhost",
-		Evm: &common.EvmUpstreamConfig{
-			ChainId:             123,
-			StatePollerInterval: common.Duration(5 * time.Second),
-			StatePollerDebounce: common.Duration(1 * time.Second),
-			Integrity: &common.UpstreamIntegrityConfig{
-				EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{
-					Enabled:                       true,
-					CheckLogIndexStrictIncrements: util.BoolPtr(true),
-				},
-			},
-		},
-	}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = true
+	req.SetDirectives(dirs)
 
 	// 0x0, 0x1, 0xC (gap) -> error
 	gock.New("http://rpc1.localhost").
@@ -159,8 +146,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexGap_Error(t *testing.T) {
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
 // Contiguous indices 0x0,0x1,0x2 should pass when enabled
@@ -171,26 +157,17 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexContiguous_NoError(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = true
+	req.SetDirectives(dirs)
 
 	// 0x0, 0x1, 0x2 -> OK
 	gock.New("http://rpc1.localhost").
@@ -199,14 +176,18 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexContiguous_NoError(t *test
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0x0"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x2"}]}]}`))
 
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	if resp != nil {
-		resp.Release()
-	}
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
 }
 
-// Inconsistent blockHash across receipts should error (integrity enabled)
+// Inconsistent blockHash across receipts should error when ValidationExpectedBlockHash is set
 func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -214,28 +195,20 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	// Set expected block hash - response has different hash
+	dirs := newTestDirectives()
+	dirs.ValidationExpectedBlockHash = "0xabc"
+	req.SetDirectives(dirs)
 
-	// Two receipts with different blockHash
+	// Two receipts with different blockHash - second one doesn't match expected
 	gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]},{"blockHash":"0xdef","logs":[]}]}`))
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -247,8 +220,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *tes
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
 // Result not an array should error (malformed upstream response)
@@ -259,26 +231,18 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ResultNotArray_Error(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	// Enable any validation to trigger parsing
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = true
+	req.SetDirectives(dirs)
 
 	// Invalid structure: result is an object
 	gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"foo":"bar"}}`))
@@ -292,8 +256,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ResultNotArray_Error(t *testing.T)
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
 // Decreasing logIndex should error
@@ -304,26 +267,17 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexDecreasing_Error(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = true
+	req.SetDirectives(dirs)
 
 	// Decreasing indices 0x2 -> 0x1
 	gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0x2"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]}]}`))
@@ -337,8 +291,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexDecreasing_Error(t *testin
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
 func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *testing.T) {
@@ -348,41 +301,17 @@ func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *te
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{
-		Id:       "rpc1",
-		Type:     common.UpstreamTypeEvm,
-		Endpoint: "http://rpc1.localhost",
-		Evm: &common.EvmUpstreamConfig{
-			ChainId:             123,
-			StatePollerInterval: common.Duration(5 * time.Second),
-			StatePollerDebounce: common.Duration(1 * time.Second),
-			Integrity: &common.UpstreamIntegrityConfig{
-				EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{
-					Enabled:                       true,
-					CheckLogIndexStrictIncrements: util.BoolPtr(true),
-				},
-			},
-		},
-	}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = true
+	req.SetDirectives(dirs)
 
 	// Missing logIndex must error now (contiguity requires presence)
 	gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{}, {"logIndex":"0x0"}]},{"blockHash":"0xabc","logs":[{"logIndex":"0x1"}]}]}`))
@@ -396,11 +325,10 @@ func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *te
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
-// logsBloom non-zero with zero logs should error when CheckLogsBloom is enabled
+// logsBloom non-zero with zero logs should error when EnforceNonEmptyLogsBloom is enabled
 func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -408,26 +336,17 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true)}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceNonEmptyLogsBloom = true
+	req.SetDirectives(dirs)
 
 	// Non-zero logsBloom with zero logs -> error
 	gock.New("http://rpc1.localhost").
@@ -445,8 +364,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
 // logsBloom check disabled should allow non-zero bloom with zero logs
@@ -457,20 +375,6 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{
-		Id:       "rpc1",
-		Type:     common.UpstreamTypeEvm,
-		Endpoint: "http://rpc1.localhost",
-		Evm: &common.EvmUpstreamConfig{
-			ChainId:             123,
-			StatePollerInterval: common.Duration(5 * time.Second),
-			StatePollerDebounce: common.Duration(1 * time.Second),
-			Integrity: &common.UpstreamIntegrityConfig{
-				EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(false)},
-			},
-		},
-	}
-
 	util.SetupMocksForEvmStatePoller()
 
 	gock.New("http://rpc1.localhost").
@@ -479,28 +383,26 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]} ]}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	// No validation directives set - should pass
+	dirs := newTestDirectives()
+	dirs.EnforceNonEmptyLogsBloom = false
+	req.SetDirectives(dirs)
 
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	if resp != nil {
-		resp.Release()
-	}
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
 }
 
 // Empty receipts should not trigger integrity errors
@@ -511,26 +413,19 @@ func TestNetworkIntegrity_EthGetBlockReceipts_EmptyReceipts_NoError(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true), CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceNonEmptyLogsBloom = true
+	dirs.EnforceLogIndexStrictIncrements = true
+	dirs.RetryEmpty = false // Don't retry empty - we want to test empty response handling
+	req.SetDirectives(dirs)
 
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -557,26 +452,18 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexCheckDisabled_NoError(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(false)}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	// Directive disabled - non-sequential should pass
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = false
+	req.SetDirectives(dirs)
 
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -584,11 +471,15 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexCheckDisabled_NoError(t *t
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0x0"},{"logIndex":"0x2"}]}]}`))
 
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err)
-	if resp != nil {
-		resp.Release()
-	}
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
 }
 
 // Retry fallback on logsBloom error: bad upstream then good upstream
@@ -599,24 +490,23 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream_Bloom(t 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upBad := &common.UpstreamConfig{Id: "rpc-bad", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true)}}}}
-	upGood := &common.UpstreamConfig{Id: "rpc-good", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogsBloom: util.BoolPtr(true)}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upBad, upGood}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	upBad := createTestUpstreamConfig("rpc-bad")
+	upBad.Endpoint = "http://rpc1.localhost"
+	upGood := createTestUpstreamConfig("rpc-good")
+	upGood.Endpoint = "http://rpc2.localhost"
 
-	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{{MatchMethod: "eth_getBlockReceipts", Retry: &common.RetryPolicyConfig{MaxAttempts: 2}}}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe:     []*common.FailsafeConfig{{MatchMethod: "eth_getBlockReceipts", Retry: &common.RetryPolicyConfig{MaxAttempts: 2}}},
+		// Enable validation via directive defaults
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			EnforceNonEmptyLogsBloom: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upBad, upGood}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
@@ -642,26 +532,17 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InvalidLogIndexHex_Error(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upCfg := &common.UpstreamConfig{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
-
 	util.SetupMocksForEvmStatePoller()
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
+	upCfg := createTestUpstreamConfig("rpc1")
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.EnforceLogIndexStrictIncrements = true
+	req.SetDirectives(dirs)
 
 	// Invalid hex in logIndex
 	gock.New("http://rpc1.localhost").Post("").Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0xzz"}]}]}`))
@@ -675,8 +556,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InvalidLogIndexHex_Error(t *testin
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.Error(t, hookErr)
-	var mf *common.ErrUpstreamMalformedResponse
-	require.True(t, errors.As(hookErr, &mf), "expected ErrUpstreamMalformedResponse, got: %v", hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
 // Retry fallback test for non-sequential logIndex bad->good
@@ -687,10 +567,6 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	upBad := &common.UpstreamConfig{Id: "rpc-bad", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
-	upGood := &common.UpstreamConfig{Id: "rpc-good", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(5 * time.Second), StatePollerDebounce: common.Duration(1 * time.Second), Integrity: &common.UpstreamIntegrityConfig{EthGetBlockReceipts: &common.UpstreamIntegrityEthGetBlockReceiptsConfig{Enabled: true, CheckLogIndexStrictIncrements: util.BoolPtr(true)}}}}
-
-	// Required poller mocks + chainId mocks for both upstreams
 	util.SetupMocksForEvmStatePoller()
 	gock.New("http://rpc1.localhost").
 		Post("").
@@ -705,16 +581,12 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 		Reply(200).
 		JSON([]byte(`{"result":"0x7b"}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
-	vr := thirdparty.NewVendorsRegistry()
-	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
-	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: common.DriverMemory, Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
-	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upBad, upGood}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
-	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	upBad := createTestUpstreamConfig("rpc-bad")
+	upBad.Endpoint = "http://rpc1.localhost"
+	upGood := createTestUpstreamConfig("rpc-good")
+	upGood.Endpoint = "http://rpc2.localhost"
 
-	// Network with a retry policy
+	// Network with a retry policy and directive defaults
 	ntwCfg := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
@@ -724,10 +596,11 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 				Retry:       &common.RetryPolicyConfig{MaxAttempts: 2},
 			},
 		},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			EnforceLogIndexStrictIncrements: util.BoolPtr(true),
+		},
 	}
-	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
-	require.NoError(t, network.Bootstrap(ctx))
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upBad, upGood}, ntwCfg)
 
 	// Request
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))

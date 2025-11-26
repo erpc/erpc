@@ -23,7 +23,7 @@ func BuildEthChainIdRequest() (*common.JsonRpcRequest, error) {
 }
 
 func projectPreForward_eth_chainId(ctx context.Context, n common.Network, r *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
-	if r.Directives().SkipCacheRead {
+	if dirs := r.Directives(); dirs != nil && dirs.SkipCacheRead {
 		return false, nil, nil // Proceed to actual upstream call
 	}
 
@@ -72,7 +72,7 @@ func networkPreForward_eth_chainId(ctx context.Context, n common.Network, _ []co
 	if r == nil || n == nil {
 		return false, nil, nil
 	}
-	if r.Directives().SkipCacheRead {
+	if dirs := r.Directives(); dirs != nil && dirs.SkipCacheRead {
 		return false, nil, nil
 	}
 
@@ -117,7 +117,7 @@ func upstreamPreForward_eth_chainId(ctx context.Context, n common.Network, u com
 	if r == nil || n == nil || u == nil {
 		return false, nil, nil
 	}
-	if r.Directives().SkipCacheRead {
+	if dirs := r.Directives(); dirs != nil && dirs.SkipCacheRead {
 		return false, nil, nil
 	}
 

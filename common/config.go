@@ -1441,6 +1441,26 @@ type DirectiveDefaultsConfig struct {
 	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
 	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
 	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+
+	// Validation: Block Integrity
+	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
+
+	// Validation: Receipts & Logs
+	EnforceLogIndexStrictIncrements *bool `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
+	EnforceNonEmptyLogsBloom        *bool `yaml:"enforceNonEmptyLogsBloom,omitempty" json:"enforceNonEmptyLogsBloom"`
+	ValidateLogsBloom               *bool `yaml:"validateLogsBloom,omitempty" json:"validateLogsBloom"`
+	ValidateTxHashUniqueness        *bool `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
+	ValidateTransactionIndex        *bool `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
+
+	// Validation: numeric checks
+	ReceiptsCountExact   *int64 `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`
+	ReceiptsCountAtLeast *int64 `yaml:"receiptsCountAtLeast,omitempty" json:"receiptsCountAtLeast"`
+
+	// Validation: Expected Ground Truths
+	ValidationExpectedBlockHash   *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
+	ValidationExpectedBlockNumber *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
 }
 
 type EvmNetworkConfig struct {
@@ -1459,9 +1479,13 @@ type EvmNetworkConfig struct {
 	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
+// EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
 type EvmIntegrityConfig struct {
-	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
-	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	// @deprecated: use DirectiveDefaults.EnforceHighestBlock
+	EnforceHighestBlock *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	// @deprecated: use DirectiveDefaults.EnforceGetLogsBlockRange
+	EnforceGetLogsBlockRange *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	// @deprecated: use DirectiveDefaults.EnforceNonNullTaggedBlocks
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 }
 
