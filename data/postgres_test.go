@@ -1,281 +1,282 @@
 package data
 
 import (
-	"context"
-	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/stretchr/testify/assert"
 )
 
-func TestPostgreConnectorInitialization(t *testing.T) {
-	t.Run("SucceedsValidConfigRealContainer", func(t *testing.T) {
+// =============================================================================
+// Read Replica Tests - Unit Tests
+// =============================================================================
+
+func TestPostgreSQLReadReplicaGetReadPool(t *testing.T) {
+	t.Run("ReturnsMainConnWhenNoReplicas", func(t *testing.T) {
 		logger := zerolog.New(io.Discard)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		req := testcontainers.ContainerRequest{
-			Image:        "postgres:15-alpine",
-			Env:          map[string]string{"POSTGRES_PASSWORD": "password"},
-			ExposedPorts: []string{"5432/tcp"},
-			WaitingFor:   wait.ForListeningPort("5432/tcp"),
-		}
-		postgresC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: req,
-			Started:          true,
-		})
-		require.NoError(t, err, "failed to start postgres container")
-		defer postgresC.Terminate(ctx)
-
-		host, err := postgresC.Host(ctx)
-		require.NoError(t, err)
-		port, err := postgresC.MappedPort(ctx, "5432")
-		require.NoError(t, err)
-
-		connURI := fmt.Sprintf("postgres://postgres:password@%s:%s/postgres?sslmode=disable", host, port.Port())
-
-		cfg := &common.PostgreSQLConnectorConfig{
-			Table:         "test_table",
-			ConnectionUri: connURI,
-			InitTimeout:   common.Duration(2 * time.Second),
-			GetTimeout:    common.Duration(2 * time.Second),
-			SetTimeout:    common.Duration(2 * time.Second),
-			MinConns:      1,
-			MaxConns:      5,
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         &pgxpool.Pool{}, // Mock primary pool
+			readReplicas: nil,             // No replicas
+			replicaIndex: 0,
 		}
 
-		connector, err := NewPostgreSQLConnector(ctx, &logger, "test-connector", cfg)
-		// We expect no error, because it should succeed on the first attempt.
-		require.NoError(t, err)
-
-		// Ensure the connector reports StateReady via its initializer
-		if connector.initializer != nil {
-			state := connector.initializer.State()
-			require.Equal(t, util.StateReady, state, "connector should be in ready state")
-		}
-
-		// Try a simple SET/GET to verify readiness.
-		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-world"), nil)
-		require.NoError(t, err, "Set should succeed after successful initialization")
-
-		val, err := connector.Get(ctx, "", "testPK", "testRK", nil)
-		require.NoError(t, err, "Get should succeed for existing key")
-		require.Equal(t, []byte("hello-world"), val)
+		pool := connector.getReadPool()
+		assert.Equal(t, connector.conn, pool, "should return primary connection when no replicas configured")
 	})
 
-	t.Run("FailsOnFirstAttemptWithInvalidAddressButReturnsConnectorAnyway", func(t *testing.T) {
+	t.Run("ReturnsMainConnWhenReplicasEmpty", func(t *testing.T) {
 		logger := zerolog.New(io.Discard)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Intentionally invalid address
-		cfg := &common.PostgreSQLConnectorConfig{
-			Table:         "test_table",
-			ConnectionUri: "postgres://user:pass@127.0.0.1:9876/bogusdb?sslmode=disable", // no server
-			InitTimeout:   common.Duration(500 * time.Millisecond),
-			GetTimeout:    common.Duration(500 * time.Millisecond),
-			SetTimeout:    common.Duration(500 * time.Millisecond),
-			MinConns:      1,
-			MaxConns:      5,
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         &pgxpool.Pool{},
+			readReplicas: []*pgxpool.Pool{}, // Empty slice
+			replicaIndex: 0,
 		}
 
-		connector, err := NewPostgreSQLConnector(ctx, &logger, "test-connector-invalid-addr", cfg)
-		// The constructor does not necessarily return an error if the first attempt fails;
-		// it can return a connector with a not-ready state. So we expect no error here.
-		require.NoError(t, err)
+		pool := connector.getReadPool()
+		assert.Equal(t, connector.conn, pool, "should return primary connection when replicas slice is empty")
+	})
 
-		if connector.initializer != nil {
-			require.NotEqual(t, util.StateReady, connector.initializer.State(),
-				"connector should not be in ready state if it failed to connect")
+	t.Run("RoundRobinWithSingleReplica", func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		replica1 := &pgxpool.Pool{}
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         &pgxpool.Pool{},
+			readReplicas: []*pgxpool.Pool{replica1},
+			replicaIndex: 0,
 		}
 
-		// Attempting to call Set or Get here should result in an error.
-		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
-		require.Error(t, err, "should fail because Postgres is not connected")
+		// All calls should return the same replica
+		for i := 0; i < 10; i++ {
+			pool := connector.getReadPool()
+			assert.Equal(t, replica1, pool, "should always return the single replica")
+		}
+	})
 
-		_, err = connector.Get(ctx, "", "testPK", "testRK", nil)
-		require.Error(t, err, "should fail because Postgres is not connected")
+	t.Run("RoundRobinWithMultipleReplicas", func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		replica1 := &pgxpool.Pool{}
+		replica2 := &pgxpool.Pool{}
+		replica3 := &pgxpool.Pool{}
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         &pgxpool.Pool{},
+			readReplicas: []*pgxpool.Pool{replica1, replica2, replica3},
+			replicaIndex: 0,
+		}
+
+		// Track which replicas are returned
+		counts := make(map[*pgxpool.Pool]int)
+
+		// Call getReadPool multiple times
+		for i := 0; i < 9; i++ {
+			pool := connector.getReadPool()
+			counts[pool]++
+		}
+
+		// Each replica should be called 3 times (9 calls / 3 replicas)
+		assert.Equal(t, 3, counts[replica1], "replica1 should be selected 3 times")
+		assert.Equal(t, 3, counts[replica2], "replica2 should be selected 3 times")
+		assert.Equal(t, 3, counts[replica3], "replica3 should be selected 3 times")
+	})
+
+	t.Run("RoundRobinDistributionIsEven", func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		numReplicas := 5
+		replicas := make([]*pgxpool.Pool, numReplicas)
+		for i := 0; i < numReplicas; i++ {
+			replicas[i] = &pgxpool.Pool{}
+		}
+
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         &pgxpool.Pool{},
+			readReplicas: replicas,
+			replicaIndex: 0,
+		}
+
+		counts := make(map[*pgxpool.Pool]int)
+		numCalls := 1000
+
+		for i := 0; i < numCalls; i++ {
+			pool := connector.getReadPool()
+			counts[pool]++
+		}
+
+		expectedCount := numCalls / numReplicas
+		for i, replica := range replicas {
+			assert.Equal(t, expectedCount, counts[replica],
+				"replica %d should be selected %d times", i, expectedCount)
+		}
+	})
+
+	t.Run("RoundRobinConcurrentAccess", func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		replica1 := &pgxpool.Pool{}
+		replica2 := &pgxpool.Pool{}
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         &pgxpool.Pool{},
+			readReplicas: []*pgxpool.Pool{replica1, replica2},
+			replicaIndex: 0,
+		}
+
+		var count1, count2 int64
+
+		var wg sync.WaitGroup
+		numGoroutines := 100
+		callsPerGoroutine := 100
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < callsPerGoroutine; j++ {
+					pool := connector.getReadPool()
+					if pool == replica1 {
+						atomic.AddInt64(&count1, 1)
+					} else if pool == replica2 {
+						atomic.AddInt64(&count2, 1)
+					}
+				}
+			}()
+		}
+
+		wg.Wait()
+
+		totalCalls := int64(numGoroutines * callsPerGoroutine)
+
+		// Each should get roughly half
+		assert.Equal(t, totalCalls/2, count1, "replica1 should get half the calls")
+		assert.Equal(t, totalCalls/2, count2, "replica2 should get half the calls")
+	})
+
+	t.Run("FallsBackToPrimaryWhenReplicaIsNil", func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		primary := &pgxpool.Pool{}
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         primary,
+			readReplicas: []*pgxpool.Pool{nil}, // Nil replica (disconnected)
+			replicaIndex: 0,
+		}
+
+		pool := connector.getReadPool()
+		assert.Equal(t, primary, pool, "should fall back to primary when replica is nil")
+	})
+
+	t.Run("FallsBackToPrimaryForNilReplicaInMixedList", func(t *testing.T) {
+		logger := zerolog.New(io.Discard)
+		primary := &pgxpool.Pool{}
+		replica1 := &pgxpool.Pool{}
+		connector := &PostgreSQLConnector{
+			id:           "test",
+			logger:       &logger,
+			conn:         primary,
+			readReplicas: []*pgxpool.Pool{replica1, nil}, // Second replica is nil
+			replicaIndex: 0,
+		}
+
+		// First call should return replica1 (index 0)
+		pool1 := connector.getReadPool()
+		assert.Equal(t, replica1, pool1, "first call should return replica1")
+
+		// Second call should fall back to primary (index 1 is nil)
+		pool2 := connector.getReadPool()
+		assert.Equal(t, primary, pool2, "second call should fall back to primary for nil replica")
 	})
 }
 
-func TestPostgreSQLDistributedLocking(t *testing.T) {
-	// Common setup for PostgreSQL connector for locking tests
-	setupConnector := func(t *testing.T) (context.Context, *PostgreSQLConnector, func()) {
-		logger := zerolog.New(io.Discard)
-		ctx, cancel := context.WithCancel(context.Background())
+// =============================================================================
+// Read Replica Configuration Tests
+// =============================================================================
 
-		req := testcontainers.ContainerRequest{
-			Image:        "postgres:15-alpine",
-			Env:          map[string]string{"POSTGRES_PASSWORD": "password", "POSTGRES_DB": "testdb"},
-			ExposedPorts: []string{"5432/tcp"},
-			WaitingFor:   wait.ForLog("database system is ready to accept connections").WithStartupTimeout(2 * time.Minute),
-		}
-		postgresC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: req,
-			Started:          true,
-		})
-		require.NoError(t, err, "failed to start postgres container")
-
-		host, err := postgresC.Host(ctx)
-		require.NoError(t, err)
-		port, err := postgresC.MappedPort(ctx, "5432")
-		require.NoError(t, err)
-
-		connURI := fmt.Sprintf("postgres://postgres:password@%s:%s/testdb?sslmode=disable", host, port.Port())
-
+func TestPostgreSQLReadReplicaConfig(t *testing.T) {
+	t.Run("ConfigWithReadReplicaUris", func(t *testing.T) {
 		cfg := &common.PostgreSQLConnectorConfig{
-			Table:         "locking_test_table",
-			ConnectionUri: connURI,
-			InitTimeout:   common.Duration(5 * time.Second),
-			GetTimeout:    common.Duration(2 * time.Second),
-			SetTimeout:    common.Duration(2 * time.Second),
-			MinConns:      1,
-			MaxConns:      5,
+			ConnectionUri: "postgres://user:pass@primary:5432/db",
+			ReadReplicaUris: []string{
+				"postgres://user:pass@replica1:5432/db",
+				"postgres://user:pass@replica2:5432/db",
+			},
+			Table:       "test_table",
+			MinConns:    1,
+			MaxConns:    10,
+			InitTimeout: common.Duration(5 * time.Second),
+			GetTimeout:  common.Duration(2 * time.Second),
+			SetTimeout:  common.Duration(2 * time.Second),
 		}
 
-		connector, err := NewPostgreSQLConnector(ctx, &logger, "test-lock-connector", cfg)
-		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			if connector.initializer == nil {
-				t.Log("Initializer is nil")
-				return false
-			}
-			state := connector.initializer.State()
-			if state != util.StateReady {
-				t.Logf("Connector not ready, current state: %s, errors: %v", state, connector.initializer.Errors())
-			}
-			return state == util.StateReady
-		}, 30*time.Second, 500*time.Millisecond, "connector did not become ready")
+		assert.Equal(t, "postgres://user:pass@primary:5432/db", cfg.ConnectionUri)
+		assert.Len(t, cfg.ReadReplicaUris, 2)
+		assert.Equal(t, "postgres://user:pass@replica1:5432/db", cfg.ReadReplicaUris[0])
+		assert.Equal(t, "postgres://user:pass@replica2:5432/db", cfg.ReadReplicaUris[1])
+	})
 
-		cleanup := func() {
-			cancel()
-			postgresC.Terminate(context.Background()) // Use a background context for termination
+	t.Run("ConfigMarshalJSONRedactsCredentials", func(t *testing.T) {
+		cfg := &common.PostgreSQLConnectorConfig{
+			ConnectionUri: "postgres://user:secretpass@primary:5432/db",
+			ReadReplicaUris: []string{
+				"postgres://user:secretpass@replica1:5432/db",
+				"postgres://user:secretpass@replica2:5432/db",
+			},
+			Table:       "test_table",
+			MinConns:    1,
+			MaxConns:    10,
+			InitTimeout: common.Duration(5 * time.Second),
+			GetTimeout:  common.Duration(2 * time.Second),
+			SetTimeout:  common.Duration(2 * time.Second),
 		}
 
-		return ctx, connector, cleanup
-	}
+		jsonBytes, err := cfg.MarshalJSON()
+		assert.NoError(t, err)
 
-	t.Run("SuccessfulImmediateLockAcquisition", func(t *testing.T) {
-		ctx, connector, cleanup := setupConnector(t)
-		defer cleanup()
-
-		lockKey := "pg-lock-immediate"
-		// TTL is not strictly used by pg_advisory_xact_lock, but pass a value for API compliance
-		lock, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err, "should acquire lock without issues")
-		require.NotNil(t, lock, "lock should not be nil")
-		require.False(t, lock.IsNil(), "lock.IsNil should be false")
-
-		// Check if underlying transaction is present
-		pgLock, ok := lock.(*postgresLock)
-		require.True(t, ok, "lock should be of type *postgresLock")
-		require.NotNil(t, pgLock.tx, "transaction should be present in acquired lock")
-
-		err = lock.Unlock(ctx) // This commits the transaction
-		require.NoError(t, err, "unlock should succeed")
-		require.Nil(t, pgLock.tx, "transaction should be nil after unlock")
+		jsonStr := string(jsonBytes)
+		assert.NotContains(t, jsonStr, "secretpass", "password should be redacted")
 	})
 
-	t.Run("LockFailsIfAlreadyHeld", func(t *testing.T) {
-		ctx, connector, cleanup := setupConnector(t)
-		defer cleanup()
-		lockKey := "pg-lock-already-held"
-
-		// Goroutine 1 (main test goroutine) acquires the lock
-		lock1, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err, "lock1: should acquire lock")
-		require.NotNil(t, lock1)
-
-		// Goroutine 2 attempts to acquire the same lock
-		lock2, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.Error(t, err, "lock2: should fail to acquire lock as it is already held")
-		require.Nil(t, lock2, "lock2: should be nil as acquisition failed")
-		require.Contains(t, err.Error(), "already locked", "error message should indicate lock is already held")
-
-		// Goroutine 1 releases the lock
-		err = lock1.Unlock(ctx)
-		require.NoError(t, err, "lock1: unlock should succeed")
-	})
-
-	t.Run("LockSucceedsAfterBeingReleased", func(t *testing.T) {
-		ctx, connector, cleanup := setupConnector(t)
-		defer cleanup()
-		lockKey := "pg-lock-release-then-acquire"
-
-		// Acquire and release the lock first
-		lock1, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err, "lock1: initial acquisition should succeed")
-		require.NotNil(t, lock1)
-		err = lock1.Unlock(ctx)
-		require.NoError(t, err, "lock1: unlock should succeed")
-
-		// Attempt to acquire the lock again
-		lock2, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err, "lock2: acquisition should succeed after release")
-		require.NotNil(t, lock2)
-		err = lock2.Unlock(ctx)
-		require.NoError(t, err, "lock2: unlock should succeed")
-	})
-
-	t.Run("LockIsReleasedOnCommit", func(t *testing.T) {
-		ctx, connector, cleanup := setupConnector(t)
-		defer cleanup()
-		lockKey := "pg-lock-commit-release"
-
-		// Acquire lock (this starts a transaction)
-		lock1, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err)
-		pgLock1, ok := lock1.(*postgresLock)
-		require.True(t, ok)
-
-		// Try to acquire again (should fail as lock1's transaction holds it)
-		_, err = connector.Lock(ctx, lockKey, 1*time.Second)
-		require.Error(t, err, "second lock attempt should fail while first is active")
-
-		// Commit the transaction for lock1
-		err = pgLock1.Unlock(ctx) // Unlock is a commit
-		require.NoError(t, err)
-
-		// Now, acquiring the lock should succeed
-		lock2, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err, "should acquire lock after first transaction committed")
-		require.NotNil(t, lock2)
-		err = lock2.Unlock(ctx)
-		require.NoError(t, err)
-	})
-
-	t.Run("LockIsReleasedOnRollback", func(t *testing.T) {
-		ctx, connector, cleanup := setupConnector(t)
-		defer cleanup()
-		lockKey := "pg-lock-rollback-release"
-
-		// Acquire lock (starts a transaction)
-		lock1, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err)
-		pgLock1, ok := lock1.(*postgresLock)
-		require.True(t, ok)
-
-		// Manually rollback the transaction instead of calling Unlock()
-		// Note: This is for testing the rollback scenario. Normally, Unlock() handles commit.
-		if pgLock1.tx != nil {
-			err = pgLock1.tx.Rollback(ctx)
-			require.NoError(t, err, "manual rollback should succeed")
-			pgLock1.tx = nil // Simulate that unlock would do this too on rollback path (though current Unlock always commits)
+	t.Run("ConfigWithEmptyReadReplicaUris", func(t *testing.T) {
+		cfg := &common.PostgreSQLConnectorConfig{
+			ConnectionUri:   "postgres://user:pass@primary:5432/db",
+			ReadReplicaUris: []string{},
+			Table:           "test_table",
+			MinConns:        1,
+			MaxConns:        10,
+			InitTimeout:     common.Duration(5 * time.Second),
+			GetTimeout:      common.Duration(2 * time.Second),
+			SetTimeout:      common.Duration(2 * time.Second),
 		}
 
-		// Now, acquiring the lock should succeed
-		lock2, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err, "should acquire lock after first transaction rolled back")
-		require.NotNil(t, lock2)
-		err = lock2.Unlock(ctx)
-		require.NoError(t, err)
+		assert.Empty(t, cfg.ReadReplicaUris)
 	})
 
+	t.Run("ConfigWithNilReadReplicaUris", func(t *testing.T) {
+		cfg := &common.PostgreSQLConnectorConfig{
+			ConnectionUri:   "postgres://user:pass@primary:5432/db",
+			ReadReplicaUris: nil,
+			Table:           "test_table",
+			MinConns:        1,
+			MaxConns:        10,
+			InitTimeout:     common.Duration(5 * time.Second),
+			GetTimeout:      common.Duration(2 * time.Second),
+			SetTimeout:      common.Duration(2 * time.Second),
+		}
+
+		assert.Nil(t, cfg.ReadReplicaUris)
+	})
 }

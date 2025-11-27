@@ -4,15 +4,19 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
@@ -29,13 +33,17 @@ var _ Connector = (*PostgreSQLConnector)(nil)
 type PostgreSQLConnector struct {
 	id            string
 	logger        *zerolog.Logger
-	conn          *pgxpool.Pool
+	appCtx        context.Context   // Application context for cleanup goroutine lifecycle
+	conn          *pgxpool.Pool     // Primary connection pool (for writes)
+	readReplicas  []*pgxpool.Pool   // Read replica pools (for reads)
+	replicaIndex  uint64            // Counter for round-robin load balancing
 	connMu        sync.RWMutex
 	initializer   *util.Initializer
 	minConns      int32
 	maxConns      int32
 	table         string
 	cleanupTicker *time.Ticker
+	cleanupCancel context.CancelFunc // Cancel function to stop the cleanup goroutine
 	initTimeout   time.Duration
 	getTimeout    time.Duration
 	setTimeout    time.Duration
@@ -72,16 +80,17 @@ func NewPostgreSQLConnector(
 	lg.Debug().Interface("config", cfg).Msg("creating postgresql connector")
 
 	connector := &PostgreSQLConnector{
-		id:            id,
-		logger:        &lg,
-		table:         cfg.Table,
-		minConns:      cfg.MinConns,
-		maxConns:      cfg.MaxConns,
-		initTimeout:   cfg.InitTimeout.Duration(),
-		getTimeout:    cfg.GetTimeout.Duration(),
-		setTimeout:    cfg.SetTimeout.Duration(),
-		cleanupTicker: time.NewTicker(5 * time.Minute),
-		connMu:        sync.RWMutex{},
+		id:          id,
+		logger:      &lg,
+		appCtx:      ctx, // Store app context for cleanup goroutine lifecycle
+		table:       cfg.Table,
+		minConns:    cfg.MinConns,
+		maxConns:    cfg.MaxConns,
+		initTimeout: cfg.InitTimeout.Duration(),
+		getTimeout:  cfg.GetTimeout.Duration(),
+		setTimeout:  cfg.SetTimeout.Duration(),
+		connMu:      sync.RWMutex{},
+		// Note: cleanupTicker is created in connectTask if needed (not using pg_cron)
 	}
 
 	// create an Initializer to handle (re)connecting
@@ -100,32 +109,86 @@ func NewPostgreSQLConnector(
 	return connector, nil
 }
 
+// closeExistingPools closes any existing connection pools to prevent leaks during reconnection.
+// IMPORTANT: Caller must hold p.connMu.Lock() before calling this method.
+func (p *PostgreSQLConnector) closeExistingPools() {
+	// Stop the cleanup goroutine first (before closing pools it depends on)
+	if p.cleanupCancel != nil {
+		p.cleanupCancel()
+		p.cleanupCancel = nil
+	}
+	if p.cleanupTicker != nil {
+		p.cleanupTicker.Stop()
+		p.cleanupTicker = nil
+	}
+
+	// Close primary pool
+	if p.conn != nil {
+		p.conn.Close()
+		p.conn = nil
+	}
+
+	// Close all replica pools
+	for i, replica := range p.readReplicas {
+		if replica != nil {
+			replica.Close()
+			p.readReplicas[i] = nil
+		}
+	}
+	p.readReplicas = nil
+
+	// Close listener pool
+	if p.listenerPool != nil {
+		p.listenerPool.Close()
+		p.listenerPool = nil
+	}
+}
+
 func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
 	p.connMu.Lock()
 	defer p.connMu.Unlock()
 
-	// Defer creation of listener pool until it's actually needed by WatchCounterInt64
-	p.listenerPool = nil
+	// Close any existing pools to prevent connection leaks on reconnect/retry
+	p.closeExistingPools()
 
-	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
-	if err != nil {
-		return common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
-	}
-	config.MinConns = p.minConns
-	config.MaxConns = p.maxConns
-	config.MaxConnLifetime = 5 * time.Hour
-	config.MaxConnIdleTime = 30 * time.Minute
+	// Create a separate context for primary connection
+	primaryCtx, primaryCancel := context.WithTimeout(ctx, p.initTimeout)
+	defer primaryCancel()
 
-	ctx, cancel := context.WithTimeout(ctx, p.initTimeout)
-	defer cancel()
-
-	conn, err := pgxpool.ConnectConfig(ctx, config)
+	// Connect to primary
+	conn, err := p.createPool(primaryCtx, cfg.ConnectionUri)
 	if err != nil {
 		return err
 	}
 
+	// Connect to read replicas (if configured)
+	// Each replica gets its own short timeout (10s or 1/4 of init timeout, whichever is smaller)
+	// so that slow/broken replicas don't block primary initialization
+	replicaTimeout := 10 * time.Second
+	if p.initTimeout/4 < replicaTimeout {
+		replicaTimeout = p.initTimeout / 4
+	}
+
+	var readReplicas []*pgxpool.Pool
+	for i, replicaUri := range cfg.ReadReplicaUris {
+		replicaCtx, replicaCancel := context.WithTimeout(ctx, replicaTimeout)
+		replicaPool, err := p.createPool(replicaCtx, replicaUri)
+		replicaCancel() // Clean up context immediately after use
+
+		if err != nil {
+			p.logger.Warn().Err(err).Int("index", i).Dur("timeout", replicaTimeout).Msg("failed to connect to read replica, skipping")
+			continue
+		}
+		readReplicas = append(readReplicas, replicaPool)
+		p.logger.Info().Int("index", i).Msg("connected to read replica")
+	}
+	p.readReplicas = readReplicas
+	if len(readReplicas) > 0 {
+		p.logger.Info().Int("count", len(readReplicas)).Msg("read replicas configured for postgres")
+	}
+
 	// Create table if not exists with TTL column
-	_, err = conn.Exec(ctx, fmt.Sprintf(`
+	_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			partition_key TEXT,
 			range_key TEXT,
@@ -140,9 +203,9 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 
 	// Migrate existing TEXT column to BYTEA if needed
 	var dataType string
-	err = conn.QueryRow(ctx, `
-		SELECT data_type 
-		FROM information_schema.columns 
+	err = conn.QueryRow(primaryCtx, `
+		SELECT data_type
+		FROM information_schema.columns
 		WHERE table_name = $1 AND column_name = 'value'
 	`, cfg.Table).Scan(&dataType)
 
@@ -151,7 +214,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		p.logger.Info().Msg("migrating value column from TEXT to BYTEA")
 
 		// Add temporary column
-		_, err = conn.Exec(ctx, fmt.Sprintf(`
+		_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
 			ALTER TABLE %s ADD COLUMN IF NOT EXISTS value_new BYTEA
 		`, cfg.Table))
 		if err != nil {
@@ -159,7 +222,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		}
 
 		// Copy data (converting text to bytea)
-		_, err = conn.Exec(ctx, fmt.Sprintf(`
+		_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
 			UPDATE %s SET value_new = value::bytea WHERE value IS NOT NULL
 		`, cfg.Table))
 		if err != nil {
@@ -167,7 +230,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		}
 
 		// Drop old column and rename new one
-		_, err = conn.Exec(ctx, fmt.Sprintf(`
+		_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
 			ALTER TABLE %s DROP COLUMN value;
 			ALTER TABLE %s RENAME COLUMN value_new TO value;
 		`, cfg.Table, cfg.Table))
@@ -179,7 +242,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	}
 
 	// Add expires_at column if it doesn't exist
-	_, err = conn.Exec(ctx, fmt.Sprintf(`
+	_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
         ALTER TABLE %s
         ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE
     `, cfg.Table))
@@ -188,7 +251,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	}
 
 	// Create index for reverse lookups
-	_, err = conn.Exec(ctx, fmt.Sprintf(`
+	_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
 		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (partition_key, range_key)
 	`, cfg.Table))
 	if err != nil {
@@ -196,7 +259,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	}
 
 	// Create index for TTL cleanup
-	_, err = conn.Exec(ctx, fmt.Sprintf(`
+	_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
 		CREATE INDEX IF NOT EXISTS idx_expires_at ON %s (expires_at)
 		WHERE expires_at IS NOT NULL
 	`, cfg.Table))
@@ -206,7 +269,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 
 	// Try to set up pg_cron cleanup job if extension exists
 	var hasPgCron bool
-	err = conn.QueryRow(ctx, `
+	err = conn.QueryRow(primaryCtx, `
         SELECT EXISTS (
             SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
         )
@@ -215,9 +278,11 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		p.logger.Warn().Err(err).Msg("failed to check for pg_cron extension")
 	}
 
+	// Determine if we should use local cleanup (not pg_cron)
+	usePgCron := false
 	if hasPgCron {
 		// Create cleanup job using pg_cron
-		_, err = conn.Exec(ctx, fmt.Sprintf(`
+		_, err = conn.Exec(primaryCtx, fmt.Sprintf(`
             SELECT cron.schedule('*/5 * * * *', $$
                 DELETE FROM %s
                 WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
@@ -227,20 +292,144 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 			p.logger.Warn().Err(err).Msg("failed to create pg_cron cleanup job, falling back to local cleanup")
 		} else {
 			p.logger.Info().Msg("successfully configured pg_cron cleanup job")
-			// Don't start the local cleanup routine since we're using pg_cron
-			p.cleanupTicker = nil
+			usePgCron = true
 		}
 	}
 
 	p.conn = conn
 	p.logger.Info().Str("table", p.table).Msg("successfully connected to postgres")
 
-	// If we are *not* using pg_cron, we still have a non-nil ticker,
-	// so we spawn the local cleanup routine:
-	if p.cleanupTicker != nil {
-		go p.startCleanup(ctx)
+	// Start local cleanup routine if not using pg_cron
+	if !usePgCron {
+		p.cleanupTicker = time.NewTicker(5 * time.Minute)
+		// Use app context as parent so cleanup stops on app shutdown,
+		// but also can be cancelled explicitly on reconnect
+		cleanupCtx, cleanupCancel := context.WithCancel(p.appCtx)
+		p.cleanupCancel = cleanupCancel
+		go p.startCleanup(cleanupCtx)
 	}
 	return nil
+}
+
+// createPool creates a new connection pool for the given URI
+func (p *PostgreSQLConnector) createPool(ctx context.Context, uri string) (*pgxpool.Pool, error) {
+	config, err := pgxpool.ParseConfig(uri)
+	if err != nil {
+		return nil, common.NewTaskFatal(fmt.Errorf("failed to parse connection URI: %w", err))
+	}
+	config.MinConns = p.minConns
+	config.MaxConns = p.maxConns
+	config.MaxConnLifetime = 5 * time.Hour
+	config.MaxConnIdleTime = 30 * time.Minute
+
+	pool, err := pgxpool.ConnectConfig(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	return pool, nil
+}
+
+// getReadPool returns a connection pool for read operations.
+// If read replicas are configured, it returns one using round-robin load balancing.
+// If no replicas are available or all are unhealthy, it falls back to the primary.
+//
+// IMPORTANT: Caller must hold p.connMu (at least RLock) before calling this method
+// to prevent races with connectTask which may swap p.conn and p.readReplicas.
+func (p *PostgreSQLConnector) getReadPool() *pgxpool.Pool {
+	// Note: We access p.readReplicas and p.conn without locking here because
+	// all callers (Get, getWithWildcard, List) already hold p.connMu.RLock().
+	// This is safe because connectTask holds p.connMu.Lock() when modifying these fields.
+
+	if len(p.readReplicas) == 0 {
+		return p.conn
+	}
+
+	// Round-robin selection using atomic increment
+	idx := atomic.AddUint64(&p.replicaIndex, 1) - 1
+	selectedIdx := idx % uint64(len(p.readReplicas))
+	replica := p.readReplicas[selectedIdx]
+
+	// If replica pool is nil (disconnected), fall back to primary
+	if replica == nil {
+		return p.conn
+	}
+
+	return replica
+}
+
+// isConnectionError determines if an error represents a true connection/infrastructure failure
+// that warrants marking the connector for reinitialization. This is stricter than
+// shouldFallbackToPrimary - it excludes normal request timeouts which don't indicate
+// the connection itself is broken.
+func (p *PostgreSQLConnector) isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Network errors (connection refused, reset, broken pipe, etc.)
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		// Only treat as connection error if it's not just a timeout
+		// A timeout on a single request doesn't mean the connection is broken
+		if !netErr.Timeout() {
+			return true
+		}
+	}
+
+	// PostgreSQL fatal errors indicate the connection is unusable
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if pgErr.Severity == "FATAL" {
+			return true
+		}
+	}
+
+	// Connection-related error messages (fallback for wrapped errors)
+	// These indicate actual connection problems, not timeouts
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "broken pipe") ||
+		strings.Contains(errMsg, "no such host") ||
+		strings.Contains(errMsg, "connection closed") ||
+		strings.Contains(errMsg, "EOF") {
+		return true
+	}
+
+	return false
+}
+
+// shouldFallbackToPrimary determines if an error from a read replica should
+// trigger a fallback to the primary. This is broader than isConnectionError
+// and includes timeouts (try primary which might be faster) and stale data scenarios.
+func (p *PostgreSQLConnector) shouldFallbackToPrimary(err error, replicaFallbackOnMissing bool) bool {
+	if err == nil {
+		return false
+	}
+
+	// True connection errors always warrant fallback
+	if p.isConnectionError(err) {
+		return true
+	}
+
+	// Context errors (timeout, canceled) - try primary which might respond faster
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+
+	// Network timeouts - replica might be slow, try primary
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	// ErrNoRows on replica might indicate stale data (replication lag)
+	// Optionally fallback to primary to get fresher data
+	if replicaFallbackOnMissing && errors.Is(err, pgx.ErrNoRows) {
+		return true
+	}
+
+	return false
 }
 
 func (p *PostgreSQLConnector) Id() string {
@@ -268,11 +457,7 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey st
 		return err
 	}
 
-	if len(value) < 1024 {
-		p.logger.Debug().Int("length", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
-	} else {
-		p.logger.Debug().Int("length", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
-	}
+	p.logger.Debug().Int("length", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
 
 	var expiresAt *time.Time
 	if ttl != nil && *ttl > 0 {
@@ -348,15 +533,24 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 
 	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres")
 
+	// Use read replica if available, with fallback to primary
+	readPool := p.getReadPool()
 	var value []byte
-	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
+	err := readPool.QueryRow(ctx, query, args...).Scan(&value)
+
+	// If replica failed, retry on primary
+	// Fall back on connection errors AND on ErrNoRows (stale replica data due to replication lag)
+	if err != nil && readPool != p.conn && p.shouldFallbackToPrimary(err, true) {
+		p.logger.Debug().Err(err).Msg("read replica failed, falling back to primary")
+		err = p.conn.QueryRow(ctx, query, args...).Scan(&value)
+	}
 
 	if err != nil {
 		p.handleConnectionFailure(err)
 		common.SetTraceSpanError(span, err)
 	}
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -572,15 +766,16 @@ func (p *PostgreSQLConnector) taskId() string {
 }
 
 func (p *PostgreSQLConnector) handleConnectionFailure(err error) {
-	if strings.Contains(err.Error(), "connection") {
+	// Only trigger reinitialization for true connection errors, not normal timeouts.
+	// Normal request timeouts under load don't mean the connection is broken.
+	if p.isConnectionError(err) {
 		s := p.initializer.State()
 		if s != util.StateInitializing &&
 			s != util.StateRetrying {
-			// p.conn = nil
 			p.logger.Warn().Err(err).Str("state", s.String()).Msg("postgres connection lost; marking connector as failed for reinitialization")
 			p.initializer.MarkTaskAsFailed(p.taskId(), err)
 		} else {
-			p.logger.Warn().Err(err).Str("state", s.String()).Msg("postgres connection lost; and will not be retried due to connector state")
+			p.logger.Warn().Err(err).Str("state", s.String()).Msg("postgres connection lost; will not retry due to connector state")
 		}
 	}
 }
@@ -760,10 +955,19 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 
 	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres with wildcard")
 
+	// Use read replica if available, with fallback to primary
+	readPool := p.getReadPool()
 	var value []byte
-	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
+	err := readPool.QueryRow(ctx, query, args...).Scan(&value)
 
-	if err == pgx.ErrNoRows {
+	// If replica failed, retry on primary
+	// Fall back on connection errors AND on ErrNoRows (stale replica data due to replication lag)
+	if err != nil && readPool != p.conn && p.shouldFallbackToPrimary(err, true) {
+		p.logger.Debug().Err(err).Msg("read replica failed, falling back to primary")
+		err = p.conn.QueryRow(ctx, query, args...).Scan(&value)
+	}
+
+	if errors.Is(err, pgx.ErrNoRows) {
 		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -922,8 +1126,8 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	}
 
 	query := fmt.Sprintf(`
-		SELECT partition_key, range_key, value 
-		FROM %s 
+		SELECT partition_key, range_key, value
+		FROM %s
 		WHERE expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC'
 		ORDER BY partition_key, range_key
 		LIMIT $1 OFFSET $2
@@ -931,7 +1135,16 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 
 	p.logger.Debug().Str("query", query).Int("limit", limit).Int("offset", offset).Msg("listing from postgres")
 
-	rows, err := p.conn.Query(ctx, query, limit+1, offset) // Get one extra to check if there are more
+	// Use read replica if available, with fallback to primary
+	readPool := p.getReadPool()
+	rows, err := readPool.Query(ctx, query, limit+1, offset) // Get one extra to check if there are more
+
+	// If replica failed, retry on primary (don't fall back on ErrNoRows for List since empty result is valid)
+	if err != nil && readPool != p.conn && p.shouldFallbackToPrimary(err, false) {
+		p.logger.Debug().Err(err).Msg("read replica failed, falling back to primary")
+		rows, err = p.conn.Query(ctx, query, limit+1, offset)
+	}
+
 	if err != nil {
 		p.handleConnectionFailure(err)
 		common.SetTraceSpanError(span, err)

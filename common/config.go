@@ -331,24 +331,30 @@ type DynamoDBConnectorConfig struct {
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri string   `yaml:"connectionUri" json:"connectionUri"`
-	Table         string   `yaml:"table" json:"table"`
-	MinConns      int32    `yaml:"minConns,omitempty" json:"minConns"`
-	MaxConns      int32    `yaml:"maxConns,omitempty" json:"maxConns"`
-	InitTimeout   Duration `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
-	GetTimeout    Duration `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
-	SetTimeout    Duration `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	ConnectionUri   string   `yaml:"connectionUri" json:"connectionUri"`
+	ReadReplicaUris []string `yaml:"readReplicaUris,omitempty" json:"readReplicaUris"`
+	Table           string   `yaml:"table" json:"table"`
+	MinConns        int32    `yaml:"minConns,omitempty" json:"minConns"`
+	MaxConns        int32    `yaml:"maxConns,omitempty" json:"maxConns"`
+	InitTimeout     Duration `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout      Duration `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout      Duration `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(map[string]string{
-		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
-		"table":         p.Table,
-		"minConns":      fmt.Sprintf("%d", p.MinConns),
-		"maxConns":      fmt.Sprintf("%d", p.MaxConns),
-		"initTimeout":   p.InitTimeout.String(),
-		"getTimeout":    p.GetTimeout.String(),
-		"setTimeout":    p.SetTimeout.String(),
+	redactedReplicas := make([]string, len(p.ReadReplicaUris))
+	for i, uri := range p.ReadReplicaUris {
+		redactedReplicas[i] = util.RedactEndpoint(uri)
+	}
+	return sonic.Marshal(map[string]interface{}{
+		"connectionUri":   util.RedactEndpoint(p.ConnectionUri),
+		"readReplicaUris": redactedReplicas,
+		"table":           p.Table,
+		"minConns":        fmt.Sprintf("%d", p.MinConns),
+		"maxConns":        fmt.Sprintf("%d", p.MaxConns),
+		"initTimeout":     p.InitTimeout.String(),
+		"getTimeout":      p.GetTimeout.String(),
+		"setTimeout":      p.SetTimeout.String(),
 	})
 }
 
