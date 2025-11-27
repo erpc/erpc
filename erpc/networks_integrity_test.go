@@ -38,6 +38,15 @@ func newTestDirectives() *common.RequestDirectives {
 	return &common.RequestDirectives{}
 }
 
+// Helper to convert hex string to bytes for tests (panics on error)
+func mustHexToBytes(hex string) []byte {
+	b, err := common.HexToBytes(hex)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
 // Helper to setup test network for integrity tests
 func setupIntegrityTestNetwork(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig, ntwCfg *common.NetworkConfig) (*Network, *upstream.UpstreamsRegistry) {
 	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
@@ -324,7 +333,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *te
 	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
 }
 
-// logsBloom non-zero with zero logs should error when EnforceNonEmptyLogsBloom is enabled
+// logsBloom non-zero with zero logs should error when ValidateLogsBloomNotEmpty is enabled
 func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -341,7 +350,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
 	dirs := newTestDirectives()
-	dirs.EnforceNonEmptyLogsBloom = true
+	dirs.ValidateLogsBloomEmptiness = true
 	req.SetDirectives(dirs)
 
 	// Non-zero logsBloom with zero logs -> error
@@ -387,7 +396,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 	req.SetNetwork(network)
 	// No validation directives set - should pass
 	dirs := newTestDirectives()
-	dirs.EnforceNonEmptyLogsBloom = false
+	dirs.ValidateLogsBloomEmptiness = false
 	req.SetDirectives(dirs)
 
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
@@ -418,7 +427,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_EmptyReceipts_NoError(t *testing.T
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
 	req.SetNetwork(network)
 	dirs := newTestDirectives()
-	dirs.EnforceNonEmptyLogsBloom = true
+	dirs.ValidateLogsBloomEmptiness = true
 	dirs.EnforceLogIndexStrictIncrements = true
 	dirs.RetryEmpty = false // Don't retry empty - we want to test empty response handling
 	req.SetDirectives(dirs)
@@ -499,7 +508,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream_Bloom(t 
 		Failsafe:     []*common.FailsafeConfig{{MatchMethod: "eth_getBlockReceipts", Retry: &common.RetryPolicyConfig{MaxAttempts: 2}}},
 		// Enable validation via directive defaults
 		DirectiveDefaults: &common.DirectiveDefaultsConfig{
-			EnforceNonEmptyLogsBloom: util.BoolPtr(true),
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
 		},
 	}
 	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upBad, upGood}, ntwCfg)
@@ -623,4 +632,415 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 	if resp != nil {
 		defer resp.Release()
 	}
+}
+
+// logsBloom zero with logs present should error when ValidateLogsBloomEmptiness is enabled
+func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithLogs_Error(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.ValidateLogsBloomEmptiness = true
+	req.SetDirectives(dirs)
+
+	// Zero logsBloom with logs present -> error (inconsistent)
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0","address":"0x1234567890123456789012345678901234567890","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.Error(t, hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
+}
+
+// Zero bloom with zero logs should pass (consistent empty state)
+func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithZeroLogs_NoError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.ValidateLogsBloomEmptiness = true
+	req.SetDirectives(dirs)
+
+	// Zero logsBloom with zero logs -> OK (consistent)
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
+}
+
+// ReceiptsCountExact mismatch should error
+func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Mismatch_Error(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	// Expect exactly 3 receipts
+	exactCount := int64(3)
+	dirs.ReceiptsCountExact = &exactCount
+	req.SetDirectives(dirs)
+
+	// Return only 2 receipts -> mismatch error
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]},{"blockHash":"0xabc","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.Error(t, hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
+}
+
+// ReceiptsCountExact match should pass
+func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Match_NoError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	// Expect exactly 2 receipts
+	exactCount := int64(2)
+	dirs.ReceiptsCountExact = &exactCount
+	req.SetDirectives(dirs)
+
+	// Return exactly 2 receipts -> OK
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]},{"blockHash":"0xabc","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
+}
+
+// ReceiptsCountAtLeast should error when count is below threshold
+func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_BelowThreshold_Error(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	// Expect at least 5 receipts
+	atLeastCount := int64(5)
+	dirs.ReceiptsCountAtLeast = &atLeastCount
+	req.SetDirectives(dirs)
+
+	// Return only 2 receipts -> below threshold error
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]},{"blockHash":"0xabc","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.Error(t, hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
+}
+
+// ReceiptsCountAtLeast should pass when count meets threshold
+func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_MeetsThreshold_NoError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	// Expect at least 2 receipts
+	atLeastCount := int64(2)
+	dirs.ReceiptsCountAtLeast = &atLeastCount
+	req.SetDirectives(dirs)
+
+	// Return exactly 3 receipts -> meets threshold OK
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]},{"blockHash":"0xabc","logs":[]},{"blockHash":"0xabc","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
+}
+
+// GroundTruthTransactions cross-validation: receipt tx hash mismatch should error
+func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMismatch_Error(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.ValidateReceiptTransactionMatch = true
+	// Ground truth: expect tx hash 0xaaa... at index 0
+	dirs.GroundTruthTransactions = []*common.GroundTruthTransaction{
+		{Hash: mustHexToBytes("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")},
+	}
+	req.SetDirectives(dirs)
+
+	// Receipt has different tx hash 0xbbb...
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.Error(t, hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
+}
+
+// GroundTruthTransactions cross-validation: matching tx hash should pass
+func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMatch_NoError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.ValidateReceiptTransactionMatch = true
+	// Ground truth: expect tx hash 0xaaa... at index 0
+	dirs.GroundTruthTransactions = []*common.GroundTruthTransaction{
+		{Hash: mustHexToBytes("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")},
+	}
+	req.SetDirectives(dirs)
+
+	// Receipt has matching tx hash 0xaaa...
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
+}
+
+// Contract creation validation: tx.to is nil but receipt has no contractAddress should error
+func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationMissingAddress_Error(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.ValidateReceiptTransactionMatch = true
+	dirs.ValidateContractCreation = true
+	// Ground truth: tx with nil To (contract creation)
+	dirs.GroundTruthTransactions = []*common.GroundTruthTransaction{
+		{Hash: mustHexToBytes("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), To: nil},
+	}
+	req.SetDirectives(dirs)
+
+	// Receipt is missing contractAddress for contract creation tx
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","contractAddress":null,"logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.Error(t, hookErr)
+	require.True(t, common.HasErrorCode(hookErr, common.ErrCodeEndpointContentValidation), "expected ErrCodeEndpointContentValidation, got: %v", hookErr)
+}
+
+// Contract creation validation: tx.to is nil and receipt has contractAddress should pass
+func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationWithAddress_NoError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	upCfg := createTestUpstreamConfig("rpc1")
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
+	network, upr := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{upCfg}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":[{"blockNumber":"0x1"}]}`))
+	req.SetNetwork(network)
+	dirs := newTestDirectives()
+	dirs.ValidateReceiptTransactionMatch = true
+	dirs.ValidateContractCreation = true
+	// Ground truth: tx with nil To (contract creation)
+	dirs.GroundTruthTransactions = []*common.GroundTruthTransaction{
+		{Hash: mustHexToBytes("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), To: nil},
+	}
+	req.SetDirectives(dirs)
+
+	// Receipt has contractAddress for contract creation tx
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "\"eth_getBlockReceipts\"") }).
+		Reply(200).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","contractAddress":"0x1234567890123456789012345678901234567890","logs":[]}]}`))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.GreaterOrEqual(t, len(ups), 1)
+	rawResp, fwdErr := ups[0].Forward(ctx, req, false)
+	require.NoError(t, fwdErr)
+	require.NotNil(t, rawResp)
+	defer rawResp.Release()
+
+	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
+	require.NoError(t, hookErr)
 }

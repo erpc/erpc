@@ -1447,12 +1447,28 @@ type DirectiveDefaultsConfig struct {
 	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 
+	// Validation: Header Field Lengths
+	ValidateHeaderFieldLengths *bool `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
+
+	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
+	ValidateTransactionFields    *bool `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`
+	ValidateTransactionBlockInfo *bool `yaml:"validateTransactionBlockInfo,omitempty" json:"validateTransactionBlockInfo"`
+
 	// Validation: Receipts & Logs
 	EnforceLogIndexStrictIncrements *bool `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
-	EnforceNonEmptyLogsBloom        *bool `yaml:"enforceNonEmptyLogsBloom,omitempty" json:"enforceNonEmptyLogsBloom"`
-	ValidateLogsBloom               *bool `yaml:"validateLogsBloom,omitempty" json:"validateLogsBloom"`
 	ValidateTxHashUniqueness        *bool `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
 	ValidateTransactionIndex        *bool `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
+	ValidateLogFields               *bool `yaml:"validateLogFields,omitempty" json:"validateLogFields"`
+
+	// Validation: Bloom Filter (simplified to 2 checks)
+	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
+	ValidateLogsBloomEmptiness *bool `yaml:"validateLogsBloomEmptiness,omitempty" json:"validateLogsBloomEmptiness"`
+	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
+	ValidateLogsBloomMatch *bool `yaml:"validateLogsBloomMatch,omitempty" json:"validateLogsBloomMatch"`
+
+	// Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
+	ValidateReceiptTransactionMatch *bool `yaml:"validateReceiptTransactionMatch,omitempty" json:"validateReceiptTransactionMatch"`
+	ValidateContractCreation        *bool `yaml:"validateContractCreation,omitempty" json:"validateContractCreation"`
 
 	// Validation: numeric checks
 	ReceiptsCountExact   *int64 `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`

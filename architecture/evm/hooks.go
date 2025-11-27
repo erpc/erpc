@@ -122,10 +122,16 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		// Then apply directive-based validation
 		return upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
 
-	case // Block lookups
-		"eth_getblockbynumber",
-		"eth_getblockbyhash",
-		// Transaction lookups
+	case "eth_getblockbynumber", "eth_getblockbyhash":
+		// First check for unexpected empty
+		rs, re = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+		if re != nil {
+			return rs, re
+		}
+		// Then apply directive-based validation
+		return upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
+
+	case // Transaction lookups
 		"eth_gettransactionbyhash",
 		"eth_gettransactionreceipt",
 		"eth_gettransactionbyblockhashandindex",

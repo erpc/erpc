@@ -54,7 +54,7 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 }
 
 // validateGetBlockReceipts validates eth_getBlockReceipts responses based on request directives.
-// It checks:
+// It performs comprehensive validation including:
 // - ReceiptsCountExact / ReceiptsCountAtLeast
 // - ValidationExpectedBlockHash / ValidationExpectedBlockNumber
 // - ValidateTxHashUniqueness
@@ -62,6 +62,9 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 // - EnforceNonEmptyLogsBloom
 // - EnforceLogIndexStrictIncrements
 // - ValidateLogsBloom
+// - ValidateLogFields (address/topic lengths, block/tx hash matching)
+// - ValidateReceiptTransactionMatch (cross-validation with GroundTruthTransactions)
+// - ValidateContractCreation (contract creation consistency)
 func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rs *common.NormalizedResponse) error {
 	jrr, err := rs.JsonRpcResponse(ctx)
 	if err != nil {
@@ -70,9 +73,13 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 
 	// Minimal JSON model for validation
 	type logLite struct {
-		LogIndex string   `json:"logIndex"`
-		Address  string   `json:"address"`
-		Topics   []string `json:"topics"`
+		LogIndex         string   `json:"logIndex"`
+		Address          string   `json:"address"`
+		Topics           []string `json:"topics"`
+		BlockHash        string   `json:"blockHash"`
+		BlockNumber      string   `json:"blockNumber"`
+		TransactionHash  string   `json:"transactionHash"`
+		TransactionIndex string   `json:"transactionIndex"`
 	}
 	type receiptLite struct {
 		BlockHash        string    `json:"blockHash"`
@@ -81,6 +88,7 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 		TransactionIndex string    `json:"transactionIndex"`
 		LogsBloom        string    `json:"logsBloom"`
 		Logs             []logLite `json:"logs"`
+		ContractAddress  string    `json:"contractAddress"`
 	}
 
 	var receipts []receiptLite
@@ -113,21 +121,23 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 	}
 
 	// 2. Expected Ground Truths
-	if expectedHash := dirs.ValidationExpectedBlockHash; expectedHash != "" {
-		expectedHash = strings.ToLower(strings.TrimPrefix(expectedHash, "0x"))
+	expectedBlockHash := ""
+	if dirs.ValidationExpectedBlockHash != "" {
+		expectedBlockHash = strings.ToLower(strings.TrimPrefix(dirs.ValidationExpectedBlockHash, "0x"))
 		for i, r := range receipts {
 			gotHash := strings.ToLower(strings.TrimPrefix(r.BlockHash, "0x"))
-			if gotHash != "" && gotHash != expectedHash {
+			if gotHash != "" && gotHash != expectedBlockHash {
 				return common.NewErrEndpointContentValidation(
-					fmt.Errorf("receipts block hash mismatch at index %d: expected %s got %s", i, expectedHash, gotHash),
+					fmt.Errorf("receipts block hash mismatch at index %d: expected %s got %s", i, expectedBlockHash, gotHash),
 					u,
 				)
 			}
 		}
 	}
 
+	var expectedBlockNum *int64
 	if dirs.ValidationExpectedBlockNumber != nil {
-		expectedNum := *dirs.ValidationExpectedBlockNumber
+		expectedBlockNum = dirs.ValidationExpectedBlockNumber
 		for i, r := range receipts {
 			if r.BlockNumber == "" {
 				continue
@@ -136,9 +146,9 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 			if err != nil {
 				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid blockNumber hex at index %d: %w", i, err), u)
 			}
-			if bn != expectedNum {
+			if bn != *expectedBlockNum {
 				return common.NewErrEndpointContentValidation(
-					fmt.Errorf("receipts block number mismatch at index %d: expected %d got %d", i, expectedNum, bn),
+					fmt.Errorf("receipts block number mismatch at index %d: expected %d got %d", i, *expectedBlockNum, bn),
 					u,
 				)
 			}
@@ -178,21 +188,172 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 		}
 	}
 
-	// 5. Deep Receipt Validation (Logs, Bloom)
+	// 5. Cross-validation with GroundTruthTransactions (library-mode only)
+	if dirs.ValidateReceiptTransactionMatch && len(dirs.GroundTruthTransactions) > 0 {
+		gtTxs := dirs.GroundTruthTransactions
+		if int64(len(gtTxs)) != count {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("receipts count %d != ground truth transactions count %d", count, len(gtTxs)),
+				u,
+			)
+		}
+		for i, r := range receipts {
+			gtTx := gtTxs[i]
+			if gtTx == nil {
+				continue
+			}
+			// Match transaction hash (gtTx.Hash is []byte, r.TransactionHash is hex string)
+			rTxHashBytes, err := evm.HexToBytes(r.TransactionHash)
+			if err != nil {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("receipt %d: invalid tx hash hex: %w", i, err),
+					u,
+				)
+			}
+			if !bytes.Equal(rTxHashBytes, gtTx.Hash) {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("receipt %d tx hash mismatch: expected %x got %x", i, gtTx.Hash, rTxHashBytes),
+					u,
+				)
+			}
+
+			// Contract creation consistency
+			if dirs.ValidateContractCreation {
+				gtHasTo := len(gtTx.To) > 0
+				rHasContract := r.ContractAddress != ""
+				if !gtHasTo {
+					// Contract creation: receipt must have contractAddress
+					if !rHasContract {
+						return common.NewErrEndpointContentValidation(
+							fmt.Errorf("receipt %d: contract creation tx but no contractAddress in receipt", i),
+							u,
+						)
+					}
+					// Validate contractAddress length
+					contractBytes, err := evm.HexToBytes(r.ContractAddress)
+					if err != nil {
+						return common.NewErrEndpointContentValidation(
+							fmt.Errorf("receipt %d: invalid contractAddress hex: %w", i, err),
+							u,
+						)
+					}
+					if len(contractBytes) != evm.AddressLength {
+						return common.NewErrEndpointContentValidation(
+							fmt.Errorf("receipt %d: contractAddress length invalid: %d", i, len(contractBytes)),
+							u,
+						)
+					}
+				} else {
+					// Not contract creation: receipt should NOT have contractAddress
+					if rHasContract {
+						return common.NewErrEndpointContentValidation(
+							fmt.Errorf("receipt %d: non-creation tx but has contractAddress", i),
+							u,
+						)
+					}
+				}
+			}
+		}
+	}
+
+	// 6. Deep Receipt Validation (Logs, Bloom)
 	var expectedLogIndex uint64 = 0
 
 	for i, r := range receipts {
-		// EnforceNonEmptyLogsBloom
-		if dirs.EnforceNonEmptyLogsBloom {
-			lb := strings.TrimLeft(strings.TrimPrefix(r.LogsBloom, "0x"), "0")
-			if lb != "" && len(r.Logs) == 0 {
+		// ValidateLogsBloomEmptiness: consistency check between bloom and logs
+		// - if bloom is non-zero, logs must exist
+		// - if logs exist, bloom must not be zero
+		if dirs.ValidateLogsBloomEmptiness {
+			bloomIsZero := isZeroBloom(r.LogsBloom)
+			hasLogs := len(r.Logs) > 0
+			if !bloomIsZero && !hasLogs {
 				return common.NewErrEndpointContentValidation(fmt.Errorf("non-zero receipt.logsBloom but 0 logs at receipt %d", i), u)
+			}
+			if bloomIsZero && hasLogs {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("zero receipt.logsBloom but %d logs at receipt %d", len(r.Logs), i), u)
 			}
 		}
 
-		// EnforceLogIndexStrictIncrements
-		if dirs.EnforceLogIndexStrictIncrements {
-			for j, log := range r.Logs {
+		// Process logs
+		for j, log := range r.Logs {
+			// ValidateLogFields
+			if dirs.ValidateLogFields {
+				// Address length
+				if log.Address != "" {
+					addrBytes, err := evm.HexToBytes(log.Address)
+					if err != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: invalid address hex: %w", i, j, err), u)
+					}
+					if len(addrBytes) != evm.AddressLength {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: address length invalid: %d", i, j, len(addrBytes)), u)
+					}
+				}
+
+				// Topic lengths and count
+				if len(log.Topics) > evm.MaxTopics {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: too many topics: %d", i, j, len(log.Topics)), u)
+				}
+				for k, topic := range log.Topics {
+					topicBytes, err := evm.HexToBytes(topic)
+					if err != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d topic %d: invalid hex: %w", i, j, k, err), u)
+					}
+					if len(topicBytes) != evm.TopicLength {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d topic %d: length invalid: %d", i, j, k, len(topicBytes)), u)
+					}
+				}
+
+				// Log block hash must match receipt block hash
+				if log.BlockHash != "" && r.BlockHash != "" {
+					logBH := strings.ToLower(strings.TrimPrefix(log.BlockHash, "0x"))
+					rBH := strings.ToLower(strings.TrimPrefix(r.BlockHash, "0x"))
+					if logBH != rBH {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: block hash mismatch", i, j), u)
+					}
+				}
+
+				// Log block number must match receipt block number
+				if log.BlockNumber != "" && r.BlockNumber != "" {
+					logBN, err := common.HexToInt64(log.BlockNumber)
+					if err != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: invalid blockNumber hex: %w", i, j, err), u)
+					}
+					rBN, err := common.HexToInt64(r.BlockNumber)
+					if err != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d: invalid blockNumber hex: %w", i, err), u)
+					}
+					if logBN != rBN {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: block number mismatch", i, j), u)
+					}
+				}
+
+				// Log tx hash must match receipt tx hash
+				if log.TransactionHash != "" && r.TransactionHash != "" {
+					logTH := strings.ToLower(strings.TrimPrefix(log.TransactionHash, "0x"))
+					rTH := strings.ToLower(strings.TrimPrefix(r.TransactionHash, "0x"))
+					if logTH != rTH {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: tx hash mismatch", i, j), u)
+					}
+				}
+
+				// Log tx index must match receipt tx index
+				if log.TransactionIndex != "" && r.TransactionIndex != "" {
+					logTI, err := common.HexToInt64(log.TransactionIndex)
+					if err != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: invalid transactionIndex hex: %w", i, j, err), u)
+					}
+					rTI, err := common.HexToInt64(r.TransactionIndex)
+					if err != nil {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d: invalid transactionIndex hex: %w", i, err), u)
+					}
+					if logTI != rTI {
+						return common.NewErrEndpointContentValidation(fmt.Errorf("receipt %d log %d: tx index mismatch", i, j), u)
+					}
+				}
+			}
+
+			// EnforceLogIndexStrictIncrements
+			if dirs.EnforceLogIndexStrictIncrements {
 				lix := log.LogIndex
 				if lix == "" {
 					return common.NewErrEndpointContentValidation(fmt.Errorf("missing logIndex at receipt %d log %d", i, j), u)
@@ -211,8 +372,8 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 			}
 		}
 
-		// ValidateLogsBloom
-		if dirs.ValidateLogsBloom && len(r.Logs) > 0 {
+		// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches
+		if dirs.ValidateLogsBloomMatch && len(r.Logs) > 0 {
 			providedBloom, perr := evm.HexToBytes(r.LogsBloom)
 			if perr != nil {
 				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid receipt.logsBloom hex: %w", perr), u)
@@ -252,6 +413,12 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 	}
 
 	return nil
+}
+
+// isZeroBloom checks if a hex-encoded bloom filter is all zeros
+func isZeroBloom(bloomHex string) bool {
+	trimmed := strings.TrimLeft(strings.TrimPrefix(bloomHex, "0x"), "0")
+	return trimmed == ""
 }
 
 // bloomAdd sets the three keccak-derived bit positions for value into bloom (2048-bit, 256 bytes, big-endian)

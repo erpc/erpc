@@ -59,12 +59,30 @@ type RequestDirectives struct {
 	EnforceGetLogsBlockRange   bool `json:"enforceGetLogsBlockRange,omitempty"`
 	EnforceNonNullTaggedBlocks bool `json:"enforceNonNullTaggedBlocks,omitempty"`
 
+	// Validation: Header Field Lengths (only via config/library, not HTTP headers)
+	ValidateHeaderFieldLengths bool `json:"validateHeaderFieldLengths,omitempty"`
+
+	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
+	ValidateTransactionFields    bool `json:"validateTransactionFields,omitempty"`
+	ValidateTransactionBlockInfo bool `json:"validateTransactionBlockInfo,omitempty"`
+
 	// Validation: Receipts & Logs
 	EnforceLogIndexStrictIncrements bool `json:"enforceLogIndexStrictIncrements,omitempty"`
-	EnforceNonEmptyLogsBloom        bool `json:"enforceNonEmptyLogsBloom,omitempty"`
-	ValidateLogsBloom               bool `json:"validateLogsBloom,omitempty"`
 	ValidateTxHashUniqueness        bool `json:"validateTxHashUniqueness,omitempty"`
 	ValidateTransactionIndex        bool `json:"validateTransactionIndex,omitempty"`
+	ValidateLogFields               bool `json:"validateLogFields,omitempty"`
+
+	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
+	ValidateLogsBloomEmptiness bool `json:"validateLogsBloomEmptiness,omitempty"`
+	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
+	// For methods without logs in response (e.g., eth_getBlockByNumber), use GroundTruthLogs
+	ValidateLogsBloomMatch bool `json:"validateLogsBloomMatch,omitempty"`
+
+	// Validation: Receipt-to-Transaction Cross-Validation
+	// When true, validates that receipt[i].transactionHash == tx[i].hash (requires GroundTruthTransactions)
+	ValidateReceiptTransactionMatch bool `json:"validateReceiptTransactionMatch,omitempty"`
+	// When true, validates contract creation consistency (no tx.to → receipt must have contractAddress)
+	ValidateContractCreation bool `json:"validateContractCreation,omitempty"`
 
 	// Validation: numeric checks (nil means unset/don't check)
 	ReceiptsCountExact   *int64 `json:"receiptsCountExact,omitempty"`
@@ -73,6 +91,37 @@ type RequestDirectives struct {
 	// Validation: Expected Ground Truths (nil means unset/don't check)
 	ValidationExpectedBlockHash   string `json:"validationExpectedBlockHash,omitempty"`
 	ValidationExpectedBlockNumber *int64 `json:"validationExpectedBlockNumber,omitempty"`
+
+	// Ground Truth Data (library-mode only, NOT settable via HTTP headers/query params)
+	// These fields allow library users to pass full objects for cross-entity validation.
+	//
+	// GroundTruthTransactions: expected transactions for receipt validation (uses manifesto evm.Transaction)
+	// When set with ValidateReceiptTransactionMatch, receipts are validated against these transactions
+	GroundTruthTransactions []*GroundTruthTransaction `json:"-"`
+	//
+	// GroundTruthLogs: expected logs for bloom validation when logs aren't in the response
+	// Used with ValidateLogsBloomMatch for methods like eth_getBlockByNumber that don't return logs
+	GroundTruthLogs []*GroundTruthLog `json:"-"`
+}
+
+// GroundTruthTransaction represents expected transaction data for cross-validation.
+// Uses manifesto-compatible structure for library-mode validation.
+type GroundTruthTransaction struct {
+	// Hash is the transaction hash (required for matching)
+	Hash []byte
+	// To is the recipient address (nil/empty for contract creation)
+	To []byte
+	// TransactionIndex is the expected position in the block
+	TransactionIndex *uint32
+}
+
+// GroundTruthLog represents expected log data for bloom validation.
+// Uses manifesto-compatible structure for library-mode validation.
+type GroundTruthLog struct {
+	// Address is the contract address that emitted the log
+	Address []byte
+	// Topics are the indexed event parameters
+	Topics [][]byte
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
@@ -89,11 +138,17 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		EnforceHighestBlock:             d.EnforceHighestBlock,
 		EnforceGetLogsBlockRange:        d.EnforceGetLogsBlockRange,
 		EnforceNonNullTaggedBlocks:      d.EnforceNonNullTaggedBlocks,
+		ValidateHeaderFieldLengths:      d.ValidateHeaderFieldLengths,
+		ValidateTransactionFields:       d.ValidateTransactionFields,
+		ValidateTransactionBlockInfo:    d.ValidateTransactionBlockInfo,
 		EnforceLogIndexStrictIncrements: d.EnforceLogIndexStrictIncrements,
-		EnforceNonEmptyLogsBloom:        d.EnforceNonEmptyLogsBloom,
-		ValidateLogsBloom:               d.ValidateLogsBloom,
 		ValidateTxHashUniqueness:        d.ValidateTxHashUniqueness,
 		ValidateTransactionIndex:        d.ValidateTransactionIndex,
+		ValidateLogFields:               d.ValidateLogFields,
+		ValidateLogsBloomEmptiness:      d.ValidateLogsBloomEmptiness,
+		ValidateLogsBloomMatch:          d.ValidateLogsBloomMatch,
+		ValidateReceiptTransactionMatch: d.ValidateReceiptTransactionMatch,
+		ValidateContractCreation:        d.ValidateContractCreation,
 		ValidationExpectedBlockHash:     d.ValidationExpectedBlockHash,
 	}
 	// Deep copy pointer fields
@@ -108,6 +163,41 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 	if d.ValidationExpectedBlockNumber != nil {
 		v := *d.ValidationExpectedBlockNumber
 		cloned.ValidationExpectedBlockNumber = &v
+	}
+	// Deep copy GroundTruthTransactions slice (shallow copy of byte slices is fine - they're immutable)
+	if len(d.GroundTruthTransactions) > 0 {
+		cloned.GroundTruthTransactions = make([]*GroundTruthTransaction, len(d.GroundTruthTransactions))
+		for i, tx := range d.GroundTruthTransactions {
+			if tx == nil {
+				continue
+			}
+			clonedTx := &GroundTruthTransaction{
+				Hash: tx.Hash,
+				To:   tx.To,
+			}
+			if tx.TransactionIndex != nil {
+				v := *tx.TransactionIndex
+				clonedTx.TransactionIndex = &v
+			}
+			cloned.GroundTruthTransactions[i] = clonedTx
+		}
+	}
+	// Deep copy GroundTruthLogs slice
+	if len(d.GroundTruthLogs) > 0 {
+		cloned.GroundTruthLogs = make([]*GroundTruthLog, len(d.GroundTruthLogs))
+		for i, log := range d.GroundTruthLogs {
+			if log == nil {
+				continue
+			}
+			clonedLog := &GroundTruthLog{
+				Address: log.Address,
+			}
+			if len(log.Topics) > 0 {
+				clonedLog.Topics = make([][]byte, len(log.Topics))
+				copy(clonedLog.Topics, log.Topics)
+			}
+			cloned.GroundTruthLogs[i] = clonedLog
+		}
 	}
 	return cloned
 }
@@ -359,21 +449,47 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 		r.directives.EnforceNonNullTaggedBlocks = *directiveDefaults.EnforceNonNullTaggedBlocks
 	}
 
+	// Validation: Header Field Lengths
+	if directiveDefaults.ValidateHeaderFieldLengths != nil {
+		r.directives.ValidateHeaderFieldLengths = *directiveDefaults.ValidateHeaderFieldLengths
+	}
+
+	// Validation: Transactions
+	if directiveDefaults.ValidateTransactionFields != nil {
+		r.directives.ValidateTransactionFields = *directiveDefaults.ValidateTransactionFields
+	}
+	if directiveDefaults.ValidateTransactionBlockInfo != nil {
+		r.directives.ValidateTransactionBlockInfo = *directiveDefaults.ValidateTransactionBlockInfo
+	}
+
 	// Validation: Receipts & Logs
 	if directiveDefaults.EnforceLogIndexStrictIncrements != nil {
 		r.directives.EnforceLogIndexStrictIncrements = *directiveDefaults.EnforceLogIndexStrictIncrements
-	}
-	if directiveDefaults.EnforceNonEmptyLogsBloom != nil {
-		r.directives.EnforceNonEmptyLogsBloom = *directiveDefaults.EnforceNonEmptyLogsBloom
-	}
-	if directiveDefaults.ValidateLogsBloom != nil {
-		r.directives.ValidateLogsBloom = *directiveDefaults.ValidateLogsBloom
 	}
 	if directiveDefaults.ValidateTxHashUniqueness != nil {
 		r.directives.ValidateTxHashUniqueness = *directiveDefaults.ValidateTxHashUniqueness
 	}
 	if directiveDefaults.ValidateTransactionIndex != nil {
 		r.directives.ValidateTransactionIndex = *directiveDefaults.ValidateTransactionIndex
+	}
+	if directiveDefaults.ValidateLogFields != nil {
+		r.directives.ValidateLogFields = *directiveDefaults.ValidateLogFields
+	}
+
+	// Validation: Bloom Filter
+	if directiveDefaults.ValidateLogsBloomEmptiness != nil {
+		r.directives.ValidateLogsBloomEmptiness = *directiveDefaults.ValidateLogsBloomEmptiness
+	}
+	if directiveDefaults.ValidateLogsBloomMatch != nil {
+		r.directives.ValidateLogsBloomMatch = *directiveDefaults.ValidateLogsBloomMatch
+	}
+
+	// Validation: Receipt-to-Transaction Cross-Validation
+	if directiveDefaults.ValidateReceiptTransactionMatch != nil {
+		r.directives.ValidateReceiptTransactionMatch = *directiveDefaults.ValidateReceiptTransactionMatch
+	}
+	if directiveDefaults.ValidateContractCreation != nil {
+		r.directives.ValidateContractCreation = *directiveDefaults.ValidateContractCreation
 	}
 
 	// Validation: numeric checks (copy pointer values)
@@ -499,11 +615,11 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get("X-ERPC-Enforce-Log-Index-Strict-Increments"); hv != "" {
 		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Enforce-Non-Empty-Logs-Bloom"); hv != "" {
-		r.directives.EnforceNonEmptyLogsBloom = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	if hv := headers.Get("X-ERPC-Validate-Logs-Bloom-Emptiness"); hv != "" {
+		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Validate-Logs-Bloom"); hv != "" {
-		r.directives.ValidateLogsBloom = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	if hv := headers.Get("X-ERPC-Validate-Logs-Bloom-Match"); hv != "" {
+		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
 	if hv := headers.Get("X-ERPC-Validate-Tx-Hash-Uniqueness"); hv != "" {
 		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(hv)) == "true"
@@ -565,11 +681,11 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if v := queryArgs.Get("enforce-log-index-strict-increments"); v != "" {
 		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("enforce-non-empty-logs-bloom"); v != "" {
-		r.directives.EnforceNonEmptyLogsBloom = strings.ToLower(strings.TrimSpace(v)) == "true"
+	if v := queryArgs.Get("validate-logs-bloom-emptiness"); v != "" {
+		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("validate-logs-bloom"); v != "" {
-		r.directives.ValidateLogsBloom = strings.ToLower(strings.TrimSpace(v)) == "true"
+	if v := queryArgs.Get("validate-logs-bloom-match"); v != "" {
+		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
 	if v := queryArgs.Get("validate-tx-hash-uniqueness"); v != "" {
 		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(v)) == "true"
