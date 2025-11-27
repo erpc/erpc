@@ -78,7 +78,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		}
 	}
 
-	return enforceNonNullBlock(network, nr)
+	return enforceNonNullBlock(nq, nr)
 }
 
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
@@ -86,13 +86,9 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
-	ncfg := network.Config()
-	if ncfg == nil ||
-		ncfg.Evm == nil ||
-		ncfg.Evm.Integrity == nil ||
-		ncfg.Evm.Integrity.EnforceHighestBlock == nil ||
-		!*ncfg.Evm.Integrity.EnforceHighestBlock {
-		// If integrity check for highest block is disabled, skip this hook.
+	// Check directive - this is the new way to control this behavior
+	dirs := nq.Directives()
+	if dirs == nil || !dirs.EnforceHighestBlock {
 		return nr, re
 	}
 
@@ -254,7 +250,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 }
 
 // enforceNonNullBlock checks if the block result is null/empty and returns an appropriate error
-func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+// This is now controlled by the EnforceNonNullTaggedBlocks directive
+func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
 	if nr != nil && !nr.IsObjectNull() && !nr.IsResultEmptyish() {
 		return nr, nil
 	}
@@ -274,15 +271,11 @@ func enforceNonNullBlock(network common.Network, nr *common.NormalizedResponse) 
 		}
 	}
 
-	// For tagged blocks, check if enforcement is EXPLICITLY disabled in config
+	// For tagged blocks, check directive
 	if isTag {
-		ncfg := network.Config()
-		if ncfg != nil &&
-			ncfg.Evm != nil &&
-			ncfg.Evm.Integrity != nil &&
-			ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks != nil &&
-			!*ncfg.Evm.Integrity.EnforceNonNullTaggedBlocks {
-			// Config EXPLICITLY disables enforcement - allow null tagged blocks
+		dirs := nq.Directives()
+		if dirs == nil || !dirs.EnforceNonNullTaggedBlocks {
+			// Directive not set or disabled - allow null tagged blocks
 			return nr, nil
 		}
 	}
@@ -384,4 +377,262 @@ func pickHighestBlock(ctx context.Context, x *common.NormalizedResponse, y *comm
 		x.Release()
 	}
 	return y, nil
+}
+
+// upstreamPostForward_eth_getBlockByNumber validates block responses based on request directives.
+// It performs validation for:
+// - ValidateHeaderFieldLengths (hash, parentHash, stateRoot, etc.)
+// - ValidateTransactionFields (tx hash length, uniqueness)
+// - ValidateTransactionBlockInfo (tx block hash/number/index match)
+// - ValidateBlockLogsBloom (non-zero bloom implies logs in receipts)
+func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
+	if re != nil || rs == nil {
+		return rs, re
+	}
+
+	var networkId, upstreamId string
+	if n != nil {
+		networkId = n.Id()
+	}
+	if u != nil {
+		upstreamId = u.Id()
+	}
+	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_getBlockByNumber", trace.WithAttributes(
+		attribute.String("network.id", networkId),
+		attribute.String("upstream.id", upstreamId),
+	))
+	defer span.End()
+
+	// Skip validation if response is empty
+	if rs.IsObjectNull() || rs.IsResultEmptyish() {
+		return rs, re
+	}
+
+	// Get directives - if nil, no validation needed
+	dirs := rq.Directives()
+	if dirs == nil {
+		return rs, re
+	}
+
+	// Run directive-based validation
+	if err := validateBlock(ctx, u, dirs, rs); err != nil {
+		return rs, err
+	}
+
+	return rs, re
+}
+
+// blockValidationTxLite is a minimal transaction model for block validation
+type blockValidationTxLite struct {
+	Hash             string `json:"hash"`
+	BlockHash        string `json:"blockHash"`
+	BlockNumber      string `json:"blockNumber"`
+	TransactionIndex string `json:"transactionIndex"`
+}
+
+// blockValidationBlockLite is a minimal block model for validation
+type blockValidationBlockLite struct {
+	Hash             string `json:"hash"`
+	ParentHash       string `json:"parentHash"`
+	StateRoot        string `json:"stateRoot"`
+	TransactionsRoot string `json:"transactionsRoot"`
+	ReceiptsRoot     string `json:"receiptsRoot"`
+	LogsBloom        string `json:"logsBloom"`
+	Number           string `json:"number"`
+	Transactions     []any  `json:"transactions"` // Can be []string (hashes) or []blockValidationTxLite (full txs)
+}
+
+// validateBlock validates eth_getBlockByNumber/Hash responses based on request directives.
+func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rs *common.NormalizedResponse) error {
+	jrr, err := rs.JsonRpcResponse(ctx)
+	if err != nil {
+		return err
+	}
+
+	var block blockValidationBlockLite
+	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &block); err != nil {
+		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid JSON result for block validation: %w", err), u)
+	}
+
+	// 1. Header Field Length Validation
+	if dirs.ValidateHeaderFieldLengths {
+		if err := validateHeaderFieldLengths(u, &block); err != nil {
+			return err
+		}
+	}
+
+	// 2. Transaction Validation (only if we have full transactions)
+	if len(block.Transactions) > 0 {
+		// Check if transactions are full objects or just hashes
+		var fullTxs []blockValidationTxLite
+		for i, tx := range block.Transactions {
+			switch t := tx.(type) {
+			case map[string]interface{}:
+				// Full transaction object - re-parse it
+				txBytes, err := common.SonicCfg.Marshal(t)
+				if err != nil {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: failed to marshal: %w", i, err), u)
+				}
+				var txl blockValidationTxLite
+				if err := common.SonicCfg.Unmarshal(txBytes, &txl); err != nil {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: failed to unmarshal: %w", i, err), u)
+				}
+				fullTxs = append(fullTxs, txl)
+			case string:
+				// Just a hash - skip full tx validation
+				continue
+			}
+		}
+
+		if len(fullTxs) > 0 {
+			if err := validateBlockTransactions(u, dirs, &block, fullTxs); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func validateHeaderFieldLengths(u common.Upstream, block *blockValidationBlockLite) error {
+	// Hash must be 32 bytes (64 hex chars + 0x prefix)
+	if block.Hash != "" {
+		hashBytes, err := common.HexToBytes(block.Hash)
+		if err != nil {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid block hash hex: %w", err), u)
+		}
+		if len(hashBytes) != 32 {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("block hash length invalid: %d", len(hashBytes)), u)
+		}
+	}
+
+	// ParentHash must be 32 bytes
+	if block.ParentHash != "" {
+		parentHashBytes, err := common.HexToBytes(block.ParentHash)
+		if err != nil {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid parentHash hex: %w", err), u)
+		}
+		if len(parentHashBytes) != 32 {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("parentHash length invalid: %d", len(parentHashBytes)), u)
+		}
+	}
+
+	// StateRoot must be 32 bytes
+	if block.StateRoot != "" {
+		stateRootBytes, err := common.HexToBytes(block.StateRoot)
+		if err != nil {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid stateRoot hex: %w", err), u)
+		}
+		if len(stateRootBytes) != 32 {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("stateRoot length invalid: %d", len(stateRootBytes)), u)
+		}
+	}
+
+	// TransactionsRoot must be 32 bytes
+	if block.TransactionsRoot != "" {
+		txRootBytes, err := common.HexToBytes(block.TransactionsRoot)
+		if err != nil {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid transactionsRoot hex: %w", err), u)
+		}
+		if len(txRootBytes) != 32 {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("transactionsRoot length invalid: %d", len(txRootBytes)), u)
+		}
+	}
+
+	// ReceiptsRoot must be 32 bytes
+	if block.ReceiptsRoot != "" {
+		receiptsRootBytes, err := common.HexToBytes(block.ReceiptsRoot)
+		if err != nil {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid receiptsRoot hex: %w", err), u)
+		}
+		if len(receiptsRootBytes) != 32 {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("receiptsRoot length invalid: %d", len(receiptsRootBytes)), u)
+		}
+	}
+
+	// LogsBloom must be 256 bytes
+	if block.LogsBloom != "" {
+		bloomBytes, err := common.HexToBytes(block.LogsBloom)
+		if err != nil {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("invalid logsBloom hex: %w", err), u)
+		}
+		if len(bloomBytes) != 256 {
+			return common.NewErrEndpointContentValidation(fmt.Errorf("logsBloom length invalid: %d", len(bloomBytes)), u)
+		}
+	}
+
+	return nil
+}
+
+func validateBlockTransactions(u common.Upstream, dirs *common.RequestDirectives, block *blockValidationBlockLite, txs []blockValidationTxLite) error {
+	// ValidateTransactionFields: hash length and uniqueness
+	if dirs.ValidateTransactionFields {
+		seenHashes := make(map[string]struct{}, len(txs))
+		for i, tx := range txs {
+			// Hash length must be 32 bytes
+			if tx.Hash != "" {
+				hashBytes, err := common.HexToBytes(tx.Hash)
+				if err != nil {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: invalid hash hex: %w", i, err), u)
+				}
+				if len(hashBytes) != 32 {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: hash length invalid: %d", i, len(hashBytes)), u)
+				}
+
+				// Check for duplicates
+				hashLower := strings.ToLower(tx.Hash)
+				if _, exists := seenHashes[hashLower]; exists {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("duplicate transaction hash in block: %s", tx.Hash), u)
+				}
+				seenHashes[hashLower] = struct{}{}
+			}
+		}
+	}
+
+	// ValidateTransactionBlockInfo: block hash/number/index match
+	if dirs.ValidateTransactionBlockInfo {
+		blockHash := strings.ToLower(strings.TrimPrefix(block.Hash, "0x"))
+		var blockNum int64
+		if block.Number != "" {
+			var err error
+			blockNum, err = common.HexToInt64(block.Number)
+			if err != nil {
+				return common.NewErrEndpointContentValidation(fmt.Errorf("invalid block number hex: %w", err), u)
+			}
+		}
+
+		for i, tx := range txs {
+			// Block hash must match
+			if tx.BlockHash != "" && blockHash != "" {
+				txBlockHash := strings.ToLower(strings.TrimPrefix(tx.BlockHash, "0x"))
+				if txBlockHash != blockHash {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: block hash mismatch", i), u)
+				}
+			}
+
+			// Block number must match
+			if tx.BlockNumber != "" && block.Number != "" {
+				txBlockNum, err := common.HexToInt64(tx.BlockNumber)
+				if err != nil {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: invalid blockNumber hex: %w", i, err), u)
+				}
+				if txBlockNum != blockNum {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: block number mismatch", i), u)
+				}
+			}
+
+			// Transaction index must match array position
+			if tx.TransactionIndex != "" {
+				txIdx, err := common.HexToInt64(tx.TransactionIndex)
+				if err != nil {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: invalid transactionIndex hex: %w", i, err), u)
+				}
+				if txIdx != int64(i) {
+					return common.NewErrEndpointContentValidation(fmt.Errorf("tx %d: transactionIndex mismatch: got %d want %d", i, txIdx, i), u)
+				}
+			}
+		}
+	}
+
+	return nil
 }

@@ -233,7 +233,11 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 
 		nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-		mergedResponse, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, nrq.Directives().SkipCacheRead)
+		skipCache := false
+		if dirs := nrq.Directives(); dirs != nil {
+			skipCache = dirs.SkipCacheRead
+		}
+		mergedResponse, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache)
 		if err != nil {
 			return true, nil, err
 		}
@@ -428,7 +432,11 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	}
 
 	rq.SetCompositeType(common.CompositeTypeLogsSplitOnError)
-	merged, err := executeGetLogsSubRequests(ctx, n, rq, subs, rq.Directives().SkipCacheRead)
+	skipCacheRead := false
+	if dirs := rq.Directives(); dirs != nil {
+		skipCacheRead = dirs.SkipCacheRead
+	}
+	merged, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
 	if err != nil {
 		return rs, re
 	}

@@ -978,6 +978,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		excluded := 0
 		nodeTypeMismatch := 0
 		tooLarge := 0
+		validation := 0
 
 		for _, e := range joinedErr.Unwrap() {
 			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
@@ -1032,6 +1033,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeEndpointUnauthorized) {
 				auth++
 				continue
+			} else if HasErrorCode(e, ErrCodeEndpointContentValidation) {
+				validation++
+				continue
 			} else {
 				other++
 			}
@@ -1079,6 +1083,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if unsynced > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream not synced", unsynced))
+		}
+		if validation > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream validation mismatch", validation))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream unknown errors", other))
@@ -2404,6 +2411,13 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// Request too-large -> No Retry
 		ErrCodeEndpointUnauthorized,
 		ErrCodeEndpointRequestTooLarge,
+
+		// Validation failures should NOT be retried on the SAME upstream,
+		// but the error itself is retryable by the network (so we can try another upstream).
+		// However, IsRetryableTowardsUpstream checks if *this specific upstream* should be retried immediately?
+		// No, this function checks if the error indicates a transient issue.
+		// Validation errors (ContentMismatch) are NOT transient for the same response, so false.
+		ErrCodeEndpointContentValidation,
 	) {
 		return false
 	}
@@ -2634,4 +2648,34 @@ var NewErrGetLogsExceededMaxAllowedTopics = func(requestTopics int64, maxAllowed
 
 func (e *ErrGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
 	return http.StatusRequestEntityTooLarge
+}
+
+// ErrEndpointContentValidation is returned when the upstream response data fails validation directives.
+// This is generally treated as a retryable error towards the *network* (try another upstream),
+// but not retryable towards the *same upstream* (it returned bad data).
+type ErrEndpointContentValidation struct {
+	UpstreamAwareError
+	BaseError
+}
+
+const ErrCodeEndpointContentValidation ErrorCode = "ErrEndpointContentValidation"
+
+var NewErrEndpointContentValidation = func(cause error, upstream Upstream) error {
+	details := map[string]interface{}{}
+	if upstream != nil {
+		details["upstreamId"] = upstream.Id()
+	}
+	return &ErrEndpointContentValidation{
+		UpstreamAwareError: UpstreamAwareError{upstream: upstream},
+		BaseError: BaseError{
+			Code:    ErrCodeEndpointContentValidation,
+			Message: "upstream response failed validation content check",
+			Cause:   cause,
+			Details: details,
+		},
+	}
+}
+
+func (e *ErrEndpointContentValidation) ErrorStatusCode() int {
+	return http.StatusBadGateway
 }

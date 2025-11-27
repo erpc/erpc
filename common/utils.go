@@ -16,6 +16,10 @@ func HexToInt64(hexValue string) (int64, error) {
 	return evm.HexToInt64(hexValue)
 }
 
+func HexToBytes(hexValue string) ([]byte, error) {
+	return evm.HexToBytes(hexValue)
+}
+
 func NormalizeHex(value interface{}) (string, error) {
 	return evm.NormalizeHex(value)
 }

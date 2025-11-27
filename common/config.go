@@ -1441,6 +1441,42 @@ type DirectiveDefaultsConfig struct {
 	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
 	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
 	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+
+	// Validation: Block Integrity
+	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
+
+	// Validation: Header Field Lengths
+	ValidateHeaderFieldLengths *bool `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
+
+	// Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
+	ValidateTransactionFields    *bool `yaml:"validateTransactionFields,omitempty" json:"validateTransactionFields"`
+	ValidateTransactionBlockInfo *bool `yaml:"validateTransactionBlockInfo,omitempty" json:"validateTransactionBlockInfo"`
+
+	// Validation: Receipts & Logs
+	EnforceLogIndexStrictIncrements *bool `yaml:"enforceLogIndexStrictIncrements,omitempty" json:"enforceLogIndexStrictIncrements"`
+	ValidateTxHashUniqueness        *bool `yaml:"validateTxHashUniqueness,omitempty" json:"validateTxHashUniqueness"`
+	ValidateTransactionIndex        *bool `yaml:"validateTransactionIndex,omitempty" json:"validateTransactionIndex"`
+	ValidateLogFields               *bool `yaml:"validateLogFields,omitempty" json:"validateLogFields"`
+
+	// Validation: Bloom Filter (simplified to 2 checks)
+	// ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
+	ValidateLogsBloomEmptiness *bool `yaml:"validateLogsBloomEmptiness,omitempty" json:"validateLogsBloomEmptiness"`
+	// ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
+	ValidateLogsBloomMatch *bool `yaml:"validateLogsBloomMatch,omitempty" json:"validateLogsBloomMatch"`
+
+	// Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
+	ValidateReceiptTransactionMatch *bool `yaml:"validateReceiptTransactionMatch,omitempty" json:"validateReceiptTransactionMatch"`
+	ValidateContractCreation        *bool `yaml:"validateContractCreation,omitempty" json:"validateContractCreation"`
+
+	// Validation: numeric checks
+	ReceiptsCountExact   *int64 `yaml:"receiptsCountExact,omitempty" json:"receiptsCountExact"`
+	ReceiptsCountAtLeast *int64 `yaml:"receiptsCountAtLeast,omitempty" json:"receiptsCountAtLeast"`
+
+	// Validation: Expected Ground Truths
+	ValidationExpectedBlockHash   *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
+	ValidationExpectedBlockNumber *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
 }
 
 type EvmNetworkConfig struct {
@@ -1459,9 +1495,13 @@ type EvmNetworkConfig struct {
 	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
 }
 
+// EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
 type EvmIntegrityConfig struct {
-	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
-	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	// @deprecated: use DirectiveDefaults.EnforceHighestBlock
+	EnforceHighestBlock *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	// @deprecated: use DirectiveDefaults.EnforceGetLogsBlockRange
+	EnforceGetLogsBlockRange *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
+	// @deprecated: use DirectiveDefaults.EnforceNonNullTaggedBlocks
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 }
 

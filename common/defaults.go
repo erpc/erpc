@@ -1334,6 +1334,18 @@ func (n *NetworkDefaults) SetDefaults() error {
 }
 
 func (d *DirectiveDefaultsConfig) SetDefaults() error {
+	if d == nil {
+		return nil
+	}
+	if d.EnforceHighestBlock == nil {
+		d.EnforceHighestBlock = util.BoolPtr(true)
+	}
+	if d.EnforceGetLogsBlockRange == nil {
+		d.EnforceGetLogsBlockRange = util.BoolPtr(true)
+	}
+	if d.EnforceNonNullTaggedBlocks == nil {
+		d.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
+	}
 	return nil
 }
 
@@ -1781,10 +1793,29 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		}
 	}
 
-	if n.DirectiveDefaults != nil {
-		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
-			return err
+	// Always ensure DirectiveDefaults exists and has proper defaults
+	if n.DirectiveDefaults == nil {
+		n.DirectiveDefaults = &DirectiveDefaultsConfig{}
+	}
+
+	// Backward compatibility: migrate old EvmIntegrityConfig to DirectiveDefaultsConfig
+	// User's explicit old config values take precedence over defaults
+	if n.Evm != nil && n.Evm.Integrity != nil {
+		integrity := n.Evm.Integrity
+		// Only migrate if the user hasn't explicitly set the new directive
+		if n.DirectiveDefaults.EnforceHighestBlock == nil && integrity.EnforceHighestBlock != nil {
+			n.DirectiveDefaults.EnforceHighestBlock = integrity.EnforceHighestBlock
 		}
+		if n.DirectiveDefaults.EnforceGetLogsBlockRange == nil && integrity.EnforceGetLogsBlockRange != nil {
+			n.DirectiveDefaults.EnforceGetLogsBlockRange = integrity.EnforceGetLogsBlockRange
+		}
+		if n.DirectiveDefaults.EnforceNonNullTaggedBlocks == nil && integrity.EnforceNonNullTaggedBlocks != nil {
+			n.DirectiveDefaults.EnforceNonNullTaggedBlocks = integrity.EnforceNonNullTaggedBlocks
+		}
+	}
+
+	if err := n.DirectiveDefaults.SetDefaults(); err != nil {
+		return err
 	}
 
 	return nil
@@ -2170,7 +2201,7 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 }
 
 func (r *RoutingConfig) SetDefaults() error {
-	if r.ScoreMultipliers == nil || len(r.ScoreMultipliers) == 0 {
+	if len(r.ScoreMultipliers) == 0 {
 		r.ScoreMultipliers = []*ScoreMultiplierConfig{
 			// For realtime/unfinalized: prioritize block lag (need fresh data)
 			{

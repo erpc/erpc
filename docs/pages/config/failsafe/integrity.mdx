@@ -1,134 +1,125 @@
 ---
-description: Integrity module is used to enforce block/logs data integrity and consistency across multiple RPC nodes...
+description: Integrity module enforces block/logs data integrity and consistency across multiple RPC nodes.
 ---
 
-import { Callout, Tabs, Tab } from "nextra/components";
+import { Callout } from "nextra/components";
 
 # Integrity
 
-When requesting latest block or logs data from RPC nodes, there's no guarantee that the responding node has the most recent data. eRPC has a built-in mechanism to track highest known block number across all upstreams and enforce additional checks on certain methods such as:
+RPC nodes may return stale or inconsistent data. eRPC's integrity module ensures you always get the most recent and valid blockchain data through:
 
-- `eth_getBlockByNumber`
-- `eth_blockNumber`
-- `eth_getLogs`
+1. **Block tracking** — Monitors highest known block across all upstreams, ensures `eth_blockNumber` and `eth_getBlockByNumber(latest/finalized)` return the freshest data.
+2. **Range enforcement** — For `eth_getLogs`, ensures the requested block range is available on the chosen upstream.
+3. **Response validation** — Validates response structure and consistency (bloom filters, receipts, logs). See [Validations](#validations).
 
-## How does eRPC handle data integrity?
+<Callout type="tip">
+Combine with [retry](/config/failsafe/retry) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
+</Callout>
 
-There are various mechanisms that aim to keep the data integrity as high as possible:
-
-1. **Retry directives** such as "[retry-empty](/operation/directives#retry-empty-responses)" or "[retry-pending](/operation/directives#retry-pending-transactions)" where request will be sent to another node if one returns an empty or pending response.
-
-2. **Integrity module** utilizes various components (e.g. EVM state poller) running for every Upstream, to track latest/finalized blocks and intercept certain methods (e.g. `eth_blockNumber` or `eth_getBlockByNumber(latest)`) to ensure the highest known block number is used. This behavior is essential for use-cases like "indexers", to always receive the highest known block number.
-
-3. **Selection policy** is used to [exclude nodes](/config/projects/selection-policies) that have too much block-head lag.
-
-# Config
-
-In this page we focus on the (2.) `integrity` module and its configuration options:
+## Config
 
 ```yaml
 projects:
   - id: main
-
-    # Enable for all networks:
-    networkDefaults:
-      evm:
-        integrity:
-          # eth_blockNumber and eth_getBlockByNumber if the chosen upstream returns a block older than the highest known block,
-          # it will return the highest known block instead.
-          # This _might_ cause an extra upstream request for eth_getBlockByNumber(latest) calls.
-          enforceHighestBlock: true
-
-          # When eth_getLogs end-range is a specific blockNumber ensure only upstreams whose
-          # latest block is equal or more handle it, otherwise return an error (i.e. MissingData) for client to retry.
-          # This might cause more requests if evm state poller has lagging latest block vs eth_getLogs end-range;
-          # it _might_ send an additional eth_blockNumber to other upstreams to see which one definitively has the requested range.
-          enforceGetLogsBlockRange: true
-
-    # Enable for a specific network:
     networks:
-      - type: evm
+      - architecture: evm
         evm:
-          chainId: 137
+          chainId: 1
+          # Block tracking: ensure highest known block is returned
           integrity:
-            enforceHighestBlock: true
-            enforceGetLogsBlockRange: true
-```
+            enforceHighestBlock: true       # Replace stale block numbers with highest known
+            enforceGetLogsBlockRange: true  # Skip upstreams that don't have requested range
 
-#### How highest-known block number is tracked?
-
-For every upstream, eRPC has a running state poller running in the background to fetch the latest/finalized block number regularly (plus ad-hoc scenarios explained below). The state poller interval can be configured with:
-```yaml
-projects:
-  - id: main
-
-    # Configure for all upstreams:
+    # State poller settings (how block tracking works)
     upstreamDefaults:
       evm:
-        statePollerInterval: 30s # Default: 30s
-        statePollerDebounce: 5s # Default: 5s (or equal to block time if the chainId is a known chain)
-
-    # Configure per-upstream:
-    upstreams:
-      - endpoint: https://xxxxxxxxxx.xyz/chain-137
-        evm:
-          chainId: 42161
-          statePollerInterval: 30s
-          statePollerDebounce: 5s
+        statePollerInterval: 30s  # How often to poll latest/finalized block
+        statePollerDebounce: 5s   # Min interval between polls (ideally ≤ block time)
 ```
 
-Additionally these are the ad-hoc scenarios where highest-known block number is updated:
-- When a call to `eth_blockNumber` is made, the result will be checked against existing highest-known block number, and if it's higher it updates the state poller proactivley.
-- When a call to `eth_getBlockByNumber(latest)` is made, the result will be checked against existing highest-known block number, and if it's higher it updates the state poller proactivley.
-- When a call to `eth_getLogs` is made and range-end is a block higher than chosen upstream's latest block, a proactive poll happens on state poller (respecting the statePollerDebounce interval) to update the highest-known block number. If still upstream is behind the requested range-end then it will be skipped.
+## Block Tracking
 
-In the config above `statePollerInterval` is the interval to poll the latest/finalized block number from the upstream. `statePollerDebounce` is the minimum interval required before next poll happens, this is mainly useful to prevent redundant calls when proactive 'fetch latest block' polls are triggered, as explained for eth_getLogs. The `statePollerDebounce` value ideally must be equal to block time of the chain (or lower to be safe).
+eRPC runs a background state poller for each upstream to track latest/finalized blocks. When `enforceHighestBlock: true`:
 
-#### How is large ranges handled?
+- **`eth_blockNumber`**: If response is older than highest known, returns highest known instead.
+- **`eth_getBlockByNumber(latest/finalized)`**: If response is stale, retries on other upstreams.
 
-eRPC has three mechanisms to deal with large ranges for eth_getLogs:
+The poller also updates proactively when `eth_blockNumber` or `eth_getBlockByNumber(latest)` returns a higher block than currently tracked.
 
-* Manual splitting based on [`upstream.evm.getLogsAutoSplittingRangeThreshold` config](/config/projects/upstreams#eth_getlogs-max-range-automatic-splitting) per-upstream when you set what is the max block range they support.
-* Automatic splitting when a node returns an error that indicates the range is too large.
-* Hard limit on below dimensions set per upstream (or globally with [upstreamDefaults](/config/projects/upstreams#config-defaults)) will reject getLogs request if it is beyond the limit and returns an error to the caller of eRPC.
-  - `Max allowed range`: set with [`upstream.evm.GetLogsMaxAllowedRange`](/config/projects/upstreams#eth_getlogs-max-allowed-range)
-  - `Max allowed addresses`: set with [`upstream.evm.GetLogsMaxAllowedAddresses`](/config/projects/upstreams#eth_getlogs-max-allowed-addresses)
-  - `Max allowed topics`: set with [`upstream.evm.GetLogsMaxAllowedTopics`](/config/projects/upstreams#eth_getlogs-max-allowed-topics)
+**Metrics**: `erpc_upstream_stale_latest_block_total`, `erpc_upstream_stale_finalized_block_total`
 
-### `eth_blockNumber` behavior
+## Range Enforcement for `eth_getLogs`
 
-This method is intercepted by the integrity module to ensure the highest known block number is returned.
-1. First request will be sent to the chosen upstream.
-2. The response will be checked against highest-known block number (across all upstreams state pollers).
-   - During this check if any upstream's "last update to latest block" is older than statePollerDebounce it will try to fetch the latest block from the upstream (i.e. we make sure we have most recent view of upstream's latest block).
-3. If the response is older than the highest-known block number, the response will be replaced with the highest-known block number.
+When `enforceGetLogsBlockRange: true`, eRPC checks that the upstream has the requested block range before sending the request:
 
-Relevant Prometheus metrics:
-- `erpc_upstream_stale_latest_block_total` - Total number of times an upstream returned a stale latest block number (vs others).
-- `erpc_upstream_stale_finalized_block_total` - Total number of times an upstream returned a stale finalized block number (vs others).
+1. If `toBlock` > upstream's latest block → skip to next upstream (after forcing a fresh poll if stale)
+2. If `fromBlock` < upstream's available range (based on `maxAvailableRecentBlocks` config) → skip to next upstream
 
-### `eth_getBlockByNumber` behavior
+**Large range handling**: eRPC can auto-split large ranges based on [`getLogsAutoSplittingRangeThreshold`](/config/projects/upstreams#eth_getlogs-max-range-automatic-splitting) or when upstream returns "range too large" errors.
 
-This method is intercepted by the integrity module to ensure the highest known block number is used for "latest" and "finalized" block tags.
-1. First request will be sent to the chosen upstream.
-2. The response will be checked against highest-known block number (across all upstreams state pollers).
-   - During this check if any upstream's "last update to latest block" is older than statePollerDebounce it will try to fetch the latest block from the upstream (i.e. we make sure we have most recent view of upstream's latest block).
-3. If the response is older than the highest-known block number, then the request will be sent to all 'other' upstreams (excluding the current one).
+**Metrics**: `erpc_upstream_evm_get_logs_stale_upper_bound_total`, `erpc_upstream_evm_get_logs_stale_lower_bound_total`, `erpc_upstream_evm_get_logs_forced_splits_total`
 
-Relevant Prometheus metrics:
-- `erpc_upstream_stale_latest_block_total` - Total number of times an upstream returned a stale latest block number (vs others).
-- `erpc_upstream_stale_finalized_block_total` - Total number of times an upstream returned a stale finalized block number (vs others).
+## Validations Directives
 
-### `eth_getLogs` behavior
+Response validation directives are ideal for **high-integrity use-cases** (such as indexing) where you need guaranteed data accuracy. When a validation fails, eRPC treats it as an upstream error — the response is rejected and retry/consensus policies automatically try other upstreams until valid data is found.
 
-This method is intercepted by the integrity module to ensure `fromBlock` and `toBlock` parameters are within the available block range of the chosen upstream.
-1. We check the `toBlock` against the chosen upstream's latest block number. If latest block is stale (previously updated < statePollerDebounce) then we force a poll to update the latest block number.
-2. If the `toBlock` is still higher than the latest block number, then we skip to the next upstream.
-3. We check the `fromBlock` is within the range of the chosen upstream relative to its "maxAvailableRecentBlocks" if configured, otherwise we skip to the next upstream.
-4. If both `fromBlock` and `toBlock` are within the range of the chosen upstream, then request is sent to the chosen upstream.
+**How it works with failsafe policies:**
 
-Relevant Prometheus metrics:
-- `erpc_upstream_evm_get_logs_stale_upper_bound_total` - Total number of times eth_getLogs was skipped due to upstream latest block being less than requested toBlock.
-- `erpc_upstream_evm_get_logs_stale_lower_bound_total` - Total number of times eth_getLogs was skipped due to fromBlock being less than upstream's available block range.
-- `erpc_upstream_evm_get_logs_range_exceeded_auto_splitting_threshold_total` - Total number of times eth_getLogs request exceeded the block range threshold and needed splitting (based on upstream config for "upstream.evm.getLogsAutoSplittingRangeThreshold").
-- `erpc_upstream_evm_get_logs_forced_splits_total` - Total number of eth_getLogs request splits by dimension (block_range, addresses, topics), due to a complain/error from upstream (e.g. "Returned too many results use a smaller block range").
+```
+Request → Upstream A returns receipts with missing logs (logsBloom doesn't match actual logs)
+        → Validation fails → Response rejected (not cached, not returned)
+        → Retry policy kicks in → Try Upstream B
+        → Upstream B returns complete receipts with matching bloom → Success!
+```
+
+With **retry**: Each validation failure triggers the next retry attempt. Configure `maxAttempts` high enough to cover your upstream pool.
+
+With **consensus**: Invalid responses are excluded from consensus voting. Only valid responses participate, so even if 2/3 upstreams return bad data, the 1 valid response wins.
+
+With **hedge + consensus + retry** (recommended for indexers): Hedge spawns parallel requests, consensus compares valid responses, retry handles cases where all initial attempts fail validation.
+
+Set via **config** (applies to all requests), **HTTP headers**, or **query parameters**:
+
+| Directive | Header | Query | Description |
+|-----------|--------|-------|-------------|
+| `validateLogsBloomEmptiness` | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | Bloom/logs consistency: logs exist ↔ bloom non-zero |
+| `validateLogsBloomMatch` | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | Recalculate bloom from logs and verify match |
+| `enforceLogIndexStrictIncrements` | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` | Log indices must increment by 1 across receipts |
+| `validateTxHashUniqueness` | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` | No duplicate transaction hashes in receipts |
+| `validateTransactionIndex` | `X-ERPC-Validate-Transaction-Index` | `validate-transaction-index` | Receipt indices must be sequential (0, 1, 2...) |
+| `validateHeaderFieldLengths` | `X-ERPC-Validate-Header-Field-Lengths` | `validate-header-field-lengths` | Block header field byte lengths |
+| `validateTransactionFields` | `X-ERPC-Validate-Transaction-Fields` | `validate-transaction-fields` | Transaction field formats |
+| `validateTransactionBlockInfo` | `X-ERPC-Validate-Transaction-Block-Info` | `validate-transaction-block-info` | Tx block hash/number matches block |
+| `validateLogFields` | `X-ERPC-Validate-Log-Fields` | `validate-log-fields` | Log address/topic lengths |
+| `receiptsCountExact` | `X-ERPC-Receipts-Count-Exact` | `receipts-count-exact` | Receipts array must have exactly N items |
+| `receiptsCountAtLeast` | `X-ERPC-Receipts-Count-At-Least` | `receipts-count-at-least` | Receipts array must have at least N items |
+| `validationExpectedBlockHash` | `X-ERPC-Validation-Expected-Block-Hash` | `validation-expected-block-hash` | All receipts must have this block hash |
+| `validationExpectedBlockNumber` | `X-ERPC-Validation-Expected-Block-Number` | `validation-expected-block-number` | All receipts must have this block number |
+
+```yaml
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        directiveDefaults:
+          # Response validations are DISABLED by default (to avoid JSON parsing overhead).
+          # Enable specific ones as needed for high-integrity use-cases:
+          validateLogsBloomEmptiness: true
+          validateLogsBloomMatch: true
+          enforceLogIndexStrictIncrements: true
+          # etc.
+        # Recommended for indexers: hedge + consensus + retry
+        # Invalid responses are rejected, valid ones are compared, retries if all fail
+        failsafe:
+          - matchMethods: "eth_getBlockReceipts"
+            hedge:
+              maxCount: 3 # Spawn up to 3 parallel requests
+              delay: 100ms
+            consensus:
+              maxParticipants: 3
+              agreementThreshold: 2 # Accept if 2+ agree (invalid ones excluded)
+            retry:
+              maxAttempts: 5 # Keep trying until valid data found
+```
