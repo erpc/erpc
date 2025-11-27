@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -1043,4 +1044,1144 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationWithAddress_NoErro
 
 	_, hookErr := evm.HandleUpstreamPostForward(ctx, network, ups[0], req, rawResp, nil, false)
 	require.NoError(t, hookErr)
+}
+
+// =============================================================================
+// FAILSAFE POLICY + VALIDATION INTEGRATION TESTS
+// These tests verify that validation errors properly trigger retry/hedge/fallback
+// to other upstreams, ensuring we get valid data from the pool of upstreams.
+// =============================================================================
+
+// Test: Retry policy retries to next upstream when first returns invalid bloom data
+func TestNetworkIntegrity_Retry_ValidationError_FallbackToGoodUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// Setup 3 upstreams: first 2 return invalid data, third returns valid
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 3},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: Invalid - non-zero bloom with zero logs
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	// rpc2: Invalid - non-zero bloom with zero logs
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	// rpc3: Valid - zero bloom with zero logs (consistent)
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed after retrying to good upstream")
+	require.NotNil(t, resp)
+	if resp != nil {
+		// Verify we got valid data (from rpc3)
+		jrr, _ := resp.JsonRpcResponse()
+		require.NotNil(t, jrr)
+		require.Nil(t, jrr.Error)
+		resp.Release()
+	}
+}
+
+// Test: All upstreams return invalid data - should fail with exhausted error
+func TestNetworkIntegrity_Retry_AllUpstreamsInvalid_ExhaustedError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// Setup 2 upstreams: both return invalid data
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 2},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// Both upstreams return invalid data
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+
+	// Should fail with exhausted or retry exceeded error since all upstreams returned invalid data
+	require.Error(t, err, "Should fail when all upstreams return invalid data")
+	require.True(t,
+		common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) ||
+			common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded),
+		"Expected upstreams exhausted or retry exceeded error, got: %v", err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: ReceiptsCountExact mismatch triggers retry to upstream with correct count
+func TestNetworkIntegrity_Retry_ReceiptsCountMismatch_FallbackToCorrectUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 2},
+		}},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// Set directive to expect exactly 2 receipts
+	dirs := newTestDirectives()
+	exactCount := int64(2)
+	dirs.ReceiptsCountExact = &exactCount
+	req.SetDirectives(dirs)
+
+	// rpc1: Returns only 1 receipt (mismatch)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]}]}`))
+
+	// rpc2: Returns 2 receipts (correct)
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]},{"blockHash":"0xabc","logs":[]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed after retrying to upstream with correct receipt count")
+	require.NotNil(t, resp)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: LogIndex strict increment violation triggers retry
+func TestNetworkIntegrity_Retry_LogIndexViolation_FallbackToValidUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 2},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			EnforceLogIndexStrictIncrements: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: Non-sequential log indices (0, 5 - gap)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0x0"},{"logIndex":"0x5"}]}]}`))
+
+	// rpc2: Sequential log indices (0, 1)
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[{"logIndex":"0x0"},{"logIndex":"0x1"}]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed after retrying to upstream with valid log indices")
+	require.NotNil(t, resp)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: Logs exist but bloom is zero - triggers retry to upstream with consistent data
+func TestNetworkIntegrity_Retry_LogsWithZeroBloom_FallbackToConsistentUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 2},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: Logs exist but bloom is zero (inconsistent)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0","address":"0x1234567890123456789012345678901234567890","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}]}]}`))
+
+	// rpc2: Non-zero bloom with logs (consistent)
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[{"logIndex":"0x0","address":"0x1234567890123456789012345678901234567890","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed after retrying to upstream with consistent bloom/logs")
+	require.NotNil(t, resp)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: Multiple validation errors across upstreams - eventually finds valid one
+func TestNetworkIntegrity_Retry_MultipleValidationTypes_EventuallySucceeds(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 4 upstreams with different validation issues
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+	up4 := createTestUpstreamConfig("rpc4")
+	up4.Endpoint = "http://rpc4.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 4},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness:      util.BoolPtr(true),
+			EnforceLogIndexStrictIncrements: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3, up4}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: Bloom inconsistency (non-zero bloom, no logs)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	// rpc2: LogIndex gap (0, 5)
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0"},{"logIndex":"0x5"}]}]}`))
+
+	// rpc3: Logs with zero bloom (inconsistent)
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0","address":"0x1234567890123456789012345678901234567890","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}]}]}`))
+
+	// rpc4: All valid (consistent bloom, sequential logs)
+	gock.New("http://rpc4.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[{"logIndex":"0x0","address":"0x1234567890123456789012345678901234567890","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]},{"logIndex":"0x1","address":"0x1234567890123456789012345678901234567890","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should eventually succeed after trying multiple upstreams")
+	require.NotNil(t, resp)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: Validation disabled - accepts invalid data without retry
+func TestNetworkIntegrity_ValidationDisabled_AcceptsInvalidData(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 1) // rpc2 should NOT be called
+
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Retry:       &common.RetryPolicyConfig{MaxAttempts: 2},
+		}},
+		// Explicitly disable validation
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness:      util.BoolPtr(false),
+			EnforceLogIndexStrictIncrements: util.BoolPtr(false),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: Would be invalid if validation was enabled (non-zero bloom with no logs)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	// rpc2: Valid data (should NOT be called since validation is disabled)
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should accept data without validation when disabled")
+	require.NotNil(t, resp)
+	if resp != nil {
+		// Should get the "invalid" data from rpc1 (but accepted because validation is off)
+		require.Equal(t, 0, resp.Retries(), "Should have no retries when validation is disabled")
+		resp.Release()
+	}
+}
+
+// =============================================================================
+// HEDGE + CONSENSUS + RETRY COMBO TESTS
+// These tests mimic production configurations where multiple failsafe policies
+// are combined to ensure data integrity across a pool of upstreams.
+// =============================================================================
+
+// Test: Hedge spawns multiple requests, validation fails on some, consensus picks valid one
+func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 4 upstreams to simulate hedge + consensus scenario
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+	up4 := createTestUpstreamConfig("rpc4")
+	up4.Endpoint = "http://rpc4.localhost"
+
+	// Production-like config: hedge + consensus + retry
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 4,
+				Delay:    common.Duration(10 * time.Millisecond),
+			},
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    4,
+				AgreementThreshold: 2,
+				PreferNonEmpty:     util.BoolPtr(true),
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 4,
+				Delay:       common.Duration(5 * time.Millisecond),
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3, up4}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1 & rpc2: Invalid - non-zero bloom with zero logs (will fail validation)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	// rpc3 & rpc4: Valid - zero bloom with zero logs (consistent)
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`))
+
+	gock.New("http://rpc4.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed - consensus should pick from valid upstreams")
+	require.NotNil(t, resp)
+	if resp != nil {
+		jrr, _ := resp.JsonRpcResponse()
+		require.NotNil(t, jrr)
+		require.Nil(t, jrr.Error)
+		resp.Release()
+	}
+}
+
+// Test: All hedged requests return invalid data, retry kicks in and eventually finds valid
+func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 3 upstreams
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+
+	// Hedge with retry
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 2,
+				Delay:    common.Duration(10 * time.Millisecond),
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+				Delay:       common.Duration(5 * time.Millisecond),
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1 & rpc2: Invalid (will be tried by hedge)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	// rpc3: Valid (retry should eventually reach this)
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed after retrying past invalid hedged responses")
+	require.NotNil(t, resp)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: Consensus with different validation errors - should pick the valid one
+func TestNetworkIntegrity_Consensus_DifferentValidationErrors_PicksValid(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 4 upstreams for consensus
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+	up4 := createTestUpstreamConfig("rpc4")
+	up4.Endpoint = "http://rpc4.localhost"
+
+	// Consensus-heavy config
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    4,
+				AgreementThreshold: 2,
+				PreferNonEmpty:     util.BoolPtr(true),
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 4,
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness:      util.BoolPtr(true),
+			EnforceLogIndexStrictIncrements: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3, up4}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: Bloom inconsistency
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	// rpc2: LogIndex gap
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0"},{"logIndex":"0x5"}]}]}`))
+
+	// rpc3 & rpc4: Valid (same response - will form consensus)
+	validResponse := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(validResponse))
+
+	gock.New("http://rpc4.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(validResponse))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed - consensus should pick from valid upstreams")
+	require.NotNil(t, resp)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: ReceiptsCountExact with consensus - only valid counts should participate
+func TestNetworkIntegrity_Consensus_ReceiptsCountExact_OnlyValidParticipate(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				PreferNonEmpty:     util.BoolPtr(true),
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// Set directive to expect exactly 2 receipts
+	dirs := newTestDirectives()
+	exactCount := int64(2)
+	dirs.ReceiptsCountExact = &exactCount
+	req.SetDirectives(dirs)
+
+	// rpc1: Returns 1 receipt (wrong count)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]}]}`))
+
+	// rpc2 & rpc3: Return 2 receipts (correct count - will form consensus)
+	correctResponse := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logs":[]},{"blockHash":"0xabc","logs":[]}]}`
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(correctResponse))
+
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(correctResponse))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed - consensus should form from upstreams with correct receipt count")
+	require.NotNil(t, resp)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
+// Test: Production-like config with all policies combined
+func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegrity(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 6 upstreams like production
+	upstreams := make([]*common.UpstreamConfig, 6)
+	for i := 0; i < 6; i++ {
+		up := createTestUpstreamConfig(fmt.Sprintf("rpc%d", i+1))
+		up.Endpoint = fmt.Sprintf("http://rpc%d.localhost", i+1)
+		upstreams[i] = up
+	}
+
+	// Production-like config from polygon/config.yml
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 4,
+				Delay:    common.Duration(10 * time.Millisecond),
+			},
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    8,
+				AgreementThreshold: 1,
+				PreferNonEmpty:     util.BoolPtr(true),
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 8,
+				Delay:       common.Duration(5 * time.Millisecond),
+			},
+			Timeout: &common.TimeoutPolicyConfig{
+				Duration: common.Duration(10 * time.Second),
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness:      util.BoolPtr(true),
+			EnforceLogIndexStrictIncrements: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, upstreams, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// Mix of valid and invalid responses
+	// rpc1, rpc2, rpc3: Invalid (various issues)
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`))
+
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0"},{"logIndex":"0x5"}]}]}`))
+
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0","address":"0x1234567890123456789012345678901234567890","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}]}]}`))
+
+	// rpc4, rpc5, rpc6: Valid (same response)
+	validResponse := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`
+	gock.New("http://rpc4.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(validResponse))
+
+	gock.New("http://rpc5.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(validResponse))
+
+	gock.New("http://rpc6.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(validResponse))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Production-like config should succeed with mix of valid/invalid upstreams")
+	require.NotNil(t, resp)
+	if resp != nil {
+		jrr, _ := resp.JsonRpcResponse()
+		require.NotNil(t, jrr)
+		require.Nil(t, jrr.Error)
+		resp.Release()
+	}
+}
+
+// =============================================================================
+// PREFER LARGER RESPONSES + VALIDATION TESTS
+// These tests verify that PreferLargerResponses respects validation -
+// invalid responses should be filtered before size comparison.
+// =============================================================================
+
+// Test: PreferLargerResponses should NOT pick a larger but invalid response
+func TestNetworkIntegrity_Consensus_PreferLargerResponses_ValidationFiltersLargerInvalid(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 3 upstreams
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+
+	// Consensus with PreferLargerResponses enabled
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      1,
+				PreferLargerResponses:   util.BoolPtr(true),
+				PreferNonEmpty:          util.BoolPtr(true),
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: LARGER response but INVALID (non-zero bloom with zero logs)
+	// This is larger due to more fields/data
+	largerInvalidResponse := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[],"transactionHash":"0x123","transactionIndex":"0x0","blockNumber":"0x1","cumulativeGasUsed":"0x5208","gasUsed":"0x5208","status":"0x1","from":"0x1234567890123456789012345678901234567890","to":"0x1234567890123456789012345678901234567891"}]}`
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(largerInvalidResponse))
+
+	// rpc2 & rpc3: SMALLER response but VALID (zero bloom with zero logs)
+	smallerValidResponse := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(smallerValidResponse))
+
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(smallerValidResponse))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed - validation should filter out larger invalid response")
+	require.NotNil(t, resp)
+	if resp != nil {
+		// Should get the smaller but valid response, not the larger invalid one
+		jrr, jrrErr := resp.JsonRpcResponse(ctx)
+		require.NoError(t, jrrErr)
+		require.NotNil(t, jrr)
+		require.Nil(t, jrr.Error)
+		// Verify we got the valid response (has logsBloom "0x0")
+		result, peekErr := jrr.PeekStringByPath(ctx, 0, "logsBloom")
+		require.NoError(t, peekErr, "Should be able to peek logsBloom")
+		require.Equal(t, "0x0", result, "Should have picked the valid response with zero bloom, not the invalid larger one")
+		resp.Release()
+	}
+}
+
+// Test: PreferLargerResponses picks largest VALID response when multiple valid exist
+func TestNetworkIntegrity_Consensus_PreferLargerResponses_PicksLargestValid(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 3 upstreams
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      1,
+				PreferLargerResponses:   util.BoolPtr(true),
+				PreferNonEmpty:          util.BoolPtr(true),
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// All valid responses but different sizes
+	// rpc1: Smallest valid (1 receipt, no logs)
+	smallValid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(smallValid))
+
+	// rpc2: Medium valid (1 receipt with extra fields)
+	mediumValid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[],"transactionHash":"0x123","status":"0x1"}]}`
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(mediumValid))
+
+	// rpc3: Largest valid (2 receipts)
+	largestValid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]},{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(largestValid))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed")
+	require.NotNil(t, resp)
+	if resp != nil {
+		jrr, jrrErr := resp.JsonRpcResponse(ctx)
+		require.NoError(t, jrrErr)
+		require.NotNil(t, jrr)
+		require.Nil(t, jrr.Error)
+		// Should have picked the largest valid response (2 receipts)
+		// Check that the second receipt exists (index 1)
+		_, peekErr := jrr.PeekStringByPath(ctx, 1, "blockHash")
+		require.NoError(t, peekErr, "Should have picked the largest valid response with 2 receipts")
+		resp.Release()
+	}
+}
+
+// Test: PreferLargerResponses with validation - all larger responses invalid, falls back to smaller valid
+func TestNetworkIntegrity_Consensus_PreferLargerResponses_AllLargerInvalid_FallsBackToSmaller(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 4 upstreams
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+	up4 := createTestUpstreamConfig("rpc4")
+	up4.Endpoint = "http://rpc4.localhost"
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:         4,
+				AgreementThreshold:      1,
+				PreferLargerResponses:   util.BoolPtr(true),
+				PreferNonEmpty:          util.BoolPtr(true),
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 4,
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness:      util.BoolPtr(true),
+			EnforceLogIndexStrictIncrements: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3, up4}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1 & rpc2: Large but INVALID (bloom inconsistency)
+	largeInvalid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[],"transactionHash":"0x123","status":"0x1"},{"blockHash":"0xabc","logsBloom":"0x1","logs":[],"transactionHash":"0x456","status":"0x1"}]}`
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(largeInvalid))
+
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(largeInvalid))
+
+	// rpc3: Medium but INVALID (log index gap)
+	mediumInvalid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[{"logIndex":"0x0"},{"logIndex":"0x5"}]}]}`
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(mediumInvalid))
+
+	// rpc4: Smallest but VALID
+	smallValid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`
+	gock.New("http://rpc4.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(smallValid))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed - should fall back to smallest valid response")
+	require.NotNil(t, resp)
+	if resp != nil {
+		jrr, jrrErr := resp.JsonRpcResponse(ctx)
+		require.NoError(t, jrrErr)
+		require.NotNil(t, jrr)
+		require.Nil(t, jrr.Error)
+		// Should have the smallest valid response
+		result, peekErr := jrr.PeekStringByPath(ctx, 0, "logsBloom")
+		require.NoError(t, peekErr, "Should be able to peek logsBloom")
+		require.Equal(t, "0x0", result, "Should have picked the valid response")
+		resp.Release()
+	}
+}
+
+// Test: Hedge + PreferLargerResponses + Validation combo
+func TestNetworkIntegrity_HedgeConsensus_PreferLargerResponses_ValidationIntegrity(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	util.SetupMocksForEvmStatePoller()
+
+	// 4 upstreams
+	up1 := createTestUpstreamConfig("rpc1")
+	up1.Endpoint = "http://rpc1.localhost"
+	up2 := createTestUpstreamConfig("rpc2")
+	up2.Endpoint = "http://rpc2.localhost"
+	up3 := createTestUpstreamConfig("rpc3")
+	up3.Endpoint = "http://rpc3.localhost"
+	up4 := createTestUpstreamConfig("rpc4")
+	up4.Endpoint = "http://rpc4.localhost"
+
+	// Production-like config with hedge + consensus + preferLargerResponses
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod: "eth_getBlockReceipts",
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 4,
+				Delay:    common.Duration(10 * time.Millisecond),
+			},
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:         4,
+				AgreementThreshold:      2,
+				PreferLargerResponses:   util.BoolPtr(true),
+				PreferNonEmpty:          util.BoolPtr(true),
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			},
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 4,
+				Delay:       common.Duration(5 * time.Millisecond),
+			},
+		}},
+		DirectiveDefaults: &common.DirectiveDefaultsConfig{
+			ValidateLogsBloomEmptiness: util.BoolPtr(true),
+		},
+	}
+	network, _ := setupIntegrityTestNetwork(t, ctx, []*common.UpstreamConfig{up1, up2, up3, up4}, ntwCfg)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1"]}`))
+	req.SetNetwork(network)
+
+	// rpc1: Largest but INVALID
+	largestInvalid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]},{"blockHash":"0xabc","logsBloom":"0x1","logs":[]},{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`
+	gock.New("http://rpc1.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(largestInvalid))
+
+	// rpc2: Medium INVALID
+	mediumInvalid := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x1","logs":[]},{"blockHash":"0xabc","logsBloom":"0x1","logs":[]}]}`
+	gock.New("http://rpc2.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(mediumInvalid))
+
+	// rpc3 & rpc4: Valid (same response - will form consensus)
+	validResponse := `{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0xabc","logsBloom":"0x0","logs":[]}]}`
+	gock.New("http://rpc3.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(validResponse))
+
+	gock.New("http://rpc4.localhost").Post("").
+		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_getBlockReceipts") }).
+		Persist().
+		Reply(200).JSON([]byte(validResponse))
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err, "Should succeed - consensus should form from valid upstreams despite larger invalid ones")
+	require.NotNil(t, resp)
+	if resp != nil {
+		jrr, jrrErr := resp.JsonRpcResponse(ctx)
+		require.NoError(t, jrrErr)
+		require.NotNil(t, jrr)
+		require.Nil(t, jrr.Error)
+		// Should have the valid response
+		result, peekErr := jrr.PeekStringByPath(ctx, 0, "logsBloom")
+		require.NoError(t, peekErr, "Should be able to peek logsBloom")
+		require.Equal(t, "0x0", result, "Should have picked valid response, not larger invalid ones")
+		resp.Release()
+	}
 }

@@ -108,28 +108,30 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		return rs, err
 	}
 
+	var validationErr error
+
 	// Method-specific post-forward hooks with directive-based validation
 	switch strings.ToLower(method) {
 	case "eth_getlogs":
-		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
+		rs, validationErr = upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
 
 	case "eth_getblockreceipts":
 		// First check for unexpected empty
-		rs, re = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-		if re != nil {
-			return rs, re
+		rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+		if validationErr != nil {
+			break
 		}
 		// Then apply directive-based validation
-		return upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
+		rs, validationErr = upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
 
 	case "eth_getblockbynumber", "eth_getblockbyhash":
 		// First check for unexpected empty
-		rs, re = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-		if re != nil {
-			return rs, re
+		rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+		if validationErr != nil {
+			break
 		}
 		// Then apply directive-based validation
-		return upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
+		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
 
 	case // Transaction lookups
 		"eth_gettransactionbyhash",
@@ -144,7 +146,17 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		"trace_transaction",
 		"trace_block",
 		"trace_get":
-		return upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+		rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+	}
+
+	// If validation failed due to content validation error (e.g. bloom inconsistency),
+	// clear the lastValidResponse so retry/consensus doesn't mistakenly use an invalid response.
+	if validationErr != nil && common.HasErrorCode(validationErr, common.ErrCodeEndpointContentValidation) {
+		rq.ClearLastValidResponse()
+	}
+
+	if validationErr != nil {
+		return rs, validationErr
 	}
 
 	return rs, re
