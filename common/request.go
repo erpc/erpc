@@ -23,6 +23,71 @@ const (
 const RequestContextKey ContextKey = "rq"
 const UpstreamsContextKey ContextKey = "ups"
 
+type directiveKeyNames struct {
+	header string
+	query  string
+}
+
+const (
+	headerDirectiveRetryEmpty                 = "X-ERPC-Retry-Empty"
+	headerDirectiveRetryPending               = "X-ERPC-Retry-Pending"
+	headerDirectiveSkipCacheRead              = "X-ERPC-Skip-Cache-Read"
+	headerDirectiveUseUpstream                = "X-ERPC-Use-Upstream"
+	headerDirectiveSkipInterpolation          = "X-ERPC-Skip-Interpolation"
+	headerDirectiveEnforceHighestBlock        = "X-ERPC-Enforce-Highest-Block"
+	headerDirectiveEnforceGetLogsRange        = "X-ERPC-Enforce-GetLogs-Range"
+	headerDirectiveEnforceNonNullTaggedBlocks = "X-ERPC-Enforce-Non-Null-Tagged-Blocks"
+	headerDirectiveEnforceLogIndexStrict      = "X-ERPC-Enforce-Log-Index-Strict-Increments"
+	headerDirectiveValidateLogsBloomEmpty     = "X-ERPC-Validate-Logs-Bloom-Emptiness"
+	headerDirectiveValidateLogsBloomMatch     = "X-ERPC-Validate-Logs-Bloom-Match"
+	headerDirectiveValidateTxHashUniq         = "X-ERPC-Validate-Tx-Hash-Uniqueness"
+	headerDirectiveValidateTxIndex            = "X-ERPC-Validate-Transaction-Index"
+	headerDirectiveReceiptsCountExact         = "X-ERPC-Receipts-Count-Exact"
+	headerDirectiveReceiptsCountAtLeast       = "X-ERPC-Receipts-Count-At-Least"
+	headerDirectiveValidationBlockHash        = "X-ERPC-Validation-Expected-Block-Hash"
+	headerDirectiveValidationBlockNumber      = "X-ERPC-Validation-Expected-Block-Number"
+)
+
+const (
+	queryDirectiveRetryEmpty                 = "retry-empty"
+	queryDirectiveRetryPending               = "retry-pending"
+	queryDirectiveSkipCacheRead              = "skip-cache-read"
+	queryDirectiveUseUpstream                = "use-upstream"
+	queryDirectiveSkipInterpolation          = "skip-interpolation"
+	queryDirectiveEnforceHighestBlock        = "enforce-highest-block"
+	queryDirectiveEnforceGetLogsRange        = "enforce-getlogs-range"
+	queryDirectiveEnforceNonNullTaggedBlocks = "enforce-non-null-tagged-blocks"
+	queryDirectiveEnforceLogIndexStrict      = "enforce-log-index-strict-increments"
+	queryDirectiveValidateLogsBloomEmpty     = "validate-logs-bloom-emptiness"
+	queryDirectiveValidateLogsBloomMatch     = "validate-logs-bloom-match"
+	queryDirectiveValidateTxHashUniq         = "validate-tx-hash-uniqueness"
+	queryDirectiveValidateTxIndex            = "validate-transaction-index"
+	queryDirectiveReceiptsCountExact         = "receipts-count-exact"
+	queryDirectiveReceiptsCountAtLeast       = "receipts-count-at-least"
+	queryDirectiveValidationBlockHash        = "validation-expected-block-hash"
+	queryDirectiveValidationBlockNumber      = "validation-expected-block-number"
+)
+
+var directiveKeyRegistry = []directiveKeyNames{
+	{header: headerDirectiveRetryEmpty, query: queryDirectiveRetryEmpty},
+	{header: headerDirectiveRetryPending, query: queryDirectiveRetryPending},
+	{header: headerDirectiveSkipCacheRead, query: queryDirectiveSkipCacheRead},
+	{header: headerDirectiveUseUpstream, query: queryDirectiveUseUpstream},
+	{header: headerDirectiveSkipInterpolation, query: queryDirectiveSkipInterpolation},
+	{header: headerDirectiveEnforceHighestBlock, query: queryDirectiveEnforceHighestBlock},
+	{header: headerDirectiveEnforceGetLogsRange, query: queryDirectiveEnforceGetLogsRange},
+	{header: headerDirectiveEnforceNonNullTaggedBlocks, query: queryDirectiveEnforceNonNullTaggedBlocks},
+	{header: headerDirectiveEnforceLogIndexStrict, query: queryDirectiveEnforceLogIndexStrict},
+	{header: headerDirectiveValidateLogsBloomEmpty, query: queryDirectiveValidateLogsBloomEmpty},
+	{header: headerDirectiveValidateLogsBloomMatch, query: queryDirectiveValidateLogsBloomMatch},
+	{header: headerDirectiveValidateTxHashUniq, query: queryDirectiveValidateTxHashUniq},
+	{header: headerDirectiveValidateTxIndex, query: queryDirectiveValidateTxIndex},
+	{header: headerDirectiveReceiptsCountExact, query: queryDirectiveReceiptsCountExact},
+	{header: headerDirectiveReceiptsCountAtLeast, query: queryDirectiveReceiptsCountAtLeast},
+	{header: headerDirectiveValidationBlockHash, query: queryDirectiveValidationBlockHash},
+	{header: headerDirectiveValidationBlockNumber, query: queryDirectiveValidationBlockNumber},
+}
+
 type RequestDirectives struct {
 	// Instruct the proxy to retry if response from the upstream appears to be empty
 	// indicating missing or non-synced data (empty array for logs, null for block, null for tx receipt, etc).
@@ -512,53 +577,32 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	}
 }
 
+func hasDirectiveInHeaders(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	for _, keys := range directiveKeyRegistry {
+		if keys.header != "" && headers.Get(keys.header) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectiveInQueryParams(queryArgs url.Values) bool {
+	if queryArgs == nil {
+		return false
+	}
+	for _, keys := range directiveKeyRegistry {
+		if keys.query != "" && queryArgs.Get(keys.query) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
-	hasDirectives := false
-
-	// 1. Check if any directive headers/params are present before locking/cloning
-	if headers != nil {
-		if headers.Get("X-ERPC-Retry-Empty") != "" ||
-			headers.Get("X-ERPC-Retry-Pending") != "" ||
-			headers.Get("X-ERPC-Skip-Cache-Read") != "" ||
-			headers.Get("X-ERPC-Use-Upstream") != "" ||
-			headers.Get("X-ERPC-Skip-Interpolation") != "" ||
-			headers.Get("X-ERPC-Enforce-Highest-Block") != "" ||
-			headers.Get("X-ERPC-Enforce-GetLogs-Range") != "" ||
-			headers.Get("X-ERPC-Enforce-Non-Null-Tagged-Blocks") != "" ||
-			headers.Get("X-ERPC-Enforce-Log-Index-Strict-Increments") != "" ||
-			headers.Get("X-ERPC-Enforce-Non-Empty-Logs-Bloom") != "" ||
-			headers.Get("X-ERPC-Validate-Logs-Bloom") != "" ||
-			headers.Get("X-ERPC-Validate-Tx-Hash-Uniqueness") != "" ||
-			headers.Get("X-ERPC-Validate-Transaction-Index") != "" ||
-			headers.Get("X-ERPC-Receipts-Count-Exact") != "" ||
-			headers.Get("X-ERPC-Receipts-Count-At-Least") != "" ||
-			headers.Get("X-ERPC-Validation-Expected-Block-Hash") != "" ||
-			headers.Get("X-ERPC-Validation-Expected-Block-Number") != "" {
-			hasDirectives = true
-		}
-	}
-
-	if !hasDirectives && queryArgs != nil {
-		if queryArgs.Get("use-upstream") != "" ||
-			queryArgs.Get("retry-empty") != "" ||
-			queryArgs.Get("retry-pending") != "" ||
-			queryArgs.Get("skip-cache-read") != "" ||
-			queryArgs.Get("skip-interpolation") != "" ||
-			queryArgs.Get("enforce-highest-block") != "" ||
-			queryArgs.Get("enforce-getlogs-range") != "" ||
-			queryArgs.Get("enforce-non-null-tagged-blocks") != "" ||
-			queryArgs.Get("enforce-log-index-strict-increments") != "" ||
-			queryArgs.Get("enforce-non-empty-logs-bloom") != "" ||
-			queryArgs.Get("validate-logs-bloom") != "" ||
-			queryArgs.Get("validate-tx-hash-uniqueness") != "" ||
-			queryArgs.Get("validate-transaction-index") != "" ||
-			queryArgs.Get("receipts-count-exact") != "" ||
-			queryArgs.Get("receipts-count-at-least") != "" ||
-			queryArgs.Get("validation-expected-block-hash") != "" ||
-			queryArgs.Get("validation-expected-block-number") != "" {
-			hasDirectives = true
-		}
-	}
+	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
 
 	// Extract user agent (always needed)
 	userAgent := r.getUserAgent(headers, queryArgs)
@@ -586,127 +630,127 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 
 	// Headers have precedence over directive defaults, but should only override when explicitly provided.
-	if hv := headers.Get("X-ERPC-Retry-Empty"); hv != "" {
+	if hv := headers.Get(headerDirectiveRetryEmpty); hv != "" {
 		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Retry-Pending"); hv != "" {
+	if hv := headers.Get(headerDirectiveRetryPending); hv != "" {
 		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Skip-Cache-Read"); hv != "" {
+	if hv := headers.Get(headerDirectiveSkipCacheRead); hv != "" {
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Use-Upstream"); hv != "" {
+	if hv := headers.Get(headerDirectiveUseUpstream); hv != "" {
 		r.directives.UseUpstream = hv
 	}
-	if hv := headers.Get("X-ERPC-Skip-Interpolation"); hv != "" {
+	if hv := headers.Get(headerDirectiveSkipInterpolation); hv != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
 
 	// Validation Headers
-	if hv := headers.Get("X-ERPC-Enforce-Highest-Block"); hv != "" {
+	if hv := headers.Get(headerDirectiveEnforceHighestBlock); hv != "" {
 		r.directives.EnforceHighestBlock = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Enforce-GetLogs-Range"); hv != "" {
+	if hv := headers.Get(headerDirectiveEnforceGetLogsRange); hv != "" {
 		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Enforce-Non-Null-Tagged-Blocks"); hv != "" {
+	if hv := headers.Get(headerDirectiveEnforceNonNullTaggedBlocks); hv != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Enforce-Log-Index-Strict-Increments"); hv != "" {
+	if hv := headers.Get(headerDirectiveEnforceLogIndexStrict); hv != "" {
 		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Validate-Logs-Bloom-Emptiness"); hv != "" {
+	if hv := headers.Get(headerDirectiveValidateLogsBloomEmpty); hv != "" {
 		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Validate-Logs-Bloom-Match"); hv != "" {
+	if hv := headers.Get(headerDirectiveValidateLogsBloomMatch); hv != "" {
 		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Validate-Tx-Hash-Uniqueness"); hv != "" {
+	if hv := headers.Get(headerDirectiveValidateTxHashUniq); hv != "" {
 		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
-	if hv := headers.Get("X-ERPC-Validate-Transaction-Index"); hv != "" {
+	if hv := headers.Get(headerDirectiveValidateTxIndex); hv != "" {
 		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
 
-	if hv := headers.Get("X-ERPC-Receipts-Count-Exact"); hv != "" {
+	if hv := headers.Get(headerDirectiveReceiptsCountExact); hv != "" {
 		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
 			r.directives.ReceiptsCountExact = &v
 		}
 	}
-	if hv := headers.Get("X-ERPC-Receipts-Count-At-Least"); hv != "" {
+	if hv := headers.Get(headerDirectiveReceiptsCountAtLeast); hv != "" {
 		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
 			r.directives.ReceiptsCountAtLeast = &v
 		}
 	}
-	if hv := headers.Get("X-ERPC-Validation-Expected-Block-Hash"); hv != "" {
+	if hv := headers.Get(headerDirectiveValidationBlockHash); hv != "" {
 		r.directives.ValidationExpectedBlockHash = hv
 	}
-	if hv := headers.Get("X-ERPC-Validation-Expected-Block-Number"); hv != "" {
+	if hv := headers.Get(headerDirectiveValidationBlockNumber); hv != "" {
 		if v, err := strconv.ParseInt(hv, 10, 64); err == nil {
 			r.directives.ValidationExpectedBlockNumber = &v
 		}
 	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
-	if useUpstream := queryArgs.Get("use-upstream"); useUpstream != "" {
+	if useUpstream := queryArgs.Get(queryDirectiveUseUpstream); useUpstream != "" {
 		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
 	}
 
-	if retryEmpty := queryArgs.Get("retry-empty"); retryEmpty != "" {
+	if retryEmpty := queryArgs.Get(queryDirectiveRetryEmpty); retryEmpty != "" {
 		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) == "true"
 	}
 
-	if retryPending := queryArgs.Get("retry-pending"); retryPending != "" {
+	if retryPending := queryArgs.Get(queryDirectiveRetryPending); retryPending != "" {
 		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) == "true"
 	}
 
-	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
+	if skipCacheRead := queryArgs.Get(queryDirectiveSkipCacheRead); skipCacheRead != "" {
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
 	}
 
-	if skipInterpolation := queryArgs.Get("skip-interpolation"); skipInterpolation != "" {
+	if skipInterpolation := queryArgs.Get(queryDirectiveSkipInterpolation); skipInterpolation != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(skipInterpolation)) == "true"
 	}
 
 	// Validation query parameters
-	if v := queryArgs.Get("enforce-highest-block"); v != "" {
+	if v := queryArgs.Get(queryDirectiveEnforceHighestBlock); v != "" {
 		r.directives.EnforceHighestBlock = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("enforce-getlogs-range"); v != "" {
+	if v := queryArgs.Get(queryDirectiveEnforceGetLogsRange); v != "" {
 		r.directives.EnforceGetLogsBlockRange = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("enforce-non-null-tagged-blocks"); v != "" {
+	if v := queryArgs.Get(queryDirectiveEnforceNonNullTaggedBlocks); v != "" {
 		r.directives.EnforceNonNullTaggedBlocks = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("enforce-log-index-strict-increments"); v != "" {
+	if v := queryArgs.Get(queryDirectiveEnforceLogIndexStrict); v != "" {
 		r.directives.EnforceLogIndexStrictIncrements = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("validate-logs-bloom-emptiness"); v != "" {
+	if v := queryArgs.Get(queryDirectiveValidateLogsBloomEmpty); v != "" {
 		r.directives.ValidateLogsBloomEmptiness = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("validate-logs-bloom-match"); v != "" {
+	if v := queryArgs.Get(queryDirectiveValidateLogsBloomMatch); v != "" {
 		r.directives.ValidateLogsBloomMatch = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("validate-tx-hash-uniqueness"); v != "" {
+	if v := queryArgs.Get(queryDirectiveValidateTxHashUniq); v != "" {
 		r.directives.ValidateTxHashUniqueness = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("validate-transaction-index"); v != "" {
+	if v := queryArgs.Get(queryDirectiveValidateTxIndex); v != "" {
 		r.directives.ValidateTransactionIndex = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
-	if v := queryArgs.Get("receipts-count-exact"); v != "" {
+	if v := queryArgs.Get(queryDirectiveReceiptsCountExact); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			r.directives.ReceiptsCountExact = &n
 		}
 	}
-	if v := queryArgs.Get("receipts-count-at-least"); v != "" {
+	if v := queryArgs.Get(queryDirectiveReceiptsCountAtLeast); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			r.directives.ReceiptsCountAtLeast = &n
 		}
 	}
-	if v := queryArgs.Get("validation-expected-block-hash"); v != "" {
+	if v := queryArgs.Get(queryDirectiveValidationBlockHash); v != "" {
 		r.directives.ValidationExpectedBlockHash = v
 	}
-	if v := queryArgs.Get("validation-expected-block-number"); v != "" {
+	if v := queryArgs.Get(queryDirectiveValidationBlockNumber); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			r.directives.ValidationExpectedBlockNumber = &n
 		}
