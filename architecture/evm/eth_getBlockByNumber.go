@@ -275,7 +275,7 @@ func enforceNonNullBlock(nq *common.NormalizedRequest, nr *common.NormalizedResp
 	if isTag {
 		dirs := nq.Directives()
 		if dirs == nil || !dirs.EnforceNonNullTaggedBlocks {
-			// Directive disabled - allow null tagged blocks
+			// Directive not set or disabled - allow null tagged blocks
 			return nr, nil
 		}
 	}

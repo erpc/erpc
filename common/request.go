@@ -46,6 +46,10 @@ const (
 	headerDirectiveReceiptsCountAtLeast       = "X-ERPC-Receipts-Count-At-Least"
 	headerDirectiveValidationBlockHash        = "X-ERPC-Validation-Expected-Block-Hash"
 	headerDirectiveValidationBlockNumber      = "X-ERPC-Validation-Expected-Block-Number"
+	headerDirectiveValidateHeaderFieldLengths = "X-ERPC-Validate-Header-Field-Lengths"
+	headerDirectiveValidateTxFields           = "X-ERPC-Validate-Transaction-Fields"
+	headerDirectiveValidateTxBlockInfo        = "X-ERPC-Validate-Transaction-Block-Info"
+	headerDirectiveValidateLogFields          = "X-ERPC-Validate-Log-Fields"
 )
 
 const (
@@ -66,6 +70,10 @@ const (
 	queryDirectiveReceiptsCountAtLeast       = "receipts-count-at-least"
 	queryDirectiveValidationBlockHash        = "validation-expected-block-hash"
 	queryDirectiveValidationBlockNumber      = "validation-expected-block-number"
+	queryDirectiveValidateHeaderFieldLengths = "validate-header-field-lengths"
+	queryDirectiveValidateTxFields           = "validate-transaction-fields"
+	queryDirectiveValidateTxBlockInfo        = "validate-transaction-block-info"
+	queryDirectiveValidateLogFields          = "validate-log-fields"
 )
 
 var directiveKeyRegistry = []directiveKeyNames{
@@ -86,6 +94,10 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveReceiptsCountAtLeast, query: queryDirectiveReceiptsCountAtLeast},
 	{header: headerDirectiveValidationBlockHash, query: queryDirectiveValidationBlockHash},
 	{header: headerDirectiveValidationBlockNumber, query: queryDirectiveValidationBlockNumber},
+	{header: headerDirectiveValidateHeaderFieldLengths, query: queryDirectiveValidateHeaderFieldLengths},
+	{header: headerDirectiveValidateTxFields, query: queryDirectiveValidateTxFields},
+	{header: headerDirectiveValidateTxBlockInfo, query: queryDirectiveValidateTxBlockInfo},
+	{header: headerDirectiveValidateLogFields, query: queryDirectiveValidateLogFields},
 }
 
 type RequestDirectives struct {
@@ -690,6 +702,18 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 			r.directives.ValidationExpectedBlockNumber = &v
 		}
 	}
+	if hv := headers.Get(headerDirectiveValidateHeaderFieldLengths); hv != "" {
+		r.directives.ValidateHeaderFieldLengths = strings.ToLower(hv) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateTxFields); hv != "" {
+		r.directives.ValidateTransactionFields = strings.ToLower(hv) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateTxBlockInfo); hv != "" {
+		r.directives.ValidateTransactionBlockInfo = strings.ToLower(hv) == "true"
+	}
+	if hv := headers.Get(headerDirectiveValidateLogFields); hv != "" {
+		r.directives.ValidateLogFields = strings.ToLower(hv) == "true"
+	}
 
 	// Query parameters come after headers so they can still override when explicitly present in URL.
 	if useUpstream := queryArgs.Get(queryDirectiveUseUpstream); useUpstream != "" {
@@ -754,6 +778,18 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			r.directives.ValidationExpectedBlockNumber = &n
 		}
+	}
+	if v := queryArgs.Get(queryDirectiveValidateHeaderFieldLengths); v != "" {
+		r.directives.ValidateHeaderFieldLengths = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTxFields); v != "" {
+		r.directives.ValidateTransactionFields = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTxBlockInfo); v != "" {
+		r.directives.ValidateTransactionBlockInfo = strings.ToLower(strings.TrimSpace(v)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveValidateLogFields); v != "" {
+		r.directives.ValidateLogFields = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
 }
 
