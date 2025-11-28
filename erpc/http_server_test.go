@@ -5716,16 +5716,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"params": ["latest", false]
 		}`
 
-		// rpc2 latest block is 0x22228888 so request should force fetching that from upstreams (and in this case rpc1 will be tried first)
-		// This behavior mimics the fact that rpc1 syncs up as soon as user sends the second request.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "\"0x22228888\"")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x22228888","timestamp":"0x6702a8f0"}}`))
+		// eth_getBlockByNumber does NOT interpolate "latest" (TranslateLatestTag=false by default),
+		// so the request goes to upstream with "latest" directly.
+		// The state poller mock for rpc1 returns 0x11118888 for "latest".
+		// EnforceHighestBlock will detect that 0x11118888 < 0x22228888 (highest known from rpc2)
+		// and re-fetch using 0x22228888.
+		// The state poller mock for rpc2 matches "0x22228888", so it will handle the re-fetch.
 
 		// Spin up the test server, make the request, and check final result.
 		// The test will use the state poller's mocks which return the latest block as 0x11118888
@@ -5817,17 +5813,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"params": ["latest", false]
 		}`
 
-		// rpc2 latest block is 0x22228888 so request should force fetching that from upstreams,
-		// In this case rpc1 still returns a block not found error, but rpc2 is up to date and returns the block.
-		// The mock for rpc2 is already defined in the util.SetupMocksForEvmStatePoller() function.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "\"0x22228888\"")
-			}).
-			Reply(200).
-			JSON([]byte(`{"error":{"code":-32014,"message":"block not found"}}`))
+		// eth_getBlockByNumber does NOT interpolate "latest" (TranslateLatestTag=false by default),
+		// so the request goes to upstream with "latest" directly.
+		// The state poller mock for rpc1 returns 0x11118888 for "latest".
+		// EnforceHighestBlock will detect that 0x11118888 < 0x22228888 (highest known from rpc2)
+		// and re-fetch using 0x22228888.
+		// The state poller mock for rpc2 matches "0x22228888", so it will handle the re-fetch and return the block.
 
 		// Spin up the test server, make the request, and check final result.
 		// The test will use the state poller's mocks which return the latest block as 0x11118888
@@ -6841,22 +6832,12 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Give state poller time to initialize and populate highest finalized
 		time.Sleep(500 * time.Millisecond)
 
-		// Since interpolation translates \"finalized\" to the highest known hex number (0x22227777),
-		// ensure rpc1 can serve that concrete block number to avoid transport mismatch errors.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "\"0x22227777\"")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      42,
-				"result": map[string]interface{}{
-					"number": "0x22227777",
-				},
-			})
+		// eth_getBlockByNumber does NOT interpolate "finalized" (TranslateFinalizedTag=false by default),
+		// so the request goes to upstream with "finalized" directly.
+		// The state poller mock for rpc1 returns 0x11117777 for finalized, and rpc2 returns 0x22227777.
+		// EnforceHighestBlock will detect that rpc1's response (0x11117777) is older than the highest
+		// known finalized (0x22227777 from rpc2), and will re-fetch using that block number.
+		// The state poller mocks already handle both "finalized" and the concrete hex block numbers.
 
 		userRequest := `{
 			"jsonrpc": "2.0",
@@ -7034,16 +7015,17 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}`
 
 		// The user request mock should be more specific and placed after the general mocks
+		// eth_getBlockByNumber does NOT interpolate "finalized" (TranslateFinalizedTag=false by default),
+		// so the request goes to upstream with "finalized" directly.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1). // Only match once for the specific user request
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				// Match the exact user request with id:999 and full block data (true param)
-				// After interpolation, the request will contain the concrete hex block number 0x100.
+				// Match the exact user request with id:999 and "finalized" tag (NOT interpolated)
 				return strings.Contains(body, `"id":999`) &&
 					strings.Contains(body, `"eth_getBlockByNumber"`) &&
-					strings.Contains(body, `"0x100"`) &&
+					strings.Contains(body, `"finalized"`) &&
 					strings.Contains(body, `true`) // Full block data requested
 			}).
 			Reply(200).
