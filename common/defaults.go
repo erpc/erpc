@@ -275,6 +275,12 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		RespRefs: NumberOrHashParam,
 		// evm/eth_getBlockByNumber.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
 		EnforceBlockAvailability: util.BoolPtr(false),
+		// Don't interpolate "latest"/"finalized" tags for this method - it should fetch actual
+		// current state from upstream. This method is the source of truth for block tags,
+		// not a consumer of interpolated values. Other methods (eth_getLogs, eth_call, etc.)
+		// will still interpolate tags using the state poller's highest known block.
+		TranslateLatestTag:    util.BoolPtr(false),
+		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getTransactionByBlockHashAndIndex": {
 		ReqRefs:  FirstParam,

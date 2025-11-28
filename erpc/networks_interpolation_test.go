@@ -1150,6 +1150,116 @@ func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 	}
 }
 
+// Test that eth_getBlockByNumber does NOT interpolate "latest" by default.
+// This method should fetch actual latest from upstream, not use the state poller's
+// potentially stale value. This is critical for indexers that poll for latest blocks.
+func TestInterpolation_EthGetBlockByNumber_Latest_NotInterpolated(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+	req.SetNetwork(network)
+
+	// Normalize the request - this is where interpolation would happen
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	// Verify "latest" was NOT translated (should still be "latest")
+	// This is the key assertion - eth_getBlockByNumber should NOT interpolate the tag
+	params := jrq.Params
+	require.Len(t, params, 2)
+	blockParam := params[0].(string)
+	assert.Equal(t, "latest", blockParam, "eth_getBlockByNumber should NOT interpolate 'latest' - it should fetch actual latest from upstream")
+}
+
+// Test that eth_getBlockByNumber does NOT interpolate "finalized" by default.
+func TestInterpolation_EthGetBlockByNumber_Finalized_NotInterpolated(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["finalized",false]}`))
+	req.SetNetwork(network)
+
+	// Normalize the request - this is where interpolation would happen
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	// Verify "finalized" was NOT translated (should still be "finalized")
+	params := jrq.Params
+	require.Len(t, params, 2)
+	blockParam := params[0].(string)
+	assert.Equal(t, "finalized", blockParam, "eth_getBlockByNumber should NOT interpolate 'finalized'")
+}
+
+// Test that other methods like eth_getBalance STILL interpolate "latest".
+// This ensures our change to eth_getBlockByNumber doesn't affect other methods.
+func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Set up mock BEFORE network initialization
+	// eth_getBalance should have "latest" interpolated to hex
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Times(1).
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			// Should have hex block number, NOT "latest"
+			return strings.Contains(body, "eth_getBalance") &&
+				strings.Contains(body, "\"0x") &&
+				!strings.Contains(body, "\"latest\"")
+		}).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x1234",
+		})
+
+	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	req.SetNetwork(network)
+
+	// Normalize the request
+	jrq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	evm.NormalizeHttpJsonRpc(ctx, req, jrq)
+
+	// Verify "latest" WAS translated to hex for eth_getBalance
+	params := jrq.Params
+	require.Len(t, params, 2)
+	blockParam := params[1].(string)
+	assert.True(t, strings.HasPrefix(blockParam, "0x"), "eth_getBalance should interpolate 'latest' to hex")
+	assert.NotEqual(t, "latest", blockParam, "eth_getBalance should NOT have 'latest' anymore")
+
+	// Forward to verify mock is hit
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	if resp != nil {
+		resp.Release()
+	}
+}
+
 // Test methods without block parameters (should not be affected)
 func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
 	util.ResetGock()
