@@ -301,6 +301,13 @@ export interface ProjectConfig {
   rateLimitBudget?: string;
   scoreMetricsWindowSize?: Duration;
   scoreRefreshInterval?: Duration;
+  /**
+   * ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
+   * Allowed values:
+   * - "compact": emit compact series by setting upstream and category labels to 'n/a'
+   * - "detailed": emit full project/vendor/network/upstream/category series
+   */
+  scoreMetricsMode?: string;
   healthCheck?: DeprecatedProjectHealthCheckConfig;
   /**
    * Configure user agent tracking at the project level
@@ -326,12 +333,6 @@ export interface NetworkDefaults {
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -367,12 +368,6 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   ignoreFields?: { [key: string]: string[]};
@@ -639,18 +634,58 @@ export interface NetworkConfig {
   alias?: string;
   methods?: MethodsConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
   skipCacheRead?: boolean;
   useUpstream?: string;
   skipInterpolation?: boolean;
+  /**
+   * Validation: Block Integrity
+   */
+  enforceHighestBlock?: boolean;
+  enforceGetLogsBlockRange?: boolean;
+  enforceNonNullTaggedBlocks?: boolean;
+  /**
+   * Validation: Header Field Lengths
+   */
+  validateHeaderFieldLengths?: boolean;
+  /**
+   * Validation: Transactions (for eth_getBlockByNumber/Hash with full txs)
+   */
+  validateTransactionFields?: boolean;
+  validateTransactionBlockInfo?: boolean;
+  /**
+   * Validation: Receipts & Logs
+   */
+  enforceLogIndexStrictIncrements?: boolean;
+  validateTxHashUniqueness?: boolean;
+  validateTransactionIndex?: boolean;
+  validateLogFields?: boolean;
+  /**
+   * Validation: Bloom Filter (simplified to 2 checks)
+   * ValidateLogsBloomEmptiness: if logs exist, bloom must not be zero; if bloom is non-zero, logs must exist
+   */
+  validateLogsBloomEmptiness?: boolean;
+  /**
+   * ValidateLogsBloomMatch: recalculate bloom from logs and verify it matches the provided bloom
+   */
+  validateLogsBloomMatch?: boolean;
+  /**
+   * Validation: Receipt-to-Transaction Cross-Validation (requires GroundTruthTransactions in library-mode)
+   */
+  validateReceiptTransactionMatch?: boolean;
+  validateContractCreation?: boolean;
+  /**
+   * Validation: numeric checks
+   */
+  receiptsCountExact?: number /* int64 */;
+  receiptsCountAtLeast?: number /* int64 */;
+  /**
+   * Validation: Expected Ground Truths
+   */
+  validationExpectedBlockHash?: string;
+  validationExpectedBlockNumber?: number /* int64 */;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
@@ -669,9 +704,21 @@ export interface EvmNetworkConfig {
    */
   enforceBlockAvailability?: boolean;
 }
+/**
+ * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
+ */
 export interface EvmIntegrityConfig {
+  /**
+   * @deprecated: use DirectiveDefaults.EnforceHighestBlock
+   */
   enforceHighestBlock?: boolean;
+  /**
+   * @deprecated: use DirectiveDefaults.EnforceGetLogsBlockRange
+   */
   enforceGetLogsBlockRange?: boolean;
+  /**
+   * @deprecated: use DirectiveDefaults.EnforceNonNullTaggedBlocks
+   */
   enforceNonNullTaggedBlocks?: boolean;
 }
 export interface SelectionPolicyConfig {
