@@ -604,7 +604,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.SetUpstream(u)
 				}
 
-				if !common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
+				if !common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped, common.ErrCodeUpstreamMethodIgnored) {
 					if err == nil {
 						loopSpan.SetStatus(codes.Ok, "")
 					} else {
