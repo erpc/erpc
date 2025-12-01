@@ -71,8 +71,12 @@ func StartHTTPServerSpan(ctx context.Context, r *http.Request) (context.Context,
 
 	propagator := propagation.TraceContext{}
 	ctx = propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+
+	// Check if force-trace is requested via header or query param
+	forceTrace := shouldForceTrace(r)
+
 	var span trace.Span
-	ctx, span = StartSpan(ctx, "Http.ReceivedRequest",
+	opts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(
 			semconv.HTTPMethodKey.String(r.Method),
@@ -80,9 +84,38 @@ func StartHTTPServerSpan(ctx context.Context, r *http.Request) (context.Context,
 			semconv.HTTPSchemeKey.String(r.URL.Scheme),
 			semconv.HTTPUserAgentKey.String(r.UserAgent()),
 		),
-	)
+	}
+
+	// Add force-trace attribute if requested (sampler will check this)
+	if forceTrace {
+		opts = append(opts, trace.WithAttributes(
+			attribute.Bool(forceTraceAttributeKey, true),
+		))
+	}
+
+	ctx, span = StartSpan(ctx, "Http.ReceivedRequest", opts...)
+
+	// Add attribute to the span for visibility (after creation, so it's recorded)
+	if forceTrace {
+		span.SetAttributes(attribute.String("erpc.forced_trace_reason", "header_or_query"))
+	}
 
 	return ctx, span
+}
+
+// shouldForceTrace checks if the request has the force-trace header or query param
+func shouldForceTrace(r *http.Request) bool {
+	// Check header: X-ERPC-Force-Trace: true (or any truthy value)
+	if h := r.Header.Get(ForceTraceHeader); h != "" {
+		return h == "true" || h == "1" || h == "yes"
+	}
+
+	// Check query param: ?force-trace=true
+	if q := r.URL.Query().Get(ForceTraceQueryParam); q != "" {
+		return q == "true" || q == "1" || q == "yes"
+	}
+
+	return false
 }
 
 func EnrichHTTPServerSpan(ctx context.Context, statusCode int, err error) {
@@ -110,12 +143,32 @@ func StartRequestSpan(ctx context.Context, req *NormalizedRequest) context.Conte
 	}
 
 	method, _ := req.Method()
-	ctx, span := tracer.Start(ctx, "Request.Handle",
+	network := GetForceTraceNetwork(ctx)
+
+	// Check if force-trace is needed using matchers
+	forceTrace, forceTraceReason := ShouldForceTrace(network, method)
+
+	opts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(
 			attribute.String("request.method", method),
 		),
-	)
+	}
+
+	// Add force-trace attribute if needed (sampler will check this)
+	if forceTrace {
+		opts = append(opts, trace.WithAttributes(
+			attribute.Bool(forceTraceAttributeKey, true),
+		))
+	}
+
+	ctx, span := tracer.Start(ctx, "Request.Handle", opts...)
+
+	// Add force-trace reason for visibility
+	if forceTrace {
+		span.SetAttributes(attribute.String("erpc.forced_trace_reason", forceTraceReason))
+	}
+
 	if IsTracingDetailed {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),

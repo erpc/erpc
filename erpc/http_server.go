@@ -234,6 +234,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			return
 		}
 
+		// Set network in context for force-trace matching in child spans (uses existing parsed values)
+		if !isAdmin && !isHealthCheck && architecture != "" && chainId != "" {
+			httpCtx = common.SetForceTraceNetwork(httpCtx, architecture+":"+chainId)
+		}
+
 		if isHealthCheck {
 			s.handleHealthCheck(httpCtx, w, r, &startedAt, projectId, architecture, chainId, encoder, writeFatalError)
 			return
