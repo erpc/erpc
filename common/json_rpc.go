@@ -1470,10 +1470,16 @@ func TranslateToJsonRpcException(err error) error {
 		)
 	}
 	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
+		var reason string
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		} else {
+			reason = err.Error()
+		}
 		return NewErrJsonRpcExceptionInternal(
 			0,
 			JsonRpcErrorUnsupportedException,
-			"method ignored by upstream",
+			"method ignored by upstream: "+reason,
 			err,
 			nil,
 		)
