@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -978,12 +979,12 @@ func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
-	// Build request and verify network-level gating returns true (no enforcement)
+	// Build request and verify network-level gating returns nil (allowed, no enforcement)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
 	req.SetNetwork(network)
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
-	allowed := network.shouldUseUpstream(ctx, ups, req, "eth_getBalance")
-	require.True(t, allowed)
+	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+	require.NoError(t, skipErr, "expected no skip error (allowed)")
 }
 
 // Network-level false should disable enforcement regardless of defaults
@@ -1044,10 +1045,342 @@ func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
-	// Build request and verify network-level gating returns true (no enforcement)
+	// Build request and verify network-level gating returns nil (allowed, no enforcement)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
 	req.SetNetwork(network)
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
-	allowed := network.shouldUseUpstream(ctx, ups, req, "eth_getBalance")
-	require.True(t, allowed)
+	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+	require.NoError(t, skipErr, "expected no skip error (allowed)")
+}
+
+// Test that ErrUpstreamBlockUnavailable is returned when block is beyond upstream's latest
+func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	// Enable enforcement
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Request block 0x99999999 (2576980377 decimal, beyond the mock's latest block of 0x11118888=286397576)
+	// The mock state poller returns 0x11118888 as latest block.
+	// Distance is 2576980377 - 286397576 = 2290582801, way beyond default 128 threshold
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x99999999"]}`))
+	req.SetNetwork(network)
+	// Set the block number on the request so it's available for gating
+	req.SetEvmBlockNumber(int64(0x99999999))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+	skipErr, isRetryable := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+
+	// Should return ErrUpstreamBlockUnavailable
+	require.Error(t, skipErr)
+	require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable),
+		"expected ErrUpstreamBlockUnavailable, got: %v", skipErr)
+
+	// Should NOT be retryable because distance is too large (> 128 default)
+	require.False(t, isRetryable, "expected not retryable for large block distance")
+}
+
+// Test that small block distance is retryable
+func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	// Enable enforcement
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Request block just 50 blocks beyond latest (0x11118888 + 50 = 0x111188BA)
+	// Distance is 50, within default 128 threshold - should be retryable
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x111188BA"]}`))
+	req.SetNetwork(network)
+	req.SetEvmBlockNumber(int64(0x111188BA))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+	skipErr, isRetryable := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+
+	// Should return error (block not available)
+	require.Error(t, skipErr)
+	require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable))
+
+	// Should be retryable because distance (50) is within threshold (128)
+	require.True(t, isRetryable, "expected retryable for small block distance")
+}
+
+// Test that ErrUpstreamRequestSkipped is NOT retryable (for comparison)
+func TestErrUpstreamRequestSkipped_IsNotRetryable(t *testing.T) {
+	err := common.NewErrUpstreamRequestSkipped(nil, "test-upstream")
+	require.False(t, common.IsRetryableTowardsUpstream(err),
+		"ErrUpstreamRequestSkipped should NOT be retryable")
+}
+
+// Test that ErrUpstreamBlockUnavailable IS retryable
+func TestErrUpstreamBlockUnavailable_IsRetryable(t *testing.T) {
+	err := common.NewErrUpstreamBlockUnavailable("test-upstream", 1000, 500, 400)
+	require.True(t, common.IsRetryableTowardsUpstream(err),
+		"ErrUpstreamBlockUnavailable should be retryable")
+}
+
+// Test that ErrUpstreamBlockUnavailable contains proper details
+func TestErrUpstreamBlockUnavailable_ContainsDetails(t *testing.T) {
+	err := common.NewErrUpstreamBlockUnavailable("test-upstream", 1000, 500, 400)
+
+	var baseErr *common.ErrUpstreamBlockUnavailable
+	require.ErrorAs(t, err, &baseErr)
+	require.Equal(t, common.ErrCodeUpstreamBlockUnavailable, baseErr.Code)
+	require.Equal(t, "test-upstream", baseErr.Details["upstreamId"])
+	require.Equal(t, int64(1000), baseErr.Details["blockNumber"])
+	require.Equal(t, int64(500), baseErr.Details["latestBlock"])
+	require.Equal(t, int64(400), baseErr.Details["finalizedBlock"])
+}
+
+// Test that ErrUpstreamBlockUnavailable error contains correct details
+func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	// Enable enforcement so block availability is checked
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
+	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+
+	// Create a request for a block beyond the upstream's latest (0x11118888=286397576)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x99999999"]}`))
+	req.SetNetwork(network)
+	req.SetEvmBlockNumber(int64(0x99999999))
+
+	// Call checkUpstreamBlockAvailability - should return error
+	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+	require.Error(t, skipErr)
+	require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable))
+
+	// Verify the error contains the expected details
+	var blockErr *common.ErrUpstreamBlockUnavailable
+	require.ErrorAs(t, skipErr, &blockErr)
+	require.Equal(t, "rpc1", blockErr.Details["upstreamId"])
+	require.Equal(t, int64(0x99999999), blockErr.Details["blockNumber"])
+	// The mock returns 0x11118888 as latest
+	require.Equal(t, int64(0x11118888), blockErr.Details["latestBlock"])
+}
+
+// TestRetryableBlockUnavailability_NoInfiniteLoop tests that when an upstream returns a
+// retryable block unavailability error (block slightly ahead), the upstream selection loop
+// does NOT spin infinitely re-selecting the same upstream.
+//
+// BUG: When checkUpstreamBlockAvailability returns a retryable error, calling
+// MarkUpstreamCompleted with a nil response sets canReUse=true (because !hasResponse=true),
+// which removes the upstream from ConsumedUpstreams. Since ErrUpstreamBlockUnavailable
+// is retryable per IsRetryableTowardsUpstream, NextUpstream doesn't skip it, causing
+// the same upstream to be selected repeatedly until context timeout.
+//
+// EXPECTED: The upstream should be selected once, fail block availability check, and
+// the error should be recorded. The loop should then exhaust upstreams and return
+// ErrUpstreamsExhausted, NOT spin until context timeout.
+func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Single upstream - if it gets re-selected infinitely, the test will timeout
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(200 * time.Millisecond),
+			StatePollerDebounce: common.Duration(50 * time.Millisecond),
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	// Enable block availability enforcement
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId:                  123,
+			EnforceBlockAvailability: b(true),
+		},
+	}
+	network, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, err)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	// Request block 0x111188BA = latestBlock(0x11118888) + 50
+	// Distance of 50 is within default MaxRetryableBlockDistance of 128, so this is a RETRYABLE error
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x111188BA"]}`))
+	req.SetNetwork(network)
+
+	// Use a short timeout - if there's an infinite loop, we'll hit this
+	// If fixed, the call should complete almost instantly with ErrUpstreamsExhausted
+	forwardCtx, forwardCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer forwardCancel()
+
+	startTime := time.Now()
+	_, err = network.Forward(forwardCtx, req)
+	elapsed := time.Since(startTime)
+
+	// The request MUST fail (no upstream has the block)
+	require.Error(t, err, "expected error since no upstream has the requested block")
+
+	// Critical assertion: If the bug exists, we'll hit the 500ms timeout and get a context error.
+	// If fixed, we should get ErrUpstreamsExhausted almost immediately (< 100ms).
+	isTimeout := common.HasErrorCode(err, common.ErrCodeNetworkRequestTimeout, common.ErrCodeEndpointRequestTimeout, common.ErrCodeFailsafeTimeoutExceeded) ||
+		errors.Is(err, context.DeadlineExceeded)
+	require.False(t, isTimeout,
+		"BUG DETECTED: Request timed out instead of exhausting upstreams. "+
+			"This indicates an infinite loop where the same upstream is being re-selected repeatedly. "+
+			"elapsed=%v, error=%v", elapsed, err)
+
+	// Should be ErrUpstreamsExhausted - all upstreams tried and failed
+	require.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
+		"expected ErrUpstreamsExhausted, got: %v (elapsed=%v)", err, elapsed)
+
+	// Should complete quickly - not waiting for timeout
+	require.Less(t, elapsed, 200*time.Millisecond,
+		"Forward took too long (%v), possible spin loop before exhausting", elapsed)
+
+	// The underlying error should be ErrUpstreamBlockUnavailable
+	require.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable),
+		"expected underlying ErrUpstreamBlockUnavailable, got: %v", err)
 }

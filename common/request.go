@@ -1122,6 +1122,16 @@ func (r *NormalizedRequest) SetUpstreams(upstreams []Upstream) {
 	}
 }
 
+// UpstreamsCount returns the number of available upstreams for this request
+func (r *NormalizedRequest) UpstreamsCount() int {
+	if r == nil {
+		return 0
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	return len(r.upstreamList)
+}
+
 // UserId returns the user ID from the user object, or "n/a" if not available
 func (r *NormalizedRequest) UserId() string {
 	if r == nil {
@@ -1284,9 +1294,10 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 
 	upstreamCount := len(r.upstreamList)
 
-	// Try all upstreams starting from current index with guaranteed sequential access
+	// Simple round-robin selection. The outer loop in networks.go is capped to prevent
+	// infinite loops. Retryable errors are removed from ConsumedUpstreams by
+	// MarkUpstreamCompleted, allowing re-selection on subsequent iterations.
 	for attempts := 0; attempts < upstreamCount; attempts++ {
-		// Get current index and increment - this is now atomic within the mutex
 		idx := r.UpstreamIdx % uint32(upstreamCount) // #nosec G115
 		r.UpstreamIdx++                              // Guaranteed increment for next caller
 
@@ -1300,12 +1311,12 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			}
 		}
 
-		// Skip if already consumed (gave valid response or consensus-valid error)
+		// Skip if already consumed (in-flight or already completed this round)
 		if _, consumed := r.ConsumedUpstreams.Load(upstream); consumed {
 			continue
 		}
 
-		// Skip if already responded with non-retryable error
+		// Skip if already responded with non-retryable error (permanent blacklist)
 		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
 			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
 				continue
@@ -1345,21 +1356,24 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 		return
 	}
 
-	// We can re-use the same upstream on next rotation if there's no response or the error is retryable towards the upstream
-	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
-
+	// Store errors for reporting and for NextUpstream to skip permanent errors.
 	if err != nil {
 		r.ErrorsByUpstream.Store(upstream, err)
 	} else if resp != nil && resp.IsResultEmptyish(ctx) {
-		jr, err := resp.JsonRpcResponse(ctx)
+		jr, jrErr := resp.JsonRpcResponse(ctx)
 		if jr == nil {
-			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", err), upstream))
+			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", jrErr), upstream))
 		} else {
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.GetResultString()), upstream))
 		}
 		r.EmptyResponses.Store(upstream, true)
 	}
 
+	// Remove from ConsumedUpstreams if upstream can be retried:
+	// - No response yet (pre-flight error like block unavailable)
+	// - Or error is retryable (transient failure)
+	// The outer loop in networks.go is capped to prevent infinite loops.
+	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
 	if canReUse {
 		r.ConsumedUpstreams.Delete(upstream)
 	}
