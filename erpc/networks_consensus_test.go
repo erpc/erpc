@@ -683,6 +683,63 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "execution reverted"},
 		},
 		{
+			name:        "all_server_errors_infra_retry_exhausted",
+			description: "All participants return server error (-32603) which is infra error -> retry exhausted",
+			upstreams:   createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+			},
+			retryPolicy: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+			},
+			expectedCalls: []int{1, 1, 1},
+			expectedError: &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "gave up retrying"},
+		},
+		{
+			name:        "one_success_rest_server_errors",
+			description: "1 success response + rest server errors (-32603 infra) -> success wins (infra errors don't count as valid participants)",
+			upstreams:   createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+				{status: 200, body: jsonRpcError(-32603, "internal server error")},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x1"`},
+		},
+		{
+			name:        "one_success_rest_consensus_errors_dispute",
+			description: "1 success response + 2 consensus errors (code 3) -> dispute (1 success vs 2 errors, neither reaches threshold=3)",
+			upstreams:   createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      3,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcError(3, "execution reverted")},
+				{status: 200, body: jsonRpcError(3, "execution reverted")},
+			},
+			expectedCalls: []int{1, 1, 1},
+			expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "not enough agreement"},
+		},
+		{
 			name:        "mixed_errors_returns_dispute",
 			description: "Different JSON-RPC errors from participants below threshold -> dispute",
 			upstreams:   createTestUpstreams(3),
@@ -1450,47 +1507,28 @@ func TestConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:        "retried_failing_usptream_reach_consensus",
-			description: "retry once on intermittently bad upstream and reach consensus if correct result is returned on second attempt",
-			upstreams:   createTestUpstreams(2),
+			description: "retry with fresh upstreams reaches consensus after first attempt fails",
+			upstreams:   createTestUpstreams(3),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         2,
 				AgreementThreshold:      2,
 				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
-				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
 			},
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
+			// Attempt 1: up1 succeeds, up2 fails with retryable error -> low participants (1 valid)
+			// Attempt 2: up1 and up2 stay consumed, up3 is used, one participant exhausts
+			// With AcceptMostCommonValidResult on low participants, we accept up1's result
 			mockResponses: []mockResponse{
-				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcSuccess("0x1")},                        // up1: success (Attempt 1)
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up2: error (Attempt 1)
+				{status: 200, body: jsonRpcSuccess("0x1")},                        // up3: success (Attempt 2)
 			},
-			expectedCalls: []int{1, 0},
+			expectedCalls: []int{1, 1, 1},
 			expectedResult: &expectedResult{
 				jsonRpcResult: `"0x1"`,
-			},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				// upstream2: first error (-32603), then success "0x1"
-				gock.New("http://rpc2.localhost").
-					Post("/").
-					Times(1).
-					Filter(func(request *http.Request) bool {
-						body := util.SafeReadBody(request)
-						return strings.Contains(string(body), "eth_randomMethod")
-					}).
-					Reply(200).
-					SetHeader("Content-Type", "application/json").
-					JSON(jsonRpcError(-32603, "unknown server error"))
-				gock.New("http://rpc2.localhost").
-					Post("/").
-					Times(1).
-					Filter(func(request *http.Request) bool {
-						body := util.SafeReadBody(request)
-						return strings.Contains(string(body), "eth_randomMethod")
-					}).
-					Reply(200).
-					SetHeader("Content-Type", "application/json").
-					JSON(jsonRpcSuccess("0x1"))
 			},
 			expectedPendingMocks: 0,
 		},
@@ -2101,8 +2139,8 @@ func TestConsensusPolicy(t *testing.T) {
 		},
 		{
 			name:        "retried_failing_usptream_but_cannot_reach_consensus",
-			description: "retry once on fully broken upstream and cannot reach consensus",
-			upstreams:   createTestUpstreams(2),
+			description: "retry with fresh upstreams but all fail, exhausts retries",
+			upstreams:   createTestUpstreams(3),
 			consensusConfig: &common.ConsensusPolicyConfig{
 				MaxParticipants:         2,
 				AgreementThreshold:      2,
@@ -2112,27 +2150,16 @@ func TestConsensusPolicy(t *testing.T) {
 			retryPolicy: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
 			},
-			// Let harness mock upstream1 once; we'll override upstream2 via setupFn
+			// All upstreams return errors -> exhausts all retries
 			mockResponses: []mockResponse{
-				{status: 200, body: jsonRpcSuccess("0x1")},
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up1: error
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up2: error
+				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up3: error
 			},
-			expectedCalls: []int{1, 0},
+			expectedCalls: []int{1, 1, 1},
 			expectedError: &expectedError{
-				code:     common.ErrCodeConsensusLowParticipants,
-				contains: "not enough participants",
-			},
-			setupFn: func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-				// upstream2: first error (-32603), then success "0x1"
-				gock.New("http://rpc2.localhost").
-					Post("/").
-					Times(2).
-					Filter(func(request *http.Request) bool {
-						body := util.SafeReadBody(request)
-						return strings.Contains(string(body), "eth_randomMethod")
-					}).
-					Reply(200).
-					SetHeader("Content-Type", "application/json").
-					JSON(jsonRpcError(-32603, "unknown server error"))
+				code:     common.ErrCodeFailsafeRetryExceeded,
+				contains: "gave up retrying",
 			},
 			expectedPendingMocks: 0,
 		},

@@ -291,23 +291,10 @@ func ShouldForceTrace(network, method string) (bool, string) {
 // matchesForceTraceMatcher checks if network and method match a single matcher.
 // If both network and method are specified, both must match (AND).
 // If only one is specified, only that field is checked.
-// Patterns within a field can use "|" for OR and "*" for wildcards.
+// Patterns support wildcards (*) and OR (|) via WildcardMatch.
 func matchesForceTraceMatcher(matcher *ForceTraceMatcher, network, method string) bool {
 	if matcher == nil {
 		return false
-	}
-
-	networkMatches := true
-	methodMatches := true
-
-	// Check network patterns if specified
-	if matcher.Network != "" {
-		networkMatches = matchesAnyPattern(matcher.Network, network)
-	}
-
-	// Check method patterns if specified
-	if matcher.Method != "" {
-		methodMatches = matchesAnyPattern(matcher.Method, method)
 	}
 
 	// If neither is specified, no match
@@ -315,56 +302,20 @@ func matchesForceTraceMatcher(matcher *ForceTraceMatcher, network, method string
 		return false
 	}
 
+	networkMatches := true
+	methodMatches := true
+
+	// Check network pattern if specified (WildcardMatch handles | and *)
+	if matcher.Network != "" {
+		networkMatches, _ = WildcardMatch(matcher.Network, network)
+	}
+
+	// Check method pattern if specified (WildcardMatch handles | and *)
+	if matcher.Method != "" {
+		methodMatches, _ = WildcardMatch(matcher.Method, method)
+	}
+
 	return networkMatches && methodMatches
-}
-
-// matchesAnyPattern checks if value matches any pattern in the "|" separated pattern string.
-func matchesAnyPattern(patterns, value string) bool {
-	if patterns == "" || value == "" {
-		return false
-	}
-
-	// Split by "|" and check each pattern
-	for _, pattern := range splitPatterns(patterns) {
-		if matched, _ := WildcardMatch(pattern, value); matched {
-			return true
-		}
-	}
-	return false
-}
-
-// splitPatterns splits a pattern string by "|" without allocations for single patterns.
-func splitPatterns(patterns string) []string {
-	// Fast path: no "|" means single pattern
-	if idx := indexByte(patterns, '|'); idx < 0 {
-		return []string{patterns}
-	}
-
-	// Split by "|"
-	var result []string
-	start := 0
-	for i := 0; i < len(patterns); i++ {
-		if patterns[i] == '|' {
-			if i > start {
-				result = append(result, patterns[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(patterns) {
-		result = append(result, patterns[start:])
-	}
-	return result
-}
-
-// indexByte returns the index of the first instance of c in s, or -1 if c is not present.
-func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
 
 // SetForceTraceNetwork stores the network in context for force-trace matching in child spans.

@@ -516,7 +516,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 
 			var err error
-			for {
+			maxLoopIterations := effectiveReq.UpstreamsCount()
+			for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
 				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
 				if ctxErr := loopCtx.Err(); ctxErr != nil {
 					cause := context.Cause(loopCtx)
@@ -544,6 +545,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
+
+				// Add upstream EVM state poller values if available
+				if eu, ok := u.(common.EvmUpstream); ok {
+					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+						loopSpan.SetAttributes(
+							attribute.Int64("upstream.latest_block", sp.LatestBlock()),
+							attribute.Int64("upstream.finalized_block", sp.FinalizedBlock()),
+						)
+					}
+				}
+
 				ulg := lg.With().Str("upstreamId", u.Id()).Logger()
 				ulg.Debug().
 					Interface("id", effectiveReq.ID()).
@@ -552,8 +564,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					Msg("selected upstream from list")
 
 				// Network-level per-upstream gating based on block availability (after block tag interpolation)
-				if !n.shouldUseUpstream(loopCtx, u, effectiveReq, method) {
-					ulg.Debug().Msg("skipping upstream due to block availability gating")
+				if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
+					ulg.Debug().Err(skipErr).Bool("retryable", isRetryable).Msg("skipping upstream due to block availability gating")
+					loopSpan.SetAttributes(
+						attribute.Bool("skipped", true),
+						attribute.String("skip_reason", skipErr.Error()),
+						attribute.Bool("skip_retryable", isRetryable),
+					)
+					// Mark upstream completed with the skip error.
+					// MarkUpstreamCompleted stores the error and keeps upstream in ConsumedUpstreams,
+					// preventing re-selection in the same round. On exhaustion, retryable errors
+					// are cleared so the upstream can be tried again after others.
+					errToStore := skipErr
+					if !isRetryable {
+						// Wrap as non-retryable skip - upstream is too far behind
+						errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
+					}
+					effectiveReq.MarkUpstreamCompleted(loopCtx, u, nil, errToStore)
 					loopSpan.End()
 					continue
 				}
@@ -625,6 +652,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					loopSpan.End()
 					return r, err
 				}
+
+				// For skipped requests, add skip reason to span and continue
+				loopSpan.SetAttributes(
+					attribute.Bool("skipped", true),
+					attribute.String("skip_reason", err.Error()),
+				)
 
 				// For skipped requests, ensure any response is not retained before continuing
 				if r != nil {
@@ -948,16 +981,20 @@ func (n *Network) resolveEnforceBlockAvailability(method string) bool {
 	return true
 }
 
-// shouldUseUpstream performs per-upstream gating for the request based on block availability.
+// checkUpstreamBlockAvailability performs per-upstream gating for the request based on block availability.
 // It is invoked just before forwarding to an upstream to avoid copying/filtering the list.
-func (n *Network) shouldUseUpstream(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) bool {
+// Returns (nil, false) if upstream has the block available.
+// Returns (error, isRetryable) if block is not available:
+//   - isRetryable=true: block is just slightly ahead (within MaxRetryableBlockDistance), upstream may catch up
+//   - isRetryable=false: block is too far ahead or below lower bound, not worth retrying this upstream
+func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
 	if n.cfg.Architecture != common.ArchitectureEvm {
-		return true
+		return nil, false
 	}
 	// Resolve enforcement using strict precedence
 	enforce := n.resolveEnforceBlockAvailability(method)
 	if !enforce {
-		return true
+		return nil, false
 	}
 	// Use cached block number from normalization to avoid re-extracting from mutated params
 	var bn int64
@@ -968,17 +1005,44 @@ func (n *Network) shouldUseUpstream(ctx context.Context, u common.Upstream, req 
 	}
 	if bn <= 0 {
 		// If still unknown, skip gating
-		return true
+		return nil, false
 	}
 	eu, ok := u.(common.EvmUpstream)
 	if !ok {
-		return true
+		return nil, false
 	}
 	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, bn)
 	if err != nil {
-		return false
+		// Error during availability check - treat as block not available yet, retryable
+		return common.NewErrUpstreamBlockUnavailable(u.Id(), bn, 0, 0), true
 	}
-	return available
+	if !available {
+		// Get poller state for detailed error
+		var latestBlock, finalizedBlock int64
+		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			latestBlock = sp.LatestBlock()
+			finalizedBlock = sp.FinalizedBlock()
+		}
+
+		blockErr := common.NewErrUpstreamBlockUnavailable(u.Id(), bn, latestBlock, finalizedBlock)
+
+		// Determine if this is retryable based on distance
+		// Upper bound issue (block ahead of latest): retryable if within max distance
+		// Lower bound issue (block too old): not retryable
+		if bn > latestBlock && latestBlock > 0 {
+			distance := bn - latestBlock
+			maxDistance := int64(128) // default
+			if n.cfg.Evm != nil && n.cfg.Evm.MaxRetryableBlockDistance != nil {
+				maxDistance = *n.cfg.Evm.MaxRetryableBlockDistance
+			}
+			isRetryable := distance <= maxDistance
+			return blockErr, isRetryable
+		}
+
+		// Lower bound issue or unknown state - not retryable
+		return blockErr, false
+	}
+	return nil, false
 }
 
 func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.Logger, ups common.Upstream, req *common.NormalizedRequest) error {

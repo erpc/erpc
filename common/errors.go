@@ -1350,6 +1350,32 @@ func (e *ErrUpstreamRequestSkipped) ErrorStatusCode() int {
 	return http.StatusNotAcceptable
 }
 
+// ErrUpstreamBlockUnavailable indicates the upstream doesn't have the requested block yet,
+// but may have it soon (unlike ErrUpstreamRequestSkipped which is permanent).
+// This error is retryable at the network level.
+type ErrUpstreamBlockUnavailable struct{ BaseError }
+
+const ErrCodeUpstreamBlockUnavailable ErrorCode = "ErrUpstreamBlockUnavailable"
+
+var NewErrUpstreamBlockUnavailable = func(upstreamId string, blockNumber int64, latestBlock int64, finalizedBlock int64) error {
+	return &ErrUpstreamBlockUnavailable{
+		BaseError{
+			Code:    ErrCodeUpstreamBlockUnavailable,
+			Message: "upstream does not have the requested block yet",
+			Details: map[string]interface{}{
+				"upstreamId":     upstreamId,
+				"blockNumber":    blockNumber,
+				"latestBlock":    latestBlock,
+				"finalizedBlock": finalizedBlock,
+			},
+		},
+	}
+}
+
+func (e *ErrUpstreamBlockUnavailable) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
+}
+
 type ErrUpstreamMethodIgnored struct{ BaseError }
 
 const ErrCodeUpstreamMethodIgnored ErrorCode = "ErrUpstreamMethodIgnored"

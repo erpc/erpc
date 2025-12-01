@@ -1511,6 +1511,13 @@ type EvmNetworkConfig struct {
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.
 	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
+
+	// MaxRetryableBlockDistance controls the maximum block distance for which an upstream
+	// block unavailability error is considered retryable. If the requested block is within
+	// this distance from the upstream's latest block, the error is retryable (upstream may catch up).
+	// If the distance is larger, the error is not retryable (upstream is too far behind).
+	// Default: 128 blocks.
+	MaxRetryableBlockDistance *int64 `yaml:"maxRetryableBlockDistance,omitempty" json:"maxRetryableBlockDistance,omitempty"`
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
