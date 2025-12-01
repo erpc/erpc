@@ -149,6 +149,24 @@ type TracingConfig struct {
 	ServiceName string            `yaml:"serviceName,omitempty" json:"serviceName"`
 	Headers     map[string]string `yaml:"headers,omitempty" json:"headers"`
 	TLS         *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
+
+	// ForceTraceMatchers defines conditions for force-tracing requests.
+	// Each matcher can specify network and/or method patterns.
+	// Multiple patterns can be separated by "|" (OR within field).
+	// Both network and method must match if both are specified (AND between fields).
+	// If only one field is specified, only that field is checked.
+	ForceTraceMatchers []*ForceTraceMatcher `yaml:"forceTraceMatchers,omitempty" json:"forceTraceMatchers"`
+}
+
+// ForceTraceMatcher defines a condition for force-tracing requests.
+type ForceTraceMatcher struct {
+	// Network patterns to match (e.g., "evm:1", "evm:1|evm:42161", "evm:*")
+	// Multiple patterns separated by "|" act as OR conditions.
+	Network string `yaml:"network,omitempty" json:"network"`
+
+	// Method patterns to match (e.g., "eth_call", "debug_*|trace_*")
+	// Multiple patterns separated by "|" act as OR conditions.
+	Method string `yaml:"method,omitempty" json:"method"`
 }
 
 type AdminConfig struct {

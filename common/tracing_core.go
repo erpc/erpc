@@ -24,6 +24,15 @@ import (
 const (
 	SpanContextKey      ContextKey = "trace_span"
 	instrumentationName string     = "github.com/erpc/erpc"
+
+	// ForceTraceHeader is the HTTP header to force tracing for a request (bypasses sampling)
+	ForceTraceHeader = "X-ERPC-Force-Trace"
+	// ForceTraceQueryParam is the query parameter to force tracing for a request
+	ForceTraceQueryParam = "force-trace"
+	// forceTraceAttributeKey is the internal attribute key used by the sampler
+	forceTraceAttributeKey = "erpc.force_trace"
+	// forceTraceNetworkKey is the context key for network-based force-tracing
+	forceTraceNetworkKey ContextKey = "force_trace_network"
 )
 
 var (
@@ -33,6 +42,9 @@ var (
 	tracerProvider *sdktrace.TracerProvider
 	tracer         trace.Tracer
 	initOnce       sync.Once
+
+	// forceTraceMatchers holds the compiled matchers for force-tracing
+	forceTraceMatchers []*ForceTraceMatcher
 )
 
 func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *TracingConfig) error {
@@ -106,6 +118,19 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 		tracer = otel.Tracer(instrumentationName)
 		IsTracingEnabled = true
 		IsTracingDetailed = cfg.Detailed
+
+		// Store force-trace matchers
+		forceTraceMatchers = cfg.ForceTraceMatchers
+
+		if len(forceTraceMatchers) > 0 {
+			for i, m := range forceTraceMatchers {
+				logger.Info().
+					Int("index", i).
+					Str("network", m.Network).
+					Str("method", m.Method).
+					Msg("force-trace matcher configured")
+			}
+		}
 
 		logger.Info().Msg("OpenTelemetry tracing initialized successfully")
 	})
@@ -190,22 +215,172 @@ func createTracingHTTPExporter(ctx context.Context, cfg *TracingConfig) (*otlptr
 }
 
 func createTracingSampler(cfg *TracingConfig) sdktrace.Sampler {
+	var baseSampler sdktrace.Sampler
+
 	if cfg.SampleRate <= 0 {
-		return sdktrace.NeverSample()
+		baseSampler = sdktrace.NeverSample()
+	} else if cfg.SampleRate >= 1.0 {
+		baseSampler = sdktrace.AlwaysSample()
+	} else {
+		// Use ParentBased sampler to ensure child spans follow parent's sampling decision
+		// This prevents orphan spans and "invalid parent span" errors
+		baseSampler = sdktrace.ParentBased(
+			sdktrace.TraceIDRatioBased(cfg.SampleRate),
+			// These options ensure consistent sampling across the trace
+			sdktrace.WithRemoteParentSampled(sdktrace.AlwaysSample()),
+			sdktrace.WithRemoteParentNotSampled(sdktrace.NeverSample()),
+			sdktrace.WithLocalParentSampled(sdktrace.AlwaysSample()),
+			sdktrace.WithLocalParentNotSampled(sdktrace.NeverSample()),
+		)
 	}
 
-	if cfg.SampleRate >= 1.0 {
-		return sdktrace.AlwaysSample()
+	// Wrap with force-trace sampler to allow bypassing sampling via header/query param
+	return &forceTraceSampler{delegate: baseSampler}
+}
+
+// forceTraceSampler wraps another sampler and forces sampling when the force-trace attribute is present
+type forceTraceSampler struct {
+	delegate sdktrace.Sampler
+}
+
+func (s *forceTraceSampler) ShouldSample(params sdktrace.SamplingParameters) sdktrace.SamplingResult {
+	// Check if force-trace attribute is set
+	for _, attr := range params.Attributes {
+		if string(attr.Key) == forceTraceAttributeKey && attr.Value.AsBool() {
+			return sdktrace.SamplingResult{
+				Decision:   sdktrace.RecordAndSample,
+				Tracestate: trace.SpanContextFromContext(params.ParentContext).TraceState(),
+			}
+		}
 	}
 
-	// Use ParentBased sampler to ensure child spans follow parent's sampling decision
-	// This prevents orphan spans and "invalid parent span" errors
-	return sdktrace.ParentBased(
-		sdktrace.TraceIDRatioBased(cfg.SampleRate),
-		// These options ensure consistent sampling across the trace
-		sdktrace.WithRemoteParentSampled(sdktrace.AlwaysSample()),
-		sdktrace.WithRemoteParentNotSampled(sdktrace.NeverSample()),
-		sdktrace.WithLocalParentSampled(sdktrace.AlwaysSample()),
-		sdktrace.WithLocalParentNotSampled(sdktrace.NeverSample()),
-	)
+	return s.delegate.ShouldSample(params)
+}
+
+func (s *forceTraceSampler) Description() string {
+	return "ForceTraceSampler{" + s.delegate.Description() + "}"
+}
+
+// ShouldForceTrace checks if the given network and method match any force-trace matcher.
+// Returns true and the matching reason if a matcher matches.
+// Network format is "architecture:chainId", e.g., "evm:1", "evm:137".
+// Method is the JSON-RPC method name, e.g., "eth_call", "eth_getBalance".
+func ShouldForceTrace(network, method string) (bool, string) {
+	if len(forceTraceMatchers) == 0 {
+		return false, ""
+	}
+
+	for _, matcher := range forceTraceMatchers {
+		if matchesForceTraceMatcher(matcher, network, method) {
+			// Build reason string
+			reason := "matcher"
+			if matcher.Network != "" && matcher.Method != "" {
+				reason = "network:" + network + ",method:" + method
+			} else if matcher.Network != "" {
+				reason = "network:" + network
+			} else if matcher.Method != "" {
+				reason = "method:" + method
+			}
+			return true, reason
+		}
+	}
+
+	return false, ""
+}
+
+// matchesForceTraceMatcher checks if network and method match a single matcher.
+// If both network and method are specified, both must match (AND).
+// If only one is specified, only that field is checked.
+// Patterns within a field can use "|" for OR and "*" for wildcards.
+func matchesForceTraceMatcher(matcher *ForceTraceMatcher, network, method string) bool {
+	if matcher == nil {
+		return false
+	}
+
+	networkMatches := true
+	methodMatches := true
+
+	// Check network patterns if specified
+	if matcher.Network != "" {
+		networkMatches = matchesAnyPattern(matcher.Network, network)
+	}
+
+	// Check method patterns if specified
+	if matcher.Method != "" {
+		methodMatches = matchesAnyPattern(matcher.Method, method)
+	}
+
+	// If neither is specified, no match
+	if matcher.Network == "" && matcher.Method == "" {
+		return false
+	}
+
+	return networkMatches && methodMatches
+}
+
+// matchesAnyPattern checks if value matches any pattern in the "|" separated pattern string.
+func matchesAnyPattern(patterns, value string) bool {
+	if patterns == "" || value == "" {
+		return false
+	}
+
+	// Split by "|" and check each pattern
+	for _, pattern := range splitPatterns(patterns) {
+		if matched, _ := WildcardMatch(pattern, value); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// splitPatterns splits a pattern string by "|" without allocations for single patterns.
+func splitPatterns(patterns string) []string {
+	// Fast path: no "|" means single pattern
+	if idx := indexByte(patterns, '|'); idx < 0 {
+		return []string{patterns}
+	}
+
+	// Split by "|"
+	var result []string
+	start := 0
+	for i := 0; i < len(patterns); i++ {
+		if patterns[i] == '|' {
+			if i > start {
+				result = append(result, patterns[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(patterns) {
+		result = append(result, patterns[start:])
+	}
+	return result
+}
+
+// indexByte returns the index of the first instance of c in s, or -1 if c is not present.
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// SetForceTraceNetwork stores the network in context for force-trace matching in child spans.
+// Call this after URL path parsing to enable network-based force-tracing for child spans.
+// Returns the updated context with network stored (always stores if non-empty, matching happens later).
+func SetForceTraceNetwork(ctx context.Context, network string) context.Context {
+	if !IsTracingEnabled || network == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, forceTraceNetworkKey, network)
+}
+
+// GetForceTraceNetwork returns the network stored in context for force-tracing, if any.
+func GetForceTraceNetwork(ctx context.Context) string {
+	if v := ctx.Value(forceTraceNetworkKey); v != nil {
+		return v.(string)
+	}
+	return ""
 }
