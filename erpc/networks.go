@@ -1156,17 +1156,19 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 }
 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
-	mlx.mu.Lock()
-	defer mlx.mu.Unlock()
-
-	if mlx.resp != nil {
-		// Balance the AddRef performed by the leader in Multiplexer.Close
-		mlx.resp.DoneRef()
-		mlx.resp.Release()
-		mlx.resp = nil
-	}
-
+	// Delete from map first - no new followers will find this multiplexer
 	n.inFlightRequests.Delete(mlx.hash)
+
+	// Delay the response cleanup into a separate goroutine to give in-flight followers time to finish copying.
+	time.AfterFunc(10*time.Millisecond, func() {
+		mlx.mu.Lock()
+		defer mlx.mu.Unlock()
+		if mlx.resp != nil {
+			mlx.resp.DoneRef()
+			mlx.resp.Release()
+			mlx.resp = nil
+		}
+	})
 }
 
 func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method string, upsList []common.Upstream) error {
