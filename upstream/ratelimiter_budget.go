@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
 	pb "github.com/envoyproxy/go-control-plane/envoy/service/ratelimit/v3"
@@ -17,12 +18,13 @@ import (
 )
 
 type RateLimiterBudget struct {
-	logger   *zerolog.Logger
-	Id       string
-	Rules    []*RateLimitRule
-	registry *RateLimitersRegistry
-	rulesMu  sync.RWMutex
-	cache    limiter.RateLimitCache
+	logger     *zerolog.Logger
+	Id         string
+	Rules      []*RateLimitRule
+	registry   *RateLimitersRegistry
+	rulesMu    sync.RWMutex
+	cache      limiter.RateLimitCache
+	maxTimeout time.Duration
 }
 
 type RateLimitRule struct {
@@ -158,7 +160,50 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 				attribute.String("scope", rule.Config.ScopeString()),
 			),
 		)
-		statuses := b.cache.DoLimit(ctx, rlReq, []*config.RateLimit{limit})
+
+		// Execute DoLimit with timeout (fail-open if timeout exceeded)
+		var statuses []*pb.RateLimitResponse_DescriptorStatus
+		limits := []*config.RateLimit{limit}
+
+		if b.maxTimeout > 0 {
+			// Run DoLimit with timeout; fail-open if exceeded.
+			// Use buffered channel so goroutine can always send and exit cleanly,
+			// even if we've timed out and moved on.
+			resultCh := make(chan []*pb.RateLimitResponse_DescriptorStatus, 1)
+			go func() {
+				resultCh <- b.cache.DoLimit(ctx, rlReq, limits)
+			}()
+
+			select {
+			case statuses = <-resultCh:
+				// DoLimit completed in time
+			case <-time.After(b.maxTimeout):
+				// Timeout exceeded - fail open (allow request).
+				// The goroutine will eventually complete and send to the buffered channel,
+				// then exit normally (no goroutine leak, just delayed cleanup).
+				b.logger.Warn().
+					Str("budget", b.Id).
+					Str("method", method).
+					Dur("timeout", b.maxTimeout).
+					Msg("rate limiter timeout exceeded, failing open (allowing request)")
+				doSpan.SetAttributes(attribute.String("result", "timeout_fail_open"))
+				doSpan.End()
+				telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+					projectId,
+					networkLabel,
+					userLabel,
+					agentName,
+					b.Id,
+					method,
+					"limit_timeout",
+				).Inc()
+				continue // Skip this rule, allow request
+			}
+		} else {
+			// No timeout configured, call synchronously
+			statuses = b.cache.DoLimit(ctx, rlReq, limits)
+		}
+
 		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
 			doSpan.SetAttributes(attribute.String("result", "over_limit"))
 			doSpan.End()

@@ -84,6 +84,29 @@ export interface TracingConfig {
         [key: string]: string;
     };
     tls?: TLSConfig;
+    /**
+     * ForceTraceMatchers defines conditions for force-tracing requests.
+     * Each matcher can specify network and/or method patterns.
+     * Multiple patterns can be separated by "|" (OR within field).
+     * Both network and method must match if both are specified (AND between fields).
+     * If only one field is specified, only that field is checked.
+     */
+    forceTraceMatchers?: (ForceTraceMatcher | undefined)[];
+}
+/**
+ * ForceTraceMatcher defines a condition for force-tracing requests.
+ */
+export interface ForceTraceMatcher {
+    /**
+     * Network patterns to match (e.g., "evm:1", "evm:1|evm:42161", "evm:*")
+     * Multiple patterns separated by "|" act as OR conditions.
+     */
+    network?: string;
+    /**
+     * Method patterns to match (e.g., "eth_call", "debug_*|trace_*")
+     * Multiple patterns separated by "|" act as OR conditions.
+     */
+    method?: string;
 }
 export interface AdminConfig {
     auth?: AuthConfig;
@@ -307,6 +330,12 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -346,6 +375,12 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -620,6 +655,12 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -689,6 +730,14 @@ export interface EvmNetworkConfig {
      * When nil or true, enforcement is enabled.
      */
     enforceBlockAvailability?: boolean;
+    /**
+     * MaxRetryableBlockDistance controls the maximum block distance for which an upstream
+     * block unavailability error is considered retryable. If the requested block is within
+     * this distance from the upstream's latest block, the error is retryable (upstream may catch up).
+     * If the distance is larger, the error is not retryable (upstream is too far behind).
+     * Default: 128 blocks.
+     */
+    maxRetryableBlockDistance?: number;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

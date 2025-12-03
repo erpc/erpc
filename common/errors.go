@@ -1012,7 +1012,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeEndpointTransportFailure) {
 				transport++
 				continue
-			} else if HasErrorCode(e, ErrCodeUpstreamSyncing) {
+			} else if HasErrorCode(e, ErrCodeUpstreamSyncing, ErrCodeUpstreamBlockUnavailable) {
 				unsynced++
 				continue
 			} else if HasErrorCode(e, ErrCodeUpstreamExcludedByPolicy) {
