@@ -344,6 +344,7 @@ rateLimiters:
   - Configure via `rateLimiters.store.driver: redis` and `rateLimiters.store.redis` (URI, TLS, pool size, etc.).
   - `nearLimitRatio` (default 0.8) controls when "near limit" is reported internally.
   - `cacheKeyPrefix` (default `erpc_rl_`) prefixes all ratelimit keys.
+  - `redis.getTimeout` (default `5s`) maximum time to wait for Redis rate limit check. If exceeded, request is allowed (fail-open). Set to `0` to disable timeout.
 
 - Memory (single-process only):
   - Fast, in-memory counters. Not shared across processes.

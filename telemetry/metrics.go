@@ -215,6 +215,12 @@ var (
 		Help:      "[DEPRECATED] Replaced by rate_limits_total. Total number of local rate-limit decisions by budget.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name", "budget", "method", "scope", "decision"})
 
+	MetricRateLimiterFailopenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_failopen_total",
+		Help:      "Total number of rate limiter fail-open events (requests allowed due to errors/timeouts).",
+	}, []string{"project", "network", "user", "agent_name", "budget", "category", "reason"})
+
 	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_success_total",

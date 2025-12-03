@@ -96,12 +96,17 @@ func (r *RateLimitersRegistry) bootstrap() error {
 	for _, budgetCfg := range r.cfg.Budgets {
 		lg := r.logger.With().Str("budget", budgetCfg.Id).Logger()
 		lg.Debug().Msgf("initializing rate limiter budget")
+		maxTimeout := time.Duration(0)
+		if r.cfg.Store != nil && r.cfg.Store.Redis != nil {
+			maxTimeout = r.cfg.Store.Redis.GetTimeout.Duration()
+		}
 		budget := &RateLimiterBudget{
-			Id:       budgetCfg.Id,
-			Rules:    make([]*RateLimitRule, 0),
-			registry: r,
-			logger:   &lg,
-			cache:    r.envoyCache,
+			Id:         budgetCfg.Id,
+			Rules:      make([]*RateLimitRule, 0),
+			registry:   r,
+			logger:     &lg,
+			cache:      r.envoyCache,
+			maxTimeout: maxTimeout,
 		}
 
 		for _, rule := range budgetCfg.Rules {
