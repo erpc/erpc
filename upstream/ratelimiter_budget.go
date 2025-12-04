@@ -174,10 +174,21 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 				resultCh <- b.cache.DoLimit(ctx, rlReq, limits)
 			}()
 
+			// Use time.NewTimer instead of time.After to avoid timer leak.
+			// time.After creates a timer that won't be GC'd until it fires,
+			// causing memory accumulation in high-throughput scenarios.
+			timer := time.NewTimer(b.maxTimeout)
 			select {
 			case statuses = <-resultCh:
-				// DoLimit completed in time
-			case <-time.After(b.maxTimeout):
+				// DoLimit completed in time - stop the timer to release resources
+				if !timer.Stop() {
+					// Timer already fired, drain the channel to prevent leak
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			case <-timer.C:
 				// Timeout exceeded - fail open (allow request).
 				// The goroutine will eventually complete and send to the buffered channel,
 				// then exit normally (no goroutine leak, just delayed cleanup).
