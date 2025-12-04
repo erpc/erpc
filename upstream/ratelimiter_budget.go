@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb_struct "github.com/envoyproxy/go-control-plane/envoy/extensions/common/ratelimit/v3"
@@ -35,8 +36,7 @@ func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, e
 	b.rulesMu.RLock()
 	defer b.rulesMu.RUnlock()
 
-	rules := make([]*RateLimitRule, 0)
-
+	rules := make([]*RateLimitRule, 0, len(b.Rules))
 	for _, rule := range b.Rules {
 		match, err := common.WildcardMatch(rule.Config.Method, method)
 		if err != nil {
@@ -46,7 +46,6 @@ func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, e
 			rules = append(rules, rule)
 		}
 	}
-
 	return rules, nil
 }
 
@@ -68,14 +67,19 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 	return nil
 }
 
-// TryAcquirePermit evaluates all matching rules for the given method using Envoy's DoLimit
-// and returns whether the request is allowed.
+// ruleResult holds the result of evaluating a single rule.
+type ruleResult struct {
+	rule    *RateLimitRule
+	allowed bool
+}
+
+// TryAcquirePermit evaluates all matching rules for the given method using Envoy's DoLimit.
+// Rules are evaluated in parallel for lower latency. Returns true if allowed, false if rate limited.
 func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string) (bool, error) {
 	if b.cache == nil {
 		return true, nil
 	}
 
-	// Detailed span for internal evaluation
 	ctx, span := common.StartDetailSpan(ctx, "RateLimiter.TryAcquirePermit",
 		trace.WithAttributes(
 			attribute.String("budget", b.Id),
@@ -92,152 +96,193 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 		return true, nil
 	}
 
+	// Extract request metadata once
+	var userLabel, agentName, networkLabel, finality, clientIP string
+	if req != nil {
+		userLabel = req.UserId()
+		agentName = req.AgentName()
+		networkLabel = req.NetworkId()
+		finality = req.Finality(ctx).String()
+		clientIP = req.ClientIP()
+	}
+
+	// Validate request context upfront
 	for _, rule := range rules {
-		// Build descriptor entries
-		entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "method", Value: method}}
-		if rule.Config.PerIP {
-			if req == nil {
-				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perIP")
-			}
-			if ip := req.ClientIP(); ip != "" && ip != "n/a" {
-				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: ip})
-			}
+		if (rule.Config.PerIP || rule.Config.PerUser || rule.Config.PerNetwork) && req == nil {
+			return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perIP/perUser/perNetwork")
 		}
-		if rule.Config.PerUser {
-			if req == nil {
-				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perUser")
-			}
-			if uid := req.UserId(); uid != "" && uid != "n/a" {
-				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "user", Value: uid})
-			}
-		}
-		if rule.Config.PerNetwork {
-			if req == nil {
-				return false, fmt.Errorf("request cannot be nil when ratelimiter rule has perNetwork")
-			}
-			if nid := req.NetworkId(); nid != "" && nid != "n/a" {
-				entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "network", Value: nid})
-			}
-		}
+	}
 
-		descriptor := &pb_struct.RateLimitDescriptor{Entries: entries}
-		rlReq := &pb.RateLimitRequest{Domain: b.Id, Descriptors: []*pb_struct.RateLimitDescriptor{descriptor}, HitsAddend: 1}
-
-		// Map enum period to unit (supports second..year) and construct full RateLimit
-		unit := rule.Config.Period.Unit()
-		// Build stats key similar to Envoy: domain + '.' + keys (avoid high-cardinality values)
-		statsKey := b.Id + ".method_" + method
-		if rule.Config.PerIP {
-			statsKey += ".ip"
-		}
-		if rule.Config.PerUser {
-			statsKey += ".user"
-		}
-		if rule.Config.PerNetwork {
-			statsKey += ".network"
-		}
-		rlStats := b.registry.statsManager.NewStats(statsKey)
-		limit := config.NewRateLimit(rule.Config.MaxCount, unit, rlStats, false, false, "", nil, false)
-
-		// Emit consolidated budget decision metrics only (avoid redundant per-call trio counters)
-		userLabel := ""
-		agentName := ""
-		networkLabel := ""
-		finality := ""
-		if req != nil {
-			userLabel = req.UserId()
-			agentName = req.AgentName()
-			networkLabel = req.NetworkId()
-			finality = req.Finality(ctx).String()
-		}
-
-		// External span around cache.DoLimit to capture total time spent
-		_, doSpan := common.StartSpan(ctx, "RateLimiter.DoLimit",
-			trace.WithSpanKind(trace.SpanKindClient),
-			trace.WithAttributes(
-				attribute.String("budget", b.Id),
-				attribute.String("method", method),
-				attribute.String("scope", rule.Config.ScopeString()),
-			),
-		)
-
-		// Execute DoLimit with timeout (fail-open if timeout exceeded)
-		var statuses []*pb.RateLimitResponse_DescriptorStatus
-		limits := []*config.RateLimit{limit}
-
-		if b.maxTimeout > 0 {
-			// Run DoLimit with timeout; fail-open if exceeded.
-			// Use buffered channel so goroutine can always send and exit cleanly,
-			// even if we've timed out and moved on.
-			resultCh := make(chan []*pb.RateLimitResponse_DescriptorStatus, 1)
-			go func() {
-				resultCh <- b.cache.DoLimit(ctx, rlReq, limits)
-			}()
-
-			// Use time.NewTimer instead of time.After to avoid timer leak.
-			// time.After creates a timer that won't be GC'd until it fires,
-			// causing memory accumulation in high-throughput scenarios.
-			timer := time.NewTimer(b.maxTimeout)
-			select {
-			case statuses = <-resultCh:
-				// DoLimit completed in time - stop the timer to release resources
-				if !timer.Stop() {
-					// Timer already fired, drain the channel to prevent leak
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-			case <-timer.C:
-				// Timeout exceeded - fail open (allow request).
-				// The goroutine will eventually complete and send to the buffered channel,
-				// then exit normally (no goroutine leak, just delayed cleanup).
-				b.logger.Warn().
-					Str("budget", b.Id).
-					Str("method", method).
-					Dur("timeout", b.maxTimeout).
-					Msg("rate limiter timeout exceeded, failing open (allowing request)")
-				doSpan.SetAttributes(attribute.String("result", "timeout_fail_open"))
-				doSpan.End()
-				telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
-					projectId,
-					networkLabel,
-					userLabel,
-					agentName,
-					b.Id,
-					method,
-					"limit_timeout",
-				).Inc()
-				continue // Skip this rule, allow request
-			}
-		} else {
-			// No timeout configured, call synchronously
-			statuses = b.cache.DoLimit(ctx, rlReq, limits)
-		}
-
-		if len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT {
-			doSpan.SetAttributes(attribute.String("result", "over_limit"))
-			doSpan.End()
-			// Record blocked event centrally here to avoid double counting at call sites
+	// Single rule: evaluate directly without goroutine overhead
+	if len(rules) == 1 {
+		allowed := b.evaluateRule(ctx, rules[0], method, clientIP, userLabel, networkLabel)
+		if !allowed {
 			telemetry.CounterHandle(
 				telemetry.MetricRateLimitsTotal,
-				projectId,                 // project
-				networkLabel,              // network
-				vendor,                    // vendor
-				upstreamId,                // upstream
-				method,                    // category
-				finality,                  // finality
-				userLabel,                 // user
-				agentName,                 // agent_name
-				b.Id,                      // budget
-				rule.Config.ScopeString(), // scope
-				authLabel,                 // auth
-				origin,                    // origin
+				projectId, networkLabel, vendor, upstreamId, method, finality,
+				userLabel, agentName, b.Id, rules[0].Config.ScopeString(), authLabel, origin,
 			).Inc()
-			return false, nil
 		}
-		doSpan.SetAttributes(attribute.String("result", "ok"))
-		doSpan.End()
+		return allowed, nil
+	}
+
+	// Multiple rules: evaluate in parallel
+	resultCh := make(chan ruleResult, len(rules))
+	var blocked atomic.Bool
+
+	for _, rule := range rules {
+		go func(r *RateLimitRule) {
+			// Skip if already blocked
+			if blocked.Load() {
+				resultCh <- ruleResult{rule: r, allowed: true}
+				return
+			}
+			allowed := b.evaluateRule(ctx, r, method, clientIP, userLabel, networkLabel)
+			if !allowed {
+				blocked.Store(true)
+			}
+			resultCh <- ruleResult{rule: r, allowed: allowed}
+		}(rule)
+	}
+
+	// Collect results
+	var blockingRule *RateLimitRule
+	for i := 0; i < len(rules); i++ {
+		result := <-resultCh
+		if !result.allowed && blockingRule == nil {
+			blockingRule = result.rule
+		}
+	}
+
+	if blockingRule != nil {
+		telemetry.CounterHandle(
+			telemetry.MetricRateLimitsTotal,
+			projectId, networkLabel, vendor, upstreamId, method, finality,
+			userLabel, agentName, b.Id, blockingRule.Config.ScopeString(), authLabel, origin,
+		).Inc()
+		return false, nil
 	}
 	return true, nil
+}
+
+// evaluateRule checks a single rate limit rule against the cache.
+// Returns true if allowed, false if over limit.
+func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string) bool {
+	// Build descriptor entries
+	entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "method", Value: method}}
+	if rule.Config.PerIP && clientIP != "" && clientIP != "n/a" {
+		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "ip", Value: clientIP})
+	}
+	if rule.Config.PerUser && userLabel != "" && userLabel != "n/a" {
+		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "user", Value: userLabel})
+	}
+	if rule.Config.PerNetwork && networkLabel != "" && networkLabel != "n/a" {
+		entries = append(entries, &pb_struct.RateLimitDescriptor_Entry{Key: "network", Value: networkLabel})
+	}
+
+	rlReq := &pb.RateLimitRequest{
+		Domain:      b.Id,
+		Descriptors: []*pb_struct.RateLimitDescriptor{{Entries: entries}},
+		HitsAddend:  1,
+	}
+
+	// Build stats key
+	statsKey := b.Id + ".method_" + method + rule.statsKeySuffix()
+
+	rlStats := b.registry.statsManager.NewStats(statsKey)
+	limit := config.NewRateLimit(rule.Config.MaxCount, rule.Config.Period.Unit(), rlStats, false, false, "", nil, false)
+	limits := []*config.RateLimit{limit}
+
+	_, doSpan := common.StartSpan(ctx, "RateLimiter.DoLimit",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("budget", b.Id),
+			attribute.String("method", method),
+			attribute.String("scope", rule.Config.ScopeString()),
+		),
+	)
+
+	var statuses []*pb.RateLimitResponse_DescriptorStatus
+	var timedOut bool
+	if b.maxTimeout > 0 {
+		statuses, timedOut = b.doLimitWithTimeout(ctx, rlReq, limits, method, userLabel, networkLabel)
+	} else {
+		statuses = b.cache.DoLimit(ctx, rlReq, limits)
+	}
+
+	if timedOut {
+		doSpan.SetAttributes(attribute.String("result", "timeout_fail_open"))
+		doSpan.End()
+		return true // fail-open
+	}
+
+	isOverLimit := len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT
+	if isOverLimit {
+		doSpan.SetAttributes(attribute.String("result", "over_limit"))
+	} else {
+		doSpan.SetAttributes(attribute.String("result", "ok"))
+	}
+	doSpan.End()
+
+	return !isOverLimit
+}
+
+// statsKeySuffix returns the pre-computed suffix for stats key.
+func (r *RateLimitRule) statsKeySuffix() string {
+	suffix := ""
+	if r.Config.PerIP {
+		suffix += ".ip"
+	}
+	if r.Config.PerUser {
+		suffix += ".user"
+	}
+	if r.Config.PerNetwork {
+		suffix += ".network"
+	}
+	return suffix
+}
+
+// doLimitWithTimeout executes DoLimit with a timeout.
+// Returns (statuses, timedOut). On timeout, returns (nil, true) and records fail-open metric.
+func (b *RateLimiterBudget) doLimitWithTimeout(
+	ctx context.Context,
+	rlReq *pb.RateLimitRequest,
+	limits []*config.RateLimit,
+	method, userLabel, networkLabel string,
+) ([]*pb.RateLimitResponse_DescriptorStatus, bool) {
+	resultCh := make(chan []*pb.RateLimitResponse_DescriptorStatus, 1)
+	go func() {
+		resultCh <- b.cache.DoLimit(ctx, rlReq, limits)
+	}()
+
+	timer := time.NewTimer(b.maxTimeout)
+	select {
+	case statuses := <-resultCh:
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		return statuses, false
+
+	case <-timer.C:
+		b.logger.Warn().
+			Str("budget", b.Id).
+			Str("method", method).
+			Dur("timeout", b.maxTimeout).
+			Msg("rate limiter timeout exceeded, failing open")
+
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+			"", // projectId not available here
+			networkLabel,
+			userLabel,
+			"", // agentName not available here
+			b.Id,
+			method,
+			"limit_timeout",
+		).Inc()
+
+		return nil, true
+	}
 }
