@@ -365,6 +365,10 @@ func createHedgePolicy(appCtx context.Context, logger *zerolog.Logger, cfg *comm
 func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	builder := retrypolicy.Builder[*common.NormalizedResponse]()
 
+	// Store configured values for tracing
+	configuredMaxAttempts := cfg.MaxAttempts
+	configuredDelay := cfg.Delay.Duration()
+
 	if cfg.MaxAttempts > 0 {
 		builder = builder.WithMaxAttempts(cfg.MaxAttempts)
 	}
@@ -385,6 +389,22 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
+	// Add callback to trace when retries are scheduled
+	builder = builder.OnRetryScheduled(func(event failsafe.ExecutionScheduledEvent[*common.NormalizedResponse]) {
+		ctx := event.Context()
+		_, span := common.StartDetailSpan(ctx, "RetryPolicy.OnRetryScheduled",
+			trace.WithAttributes(
+				attribute.String("scope", string(scope)),
+				attribute.Int64("configured_delay_ms", configuredDelay.Milliseconds()),
+				attribute.Int64("scheduled_delay_ms", event.Delay.Milliseconds()),
+				attribute.Int("configured_max_attempts", configuredMaxAttempts),
+				attribute.Int("attempts", event.Attempts()),
+				attribute.Int("retries", event.Retries()),
+			),
+		)
+		defer span.End()
+	})
+
 	// Use default values if not set
 	emptyResultConfidence := cfg.EmptyResultConfidence
 	if emptyResultConfidence == 0 {
@@ -401,6 +421,8 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		ctx, span := common.StartDetailSpan(ctx, "RetryPolicy.HandleIf",
 			trace.WithAttributes(
 				attribute.String("scope", string(scope)),
+				attribute.Int64("configured_delay_ms", configuredDelay.Milliseconds()),
+				attribute.Int("configured_max_attempts", configuredMaxAttempts),
 			))
 		defer span.End()
 

@@ -240,38 +240,19 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
 
-	// First, try to find a specific match for both method and finality
+	// Iterate through executors in config order and return the first match.
+	// This respects the user-defined priority order in the config file.
 	for _, fe := range n.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) > 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched && slices.Contains(fe.finalities, finality) {
-				return fe
-			}
+		// Check if method matches (wildcard "*" matches any method)
+		methodMatches := fe.method == "*"
+		if !methodMatches {
+			methodMatches, _ = common.WildcardMatch(fe.method, method)
 		}
-	}
 
-	// Then, try to find a match for method only (empty finalities means any finality)
-	for _, fe := range n.failsafeExecutors {
-		if fe.method != "*" && len(fe.finalities) == 0 {
-			matched, _ := common.WildcardMatch(fe.method, method)
-			if matched {
-				return fe
-			}
-		}
-	}
+		// Check if finality matches (empty finalities = any finality)
+		finalityMatches := len(fe.finalities) == 0 || slices.Contains(fe.finalities, finality)
 
-	// Then, try to find a match for finality only
-	for _, fe := range n.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) > 0 {
-			if slices.Contains(fe.finalities, finality) {
-				return fe
-			}
-		}
-	}
-
-	// Return the first generic executor if no specific one is found (method = "*", finalities = nil)
-	for _, fe := range n.failsafeExecutors {
-		if fe.method == "*" && len(fe.finalities) == 0 {
+		if methodMatches && finalityMatches {
 			return fe
 		}
 	}
@@ -450,6 +431,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if failsafeExecutor == nil {
 		return nil, errors.New("no failsafe executor found for this request")
 	}
+
+	// Add tracing for which failsafe policy was selected
+	forwardSpan.SetAttributes(
+		attribute.String("failsafe.matched_method", failsafeExecutor.method),
+		attribute.String("failsafe.matched_finalities", fmt.Sprintf("%v", failsafeExecutor.finalities)),
+	)
 
 	resp, execErr := failsafeExecutor.executor.
 		WithContext(ectx).

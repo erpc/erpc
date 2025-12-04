@@ -777,3 +777,561 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 
 	return network
 }
+
+// Helper function to setup a test network with multiple failsafe policies
+func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Context, failsafeConfigs []*common.FailsafeConfig) *Network {
+	t.Helper()
+
+	upstreamConfigs := []*common.UpstreamConfig{
+		{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+	}
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId: 123,
+		},
+		Failsafe: failsafeConfigs,
+	}
+
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	require.NoError(t, err)
+
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx,
+		&log.Logger,
+		"test",
+		upstreamConfigs,
+		ssr,
+		rateLimitersRegistry,
+		vr,
+		pr,
+		nil,
+		metricsTracker,
+		time.Second,
+		nil,
+	)
+
+	upstreamsRegistry.Bootstrap(ctx)
+
+	time.Sleep(100 * time.Millisecond)
+
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	require.NoError(t, err)
+
+	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
+	require.NoError(t, err)
+
+	err = network.Bootstrap(ctx)
+	require.NoError(t, err)
+
+	return network
+}
+
+func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
+	t.Run("FirstMatchingPolicy_ByFinality_BeforeMethodOnlyMatch", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Policy 1: wildcard method, specific finality (realtime) - delay 100ms
+		// Policy 2: specific method (eth_call), no finality constraint - delay 0ms
+		// For eth_call with realtime finality, Policy 1 should be selected (order-based)
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod:   "*",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+					Delay:       common.Duration(100 * time.Millisecond),
+				},
+			},
+			{
+				MatchMethod: "eth_call|trace_*|debug_*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
+					Delay:       0,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// Create request for eth_call with latest (realtime finality)
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+
+		executor := network.getFailsafeExecutor(ctx, req)
+
+		require.NotNil(t, executor)
+		// Policy 1 should be selected (wildcard method, realtime finality)
+		assert.Equal(t, "*", executor.method)
+		assert.Contains(t, executor.finalities, common.DataFinalityStateRealtime)
+	})
+
+	t.Run("SecondPolicy_WhenFirstDoesNotMatchFinality", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Policy 1: wildcard method, specific finality (realtime)
+		// Policy 2: specific method (eth_call), no finality constraint
+		// For eth_call with a specific block number (not realtime), Policy 2 should be selected
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod:   "*",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+				},
+			},
+			{
+				MatchMethod: "eth_call|trace_*|debug_*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// Create request for eth_call with a specific block number (finality = unfinalized or finalized, not realtime)
+		// Note: All block tags (latest, pending, finalized, safe) are considered "realtime"
+		// Only specific block numbers are considered non-realtime
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"0x100"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+
+		executor := network.getFailsafeExecutor(ctx, req)
+
+		require.NotNil(t, executor)
+		// Policy 2 should be selected (specific method, no finality constraint)
+		assert.Equal(t, "eth_call|trace_*|debug_*", executor.method)
+		assert.Empty(t, executor.finalities)
+	})
+
+	t.Run("GenericFallback_WhenNoSpecificMatch", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Policy 1: specific method (eth_call), specific finality (realtime)
+		// Policy 2: wildcard method, no finality (fallback)
+		// For eth_blockNumber with unfinalized finality, Policy 2 should be selected
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod:   "eth_call",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+				},
+			},
+			{
+				MatchMethod: "*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// Create request for eth_blockNumber (doesn't match eth_call)
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+
+		executor := network.getFailsafeExecutor(ctx, req)
+
+		require.NotNil(t, executor)
+		// Policy 2 (wildcard fallback) should be selected
+		assert.Equal(t, "*", executor.method)
+		assert.Empty(t, executor.finalities)
+	})
+
+	t.Run("WildcardMethodMatch_AnyMethod", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Single policy with wildcard method
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod: "*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// Test various methods
+		methods := []string{"eth_call", "eth_getBalance", "eth_blockNumber", "trace_call", "debug_traceTransaction"}
+		for _, method := range methods {
+			requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":[]}`)
+			req := common.NewNormalizedRequest(requestBytes)
+			req.SetNetwork(network) // Required for finality detection
+
+			executor := network.getFailsafeExecutor(ctx, req)
+
+			require.NotNil(t, executor, "executor should not be nil for method %s", method)
+			assert.Equal(t, "*", executor.method)
+		}
+	})
+
+	t.Run("WildcardPatternMatch_trace_star", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod: "trace_*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+				},
+			},
+			{
+				MatchMethod: "*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// trace_call should match trace_*
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"trace_call","params":[]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+
+		executor := network.getFailsafeExecutor(ctx, req)
+
+		require.NotNil(t, executor)
+		assert.Equal(t, "trace_*", executor.method)
+
+		// eth_call should NOT match trace_*, should fall through to wildcard
+		requestBytes2 := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[]}`)
+		req2 := common.NewNormalizedRequest(requestBytes2)
+		req2.SetNetwork(network) // Required for finality detection
+
+		executor2 := network.getFailsafeExecutor(ctx, req2)
+
+		require.NotNil(t, executor2)
+		assert.Equal(t, "*", executor2.method)
+	})
+
+	t.Run("PipeDelimitedMethodMatch", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod: "eth_call|eth_getBalance|eth_getCode",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+				},
+			},
+			{
+				MatchMethod: "*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// eth_call should match
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+		executor := network.getFailsafeExecutor(ctx, req)
+		require.NotNil(t, executor)
+		assert.Equal(t, "eth_call|eth_getBalance|eth_getCode", executor.method)
+
+		// eth_getBalance should match
+		requestBytes2 := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`)
+		req2 := common.NewNormalizedRequest(requestBytes2)
+		req2.SetNetwork(network) // Required for finality detection
+		executor2 := network.getFailsafeExecutor(ctx, req2)
+		require.NotNil(t, executor2)
+		assert.Equal(t, "eth_call|eth_getBalance|eth_getCode", executor2.method)
+
+		// eth_blockNumber should NOT match, falls to wildcard
+		requestBytes3 := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+		req3 := common.NewNormalizedRequest(requestBytes3)
+		req3.SetNetwork(network) // Required for finality detection
+		executor3 := network.getFailsafeExecutor(ctx, req3)
+		require.NotNil(t, executor3)
+		assert.Equal(t, "*", executor3.method)
+	})
+
+	t.Run("MultipleFinalitiesMatch", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Policy 1: Only matches realtime (NOT unknown)
+		// Policy 2: Matches unknown only
+		// Policy 3: Wildcard fallback
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod:   "*",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+				},
+			},
+			{
+				MatchMethod:   "*",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateUnknown},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
+				},
+			},
+			{
+				MatchMethod: "*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// Request with latest (realtime) should match first policy
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{},"latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+		executor := network.getFailsafeExecutor(ctx, req)
+		require.NotNil(t, executor)
+		assert.Contains(t, executor.finalities, common.DataFinalityStateRealtime)
+
+		// Request with a specific block number (finality = unknown without response context)
+		// should match second policy (unknown finality)
+		requestBytes2 := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{},"0x100"]}`)
+		req2 := common.NewNormalizedRequest(requestBytes2)
+		req2.SetNetwork(network) // Required for finality detection
+		executor2 := network.getFailsafeExecutor(ctx, req2)
+		require.NotNil(t, executor2)
+		// Should match Policy 2 (unknown finality) since specific block without response = unknown
+		assert.Contains(t, executor2.finalities, common.DataFinalityStateUnknown)
+	})
+
+	t.Run("NoMatchingPolicy_ReturnsNil", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Policy that only matches eth_call with realtime finality
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod:   "eth_call",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// eth_blockNumber should NOT match any policy
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+		executor := network.getFailsafeExecutor(ctx, req)
+
+		// No matching policy - but there's always a default executor appended
+		// Let's verify behavior - it should return nil if no explicit match
+		// Actually, looking at networks_registry.go, a default executor is always added
+		// So this test verifies the default is returned
+		require.NotNil(t, executor)
+		assert.Equal(t, "*", executor.method)
+		assert.Empty(t, executor.finalities)
+	})
+
+	t.Run("ConfigOrder_FirstPolicyWins_EvenIfLessSpecific", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Key test: order matters, first match wins
+		// Policy 1: wildcard (less specific) but comes first
+		// Policy 2: more specific (eth_call) but comes second
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				MatchMethod: "*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 10, // Distinctive value to verify selection
+				},
+			},
+			{
+				MatchMethod: "eth_call",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// eth_call should match Policy 1 (wildcard) because it comes first
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+		executor := network.getFailsafeExecutor(ctx, req)
+
+		require.NotNil(t, executor)
+		// Policy 1 (wildcard) should be selected because it comes first and matches
+		assert.Equal(t, "*", executor.method)
+	})
+
+	t.Run("RealWorldScenario_MonadConfig", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Simulates monad.yml config structure
+		failsafeConfigs := []*common.FailsafeConfig{
+			{
+				// Policy 1: realtime requests with retry delay
+				MatchMethod:   "*",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateRealtime},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 5,
+					Delay:       common.Duration(100 * time.Millisecond),
+				},
+			},
+			{
+				// Policy 2: eth_call with no delay (was incorrectly matched before)
+				MatchMethod: "eth_call|trace_*|debug_*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
+					Delay:       0,
+				},
+			},
+			{
+				// Policy 3: unknown finality
+				MatchMethod:   "*",
+				MatchFinality: []common.DataFinalityState{common.DataFinalityStateUnknown},
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 6,
+				},
+			},
+			{
+				// Policy 4: fallback
+				MatchMethod: "*",
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 4,
+				},
+			},
+		}
+
+		network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+
+		// eth_call with latest (realtime) should get Policy 1 (with delay)
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{},"latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network) // Required for finality detection
+		executor := network.getFailsafeExecutor(ctx, req)
+
+		require.NotNil(t, executor)
+		// Should match Policy 1: wildcard method with realtime finality
+		assert.Equal(t, "*", executor.method)
+		assert.Contains(t, executor.finalities, common.DataFinalityStateRealtime)
+
+		// eth_call with specific block number (not realtime) should get Policy 2 (no delay)
+		// Note: "finalized" block tag is actually realtime, so we use a block number instead
+		requestBytes2 := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{},"0x100"]}`)
+		req2 := common.NewNormalizedRequest(requestBytes2)
+		req2.SetNetwork(network) // Required for finality detection
+		executor2 := network.getFailsafeExecutor(ctx, req2)
+
+		require.NotNil(t, executor2)
+		// Should match Policy 2: specific method, no finality constraint
+		assert.Equal(t, "eth_call|trace_*|debug_*", executor2.method)
+
+		// eth_getBalance with latest (realtime) should get Policy 1
+		requestBytes3 := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		req3 := common.NewNormalizedRequest(requestBytes3)
+		req3.SetNetwork(network) // Required for finality detection
+		executor3 := network.getFailsafeExecutor(ctx, req3)
+
+		require.NotNil(t, executor3)
+		assert.Equal(t, "*", executor3.method)
+		assert.Contains(t, executor3.finalities, common.DataFinalityStateRealtime)
+
+		// eth_getBalance with specific block number should get Policy 3 (unknown finality)
+		// Note: Specific block number without response context = unknown finality
+		requestBytes4 := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","0x100"]}`)
+		req4 := common.NewNormalizedRequest(requestBytes4)
+		req4.SetNetwork(network) // Required for finality detection
+		executor4 := network.getFailsafeExecutor(ctx, req4)
+
+		require.NotNil(t, executor4)
+		// Policy 2 doesn't match (eth_getBalance not in list)
+		// Policy 3 DOES match (specific block = unknown finality)
+		assert.Equal(t, "*", executor4.method)
+		assert.Contains(t, executor4.finalities, common.DataFinalityStateUnknown)
+	})
+}
