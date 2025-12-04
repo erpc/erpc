@@ -63,7 +63,7 @@ COPY package.json /temp/prod/package.json
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install --prod --frozen-lockfile
 
 # Create symlink stage (for backwards compatibility with earlier image file structure)
-FROM alpine:latest@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 AS symlink
+FROM alpine:latest@sha256:51183f2cfa6320055da30872f211093f9ff1d3cf06f39a0bdb212314c5dc7375 AS symlink
 RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
 
 # Final stage
