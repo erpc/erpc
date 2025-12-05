@@ -13,15 +13,22 @@ type Multiplexer struct {
 	resp *common.NormalizedResponse
 	err  error
 	done chan struct{}
-	mu   *sync.RWMutex
 	once sync.Once
+
+	// mu protects all mutable state: resp, err, closed, and copyWg coordination.
+	// RWMutex allows multiple followers to read resp concurrently.
+	mu sync.RWMutex
+	// copyWg tracks followers that are actively copying the response.
+	// Cleanup waits for all followers to finish copying before releasing resources.
+	copyWg sync.WaitGroup
+	// closed is set when cleanup starts; prevents new followers from registering
+	closed bool
 }
 
 func NewMultiplexer(hash string) *Multiplexer {
 	return &Multiplexer{
 		hash: hash,
 		done: make(chan struct{}),
-		mu:   &sync.RWMutex{},
 	}
 }
 
@@ -61,10 +68,6 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
 					multiplexerResp.WithJsonRpcResponse(cloned)
 					resp = multiplexerResp
-				}
-				// Hold a ref so cleanup waits for followers to finish cloning
-				if resp != nil {
-					resp.AddRef()
 				}
 			}
 		}

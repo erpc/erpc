@@ -1064,9 +1064,33 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		return nil, nil, nil
 	}
 
-	// Check for existing multiplexer
-	if vinf, exists := n.inFlightRequests.Load(mlxHash); exists {
+	// Try to atomically register as the leader or become a follower.
+	// Loop handles the edge case where we find a closed multiplexer during cleanup.
+	for {
+		mlx := NewMultiplexer(mlxHash)
+		vinf, loaded := n.inFlightRequests.LoadOrStore(mlxHash, mlx)
+
+		if !loaded {
+			// Our multiplexer was stored, we're the leader
+			return mlx, nil, nil
+		}
+
+		// Another request is already in flight - try to be a follower
 		inf := vinf.(*Multiplexer)
+
+		// Try to register as follower under lock to prevent race with cleanup's Wait()
+		inf.mu.Lock()
+		if inf.closed {
+			// Leader already finished and cleanup started, can't be a follower.
+			// Retry LoadOrStore - the old entry should be deleted soon, allowing
+			// us to properly become the new leader (with our mlx stored in the map).
+			inf.mu.Unlock()
+			continue
+		}
+
+		inf.copyWg.Add(1)
+		inf.mu.Unlock()
+
 		method, _ := req.Method()
 		finality := req.Finality(ctx)
 		telemetry.CounterHandle(telemetry.MetricNetworkMultiplexedRequests,
@@ -1077,6 +1101,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 
 		resp, err := n.waitForMultiplexResult(ctx, inf, req, startTime)
 
+		// Done() is called in waitForMultiplexResult via defer
 		lg.Trace().Str("hash", mlxHash).Object("response", resp).Err(err).Msgf("multiplexed request result")
 
 		if err != nil {
@@ -1085,54 +1110,33 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		if resp != nil {
 			return nil, resp, nil
 		}
+
+		// Shouldn't reach here normally, but if we do, retry
+		lg.Warn().Str("hash", mlxHash).Msg("multiplexer follower got nil response and no error, retrying")
 	}
-
-	mlx := NewMultiplexer(mlxHash)
-	n.inFlightRequests.Store(mlxHash, mlx)
-
-	return mlx, nil, nil
 }
 
 func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Network.WaitForMultiplexResult")
 	defer span.End()
 
-	// Check if result is already available
-	mlx.mu.Lock()
-	if mlx.resp != nil || mlx.err != nil {
-		// Clone the stored response while holding the lock to avoid races with cleanup
-		if mlx.resp != nil {
-			mlx.resp.AddRef()
-		}
-		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
-		if mlx.resp != nil {
-			mlx.resp.DoneRef()
-		}
-		mlx.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return out, mlx.err
-	}
-	mlx.mu.Unlock()
+	// Caller already registered with copyWg.Add(1), ensure we signal completion
+	defer mlx.copyWg.Done()
 
-	// Wait for result
+	// Wait for leader to complete (or check if already done)
 	select {
 	case <-mlx.done:
-		// Need to lock when accessing mlx.resp to avoid race with cleanupMultiplexer
-		mlx.mu.Lock()
-		if mlx.resp != nil {
-			mlx.resp.AddRef()
-		}
+		// Leader finished - copy the response
+		// Lock protects against concurrent reads, cleanup waits for copyWg so response is valid
+		mlx.mu.RLock()
 		out, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
-		if mlx.resp != nil {
-			mlx.resp.DoneRef()
-		}
-		mlx.mu.Unlock()
+		resultErr := mlx.err
+		mlx.mu.RUnlock()
+
 		if err != nil {
 			return nil, err
 		}
-		return out, mlx.err
+		return out, resultErr
 	case <-ctx.Done():
 		err := ctx.Err()
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -1143,17 +1147,27 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 }
 
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
+	// Mark as closed under lock to prevent new followers from registering
 	mlx.mu.Lock()
-	defer mlx.mu.Unlock()
+	mlx.closed = true
+	mlx.mu.Unlock()
 
+	// Remove from map so new requests create their own multiplexer
+	n.inFlightRequests.Delete(mlx.hash)
+
+	// Wait for all followers to finish copying before releasing.
+	// Wait() is safe because closed=true prevents any new Add() calls.
+	// This blocks the leader briefly, but the leader has already returned
+	// its response to the caller, so this only delays cleanup.
+	mlx.copyWg.Wait()
+
+	// After Wait(), no followers are accessing the response.
+	mlx.mu.Lock()
 	if mlx.resp != nil {
-		// Balance the AddRef performed by the leader in Multiplexer.Close
-		mlx.resp.DoneRef()
 		mlx.resp.Release()
 		mlx.resp = nil
 	}
-
-	n.inFlightRequests.Delete(mlx.hash)
+	mlx.mu.Unlock()
 }
 
 func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method string, upsList []common.Upstream) error {
