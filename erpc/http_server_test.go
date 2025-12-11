@@ -173,9 +173,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		wg.Wait()
 
 		for _, result := range results {
-			if result.statusCode != http.StatusGatewayTimeout {
-				t.Errorf("unexpected status code: %d", result.statusCode)
-			}
+			assert.Equal(t, http.StatusOK, result.statusCode)
 			assert.Contains(t, result.body, "timeout")
 		}
 	})
@@ -305,7 +303,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				statusCode, body := sendRequest()
-				assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+				assert.Equal(t, http.StatusOK, statusCode)
 				assert.Contains(t, body, "http request handling timeout")
 			}()
 		}
@@ -464,9 +462,9 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		timeouts := 0
 		successes := 0
 		for _, result := range results {
-			if result.statusCode == http.StatusGatewayTimeout {
+			assert.Equal(t, http.StatusOK, result.statusCode)
+			if strings.Contains(result.body, "timeout") {
 				timeouts++
-				assert.Contains(t, result.body, "timeout")
 			} else {
 				successes++
 				assert.Contains(t, result.body, "blockNumber")
@@ -548,7 +546,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "http request handling timeout")
 	})
 
@@ -630,7 +628,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "exceeded on network-level")
 	})
 
@@ -711,7 +709,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "exceeded on network-level")
 	})
 
@@ -788,7 +786,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "timeout policy exceeded on upstream-level")
 	})
 
@@ -869,7 +867,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "timeout policy exceeded on upstream-level")
 	})
 
@@ -946,7 +944,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		if !strings.Contains(body, "timeout") {
 			t.Fatalf("expected timeout error, got %s", body)
 		}
@@ -1025,7 +1023,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "timeout")
 	})
 
@@ -1106,7 +1104,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "timeout policy")
 	})
 
@@ -3200,7 +3198,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		defer shutdown()
 
 		statusCode, _, _ := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","params":[],"id":111}`, nil, nil)
-		assert.Equal(t, http.StatusNotAcceptable, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 	})
 
 	t.Run("ReturnCorrectCORS", func(t *testing.T) {
@@ -5351,8 +5349,8 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		// Make the request and verify it fails
 		statusCode, _, body := sendRequest(fullRangeRequest, nil, nil)
 
-		// Verify response indicates failure
-		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+		// Verify transport remains 200 for JSON-RPC failure
+		assert.Equal(t, http.StatusOK, statusCode)
 
 		// Parse the error response
 		var respObject map[string]interface{}
@@ -7463,7 +7461,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		statusCode, _, respBody := sendRequest(userRequest, nil, nil)
-		assert.Equal(t, http.StatusPreconditionFailed, statusCode, "status code should indicate failure")
+		assert.Equal(t, http.StatusOK, statusCode, "transport should be 200 for JSON-RPC failures")
 
 		var respObj map[string]interface{}
 		err = sonic.UnmarshalString(respBody, &respObj)
@@ -7611,7 +7609,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}
 
 		statusCode, _, respBody := sendRequest(userRequest, nil, nil)
-		assert.Equal(t, http.StatusConflict, statusCode, "status code should indicate failure")
+		assert.Equal(t, http.StatusOK, statusCode, "transport should be 200 for JSON-RPC failures")
 
 		var respObj map[string]interface{}
 		err = sonic.UnmarshalString(respBody, &respObj)
