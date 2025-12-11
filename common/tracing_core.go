@@ -82,12 +82,23 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 			return
 		}
 
+		// Build resource attributes
+		attrs := []attribute.KeyValue{
+			semconv.ServiceNameKey.String(cfg.ServiceName),
+			semconv.ServiceVersionKey.String(ErpcVersion),
+			attribute.String("commit.sha", ErpcCommitSha),
+		}
+
+		// Add custom resource attributes from config (env vars already expanded)
+		for key, value := range cfg.ResourceAttributes {
+			if value != "" {
+				attrs = append(attrs, attribute.String(key, value))
+				logger.Debug().Str("key", key).Str("value", value).Msg("adding custom resource attribute")
+			}
+		}
+
 		res, err := resource.New(ctx,
-			resource.WithAttributes(
-				semconv.ServiceNameKey.String(cfg.ServiceName),
-				semconv.ServiceVersionKey.String(ErpcVersion),
-				attribute.String("commit.sha", ErpcCommitSha),
-			),
+			resource.WithAttributes(attrs...),
 		)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to create resource")

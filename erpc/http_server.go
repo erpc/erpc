@@ -48,6 +48,7 @@ type HttpServer struct {
 	trustedForwarderNets    []net.IPNet
 	trustedForwarderIPs     map[string]struct{}
 	trustedIPHeaders        []string
+	resolvedResponseHeaders map[string]string
 }
 
 func NewHttpServer(
@@ -125,6 +126,21 @@ func NewHttpServer(
 				continue
 			}
 			srv.trustedIPHeaders = append(srv.trustedIPHeaders, h)
+		}
+	}
+
+	// Resolve custom response headers (expand env vars at startup)
+	if cfg != nil && len(cfg.ResponseHeaders) > 0 {
+		srv.resolvedResponseHeaders = make(map[string]string, len(cfg.ResponseHeaders))
+		for key, value := range cfg.ResponseHeaders {
+			// Expand env vars (handles both ${VAR} and $VAR syntax)
+			resolved := os.ExpandEnv(value)
+			if resolved != "" {
+				srv.resolvedResponseHeaders[key] = resolved
+				logger.Info().Str("header", key).Str("value", resolved).Msg("custom response header configured")
+			} else {
+				logger.Debug().Str("header", key).Msg("custom response header skipped (empty value after env expansion)")
+			}
 		}
 	}
 
@@ -217,6 +233,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-ERPC-Version", common.ErpcVersion)
 		w.Header().Set("X-ERPC-Commit", common.ErpcCommitSha)
+
+		// Add custom response headers (resolved at startup with env var expansion)
+		for key, value := range s.resolvedResponseHeaders {
+			w.Header().Set(key, value)
+		}
 
 		projectId, architecture, chainId, isAdmin, isHealthCheck, err = s.parseUrlPath(r, projectId, architecture, chainId)
 		if err != nil {
