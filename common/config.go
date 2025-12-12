@@ -88,24 +88,25 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 }
 
 type ServerConfig struct {
-	ListenV4            *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
-	HttpHostV4          *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
-	ListenV6            *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
-	HttpHostV6          *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort            *int            `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
-	HttpPortV4          *int            `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
-	HttpPortV6          *int            `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
-	MaxTimeout          *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
-	ReadTimeout         *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
-	WriteTimeout        *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
-	EnableGzip          *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	TLS                 *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
-	Aliasing            *AliasingConfig `yaml:"aliasing" json:"aliasing"`
-	WaitBeforeShutdown  *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
-	WaitAfterShutdown   *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
-	IncludeErrorDetails *bool           `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
-	TrustedIPForwarders []string        `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
-	TrustedIPHeaders    []string        `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
+	ListenV4            *bool             `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4          *string           `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6            *bool             `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6          *string           `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort            *int              `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
+	HttpPortV4          *int              `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
+	HttpPortV6          *int              `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
+	MaxTimeout          *Duration         `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
+	ReadTimeout         *Duration         `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
+	WriteTimeout        *Duration         `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
+	EnableGzip          *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS                 *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
+	Aliasing            *AliasingConfig   `yaml:"aliasing" json:"aliasing"`
+	WaitBeforeShutdown  *Duration         `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
+	WaitAfterShutdown   *Duration         `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
+	IncludeErrorDetails *bool             `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
+	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
+	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
 }
 
 type HealthCheckConfig struct {
@@ -141,14 +142,15 @@ const (
 )
 
 type TracingConfig struct {
-	Enabled     bool              `yaml:"enabled,omitempty" json:"enabled"`
-	Endpoint    string            `yaml:"endpoint,omitempty" json:"endpoint"`
-	Protocol    TracingProtocol   `yaml:"protocol,omitempty" json:"protocol"`
-	SampleRate  float64           `yaml:"sampleRate,omitempty" json:"sampleRate"`
-	Detailed    bool              `yaml:"detailed,omitempty" json:"detailed"`
-	ServiceName string            `yaml:"serviceName,omitempty" json:"serviceName"`
-	Headers     map[string]string `yaml:"headers,omitempty" json:"headers"`
-	TLS         *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
+	Enabled            bool              `yaml:"enabled,omitempty" json:"enabled"`
+	Endpoint           string            `yaml:"endpoint,omitempty" json:"endpoint"`
+	Protocol           TracingProtocol   `yaml:"protocol,omitempty" json:"protocol"`
+	SampleRate         float64           `yaml:"sampleRate,omitempty" json:"sampleRate"`
+	Detailed           bool              `yaml:"detailed,omitempty" json:"detailed"`
+	ServiceName        string            `yaml:"serviceName,omitempty" json:"serviceName"`
+	Headers            map[string]string `yaml:"headers,omitempty" json:"headers"`
+	TLS                *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
+	ResourceAttributes map[string]string `yaml:"resourceAttributes,omitempty" json:"resourceAttributes"`
 
 	// ForceTraceMatchers defines conditions for force-tracing requests.
 	// Each matcher can specify network and/or method patterns.

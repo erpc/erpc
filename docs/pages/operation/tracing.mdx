@@ -32,6 +32,29 @@ When `tracing.detailed` is set to true, eRPC will include detailed tracing infor
 
 Remember that detailed tracing can significantly increase the volume of traces, so use it judiciously.
 
+### Custom resource attributes
+
+You can add custom attributes to all traces from an eRPC instance using `resourceAttributes`. This is useful for adding deployment-specific metadata like region, machine ID, or pod name.
+
+Values support environment variable expansion using `${VAR}` syntax. Attributes with empty values (after expansion) are automatically omitted.
+
+```yaml
+tracing:
+  enabled: true
+  endpoint: "localhost:4317"
+  protocol: "grpc"
+  sampleRate: 0.1
+  # Custom attributes added to all traces from this instance
+  resourceAttributes:
+    fly.region: ${FLY_REGION}           # Fly.io region
+    fly.machine_id: ${FLY_MACHINE_ID}   # Fly.io machine ID
+    # Or for Kubernetes:
+    # k8s.pod_name: ${HOSTNAME}
+    # k8s.node_name: ${NODE_NAME}
+```
+
+This allows you to filter and group traces by region/machine in your tracing backend (Jaeger, Tempo, etc.) to debug region-specific issues.
+
 ## Using with Jaeger
 
 The included [`docker-compose.yml`](https://github.com/erpc/erpc/blob/main/docker-compose.yml) file contains a Jaeger service for visualizing traces. To use it:

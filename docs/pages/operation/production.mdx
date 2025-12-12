@@ -86,3 +86,31 @@ server:
 Shorter values let Envoy reuse a connection after the listener is gone or try to reach
 a pod that has already exited. Use these numbers as a safe starting point and adjust
 to match your own probe intervals.
+
+## Custom response headers
+
+You can add custom headers to all HTTP responses using `server.responseHeaders`. This is useful for exposing instance metadata (region, machine ID, pod name) directly in responses for debugging.
+
+Values support environment variable expansion using `${VAR}` syntax. Headers with empty values (after expansion) are automatically omitted.
+
+```yaml
+server:
+  responseHeaders:
+    X-ERPC-Region: ${FLY_REGION}         # Fly.io region
+    X-ERPC-Machine: ${FLY_MACHINE_ID}    # Fly.io machine ID
+    # Or for Kubernetes:
+    # X-ERPC-Pod: ${HOSTNAME}
+```
+
+This allows quick identification of which instance handled a request without checking traces:
+
+```
+HTTP/1.1 200 OK
+X-ERPC-Version: main
+X-ERPC-Region: sin
+X-ERPC-Machine: 4d891234ab
+```
+
+<Callout type="info">
+  For deeper debugging, combine this with [custom trace attributes](/operation/tracing#custom-resource-attributes) to get full observability in your tracing backend.
+</Callout>
