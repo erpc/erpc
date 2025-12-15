@@ -52,6 +52,13 @@ export {
   ConsensusDisputeBehaviorAcceptMostCommonValidResult,
   ConsensusDisputeBehaviorPreferBlockHeadLeader,
   ConsensusDisputeBehaviorOnlyBlockHeadLeader,
+  // Rate limiter periods
+  RateLimitPeriodSecond,
+  RateLimitPeriodMinute,
+  RateLimitPeriodHour,
+  RateLimitPeriodDay,
+  RateLimitPeriodMonth,
+  RateLimitPeriodYear,
 } from "./generated";
 export type {
   Config,
