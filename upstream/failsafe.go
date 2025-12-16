@@ -187,6 +187,17 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 			return true
 		}
 
+		// Connection-level failures (connection refused, reset, timeout) -> open the circuit
+		// This ensures that if an upstream is completely unreachable, we fail over quickly
+		if common.HasErrorCode(err, common.ErrCodeEndpointTransportFailure) {
+			span.SetAttributes(
+				attribute.Bool("should_open", true),
+				attribute.String("reason", "transport_failure"),
+				attribute.String("error_code", "ErrCodeEndpointTransportFailure"),
+			)
+			return true
+		}
+
 		// 401 / 403 / RPC-RPC vendor auth -> open the circuit
 		if common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized) {
 			span.SetAttributes(
