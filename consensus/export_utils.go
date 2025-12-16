@@ -130,6 +130,3 @@ func parseS3Path(s3Path string) (bucket string, keyPrefix string, err error) {
 
 	return bucket, keyPrefix, nil
 }
-
-// setDefaultS3Config sets default values for S3 configuration
-// Removed defaulting helpers; defaults are handled in common/defaults.go
