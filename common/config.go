@@ -1520,6 +1520,13 @@ type EvmNetworkConfig struct {
 	// If the distance is larger, the error is not retryable (upstream is too far behind).
 	// Default: 128 blocks.
 	MaxRetryableBlockDistance *int64 `yaml:"maxRetryableBlockDistance,omitempty" json:"maxRetryableBlockDistance,omitempty"`
+
+	// MarkEmptyAsErrorMethods lists methods for which an empty/null result from an upstream
+	// should be treated as a "missing data" error, triggering retry on other upstreams.
+	// This is useful for point-lookups (blocks, transactions, receipts, traces) where an
+	// empty result likely means the upstream hasn't indexed that data yet.
+	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
+	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

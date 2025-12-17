@@ -1830,6 +1830,29 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 
+// DefaultMarkEmptyAsErrorMethods lists the default methods for which empty/null results
+// should be treated as "missing data" errors, triggering retry on other upstreams.
+// Note: eth_getBlockByHash is intentionally excluded because subgraph-based upstreams
+// commonly return empty for this method, which is expected behavior.
+var DefaultMarkEmptyAsErrorMethods = []string{
+	// Block lookups (eth_getBlockByHash excluded - subgraphs return empty for it)
+	"eth_getBlockByNumber",
+	"eth_getBlockReceipts",
+	// Transaction lookups
+	"eth_getTransactionByHash",
+	"eth_getTransactionReceipt",
+	"eth_getTransactionByBlockHashAndIndex",
+	"eth_getTransactionByBlockNumberAndIndex",
+	// Uncle/ommers (legacy API)
+	"eth_getUncleByBlockHashAndIndex",
+	"eth_getUncleByBlockNumberAndIndex",
+	// Traces (debug/trace/parity modules)
+	"debug_traceTransaction",
+	"trace_transaction",
+	"trace_block",
+	"trace_get",
+}
+
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
@@ -1853,6 +1876,11 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.GetLogsSplitConcurrency == 0 {
 		e.GetLogsSplitConcurrency = 10
+	}
+
+	// Default methods for marking empty results as errors
+	if e.MarkEmptyAsErrorMethods == nil {
+		e.MarkEmptyAsErrorMethods = DefaultMarkEmptyAsErrorMethods
 	}
 
 	return nil

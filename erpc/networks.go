@@ -558,6 +558,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						attribute.String("skip_reason", skipErr.Error()),
 						attribute.Bool("skip_retryable", isRetryable),
 					)
+
+					// Track block unavailability in metrics so it's visible on charts
+					finality := effectiveReq.Finality(loopCtx)
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+						n.projectId,
+						u.VendorName(),
+						n.Label(),
+						u.Id(),
+						method,
+						common.ErrorFingerprint(skipErr),
+						string(common.SeverityInfo),
+						effectiveReq.CompositeType(),
+						finality.String(),
+						effectiveReq.UserId(),
+						effectiveReq.AgentName(),
+					).Inc()
+
 					// Mark upstream completed with the skip error.
 					// MarkUpstreamCompleted stores the error and keeps upstream in ConsumedUpstreams,
 					// preventing re-selection in the same round. On exhaustion, retryable errors
