@@ -57,6 +57,7 @@ export {
   RateLimitPeriodMinute,
   RateLimitPeriodHour,
   RateLimitPeriodDay,
+  RateLimitPeriodWeek,
   RateLimitPeriodMonth,
   RateLimitPeriodYear,
 } from "./generated";

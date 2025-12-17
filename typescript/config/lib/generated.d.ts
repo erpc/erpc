@@ -52,6 +52,9 @@ export interface ServerConfig {
     includeErrorDetails?: boolean;
     trustedIPForwarders?: string[];
     trustedIPHeaders?: string[];
+    responseHeaders?: {
+        [key: string]: string;
+    };
 }
 export interface HealthCheckConfig {
     mode?: HealthCheckMode;
@@ -84,6 +87,9 @@ export interface TracingConfig {
         [key: string]: string;
     };
     tls?: TLSConfig;
+    resourceAttributes?: {
+        [key: string]: string;
+    };
     /**
      * ForceTraceMatchers defines conditions for force-tracing requests.
      * Each matcher can specify network and/or method patterns.
@@ -738,6 +744,14 @@ export interface EvmNetworkConfig {
      * Default: 128 blocks.
      */
     maxRetryableBlockDistance?: number;
+    /**
+     * MarkEmptyAsErrorMethods lists methods for which an empty/null result from an upstream
+     * should be treated as a "missing data" error, triggering retry on other upstreams.
+     * This is useful for point-lookups (blocks, transactions, receipts, traces) where an
+     * empty result likely means the upstream hasn't indexed that data yet.
+     * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
+     */
+    markEmptyAsErrorMethods?: string[];
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

@@ -18,8 +18,8 @@ var __copyProps = (to, from, except, desc) => {
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // src/index.ts
-var src_exports = {};
-__export(src_exports, {
+var index_exports = {};
+__export(index_exports, {
   ArchitectureEvm: () => ArchitectureEvm,
   AuthTypeJwt: () => AuthTypeJwt,
   AuthTypeNetwork: () => AuthTypeNetwork,
@@ -46,12 +46,18 @@ __export(src_exports, {
   EvmSyncingStateNotSyncing: () => EvmSyncingStateNotSyncing,
   EvmSyncingStateSyncing: () => EvmSyncingStateSyncing,
   EvmSyncingStateUnknown: () => EvmSyncingStateUnknown,
+  RateLimitPeriodDay: () => RateLimitPeriodDay,
+  RateLimitPeriodHour: () => RateLimitPeriodHour,
+  RateLimitPeriodMinute: () => RateLimitPeriodMinute,
+  RateLimitPeriodMonth: () => RateLimitPeriodMonth,
+  RateLimitPeriodSecond: () => RateLimitPeriodSecond,
+  RateLimitPeriodYear: () => RateLimitPeriodYear,
   ScopeNetwork: () => ScopeNetwork,
   ScopeUpstream: () => ScopeUpstream,
   UpstreamTypeEvm: () => UpstreamTypeEvm,
   createConfig: () => createConfig
 });
-module.exports = __toCommonJS(src_exports);
+module.exports = __toCommonJS(index_exports);
 
 // src/generated.ts
 var UpstreamTypeEvm = "evm";
@@ -69,6 +75,12 @@ var ConsensusDisputeBehaviorReturnError = "returnError";
 var ConsensusDisputeBehaviorAcceptMostCommonValidResult = "acceptMostCommonValidResult";
 var ConsensusDisputeBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
 var ConsensusDisputeBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
+var RateLimitPeriodSecond = 0;
+var RateLimitPeriodMinute = 1;
+var RateLimitPeriodHour = 2;
+var RateLimitPeriodDay = 3;
+var RateLimitPeriodMonth = 5;
+var RateLimitPeriodYear = 6;
 var AuthTypeSecret = "secret";
 var AuthTypeJwt = "jwt";
 var AuthTypeSiwe = "siwe";
@@ -116,6 +128,12 @@ var createConfig = (cfg) => {
   EvmSyncingStateNotSyncing,
   EvmSyncingStateSyncing,
   EvmSyncingStateUnknown,
+  RateLimitPeriodDay,
+  RateLimitPeriodHour,
+  RateLimitPeriodMinute,
+  RateLimitPeriodMonth,
+  RateLimitPeriodSecond,
+  RateLimitPeriodYear,
   ScopeNetwork,
   ScopeUpstream,
   UpstreamTypeEvm,
