@@ -4,12 +4,12 @@
         "build": "pnpm -r build"
     },
     "devDependencies": {
-        "@biomejs/biome": "1.9.4",
+        "@biomejs/biome": "^2.3.9",
         "typescript": "5.1.6"
     },
     "dependencies": {
-        "esbuild": "0.24.0",
-        "@erpc-cloud/config": "workspace:*"
+        "@erpc-cloud/config": "workspace:*",
+        "esbuild": "^0.27.2"
     },
     "packageManager": "pnpm@9.10.0",
     "engines": {

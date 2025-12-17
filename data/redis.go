@@ -197,7 +197,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 			if len(options.TLSConfig.Certificates) > 0 {
 				errMsg += " Also verify the client certificate and key ('tls.certFile', 'tls.keyFile') if used."
 			}
-			return common.NewTaskFatal(fmt.Errorf(errMsg))
+			return common.NewTaskFatal(errors.New(errMsg))
 		}
 		return err
 	}

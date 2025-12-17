@@ -1894,7 +1894,7 @@ const ErrCodeEndpointTransportFailure = "ErrEndpointTransportFailure"
 var NewErrEndpointTransportFailure = func(url *url.URL, cause error) error {
 	if cause != nil {
 		if _, ok := cause.(StandardError); !ok {
-			cause = fmt.Errorf(strings.ReplaceAll(cause.Error(), url.String(), ""))
+			cause = errors.New(strings.ReplaceAll(cause.Error(), url.String(), ""))
 		}
 	}
 	return &ErrEndpointTransportFailure{
