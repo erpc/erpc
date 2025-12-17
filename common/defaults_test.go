@@ -421,4 +421,23 @@ func TestBuildProviderSettings(t *testing.T) {
 		assert.Nil(t, settings["provider"])
 		assert.Nil(t, settings["type"])
 	})
+
+	// Test case for QuickNode with tag filters
+	t.Run("quicknode with filters", func(t *testing.T) {
+		endpoint, _ := url.Parse("quicknode://test-api-key?tagIds=123,456&tagLabels=production,staging")
+		settings, err := buildProviderSettings("quicknode", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "test-api-key", settings["apiKey"])
+		assert.Equal(t, []int{123, 456}, settings["tagIds"])
+		assert.Equal(t, []string{"production", "staging"}, settings["tagLabels"])
+	})
+
+	t.Run("quicknode without filters", func(t *testing.T) {
+		endpoint, _ := url.Parse("quicknode://test-api-key")
+		settings, err := buildProviderSettings("quicknode", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "test-api-key", settings["apiKey"])
+		assert.Nil(t, settings["tagIds"])
+		assert.Nil(t, settings["tagLabels"])
+	})
 }

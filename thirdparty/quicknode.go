@@ -37,6 +37,11 @@ type QuicknodeEndpointsResponse struct {
 	Error string               `json:"error,omitempty"`
 }
 
+type QuicknodeFilterParams struct {
+	TagIDs    []int
+	TagLabels []string
+}
+
 const DefaultQuicknodeRecheckInterval = 1 * time.Hour
 
 func CreateQuicknodeVendor() common.Vendor {
@@ -48,6 +53,40 @@ func CreateQuicknodeVendor() common.Vendor {
 
 func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
+}
+
+func (v *QuicknodeVendor) extractFilterParams(settings common.VendorSettings) *QuicknodeFilterParams {
+	params := &QuicknodeFilterParams{}
+
+	// Extract tagIds - can be a single integer or array of integers
+	if tagIds, ok := settings["tagIds"]; ok && tagIds != nil {
+		switch val := tagIds.(type) {
+		case int:
+			params.TagIDs = []int{val}
+		case []interface{}:
+			for _, id := range val {
+				if intVal, ok := id.(int); ok {
+					params.TagIDs = append(params.TagIDs, intVal)
+				}
+			}
+		}
+	}
+
+	// Extract tagLabels - can be a single string or array of strings
+	if tagLabels, ok := settings["tagLabels"]; ok && tagLabels != nil {
+		switch val := tagLabels.(type) {
+		case string:
+			params.TagLabels = []string{val}
+		case []interface{}:
+			for _, label := range val {
+				if strLabel, ok := label.(string); ok {
+					params.TagLabels = append(params.TagLabels, strLabel)
+				}
+			}
+		}
+	}
+
+	return params
 }
 
 func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
@@ -71,7 +110,10 @@ func (v *QuicknodeVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 		recheckInterval = interval
 	}
 
-	err = v.ensureRefreshEndpoints(ctx, logger, apiKey, recheckInterval)
+	// Extract tag filtering settings
+	filterParams := v.extractFilterParams(settings)
+
+	err = v.ensureRefreshEndpoints(ctx, logger, apiKey, recheckInterval, filterParams)
 	if err != nil {
 		logger.Warn().Err(err).Msg("failed to refresh QuickNode endpoints")
 		return false, err
@@ -115,7 +157,10 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 			recheckInterval = interval
 		}
 
-		err := v.ensureRefreshEndpoints(ctx, &log.Logger, apiKey, recheckInterval)
+		// Extract tag filtering settings
+		filterParams := v.extractFilterParams(settings)
+
+		err := v.ensureRefreshEndpoints(ctx, &log.Logger, apiKey, recheckInterval, filterParams)
 		if err != nil {
 			log.Warn().Err(err).Msg("failed to refresh QuickNode endpoints, falling back to static endpoint generation")
 			return nil, err
@@ -147,7 +192,7 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 	}
 }
 
-func (v *QuicknodeVendor) ensureRefreshEndpoints(ctx context.Context, logger *zerolog.Logger, apiKey string, recheckInterval time.Duration) error {
+func (v *QuicknodeVendor) ensureRefreshEndpoints(ctx context.Context, logger *zerolog.Logger, apiKey string, recheckInterval time.Duration, filterParams *QuicknodeFilterParams) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -157,7 +202,7 @@ func (v *QuicknodeVendor) ensureRefreshEndpoints(ctx context.Context, logger *ze
 	}
 
 	// Fetch endpoints from API
-	endpoints, err := v.fetchEndpoints(ctx, apiKey)
+	endpoints, err := v.fetchEndpoints(ctx, apiKey, filterParams)
 	if err != nil {
 		// Keep stale data if fetch fails
 		if _, hasData := v.remoteData[apiKey]; hasData {
@@ -180,7 +225,7 @@ func (v *QuicknodeVendor) ensureRefreshEndpoints(ctx context.Context, logger *ze
 	return nil
 }
 
-func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string) ([]*QuicknodeEndpoint, error) {
+func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string, filterParams *QuicknodeFilterParams) ([]*QuicknodeEndpoint, error) {
 	var allEndpoints []*QuicknodeEndpoint
 
 	// Build URL with pagination
@@ -197,6 +242,21 @@ func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string) ([]
 		params := url.Values{}
 		params.Set("limit", strconv.Itoa(limit))
 		params.Set("offset", strconv.Itoa(offset))
+
+		// Add tag_ids filter if provided (comma-separated list)
+		if filterParams != nil && len(filterParams.TagIDs) > 0 {
+			tagIDStrs := make([]string, len(filterParams.TagIDs))
+			for i, id := range filterParams.TagIDs {
+				tagIDStrs[i] = strconv.Itoa(id)
+			}
+			params.Set("tag_ids", strings.Join(tagIDStrs, ","))
+		}
+
+		// Add tag_labels filter if provided (comma-separated list)
+		if filterParams != nil && len(filterParams.TagLabels) > 0 {
+			params.Set("tag_labels", strings.Join(filterParams.TagLabels, ","))
+		}
+
 		requestURL := baseURL + "?" + params.Encode()
 
 		req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
