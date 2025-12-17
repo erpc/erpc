@@ -109,44 +109,43 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	}
 
 	var validationErr error
+	methodLower := strings.ToLower(method)
+
+	// Check if this method should have empty results marked as errors
+	shouldMarkEmpty := isMethodInMarkEmptyList(n, methodLower)
 
 	// Method-specific post-forward hooks with directive-based validation
-	switch strings.ToLower(method) {
+	switch methodLower {
 	case "eth_getlogs":
 		rs, validationErr = upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
 
 	case "eth_getblockreceipts":
-		// First check for unexpected empty
-		rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-		if validationErr != nil {
-			break
+		// First check for unexpected empty (if enabled for this method)
+		if shouldMarkEmpty {
+			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+			if validationErr != nil {
+				break
+			}
 		}
 		// Then apply directive-based validation
 		rs, validationErr = upstreamPostForward_eth_getBlockReceipts(ctx, n, u, rq, rs, re)
 
 	case "eth_getblockbynumber", "eth_getblockbyhash":
-		// First check for unexpected empty
-		rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
-		if validationErr != nil {
-			break
+		// First check for unexpected empty (if enabled for this method)
+		if shouldMarkEmpty {
+			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+			if validationErr != nil {
+				break
+			}
 		}
 		// Then apply directive-based validation
 		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
 
-	case // Transaction lookups
-		"eth_gettransactionbyhash",
-		"eth_gettransactionreceipt",
-		"eth_gettransactionbyblockhashandindex",
-		"eth_gettransactionbyblocknumberandindex",
-		// Uncle/ommers (legacy API)
-		"eth_getunclebyblockhashandindex",
-		"eth_getunclebyblocknumberandindex",
-		// Traces (debug/trace/parity modules)
-		"debug_tracetransaction",
-		"trace_transaction",
-		"trace_block",
-		"trace_get":
-		rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+	default:
+		// For other methods, only apply the mark empty check if configured
+		if shouldMarkEmpty {
+			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+		}
 	}
 
 	// If validation failed due to content validation error (e.g. bloom inconsistency),
@@ -160,4 +159,24 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	}
 
 	return rs, re
+}
+
+// isMethodInMarkEmptyList checks if the given method is in the network's configured
+// list of methods that should have empty results marked as errors.
+func isMethodInMarkEmptyList(n common.Network, methodLower string) bool {
+	if n == nil || n.Config() == nil || n.Config().Evm == nil {
+		return false
+	}
+
+	methods := n.Config().Evm.MarkEmptyAsErrorMethods
+	if methods == nil {
+		return false
+	}
+
+	for _, m := range methods {
+		if strings.ToLower(m) == methodLower {
+			return true
+		}
+	}
+	return false
 }
