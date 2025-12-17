@@ -49,7 +49,7 @@ jobs:
           tygo generate
       
       - name: Setup Syft
-        uses: anchore/sbom-action/download-syft@fbfd9c6c189226748411491745178e0c2017392d # v0.20.8
+        uses: anchore/sbom-action/download-syft@43a17d6e7add2b5535efe4dcae9952337c479a93 # v0.20.8
 
       # Run goreleaser in snapshot mode to generate checksums
       - name: Run GoReleaser Snapshot
@@ -142,7 +142,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Syft
-        uses: anchore/sbom-action/download-syft@fbfd9c6c189226748411491745178e0c2017392d # v0.20.8
+        uses: anchore/sbom-action/download-syft@43a17d6e7add2b5535efe4dcae9952337c479a93 # v0.20.8
 
       # Extract version from commit message
       - name: Extract version
