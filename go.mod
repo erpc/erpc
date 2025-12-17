@@ -26,7 +26,7 @@ require (
 	github.com/klauspost/compress v1.17.9
 	github.com/lyft/gostats v0.4.14
 	github.com/prometheus/client_golang v1.20.5
-	github.com/redis/go-redis/v9 v9.17.1
+	github.com/redis/go-redis/v9 v9.17.2
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/afero v1.11.0
 	github.com/spruceid/siwe-go v0.2.1
