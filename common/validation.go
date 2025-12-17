@@ -1287,11 +1287,14 @@ func (c *SelectionPolicyConfig) Validate() error {
 	if c.EvalFunction == nil {
 		return fmt.Errorf("selectionPolicy.evalFunction is required")
 	}
-	if c.ResampleInterval <= 0 {
-		return fmt.Errorf("selectionPolicy.resampleInterval must be greater than 0")
-	}
-	if c.ResampleCount <= 0 {
-		return fmt.Errorf("selectionPolicy.resampleCount must be greater than 0")
+	// ResampleInterval and ResampleCount are only required when ResampleExcluded is true
+	if c.ResampleExcluded {
+		if c.ResampleInterval <= 0 {
+			return fmt.Errorf("selectionPolicy.resampleInterval must be greater than 0 when resampleExcluded is true")
+		}
+		if c.ResampleCount <= 0 {
+			return fmt.Errorf("selectionPolicy.resampleCount must be greater than 0 when resampleExcluded is true")
+		}
 	}
 	return nil
 }
