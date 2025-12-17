@@ -17,7 +17,7 @@ require (
 	github.com/evanw/esbuild v0.24.0
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/go-logr/zerologr v1.2.3
-	github.com/go-redsync/redsync/v4 v4.14.1
+	github.com/go-redsync/redsync/v4 v4.15.0
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/grafana/sobek v0.0.0-20241024150027-d91f02b05e9b
 	github.com/h2non/gock v1.2.0
@@ -26,7 +26,7 @@ require (
 	github.com/klauspost/compress v1.17.9
 	github.com/lyft/gostats v0.4.14
 	github.com/prometheus/client_golang v1.20.5
-	github.com/redis/go-redis/v9 v9.17.1
+	github.com/redis/go-redis/v9 v9.17.2
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/afero v1.11.0
 	github.com/spruceid/siwe-go v0.2.1
