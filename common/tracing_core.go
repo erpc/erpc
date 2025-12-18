@@ -165,17 +165,15 @@ func SetTraceSpanError(span trace.Span, err any) {
 		return
 	}
 	if err, ok := err.(error); ok {
-		var errStr string
 		if stdErr, ok := err.(StandardError); ok {
-			errStr, _ = SonicCfg.MarshalToString(stdErr)
-			if errStr == "" {
-				errStr = stdErr.Base().Error()
-			}
+			// Use the error message directly instead of expensive JSON marshaling.
+			// The error code chain provides enough context for filtering.
+			base := stdErr.Base()
 			span.SetAttributes(
 				attribute.String("error.code", stdErr.CodeChain()),
 			)
-			span.RecordError(fmt.Errorf("%s", errStr))
-			span.SetStatus(codes.Error, string(stdErr.Base().Code))
+			span.RecordError(fmt.Errorf("%s: %s", base.Code, base.Message))
+			span.SetStatus(codes.Error, string(base.Code))
 		} else {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, ErrorSummary(err))

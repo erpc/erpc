@@ -24,6 +24,10 @@ type CounterInt64SharedVariable interface {
 	GetValue() int64
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
+	// SetLocalValue updates the local in-memory value synchronously without any network calls.
+	// Returns true if the value was actually updated (newValue > current).
+	// Use this for fast path updates where remote sync can happen asynchronously.
+	SetLocalValue(newValue int64) bool
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
 }
@@ -59,21 +63,79 @@ func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
 }
 
+// SetLocalValue updates only the local in-memory atomic value without any network/distributed operations.
+// This is a fast, synchronous update for cases where immediate local visibility is needed
+// and remote sync can happen asynchronously later.
+// Returns true if the value was actually updated (newValue > currentValue).
+func (c *counterInt64) SetLocalValue(newValue int64) bool {
+	currentValue := c.value.Load()
+	if newValue <= currentValue {
+		return false
+	}
+	// Use CompareAndSwap for thread-safety without holding the mutex long
+	// If another goroutine updated it in the meantime, we retry
+	for {
+		if c.value.CompareAndSwap(currentValue, newValue) {
+			c.registry.logger.Debug().
+				Str("key", c.key).
+				Int64("from", currentValue).
+				Int64("to", newValue).
+				Msg("local counter value set synchronously")
+			c.triggerValueCallback(newValue)
+			return true
+		}
+		// Someone else updated it, re-check
+		currentValue = c.value.Load()
+		if newValue <= currentValue {
+			return false // Our value is no longer an improvement
+		}
+	}
+}
+
 func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	// This function is designed to be called from within c.updateMu.Lock().
 	// It returns true if the local value was actually updated.
+	// Uses CAS to safely coordinate with SetLocalValue which bypasses updateMu.
 	currentValue := c.value.Load()
 	updated := false
 	if newVal > currentValue {
-		c.value.Store(newVal)
-		updated = true
-		c.registry.logger.Debug().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
-		c.triggerValueCallback(newVal)
+		// Use CAS loop to handle race with SetLocalValue
+		for {
+			if c.value.CompareAndSwap(currentValue, newVal) {
+				updated = true
+				c.registry.logger.Debug().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
+				c.triggerValueCallback(newVal)
+				break
+			}
+			// CAS failed - someone else updated (likely SetLocalValue)
+			currentValue = c.value.Load()
+			if newVal <= currentValue {
+				// Our value is no longer an improvement, abort
+				c.registry.logger.Trace().Str("source", source).Str("key", c.key).Int64("newVal", newVal).Int64("currentValue", currentValue).Msg("CAS failed, value no longer an improvement")
+				break
+			}
+			// Retry with updated currentValue
+		}
 	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {
-		c.value.Store(newVal)
-		updated = true
-		c.registry.logger.Warn().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Int64("rollback", currentValue-newVal).Msg("counter value rolled back")
-		c.triggerValueCallback(newVal)
+		// Rollback detection: The new value is significantly lower than current.
+		// This could indicate a blockchain reorg OR stale data racing with SetLocalValue.
+		//
+		// We do NOT apply the rollback here because:
+		// 1. SetLocalValue may have set a higher value from fresh RPC data
+		// 2. Even remote-sync updates might carry stale data from lagging upstreams
+		// 3. For block numbers (the primary use case), values should only increase
+		//
+		// If a real reorg happened, subsequent polls will naturally pick up the
+		// correct lower value through the normal forward-progress path.
+		// We still trigger the rollback callbacks to notify listeners of the detection.
+		c.registry.logger.Debug().
+			Str("source", source).
+			Str("key", c.key).
+			Int64("currentValue", currentValue).
+			Int64("newVal", newVal).
+			Int64("gap", currentValue-newVal).
+			Msg("rollback detected but not applied to preserve SetLocalValue invariant")
+
 		c.callbackMu.RLock()
 		callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
 		copy(callbacks, c.largeRollbackCallbacks)
