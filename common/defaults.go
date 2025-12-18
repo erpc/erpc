@@ -1238,9 +1238,56 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 			"apiKey": endpoint.Host,
 		}, nil
 	case "quicknode", "evm+quicknode":
-		return VendorSettings{
+		settings := VendorSettings{
 			"apiKey": endpoint.Host,
-		}, nil
+		}
+
+		// Parse query parameters for tag filters
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse quicknode query parameters: %w", err)
+			}
+
+			// Parse tagIds - can be comma-separated or multiple values
+			if tagIds := params.Get("tagIds"); tagIds != "" {
+				// Split comma-separated values
+				ids := strings.Split(tagIds, ",")
+				if len(ids) == 1 {
+					// Single value - try to parse as int
+					if id, err := strconv.Atoi(strings.TrimSpace(ids[0])); err == nil {
+						settings["tagIds"] = id
+					}
+				} else {
+					// Multiple values - parse as int array
+					intIds := make([]int, 0, len(ids))
+					for _, idStr := range ids {
+						if id, err := strconv.Atoi(strings.TrimSpace(idStr)); err == nil {
+							intIds = append(intIds, id)
+						}
+					}
+					if len(intIds) > 0 {
+						settings["tagIds"] = intIds
+					}
+				}
+			}
+
+			// Parse tagLabels - can be comma-separated or multiple values
+			if tagLabels := params.Get("tagLabels"); tagLabels != "" {
+				// Split comma-separated values
+				labels := strings.Split(tagLabels, ",")
+				for i := range labels {
+					labels[i] = strings.TrimSpace(labels[i])
+				}
+				if len(labels) == 1 {
+					settings["tagLabels"] = labels[0]
+				} else {
+					settings["tagLabels"] = labels
+				}
+			}
+		}
+
+		return settings, nil
 	case "chainstack", "evm+chainstack":
 		settings := VendorSettings{
 			"apiKey": endpoint.Host,
@@ -2340,15 +2387,15 @@ const DefaultPolicyFunction = `
 	(upstreams, method) => {
 		const defaults = upstreams.filter(u => u.config.group !== 'fallback')
 		const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-		
+
 		const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
 		const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
 		const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
-		
+
 		const healthyOnes = defaults.filter(
 			u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
 		)
-		
+
 		if (healthyOnes.length >= minHealthyThreshold) {
 			return healthyOnes
 		}
@@ -2357,7 +2404,7 @@ const DefaultPolicyFunction = `
 			let healthyFallbacks = fallbacks.filter(
 				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
 			)
-			
+
 			if (healthyFallbacks.length > 0) {
 				return healthyFallbacks
 			}
