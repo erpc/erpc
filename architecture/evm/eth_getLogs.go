@@ -333,6 +333,14 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		)
 	}
 
+	// Structured attributes to make "block unavailable" traces easy to filter/debug.
+	span.SetAttributes(
+		attribute.Int64("request.from_block", fromBlock),
+		attribute.Int64("request.to_block", toBlock),
+		attribute.Int64("upstream.poller_latest_block", statePoller.LatestBlock()),
+		attribute.Int64("upstream.poller_finalized_block", statePoller.FinalizedBlock()),
+	)
+
 	// Check if the upstream can handle the requested block range
 	available, err := up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, toBlock)
 	if err != nil {
@@ -341,10 +349,27 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	if !available {
 		latestBlock := statePoller.LatestBlock()
 		finalizedBlock := statePoller.FinalizedBlock()
+		var headGap int64
+		if latestBlock > 0 && toBlock > latestBlock {
+			headGap = toBlock - latestBlock
+		}
+		span.SetAttributes(
+			attribute.Bool("block_availability.available", false),
+			attribute.String("block_availability.reason", "to_block_unavailable"),
+			attribute.Int64("block_availability.head_gap", headGap),
+			attribute.String("error.code", common.ErrCodeEndpointMissingData),
+		)
 
 		return true, nil, common.NewErrEndpointMissingData(
 			fmt.Errorf("block not found for eth_getLogs, requested toBlock %d is not available on the upstream node (latestBlock: %d, finalizedBlock: %d)", toBlock, latestBlock, finalizedBlock),
 			up,
+			map[string]interface{}{
+				"requestedBlock": toBlock,
+				"fromBlock":      fromBlock,
+				"toBlock":        toBlock,
+				"headGap":        headGap,
+				"reason":         "to_block_unavailable",
+			},
 		)
 	}
 	available, err = up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, fromBlock)
@@ -354,10 +379,27 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	if !available {
 		latestBlock := statePoller.LatestBlock()
 		finalizedBlock := statePoller.FinalizedBlock()
+		var headGap int64
+		if latestBlock > 0 && fromBlock > latestBlock {
+			headGap = fromBlock - latestBlock
+		}
+		span.SetAttributes(
+			attribute.Bool("block_availability.available", false),
+			attribute.String("block_availability.reason", "from_block_unavailable"),
+			attribute.Int64("block_availability.head_gap", headGap),
+			attribute.String("error.code", common.ErrCodeEndpointMissingData),
+		)
 
 		return true, nil, common.NewErrEndpointMissingData(
 			fmt.Errorf("block not found for eth_getLogs, fromBlock %d is not available on the upstream node (latestBlock: %d, finalizedBlock: %d)", fromBlock, latestBlock, finalizedBlock),
 			up,
+			map[string]interface{}{
+				"requestedBlock": fromBlock,
+				"fromBlock":      fromBlock,
+				"toBlock":        toBlock,
+				"headGap":        headGap,
+				"reason":         "from_block_unavailable",
+			},
 		)
 	}
 

@@ -2017,7 +2017,7 @@ type ErrEndpointMissingData struct {
 
 const ErrCodeEndpointMissingData = "ErrEndpointMissingData"
 
-var NewErrEndpointMissingData = func(cause error, upstream Upstream) error {
+var NewErrEndpointMissingData = func(cause error, upstream Upstream, extraDetails ...map[string]interface{}) error {
 	details := map[string]interface{}{}
 	if upstream != nil {
 		details["upstreamId"] = upstream.Id()
@@ -2031,6 +2031,12 @@ var NewErrEndpointMissingData = func(cause error, upstream Upstream) error {
 			if cfg.Evm != nil {
 				details["maxAvailableRecentBlocks"] = cfg.Evm.MaxAvailableRecentBlocks
 			}
+		}
+	}
+	// Merge extra details for filtering/debugging
+	for _, ed := range extraDetails {
+		for k, v := range ed {
+			details[k] = v
 		}
 	}
 
