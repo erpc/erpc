@@ -219,6 +219,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 		initialValue   int64
 		updateValue    int64
 		expectedValue  int64
+		eventual       bool
+		eventualValue  int64
 		expectedCalls  int
 		expectedRemote bool
 	}{
@@ -260,9 +262,12 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				c.On("Set", mock.Anything, "test", "value", []byte("15"), mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(15)).Return(nil)
 			},
-			initialValue:   5,
-			updateValue:    10,
-			expectedValue:  15,
+			initialValue: 5,
+			updateValue:  10,
+			// Foreground is local-only; background reconcile will eventually adopt/push 15.
+			expectedValue:  10,
+			eventual:       true,
+			eventualValue:  15,
 			expectedCalls:  1,
 			expectedRemote: false,
 		},
@@ -301,7 +306,12 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 
 			result := counter.TryUpdate(ctx, tt.updateValue)
 			assert.Equal(t, tt.expectedValue, result)
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
+			if tt.eventual {
+				assert.Eventually(t, func() bool {
+					return counter.GetValue() == tt.eventualValue
+				}, 500*time.Millisecond, 10*time.Millisecond)
+			}
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
 		})
@@ -317,6 +327,8 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		updateValue   int64
 		lastProcessed time.Time
 		expectedValue int64
+		eventualValue int64
+		eventual      bool
 		expectedError error
 		expectedCalls int
 	}{
@@ -336,8 +348,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "stale local value same as remote unstales local value",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
-				l.On("Unlock", mock.Anything).Return(nil)
+				// No remote I/O expected in the synchronous path (local-only).
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -378,15 +389,18 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			staleness:     time.Second,
 			updateValue:   10,
 			lastProcessed: time.Now().Add(-2 * time.Second),
-			expectedValue: 15,
+			// Foreground path is local-only: it returns the refresh result (10).
+			// Remote reconciliation happens asynchronously and should eventually raise the local value to 15.
+			expectedValue: 10,
+			eventual:      true,
+			eventualValue: 15,
 			expectedError: nil,
 			expectedCalls: 1,
 		},
 		{
 			name: "update function returns error",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
-				l.On("Unlock", mock.Anything).Return(nil)
+				// No remote I/O expected on error; we just mark as fresh to debounce retries.
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -433,7 +447,13 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.expectedValue, result)
-			time.Sleep(10 * time.Millisecond)
+			// Give background goroutines (remote reconciliation/push) time to run when applicable.
+			time.Sleep(100 * time.Millisecond)
+			if tt.eventual {
+				assert.Eventually(t, func() bool {
+					return counter.GetValue() == tt.eventualValue
+				}, 500*time.Millisecond, 10*time.Millisecond, "counter should eventually converge to the higher remote value")
+			}
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
 		})
@@ -556,6 +576,8 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		updateValue      int64
 		ignoreRollbackOf int64
 		expectedValue    int64
+		eventual         bool
+		eventualValue    int64
 	}{
 		{
 			name: "remote lock fails, fallback local, higher update => update",
@@ -572,9 +594,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		{
 			name: "remote lock fails, fallback local, lower update within rollback range => no update",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				// No Set call is expected because we fail to lock remotely
-				conn.On("Lock", mock.Anything, "test", mock.Anything).
-					Return(nil, errors.New("lock failed"))
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      95,
@@ -584,8 +604,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		{
 			name: "remote lock fails, fallback local, lower update exceeds rollback range => no update (rollback not applied)",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				conn.On("Lock", mock.Anything, "test", mock.Anything).
-					Return(nil, errors.New("lock failed"))
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      50,
@@ -608,7 +627,10 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			initialValue:     100,
 			updateValue:      150,
 			ignoreRollbackOf: 1024,
-			expectedValue:    200, // remote overrides local
+			// Foreground is local-only; background reconcile will eventually adopt/push 200.
+			expectedValue: 150,
+			eventual:      true,
+			eventualValue: 200,
 		},
 		{
 			name: "remote lock succeeds, remote is lower, new update is higher => triggers Set + Publish",
@@ -633,11 +655,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		{
 			name: "remote lock succeeds, remote is lower, newValue is also lower but within rollback range => no update",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
-				lock.On("Unlock", mock.Anything).Return(nil)
-				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
-					Return([]byte("100"), nil)
-				// No Set call because final local won't change (difference=5, within rollback range=10)
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      95,
@@ -647,12 +665,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		{
 			name: "remote lock succeeds, remote is lower, newValue is lower, exceeds rollback range => no update (rollback not applied)",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
-				lock.On("Unlock", mock.Anything).Return(nil)
-				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
-					Return([]byte("100"), nil)
-				// NEW BEHAVIOR: No Set/Publish calls because rollback is not applied.
-				// The value remains at 100 (both local and remote are 100).
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      50,
@@ -685,7 +698,13 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			)
 
 			// Give async goroutines (the Set/Publish calls) time to complete
-			time.Sleep(20 * time.Millisecond)
+			if tt.eventual {
+				assert.Eventually(t, func() bool {
+					return counter.GetValue() == tt.eventualValue
+				}, 500*time.Millisecond, 10*time.Millisecond)
+			} else {
+				time.Sleep(20 * time.Millisecond)
+			}
 
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
@@ -696,10 +715,6 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) {
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
-
-	// We expect a single lock attempt during the first refresh.
-	connector.On("Lock", mock.Anything, "test", mock.Anything).
-		Return(nil, errors.New("lock failed")).Once()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -735,9 +750,6 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
-
-	connector.On("Lock", mock.Anything, "test", mock.Anything).
-		Return(nil, errors.New("lock failed")).Once()
 
 	counter := &counterInt64{
 		registry:         registry,

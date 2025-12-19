@@ -161,22 +161,12 @@ func (m *mockStatePoller) LatestBlock() int64 {
 }
 
 func (m *mockStatePoller) FinalizedBlock() int64 {
-	// If explicitly mocked, return mocked value
-	for _, c := range m.ExpectedCalls {
-		if c.Method == "FinalizedBlock" {
-			args := m.Called()
-			fb, ok := args.Get(0).(int64)
-			if !ok {
-				panic("FinalizedBlock() returned non-int64 value")
-			}
-			return fb
-		}
+	args := m.Called()
+	fb, ok := args.Get(0).(int64)
+	if !ok {
+		panic("FinalizedBlock() returned non-int64 value")
 	}
-	// Not explicitly mocked - return 0 as default.
-	// Note: We intentionally don't call m.LatestBlock() as a fallback because
-	// that would consume a mock expectation, causing tests to fail if they
-	// only set up LatestBlock with .Once() and the code calls both methods.
-	return 0
+	return fb
 }
 
 func (m *mockStatePoller) IsObjectNull() bool {

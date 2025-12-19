@@ -139,8 +139,9 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.Equal(t, int64(123), value)
-		assert.Greater(t, elapsed, 900*time.Millisecond, "Should wait for lock")
-		assert.Less(t, elapsed, 2*time.Second, "Should not wait too long")
+		// New design: foreground path is local-only (no distributed lock acquisition).
+		// Even if another instance holds the lock, request flow must not be blocked.
+		assert.Less(t, elapsed, 200*time.Millisecond, "Should NOT wait for lock in foreground")
 	})
 
 	t.Run("timeout budget validation", func(t *testing.T) {

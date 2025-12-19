@@ -85,6 +85,9 @@ func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
+	// Remote push happens asynchronously.
+	time.Sleep(50 * time.Millisecond)
+
 	connector.AssertExpectations(t)
 }
 
@@ -109,6 +112,9 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
+
+	// Remote push happens asynchronously.
+	time.Sleep(50 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
@@ -188,7 +194,13 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	counter.value.Store(5)
 
 	result := counter.TryUpdate(ctx, 10)
-	assert.Equal(t, int64(15), result) // Should use higher remote value
+	// Foreground path is local-only; remote reconciliation happens in background.
+	assert.Equal(t, int64(10), result)
+
+	// Allow background reconcile/push to run and adopt the higher remote value.
+	assert.Eventually(t, func() bool {
+		return counter.GetValue() == int64(15)
+	}, 500*time.Millisecond, 10*time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
@@ -197,13 +209,10 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 	registry, connector, ctx := setupTest("my-dev")
 
-	lock := &MockLock{}
-	lock.On("Unlock", mock.Anything).Return(nil).Times(10)
-
-	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil).Times(10)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil).Times(10)
-	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil).Times(10)
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil).Times(10)
+	// Remote push is best-effort and deduped; for this test we only care about local correctness.
+	// Provide an optional Lock expectation to avoid unexpected-call panics if a background push runs.
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).
+		Return(nil, errors.New("lock acquisition failed")).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,
