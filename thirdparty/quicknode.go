@@ -63,6 +63,8 @@ func (v *QuicknodeVendor) extractFilterParams(settings common.VendorSettings) *Q
 		switch val := tagIds.(type) {
 		case int:
 			params.TagIDs = []int{val}
+		case []int:
+			params.TagIDs = val
 		case []interface{}:
 			for _, id := range val {
 				if intVal, ok := id.(int); ok {
@@ -77,6 +79,8 @@ func (v *QuicknodeVendor) extractFilterParams(settings common.VendorSettings) *Q
 		switch val := tagLabels.(type) {
 		case string:
 			params.TagLabels = []string{val}
+		case []string:
+			params.TagLabels = val
 		case []interface{}:
 			for _, label := range val {
 				if strLabel, ok := label.(string); ok {
