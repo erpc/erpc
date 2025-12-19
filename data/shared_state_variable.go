@@ -242,38 +242,73 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	defer span.End()
 
 	if !c.IsStale(staleness) {
+		span.SetAttributes(attribute.Bool("skipped_not_stale", true))
 		return c.value.Load(), nil
 	}
 
+	// Track time waiting for mutex
+	_, mutexSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.AcquireMutex")
 	c.updateMu.Lock()
+	mutexSpan.End()
 	defer c.updateMu.Unlock()
 
+	// Double-check staleness after acquiring mutex
 	if !c.IsStale(staleness) {
+		span.SetAttributes(attribute.Bool("skipped_not_stale_after_mutex", true))
 		return c.value.Load(), nil
 	}
 
 	initialVal := c.value.Load()
+	span.SetAttributes(attribute.Int64("initial_value", initialVal))
 
+	// Track distributed lock acquisition
 	lockCtx, lockCancel := context.WithTimeout(ctx, c.registry.lockMaxWait)
+	_, lockSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.AcquireDistributedLock")
 	unlock := c.tryAcquireLock(lockCtx)
+	lockSpan.SetAttributes(attribute.Bool("lock_acquired", unlock != nil))
+	lockSpan.End()
 	lockCancel()
 
+	// Execute the refresh function (e.g., RPC call to get latest block) in background
 	resultCh := make(chan refreshResult, 1)
 	go func() {
 		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
 		defer fnCancel()
+
+		// Create a span for the actual RPC/refresh call - this is usually what takes time
+		_, fnSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.ExecuteRefresh",
+			trace.WithAttributes(
+				attribute.String("key", c.key),
+				attribute.Int64("timeout_ms", c.registry.fallbackTimeout.Milliseconds()),
+			),
+		)
 		value, err := executeNewValueFn(fnCtx)
+		if err != nil {
+			fnSpan.SetAttributes(attribute.String("error", err.Error()))
+		} else {
+			fnSpan.SetAttributes(attribute.Int64("result_value", value))
+		}
+		fnSpan.End()
+
 		resultCh <- refreshResult{val: value, err: err}
 	}()
 
 	timer := time.NewTimer(c.registry.updateMaxWait)
 	defer timer.Stop()
 
+	role := "follower"
+	if unlock != nil {
+		role = "leader"
+	}
+	span.SetAttributes(attribute.String("role", role))
+
 	if unlock == nil {
 		select {
 		case r := <-resultCh:
+			span.SetAttributes(attribute.String("result_path", "follower_got_result"))
 			return c.handleFollowerResult(initialVal, r)
 		case <-timer.C:
+			span.SetAttributes(attribute.String("result_path", "follower_timeout"))
 			c.markFreshAttempt()
 			c.continueAsyncRefresh(resultCh)
 			return initialVal, nil
@@ -282,8 +317,10 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	select {
 	case r := <-resultCh:
+		span.SetAttributes(attribute.String("result_path", "leader_got_result"))
 		return c.handleLeaderResult(initialVal, unlock, r)
 	case <-timer.C:
+		span.SetAttributes(attribute.String("result_path", "leader_timeout"))
 		c.markFreshAttempt()
 		unlock()
 		c.continueAsyncRefresh(resultCh)
