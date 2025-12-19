@@ -553,20 +553,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// Network-level per-upstream gating based on block availability (after block tag interpolation)
 				if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
 					ulg.Debug().Err(skipErr).Bool("retryable", isRetryable).Msg("skipping upstream due to block availability gating")
-					if loopSpan.IsRecording() {
-						skipCode := ""
-						if se, ok := skipErr.(common.StandardError); ok && se != nil {
-							if be := se.Base(); be != nil {
-								skipCode = string(be.GetCode())
-							}
-						}
-						loopSpan.SetAttributes(
-							attribute.Bool("skipped", true),
-							attribute.String("skip_reason", skipErr.Error()),
-							attribute.Bool("skip_retryable", isRetryable),
-							attribute.String("error.code", skipCode),
-						)
-					}
+					loopSpan.SetAttributes(
+						attribute.Bool("skipped", true),
+						attribute.String("skip_reason", skipErr.Error()),
+						attribute.Bool("skip_retryable", isRetryable),
+					)
 
 					// Track block unavailability in metrics so it's visible on charts
 					finality := effectiveReq.Finality(loopCtx)
@@ -714,8 +705,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				lvr.Release()
 				req.ClearLastValidResponse()
 			}
-			// Set failure category on forward span for easy filtering
-			common.SetTraceSpanError(forwardSpan, translatedErr)
 			return nil, translatedErr
 		}
 
@@ -737,8 +726,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
-			// Set failure category on forward span for easy filtering
-			common.SetTraceSpanError(forwardSpan, translatedErr)
 			return nil, translatedErr
 		}
 	}

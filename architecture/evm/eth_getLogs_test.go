@@ -172,13 +172,10 @@ func (m *mockStatePoller) FinalizedBlock() int64 {
 			return fb
 		}
 	}
-
-	// Fallback: if LatestBlock is mocked, reuse it; otherwise default to 0
-	for _, c := range m.ExpectedCalls {
-		if c.Method == "LatestBlock" {
-			return m.LatestBlock()
-		}
-	}
+	// Not explicitly mocked - return 0 as default.
+	// Note: We intentionally don't call m.LatestBlock() as a fallback because
+	// that would consume a mock expectation, causing tests to fail if they
+	// only set up LatestBlock with .Once() and the code calls both methods.
 	return 0
 }
 
