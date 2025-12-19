@@ -1121,6 +1121,58 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 		assert.Equal(t, int64(300), counter.GetValue())
 	})
 
+	t.Run("SetLocalValue marks value as fresh preventing unnecessary polls", func(t *testing.T) {
+		// This test verifies that SetLocalValue updates lastProcessed so that
+		// TryUpdateIfStale won't trigger unnecessary RPC calls.
+		// Bug: If SetLocalValue doesn't update lastProcessed, every request would
+		// trigger a blocking RPC call even when we just got fresh data.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("freshness-test")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "freshness-test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockMaxWait:     50 * time.Millisecond,
+			updateMaxWait:   100 * time.Millisecond,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "freshness-test/counter").
+			Return(updates, cleanup, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "freshness-test/counter", "value", nil).
+			Return([]byte(""), common.NewErrRecordNotFound("", "", ""))
+
+		counter := registry.GetCounterInt64("counter", 0)
+		time.Sleep(50 * time.Millisecond)
+
+		// Initially should be stale (no value set yet)
+		assert.True(t, counter.IsStale(500*time.Millisecond), "should be stale initially")
+
+		// SetLocalValue should mark as fresh
+		counter.SetLocalValue(100)
+		assert.False(t, counter.IsStale(500*time.Millisecond), "should NOT be stale after SetLocalValue")
+
+		// TryUpdateIfStale should NOT call getNewValue when not stale
+		pollCalled := false
+		_, err := counter.TryUpdateIfStale(ctx, 500*time.Millisecond, func(ctx context.Context) (int64, error) {
+			pollCalled = true
+			return 100, nil
+		})
+		assert.NoError(t, err)
+		assert.False(t, pollCalled, "TryUpdateIfStale should NOT poll when SetLocalValue just updated the value")
+
+		// Wait for staleness window to pass
+		time.Sleep(600 * time.Millisecond)
+		assert.True(t, counter.IsStale(500*time.Millisecond), "should be stale after staleness window")
+	})
+
 	t.Run("SetLocalValue is thread-safe under concurrent access", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

@@ -76,6 +76,11 @@ func (c *counterInt64) SetLocalValue(newValue int64) bool {
 	// If another goroutine updated it in the meantime, we retry
 	for {
 		if c.value.CompareAndSwap(currentValue, newValue) {
+			// Mark as fresh so TryUpdateIfStale won't trigger unnecessary polls
+			c.lastProcessedMu.Lock()
+			c.lastProcessed = time.Now()
+			c.lastProcessedMu.Unlock()
+
 			c.registry.logger.Trace().
 				Str("key", c.key).
 				Int64("from", currentValue).
