@@ -76,7 +76,7 @@ func (c *counterInt64) SetLocalValue(newValue int64) bool {
 	// If another goroutine updated it in the meantime, we retry
 	for {
 		if c.value.CompareAndSwap(currentValue, newValue) {
-			c.registry.logger.Debug().
+			c.registry.logger.Trace().
 				Str("key", c.key).
 				Int64("from", currentValue).
 				Int64("to", newValue).
@@ -103,7 +103,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
 				updated = true
-				c.registry.logger.Debug().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
+				c.registry.logger.Trace().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
 				c.triggerValueCallback(newVal)
 				break
 			}
@@ -128,7 +128,7 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 		// If a real reorg happened, subsequent polls will naturally pick up the
 		// correct lower value through the normal forward-progress path.
 		// We still trigger the rollback callbacks to notify listeners of the detection.
-		c.registry.logger.Debug().
+		c.registry.logger.Trace().
 			Str("source", source).
 			Str("key", c.key).
 			Int64("currentValue", currentValue).
