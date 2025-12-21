@@ -85,7 +85,6 @@ type EvmStatePoller struct {
 	stateMu sync.RWMutex
 
 	// Track if updates are in progress to avoid goroutine pile-up
-	latestUpdateInProgress    sync.Mutex
 	finalizedUpdateInProgress sync.Mutex
 
 	// Earliest per probe tracking
@@ -447,10 +446,12 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 }
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
-	// SYNCHRONOUS local update: immediately make the block available for gating checks.
-	// This ensures that if eth_getBlockByNumber returns block N, subsequent requests
-	// like eth_getLogs(N) can pass the block availability check without waiting for
-	// async/remote state updates.
+	// Best-effort, non-blocking update.
+	//
+	// IMPORTANT:
+	// - This must be fast and MUST NOT be blocked by any refresh/thundering-herd coordination.
+	// - TryUpdate is local-only and schedules remote propagation asynchronously via the shared variable's
+	//   deduped publish-first background push.
 	currentValue := e.latestBlockShared.GetValue()
 	if blockNumber <= currentValue {
 		e.logger.Trace().
@@ -460,42 +461,12 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 		return
 	}
 
-	updated := e.latestBlockShared.SetLocalValue(blockNumber)
-	if !updated {
-		e.logger.Trace().
-			Int64("blockNumber", blockNumber).
-			Msg("local value not updated (concurrent update or not newer)")
-		return
-	}
-
+	newValue := e.latestBlockShared.TryUpdate(e.appCtx, blockNumber)
 	e.logger.Trace().
 		Int64("blockNumber", blockNumber).
 		Int64("previousValue", currentValue).
-		Msg("latest block suggestion applied locally")
-
-	// ASYNC remote update: sync with shared state (Redis) in background.
-	// This is best-effort and non-blocking to avoid goroutine pile-up.
-	if !e.latestUpdateInProgress.TryLock() {
-		// Another remote update is already in progress, skip this one.
-		// The local value is already updated, so gating will work correctly.
-		e.logger.Trace().
-			Int64("blockNumber", blockNumber).
-			Msg("skipping remote sync as another update is in progress")
-		return
-	}
-
-	go func() {
-		defer e.latestUpdateInProgress.Unlock()
-
-		// Create a timeout context to avoid blocking forever on Redis operations
-		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
-		defer cancel()
-
-		e.latestBlockShared.TryUpdate(ctx, blockNumber)
-		e.logger.Trace().
-			Int64("blockNumber", blockNumber).
-			Msg("latest block suggestion synced to remote")
-	}()
+		Int64("newValue", newValue).
+		Msg("latest block suggestion applied")
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {

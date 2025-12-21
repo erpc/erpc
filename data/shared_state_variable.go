@@ -201,9 +201,10 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	// Capture pre-update value to decide whether it's worth scheduling a push.
 	prev := c.value.Load()
 
-	c.updateMu.Lock()
+	// IMPORTANT: TryUpdate must never wait on updateMu.
+	// updateMu exists to coordinate expensive refresh execution in TryUpdateIfStale (thundering herd control),
+	// but local counter advancement must remain fast even if a refresh is in-flight.
 	_ = c.processNewValue(UpdateSourceTryUpdate, newValue)
-	c.updateMu.Unlock()
 
 	// Schedule a background push only when the caller is attempting to advance the value
 	// (newValue >= prev). This avoids unnecessary remote traffic for obviously stale inputs
