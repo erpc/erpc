@@ -423,7 +423,14 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 	}
 
 	go func() {
-		defer c.bgPushInProgress.Unlock()
+		defer func() {
+			c.bgPushInProgress.Unlock()
+			// Close the race window: if someone set bgPushRequested between our Swap(false)
+			// returning false and their TryLock failing, respawn a worker.
+			if c.bgPushRequested.Load() {
+				c.scheduleBackgroundPushCurrent()
+			}
+		}()
 
 		for {
 			// Coalesce: if no push is requested at loop start, we're done.

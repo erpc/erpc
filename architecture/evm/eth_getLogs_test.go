@@ -1309,7 +1309,7 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		assert.True(t, handled)
 		assert.Nil(t, resp)
 		assert.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
 	})
 
 	t.Run("still_hard_fails_when_toBlock_ahead_beyond_maxRetryableDistance", func(t *testing.T) {
@@ -1334,7 +1334,7 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		assert.True(t, handled)
 		assert.Nil(t, resp)
 		assert.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
 	})
 }
 
