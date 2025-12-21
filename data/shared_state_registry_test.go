@@ -74,6 +74,8 @@ func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).
 		Return(nil, errors.New("lock acquisition failed"))
+	// Background push now publishes the current value even if lock acquisition fails.
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -130,6 +132,8 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("10"), mock.Anything).
 		Return(errors.New("set failed"))
+	// Background push now publishes the current value even if remote set fails.
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -184,6 +188,8 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("15"), nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("15"), mock.Anything).Return(nil)
+	// Background push publishes local snapshot first, then publishes the reconciled remote value.
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(15)).Return(nil)
 
 	counter := &counterInt64{
@@ -213,6 +219,9 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 	// Provide an optional Lock expectation to avoid unexpected-call panics if a background push runs.
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).
 		Return(nil, errors.New("lock acquisition failed")).Maybe()
+	// Background push also publishes best-effort for fast propagation.
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).
+		Return(nil).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,

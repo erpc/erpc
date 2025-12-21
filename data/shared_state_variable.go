@@ -59,6 +59,9 @@ type counterInt64 struct {
 	// bgPushInProgress dedupes best-effort remote reconciliation/push operations.
 	// It MUST NOT be held while waiting on updateMu; remote sync should never block request flow.
 	bgPushInProgress sync.Mutex
+	// bgPushRequested indicates a newer value should be pushed after the current push attempt.
+	// This avoids dropping updates when scheduleBackgroundPushCurrent() is called while a push is in progress.
+	bgPushRequested atomic.Bool
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -410,51 +413,77 @@ func (c *counterInt64) updateRemoteUpdate(ctx context.Context, newValue int64) {
 // scheduleBackgroundPushCurrent dedupes and pushes the current local value to the
 // remote store under a lock, without blocking the caller.
 func (c *counterInt64) scheduleBackgroundPushCurrent() {
+	// Always mark that a push is needed.
+	c.bgPushRequested.Store(true)
+
+	// Only one goroutine at a time runs the push loop.
 	if !c.bgPushInProgress.TryLock() {
 		return
 	}
+
 	go func() {
 		defer c.bgPushInProgress.Unlock()
 
-		// Snapshot local value (atomic read; never block request flow here)
-		localVal := c.value.Load()
-		if localVal <= 0 {
-			return
-		}
+		for {
+			// Coalesce: if no push is requested at loop start, we're done.
+			if !c.bgPushRequested.Swap(false) {
+				return
+			}
 
-		// Acquire distributed lock with background budget.
-		// NOTE: This may block if Redis is unhealthy or lock is contended, but it must not
-		// block request flow because we are NOT holding updateMu while waiting.
-		lockCtx, lockCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockTtl)
-		unlock := c.tryAcquireLock(lockCtx)
-		lockCancel()
-		if unlock == nil {
-			return
-		}
-		defer unlock()
+			// Snapshot local value (atomic read; never block request flow here)
+			localVal := c.value.Load()
+			if localVal <= 0 {
+				continue
+			}
 
-		// Reconcile with remote under the distributed lock.
-		getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		remoteVal := c.tryGetRemoteValue(getCtx)
-		getCancel()
+			// Best-effort fast propagation (no distributed lock): publish the latest value so
+			// other instances can update their local counters quickly via WatchCounterInt64.
+			// This is safe because counterInt64 never applies rollbacks (monotonic), so out-of-order
+			// publishes won't regress local values.
+			pubCtx, pubCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockMaxWait)
+			_ = c.registry.connector.PublishCounterInt64(pubCtx, c.key, localVal)
+			pubCancel()
 
-		// If remote is ahead, adopt it locally (briefly take updateMu for thundering herd coordination).
-		if remoteVal > localVal {
-			c.updateMu.Lock()
-			_ = c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
-			c.updateMu.Unlock()
-		}
+			// Acquire distributed lock with a bounded wait budget.
+			// NOTE: This is a background operation and MUST NOT block request flow.
+			lockCtx, lockCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockMaxWait)
+			unlock := c.tryAcquireLock(lockCtx)
+			lockCancel()
+			if unlock == nil {
+				// Could not acquire lock quickly; rely on publish-only propagation for now.
+				// If newer updates arrive, scheduleBackgroundPushCurrent() will set bgPushRequested
+				// and this loop will run again.
+				continue
+			}
 
-		// Push max(local, remote) to remote.
-		finalVal := c.value.Load()
-		if remoteVal > finalVal {
-			finalVal = remoteVal
+			func() {
+				defer unlock()
+
+				// Reconcile with remote under the distributed lock.
+				getCtx, getCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+				remoteVal := c.tryGetRemoteValue(getCtx)
+				getCancel()
+
+				// If remote is ahead, adopt it locally (briefly take updateMu for thundering herd coordination).
+				if remoteVal > localVal {
+					c.updateMu.Lock()
+					_ = c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
+					c.updateMu.Unlock()
+				}
+
+				// Push max(local, remote) to remote.
+				finalVal := c.value.Load()
+				if remoteVal > finalVal {
+					finalVal = remoteVal
+				}
+				if finalVal <= 0 {
+					return
+				}
+
+				pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
+				c.updateRemoteUpdate(pctx, finalVal)
+				cancel()
+			}()
 		}
-		if finalVal <= 0 {
-			return
-		}
-		pctx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
-		c.updateRemoteUpdate(pctx, finalVal)
-		cancel()
 	}()
 }

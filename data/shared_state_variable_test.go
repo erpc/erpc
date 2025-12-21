@@ -229,6 +229,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
+				// Background push now publishes the local snapshot best-effort even when lock acquisition fails.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:   5,
 			updateValue:    10,
@@ -245,6 +247,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 					Return([]byte(""), errors.New("get failed"))
 				c.On("Set", mock.Anything, "test", "value", []byte("10"), mock.Anything).
 					Return(errors.New("set failed"))
+				// Best-effort publish happens before any remote reconciliation attempt.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:   5,
 			updateValue:    10,
@@ -258,6 +262,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("15"), nil)
+				// Background push publishes local snapshot first, then the reconciled higher value.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 				// After reconciling to 15, the code pushes the current value back to remote
 				c.On("Set", mock.Anything, "test", "value", []byte("15"), mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(15)).Return(nil)
@@ -381,6 +387,8 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("15"), nil)
+				// Background push publishes local snapshot first, then the reconciled higher value.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 				// With lock held, reconcile will push the higher value back to remote
 				c.On("Set", mock.Anything, "test", "value", []byte("15"), mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(15)).Return(nil)
@@ -467,12 +475,13 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 	lock := &MockLock{}
 
-	// Setup mocks for multiple concurrent calls
-	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Times(10)
-	lock.On("Unlock", mock.Anything).Return(nil).Times(10)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("5"), nil).Times(10)
-	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Times(10)
-	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Times(10)
+	// Remote reconciliation/push is best-effort and deduped; this test focuses on local correctness.
+	// Allow background remote activity without asserting exact call counts (which are nondeterministic under coalescing).
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Maybe()
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("5"), nil).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -585,6 +594,8 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				// No Set call is expected because we fail to lock remotely
 				conn.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
+				// Background push publishes best-effort even when the lock cannot be acquired.
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:     5,
 			updateValue:      10,
@@ -620,6 +631,8 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
 					Return([]byte("200"), nil)
+				// Background push publishes local snapshot first, then the reconciled higher value.
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(150)).Return(nil)
 				// After reconciling to 200 while holding the lock, code pushes current back to remote
 				conn.On("Set", mock.Anything, "test", "value", []byte("200"), mock.Anything).Return(nil)
 				conn.On("PublishCounterInt64", mock.Anything, "test", int64(200)).Return(nil)
@@ -959,6 +972,9 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 			}).
 			Return(nil, context.DeadlineExceeded)
 
+		// Background push publishes best-effort for fast propagation.
+		connector.On("PublishCounterInt64", mock.Anything, "test/timeout-counter", int64(42)).Return(nil).Maybe()
+
 		// Setup mock for Get to return not found initially
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/timeout-counter", "value", nil).
 			Return(nil, common.NewErrRecordNotFound("test/timeout-counter", "value", "mock"))
@@ -1024,6 +1040,9 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 				<-ctx.Done()
 			}).
 			Return(nil, context.DeadlineExceeded)
+
+		// Background push publishes best-effort for fast propagation.
+		connector.On("PublishCounterInt64", mock.Anything, "test/update-counter", int64(100)).Return(nil).Maybe()
 
 		// Setup other required mocks
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/update-counter", "value", nil).
