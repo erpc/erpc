@@ -5,7 +5,7 @@
     },
     "devDependencies": {
         "@biomejs/biome": "^2.3.10",
-        "typescript": "5.1.6"
+        "typescript": "5.9.3"
     },
     "dependencies": {
         "@erpc-cloud/config": "workspace:*",

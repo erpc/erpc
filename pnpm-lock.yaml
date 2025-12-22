@@ -19,8 +19,8 @@ importers:
         specifier: ^2.3.10
         version: 2.3.10
       typescript:
-        specifier: 5.1.6
-        version: 5.1.6
+        specifier: 5.9.3
+        version: 5.9.3
 
   typescript/cli:
     devDependencies:
@@ -28,8 +28,8 @@ importers:
         specifier: ^22.19.3
         version: 22.19.3
       typescript:
-        specifier: ^5.7.3
-        version: 5.7.3
+        specifier: ^5.9.3
+        version: 5.9.3
 
   typescript/config: {}
 
@@ -252,13 +252,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  typescript@5.1.6:
-    resolution: {integrity: sha512-zaWCozRZ6DLEWAWFrVDz1H6FVXzUSfTy5FUMWsQlU8Ym5JP9eO4xkTIROFCQvhQf61z6O/G6ugw3SgAnvvm+HA==}
-    engines: {node: '>=14.17'}
-    hasBin: true
-
-  typescript@5.7.3:
-    resolution: {integrity: sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==}
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -413,8 +408,6 @@ snapshots:
       '@esbuild/win32-ia32': 0.27.2
       '@esbuild/win32-x64': 0.27.2
 
-  typescript@5.1.6: {}
-
-  typescript@5.7.3: {}
+  typescript@5.9.3: {}
 
   undici-types@6.21.0: {}
