@@ -34,7 +34,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 0
 
@@ -137,7 +137,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 0
 
@@ -261,7 +261,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 0
 
@@ -274,7 +274,7 @@ jobs:
 
       - name: Setup Blacksmith Builder
         if: github.repository_owner == 'erpc'
-        uses: useblacksmith/setup-docker-builder@f9b57e1c7d5a57eed0b5609e1ffeadbf3bb0b726 # v1
+        uses: useblacksmith/setup-docker-builder@53647ab5afe8827af5623b35bd4302eabd41619f # v1.2.0
 
       - name: Set up Docker Buildx
         if: github.repository_owner != 'erpc'
@@ -342,7 +342,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 0
 
@@ -355,7 +355,7 @@ jobs:
 
       - name: Setup Blacksmith Builder
         if: github.repository_owner == 'erpc'
-        uses: useblacksmith/setup-docker-builder@f9b57e1c7d5a57eed0b5609e1ffeadbf3bb0b726 # v1
+        uses: useblacksmith/setup-docker-builder@53647ab5afe8827af5623b35bd4302eabd41619f # v1.2.0
 
       - name: Set up Docker Buildx
         if: github.repository_owner != 'erpc'

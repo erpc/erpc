@@ -51,6 +51,7 @@ __export(index_exports, {
   RateLimitPeriodMinute: () => RateLimitPeriodMinute,
   RateLimitPeriodMonth: () => RateLimitPeriodMonth,
   RateLimitPeriodSecond: () => RateLimitPeriodSecond,
+  RateLimitPeriodWeek: () => RateLimitPeriodWeek,
   RateLimitPeriodYear: () => RateLimitPeriodYear,
   ScopeNetwork: () => ScopeNetwork,
   ScopeUpstream: () => ScopeUpstream,
@@ -79,6 +80,7 @@ var RateLimitPeriodSecond = 0;
 var RateLimitPeriodMinute = 1;
 var RateLimitPeriodHour = 2;
 var RateLimitPeriodDay = 3;
+var RateLimitPeriodWeek = 4;
 var RateLimitPeriodMonth = 5;
 var RateLimitPeriodYear = 6;
 var AuthTypeSecret = "secret";
@@ -133,6 +135,7 @@ var createConfig = (cfg) => {
   RateLimitPeriodMinute,
   RateLimitPeriodMonth,
   RateLimitPeriodSecond,
+  RateLimitPeriodWeek,
   RateLimitPeriodYear,
   ScopeNetwork,
   ScopeUpstream,
