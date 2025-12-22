@@ -1,5 +1,5 @@
 # Use the official Node.js image as the base image
-FROM node:20-alpine@sha256:1ab6fc5a31d515dc7b6b25f6acfda2001821f2c2400252b6cb61044bd9f9ad48
+FROM node:20-alpine@sha256:658d0f63e501824d6c23e06d4bb95c71e7d704537c9d9272f488ac03a370d448
 
 # Install pnpm
 RUN npm install -g pnpm
