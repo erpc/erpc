@@ -25,8 +25,8 @@ importers:
   typescript/cli:
     devDependencies:
       '@types/node':
-        specifier: ^22.10.5
-        version: 22.10.5
+        specifier: ^22.19.3
+        version: 22.19.3
       typescript:
         specifier: ^5.7.3
         version: 5.7.3
@@ -244,8 +244,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@types/node@22.10.5':
-    resolution: {integrity: sha512-F8Q+SeGimwOo86fiovQh8qiXfFEh2/ocYv7tU5pJ3EXMSSxk1Joj5wefpFK2fHTf/N6HKGSxIDBT9f3gCxXPkQ==}
+  '@types/node@22.19.3':
+    resolution: {integrity: sha512-1N9SBnWYOJTrNZCdh/yJE+t910Y128BoyY+zBLWhL3r0TYzlTmFdXrPwHL9DyFZmlEXNQQolTZh3KHV31QDhyA==}
 
   esbuild@0.27.2:
     resolution: {integrity: sha512-HyNQImnsOC7X9PMNaCIeAm4ISCQXs5a5YasTXVliKv4uuBo1dKrG0A+uQS8M5eXjVMnLg3WgXaKvprHlFJQffw==}
@@ -262,8 +262,8 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  undici-types@6.20.0:
-    resolution: {integrity: sha512-Ny6QZ2Nju20vw1SRHe3d9jVu6gJ+4e3+MMpqu7pqE5HT6WsTSlce++GQmK5UXS8mzV8DSYHrQH+Xrf2jVcuKNg==}
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
 snapshots:
 
@@ -380,9 +380,9 @@ snapshots:
   '@esbuild/win32-x64@0.27.2':
     optional: true
 
-  '@types/node@22.10.5':
+  '@types/node@22.19.3':
     dependencies:
-      undici-types: 6.20.0
+      undici-types: 6.21.0
 
   esbuild@0.27.2:
     optionalDependencies:
@@ -417,4 +417,4 @@ snapshots:
 
   typescript@5.7.3: {}
 
-  undici-types@6.20.0: {}
+  undici-types@6.21.0: {}
