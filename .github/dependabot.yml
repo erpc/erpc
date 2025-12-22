@@ -3,79 +3,119 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-docker:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directory: /docs
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-docker-docs:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /docs
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-npm-docs:
+        patterns:
+          - "*"
 
   - package-ecosystem: gomod
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-go:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directory: /monitoring
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-docker-monitoring:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-npm-root:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /test/util
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-npm-test:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /typescript/cli
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-npm-cli:
+        patterns:
+          - "*"
 
   - package-ecosystem: npm
     directory: /typescript/config
     schedule:
-      interval: daily
+      interval: weekly
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      all-npm-config:
+        patterns:
+          - "*"
