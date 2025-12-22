@@ -219,6 +219,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 		initialValue   int64
 		updateValue    int64
 		expectedValue  int64
+		eventual       bool
+		eventualValue  int64
 		expectedCalls  int
 		expectedRemote bool
 	}{
@@ -227,6 +229,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
+				// Background push now publishes the local snapshot best-effort even when lock acquisition fails.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:   5,
 			updateValue:    10,
@@ -243,6 +247,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 					Return([]byte(""), errors.New("get failed"))
 				c.On("Set", mock.Anything, "test", "value", []byte("10"), mock.Anything).
 					Return(errors.New("set failed"))
+				// Best-effort publish happens before any remote reconciliation attempt.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:   5,
 			updateValue:    10,
@@ -256,13 +262,18 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("15"), nil)
+				// Background push publishes local snapshot first, then the reconciled higher value.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 				// After reconciling to 15, the code pushes the current value back to remote
 				c.On("Set", mock.Anything, "test", "value", []byte("15"), mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(15)).Return(nil)
 			},
-			initialValue:   5,
-			updateValue:    10,
-			expectedValue:  15,
+			initialValue: 5,
+			updateValue:  10,
+			// Foreground is local-only; background reconcile will eventually adopt/push 15.
+			expectedValue:  10,
+			eventual:       true,
+			eventualValue:  15,
 			expectedCalls:  1,
 			expectedRemote: false,
 		},
@@ -301,7 +312,12 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 
 			result := counter.TryUpdate(ctx, tt.updateValue)
 			assert.Equal(t, tt.expectedValue, result)
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
+			if tt.eventual {
+				assert.Eventually(t, func() bool {
+					return counter.GetValue() == tt.eventualValue
+				}, 500*time.Millisecond, 10*time.Millisecond)
+			}
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
 		})
@@ -317,6 +333,8 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		updateValue   int64
 		lastProcessed time.Time
 		expectedValue int64
+		eventualValue int64
+		eventual      bool
 		expectedError error
 		expectedCalls int
 	}{
@@ -336,8 +354,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "stale local value same as remote unstales local value",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
-				l.On("Unlock", mock.Anything).Return(nil)
+				// No remote I/O expected in the synchronous path (local-only).
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -370,6 +387,8 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("15"), nil)
+				// Background push publishes local snapshot first, then the reconciled higher value.
+				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 				// With lock held, reconcile will push the higher value back to remote
 				c.On("Set", mock.Anything, "test", "value", []byte("15"), mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(15)).Return(nil)
@@ -378,15 +397,18 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			staleness:     time.Second,
 			updateValue:   10,
 			lastProcessed: time.Now().Add(-2 * time.Second),
-			expectedValue: 15,
+			// Foreground path is local-only: it returns the refresh result (10).
+			// Remote reconciliation happens asynchronously and should eventually raise the local value to 15.
+			expectedValue: 10,
+			eventual:      true,
+			eventualValue: 15,
 			expectedError: nil,
 			expectedCalls: 1,
 		},
 		{
 			name: "update function returns error",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
-				l.On("Unlock", mock.Anything).Return(nil)
+				// No remote I/O expected on error; we just mark as fresh to debounce retries.
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -433,7 +455,13 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.expectedValue, result)
-			time.Sleep(10 * time.Millisecond)
+			// Give background goroutines (remote reconciliation/push) time to run when applicable.
+			time.Sleep(100 * time.Millisecond)
+			if tt.eventual {
+				assert.Eventually(t, func() bool {
+					return counter.GetValue() == tt.eventualValue
+				}, 500*time.Millisecond, 10*time.Millisecond, "counter should eventually converge to the higher remote value")
+			}
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
 		})
@@ -447,12 +475,13 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 	lock := &MockLock{}
 
-	// Setup mocks for multiple concurrent calls
-	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Times(10)
-	lock.On("Unlock", mock.Anything).Return(nil).Times(10)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("5"), nil).Times(10)
-	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Times(10)
-	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Times(10)
+	// Remote reconciliation/push is best-effort and deduped; this test focuses on local correctness.
+	// Allow background remote activity without asserting exact call counts (which are nondeterministic under coalescing).
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Maybe()
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).Return([]byte("5"), nil).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -556,6 +585,8 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		updateValue      int64
 		ignoreRollbackOf int64
 		expectedValue    int64
+		eventual         bool
+		eventualValue    int64
 	}{
 		{
 			name: "remote lock fails, fallback local, higher update => update",
@@ -563,6 +594,8 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				// No Set call is expected because we fail to lock remotely
 				conn.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
+				// Background push publishes best-effort even when the lock cannot be acquired.
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:     5,
 			updateValue:      10,
@@ -572,9 +605,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		{
 			name: "remote lock fails, fallback local, lower update within rollback range => no update",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				// No Set call is expected because we fail to lock remotely
-				conn.On("Lock", mock.Anything, "test", mock.Anything).
-					Return(nil, errors.New("lock failed"))
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      95,
@@ -582,15 +613,16 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			expectedValue:    100, // remains unchanged
 		},
 		{
-			name: "remote lock fails, fallback local, lower update exceeds rollback range => update",
+			name: "remote lock fails, fallback local, lower update exceeds rollback range => no update (rollback not applied)",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				conn.On("Lock", mock.Anything, "test", mock.Anything).
-					Return(nil, errors.New("lock failed"))
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      50,
 			ignoreRollbackOf: 40, // difference = 50 => exceeds rollback range
-			expectedValue:    50,
+			// NEW BEHAVIOR: Rollback is detected but NOT applied to preserve SetLocalValue invariant.
+			// The value remains at 100 instead of rolling back to 50.
+			expectedValue: 100,
 		},
 		{
 			name: "remote lock succeeds, remote higher => override local; push reconciled value",
@@ -599,6 +631,8 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
 					Return([]byte("200"), nil)
+				// Background push publishes local snapshot first, then the reconciled higher value.
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(150)).Return(nil)
 				// After reconciling to 200 while holding the lock, code pushes current back to remote
 				conn.On("Set", mock.Anything, "test", "value", []byte("200"), mock.Anything).Return(nil)
 				conn.On("PublishCounterInt64", mock.Anything, "test", int64(200)).Return(nil)
@@ -606,7 +640,10 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			initialValue:     100,
 			updateValue:      150,
 			ignoreRollbackOf: 1024,
-			expectedValue:    200, // remote overrides local
+			// Foreground is local-only; background reconcile will eventually adopt/push 200.
+			expectedValue: 150,
+			eventual:      true,
+			eventualValue: 200,
 		},
 		{
 			name: "remote lock succeeds, remote is lower, new update is higher => triggers Set + Publish",
@@ -631,11 +668,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 		{
 			name: "remote lock succeeds, remote is lower, newValue is also lower but within rollback range => no update",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
-				lock.On("Unlock", mock.Anything).Return(nil)
-				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
-					Return([]byte("100"), nil)
-				// No Set call because final local won't change (difference=5, within rollback range=10)
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      95,
@@ -643,21 +676,15 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			expectedValue:    100,
 		},
 		{
-			name: "remote lock succeeds, remote is lower, newValue is lower, exceeds rollback range => triggers Set + Publish",
+			name: "remote lock succeeds, remote is lower, newValue is lower, exceeds rollback range => no update (rollback not applied)",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
-				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
-				lock.On("Unlock", mock.Anything).Return(nil)
-				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
-					Return([]byte("100"), nil)
-				conn.On("Set", mock.Anything, "test", "value", []byte("50"), mock.Anything).
-					Return(nil)
-				conn.On("PublishCounterInt64", mock.Anything, "test", int64(50)).
-					Return(nil)
+				// newValue < prev => TryUpdate will not schedule any remote work
 			},
 			initialValue:     100,
 			updateValue:      50,
-			ignoreRollbackOf: 40, // difference=50 => exceeds rollback range => do update
-			expectedValue:    50,
+			ignoreRollbackOf: 40, // difference=50 => exceeds rollback range
+			// NEW BEHAVIOR: Rollback is detected but NOT applied to preserve SetLocalValue invariant.
+			expectedValue: 100,
 		},
 	}
 
@@ -684,7 +711,13 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			)
 
 			// Give async goroutines (the Set/Publish calls) time to complete
-			time.Sleep(20 * time.Millisecond)
+			if tt.eventual {
+				assert.Eventually(t, func() bool {
+					return counter.GetValue() == tt.eventualValue
+				}, 500*time.Millisecond, 10*time.Millisecond)
+			} else {
+				time.Sleep(20 * time.Millisecond)
+			}
 
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
@@ -695,10 +728,6 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) {
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
-
-	// We expect a single lock attempt during the first refresh.
-	connector.On("Lock", mock.Anything, "test", mock.Anything).
-		Return(nil, errors.New("lock failed")).Once()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -734,9 +763,6 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
-
-	connector.On("Lock", mock.Anything, "test", mock.Anything).
-		Return(nil, errors.New("lock failed")).Once()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -946,6 +972,9 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 			}).
 			Return(nil, context.DeadlineExceeded)
 
+		// Background push publishes best-effort for fast propagation.
+		connector.On("PublishCounterInt64", mock.Anything, "test/timeout-counter", int64(42)).Return(nil).Maybe()
+
 		// Setup mock for Get to return not found initially
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/timeout-counter", "value", nil).
 			Return(nil, common.NewErrRecordNotFound("test/timeout-counter", "value", "mock"))
@@ -1012,6 +1041,9 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 			}).
 			Return(nil, context.DeadlineExceeded)
 
+		// Background push publishes best-effort for fast propagation.
+		connector.On("PublishCounterInt64", mock.Anything, "test/update-counter", int64(100)).Return(nil).Maybe()
+
 		// Setup other required mocks
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/update-counter", "value", nil).
 			Return(nil, common.NewErrRecordNotFound("test/update-counter", "value", "mock"))
@@ -1063,5 +1095,351 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 		cfg.FallbackTimeout = common.Duration(1 * time.Second)
 		err = cfg.Validate()
 		assert.NoError(t, err)
+	})
+
+	t.Run("SetLocalValue updates value synchronously without network calls", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Use a mock connector that will fail if any network call is made
+		connector := NewMockConnector("sync-test")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockTtl:         30 * time.Second,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/sync-counter").
+			Return(updates, cleanup, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/sync-counter", "value", nil).
+			Return([]byte("100"), nil)
+
+		counter := registry.GetCounterInt64("sync-counter", 1024).(*counterInt64)
+		time.Sleep(50 * time.Millisecond) // Allow initialization
+
+		// Verify initial value
+		assert.Equal(t, int64(100), counter.GetValue())
+
+		// SetLocalValue should update SYNCHRONOUSLY (no network, no async)
+		// This is the critical fix: the value must be immediately visible
+		updated := counter.SetLocalValue(200)
+		assert.True(t, updated, "SetLocalValue should return true when value increased")
+
+		// IMMEDIATELY check the value - this is the key assertion
+		// Before the fix, this would fail because update was async
+		assert.Equal(t, int64(200), counter.GetValue(), "GetValue must return updated value immediately after SetLocalValue")
+
+		// SetLocalValue with same or lower value should not update
+		updated = counter.SetLocalValue(200)
+		assert.False(t, updated, "SetLocalValue should return false when value is not greater")
+
+		updated = counter.SetLocalValue(150)
+		assert.False(t, updated, "SetLocalValue should return false when value is lower")
+
+		// Value should still be 200
+		assert.Equal(t, int64(200), counter.GetValue())
+
+		// SetLocalValue with higher value should update
+		updated = counter.SetLocalValue(300)
+		assert.True(t, updated)
+		assert.Equal(t, int64(300), counter.GetValue())
+	})
+
+	t.Run("SetLocalValue marks value as fresh preventing unnecessary polls", func(t *testing.T) {
+		// This test verifies that SetLocalValue updates lastProcessed so that
+		// TryUpdateIfStale won't trigger unnecessary RPC calls.
+		// Bug: If SetLocalValue doesn't update lastProcessed, every request would
+		// trigger a blocking RPC call even when we just got fresh data.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("freshness-test")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "freshness-test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockMaxWait:     50 * time.Millisecond,
+			updateMaxWait:   100 * time.Millisecond,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "freshness-test/counter").
+			Return(updates, cleanup, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "freshness-test/counter", "value", nil).
+			Return([]byte(""), common.NewErrRecordNotFound("", "", ""))
+
+		counter := registry.GetCounterInt64("counter", 0)
+		time.Sleep(50 * time.Millisecond)
+
+		// Initially should be stale (no value set yet)
+		assert.True(t, counter.IsStale(500*time.Millisecond), "should be stale initially")
+
+		// SetLocalValue should mark as fresh
+		counter.SetLocalValue(100)
+		assert.False(t, counter.IsStale(500*time.Millisecond), "should NOT be stale after SetLocalValue")
+
+		// TryUpdateIfStale should NOT call getNewValue when not stale
+		pollCalled := false
+		_, err := counter.TryUpdateIfStale(ctx, 500*time.Millisecond, func(ctx context.Context) (int64, error) {
+			pollCalled = true
+			return 100, nil
+		})
+		assert.NoError(t, err)
+		assert.False(t, pollCalled, "TryUpdateIfStale should NOT poll when SetLocalValue just updated the value")
+
+		// Wait for staleness window to pass
+		time.Sleep(600 * time.Millisecond)
+		assert.True(t, counter.IsStale(500*time.Millisecond), "should be stale after staleness window")
+	})
+
+	t.Run("SetLocalValue is thread-safe under concurrent access", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("concurrent-sync-test")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockTtl:         30 * time.Second,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/concurrent-counter").
+			Return(updates, cleanup, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/concurrent-counter", "value", nil).
+			Return([]byte("0"), nil)
+
+		counter := registry.GetCounterInt64("concurrent-counter", 1024).(*counterInt64)
+		time.Sleep(50 * time.Millisecond)
+
+		// Spawn many goroutines all trying to SetLocalValue concurrently
+		var wg sync.WaitGroup
+		numGoroutines := 100
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(val int64) {
+				defer wg.Done()
+				counter.SetLocalValue(val)
+			}(int64(i + 1))
+		}
+		wg.Wait()
+
+		// The final value should be the highest one attempted (100)
+		finalValue := counter.GetValue()
+		assert.Equal(t, int64(100), finalValue, "Final value should be the highest concurrent update")
+	})
+
+	t.Run("no regression when SetLocalValue and processNewValue race", func(t *testing.T) {
+		// This test verifies the fix for the race condition between SetLocalValue
+		// (which bypasses updateMu) and processNewValue (called from TryUpdate).
+		// Before the fix, processNewValue could overwrite a higher SetLocalValue
+		// with a lower value because it used Load-then-Store instead of CAS.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("race-test")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockTtl:         30 * time.Second,
+			lockMaxWait:     100 * time.Millisecond,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/race-counter").
+			Return(updates, cleanup, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/race-counter", "value", nil).
+			Return([]byte("100"), nil)
+		connector.On("Lock", mock.Anything, mock.Anything, mock.Anything).
+			Return(nil, nil).Maybe()
+		connector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return(nil).Maybe()
+
+		counter := registry.GetCounterInt64("race-counter", 1024).(*counterInt64)
+		time.Sleep(50 * time.Millisecond)
+
+		assert.Equal(t, int64(100), counter.GetValue())
+
+		// Simulate the race: concurrent SetLocalValue (high value) and TryUpdate (lower value)
+		// Run many iterations to increase chance of catching race
+		for iteration := 0; iteration < 50; iteration++ {
+			baseValue := int64(100 + iteration*10)
+			counter.value.Store(baseValue)
+
+			var wg sync.WaitGroup
+
+			// Goroutine 1: SetLocalValue with higher value
+			highValue := baseValue + 50
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				counter.SetLocalValue(highValue)
+			}()
+
+			// Goroutine 2: TryUpdate with lower value (simulates upstream returning older block)
+			lowerValue := baseValue + 20
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// Call processNewValue directly under lock (as TryUpdate does)
+				counter.updateMu.Lock()
+				counter.processNewValue("test", lowerValue)
+				counter.updateMu.Unlock()
+			}()
+
+			wg.Wait()
+
+			// The final value MUST be the higher one - never regress
+			finalValue := counter.GetValue()
+			assert.GreaterOrEqual(t, finalValue, highValue,
+				"iteration %d: value regressed from %d to %d (lower TryUpdate value was %d)",
+				iteration, highValue, finalValue, lowerValue)
+		}
+	})
+
+	t.Run("processNewValue does not rollback SetLocalValue even from remote-sync", func(t *testing.T) {
+		// This test verifies that processNewValue will NOT rollback a value set by
+		// SetLocalValue, even when called with UpdateSourceRemoteSync (watch channel).
+		// This is critical because SetLocalValue represents fresh RPC data that should
+		// not be overwritten by potentially stale distributed state.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("rollback-test")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockTtl:         30 * time.Second,
+			lockMaxWait:     100 * time.Millisecond,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/rollback-counter").
+			Return(updates, cleanup, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/rollback-counter", "value", nil).
+			Return([]byte("100"), nil)
+
+		// Use small ignoreRollbackOf to ensure rollback logic is triggered
+		counter := registry.GetCounterInt64("rollback-counter", 10).(*counterInt64)
+		time.Sleep(50 * time.Millisecond)
+
+		assert.Equal(t, int64(100), counter.GetValue())
+
+		// Set a high value via SetLocalValue (simulates fresh RPC response)
+		updated := counter.SetLocalValue(200)
+		assert.True(t, updated)
+		assert.Equal(t, int64(200), counter.GetValue())
+
+		// Now simulate processNewValue with a lower value from various sources
+		// that would normally trigger rollback (gap > ignoreRollbackOf)
+		testSources := []string{
+			UpdateSourceRemoteSync,       // watch channel
+			UpdateSourceTryUpdate,        // async TryUpdate
+			UpdateSourceTryUpdateIfStale, // polling
+			UpdateSourceRemoteCheck,      // reconciliation
+		}
+
+		for _, source := range testSources {
+			// Reset to 200
+			counter.value.Store(200)
+
+			// Call processNewValue with a much lower value (gap=100 > ignoreRollbackOf=10)
+			counter.updateMu.Lock()
+			counter.processNewValue(source, 100)
+			counter.updateMu.Unlock()
+
+			// Value should NOT have been rolled back
+			assert.Equal(t, int64(200), counter.GetValue(),
+				"source=%s: value should not be rolled back from 200 to 100", source)
+		}
+	})
+
+	t.Run("rollback callbacks are still triggered even without applying rollback", func(t *testing.T) {
+		// Verifies that rollback detection still triggers callbacks for monitoring/alerting
+		// even though the actual value rollback is not applied.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("callback-test")
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockTtl:         30 * time.Second,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/callback-counter").
+			Return(updates, cleanup, nil)
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/callback-counter", "value", nil).
+			Return([]byte("100"), nil)
+
+		counter := registry.GetCounterInt64("callback-counter", 10).(*counterInt64)
+		time.Sleep(50 * time.Millisecond)
+
+		// Track rollback callback invocations
+		var callbackMu sync.Mutex
+		var callbackCalls []struct{ current, new int64 }
+		counter.OnLargeRollback(func(currentVal, newVal int64) {
+			callbackMu.Lock()
+			callbackCalls = append(callbackCalls, struct{ current, new int64 }{currentVal, newVal})
+			callbackMu.Unlock()
+		})
+
+		// Set high value
+		counter.SetLocalValue(200)
+		assert.Equal(t, int64(200), counter.GetValue())
+
+		// Process a value that would trigger rollback detection
+		counter.updateMu.Lock()
+		counter.processNewValue(UpdateSourceRemoteSync, 100)
+		counter.updateMu.Unlock()
+
+		// Value should NOT be rolled back
+		assert.Equal(t, int64(200), counter.GetValue())
+
+		// But callback SHOULD have been triggered
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
+		assert.Len(t, callbackCalls, 1, "rollback callback should be triggered")
+		if len(callbackCalls) > 0 {
+			assert.Equal(t, int64(200), callbackCalls[0].current)
+			assert.Equal(t, int64(100), callbackCalls[0].new)
+		}
 	})
 }

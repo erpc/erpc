@@ -85,7 +85,6 @@ type EvmStatePoller struct {
 	stateMu sync.RWMutex
 
 	// Track if updates are in progress to avoid goroutine pile-up
-	latestUpdateInProgress    sync.Mutex
 	finalizedUpdateInProgress sync.Mutex
 
 	// Earliest per probe tracking
@@ -447,43 +446,27 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 }
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
-	// Best-effort, non-blocking update to avoid goroutine pile-up
-	// If an update is already in progress, skip this one
-	if !e.latestUpdateInProgress.TryLock() {
-		// Another update is already in progress, skip this one
-		e.logger.Trace().
-			Int64("blockNumber", blockNumber).
-			Msg("skipping latest block suggestion as another update is in progress")
-		return
-	}
-
-	// We acquired the lock, perform the update and release when done
-	go func() {
-		defer e.latestUpdateInProgress.Unlock()
-
-		// Check if this update is still relevant (not older than current value)
-		currentValue := e.latestBlockShared.GetValue()
-		if blockNumber <= currentValue {
-			e.logger.Trace().
-				Int64("blockNumber", blockNumber).
-				Int64("currentValue", currentValue).
-				Msg("skipping latest block update as it's not newer")
-			return
-		}
+	// Best-effort, non-blocking update.
+	//
+	// IMPORTANT:
+	// - This must be fast and MUST NOT be blocked by any refresh/thundering-herd coordination.
+	// - TryUpdate is local-only and schedules remote propagation asynchronously via the shared variable's
+	//   deduped publish-first background push.
+	currentValue := e.latestBlockShared.GetValue()
+	if blockNumber <= currentValue {
 		e.logger.Trace().
 			Int64("blockNumber", blockNumber).
 			Int64("currentValue", currentValue).
-			Msg("accepting latest block suggestion")
+			Msg("skipping latest block suggestion as it's not newer")
+		return
+	}
 
-		// Create a timeout context to avoid blocking forever on Redis operations
-		ctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
-		defer cancel()
-
-		e.latestBlockShared.TryUpdate(ctx, blockNumber)
-		e.logger.Trace().
-			Int64("blockNumber", blockNumber).
-			Msg("latest block suggestion applied")
-	}()
+	newValue := e.latestBlockShared.TryUpdate(e.appCtx, blockNumber)
+	e.logger.Trace().
+		Int64("blockNumber", blockNumber).
+		Int64("previousValue", currentValue).
+		Int64("newValue", newValue).
+		Msg("latest block suggestion applied")
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {

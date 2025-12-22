@@ -45,15 +45,14 @@ func TestTryUpdate_LocalThenBackgroundPush(t *testing.T) {
 	}
 	r, c := setupMockRegistry(t, cfg)
 
-	// Foreground lock fails fast
-	c.On("Lock", mock.Anything, "test/my", mock.Anything).Return(nil, errors.New("busy")).Once()
 	// Background reconcile acquires lock, reads remote (not found), sets and publishes current value 10
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil).Once()
 	c.On("Lock", mock.Anything, "test/my", mock.Anything).Return(lock, nil).Once()
 	c.On("Get", mock.Anything, ConnectorMainIndex, "test/my", "value", nil).Return([]byte(""), errors.New("not found")).Once()
 	c.On("Set", mock.Anything, "test/my", "value", []byte("10"), mock.Anything).Return(nil).Once()
-	c.On("PublishCounterInt64", mock.Anything, "test/my", int64(10)).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/my", int64(10)).Return(nil)
 
 	ctr := &counterInt64{registry: r, key: "test/my", ignoreRollbackOf: 1024}
 	val := ctr.TryUpdate(context.Background(), 10)
@@ -74,15 +73,14 @@ func TestTryUpdateIfStale_UpdateFnBudgetExceeded(t *testing.T) {
 	}
 	r, c := setupMockRegistry(t, cfg)
 
-	// No foreground lock acquired
-	c.On("Lock", mock.Anything, "test/stale", mock.Anything).Return(nil, errors.New("busy")).Once()
 	// Background reconcile will acquire the lock once and push the final value 999
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil).Once()
 	c.On("Lock", mock.Anything, "test/stale", mock.Anything).Return(lock, nil).Once()
 	c.On("Get", mock.Anything, ConnectorMainIndex, "test/stale", "value", nil).Return([]byte(""), errors.New("not found")).Once()
 	c.On("Set", mock.Anything, "test/stale", "value", []byte("999"), mock.Anything).Return(nil).Once()
-	c.On("PublishCounterInt64", mock.Anything, "test/stale", int64(999)).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/stale", int64(999)).Return(nil)
 
 	ctr := &counterInt64{registry: r, key: "test/stale", ignoreRollbackOf: 1024}
 	ctr.value.Store(1)
@@ -117,27 +115,26 @@ func TestBackgroundReconcileUsesMax(t *testing.T) {
 	}
 	r, c := setupMockRegistry(t, cfg)
 
-	// Foreground lock fails
-	c.On("Lock", mock.Anything, "test/recon", mock.Anything).Return(nil, errors.New("busy")).Once()
 	// Background: acquire lock, remote higher 15, then push 15
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil).Once()
 	c.On("Lock", mock.Anything, "test/recon", mock.Anything).Return(lock, nil).Once()
 	c.On("Get", mock.Anything, ConnectorMainIndex, "test/recon", "value", nil).Return([]byte("15"), nil).Once()
 	c.On("Set", mock.Anything, "test/recon", "value", []byte("15"), mock.Anything).Return(nil).Once()
-	c.On("PublishCounterInt64", mock.Anything, "test/recon", int64(15)).Return(nil).Once()
+	// best-effort publish local snapshot first, then publish-after-Set for the reconciled value
+	c.On("PublishCounterInt64", mock.Anything, "test/recon", int64(10)).Return(nil)
+	c.On("PublishCounterInt64", mock.Anything, "test/recon", int64(15)).Return(nil)
 
 	ctr := &counterInt64{registry: r, key: "test/recon", ignoreRollbackOf: 1024}
 	ctr.value.Store(5)
 	val := ctr.TryUpdate(context.Background(), 10)
 	assert.Equal(t, int64(10), val)
 
-	time.Sleep(200 * time.Millisecond)
-	assert.Equal(t, int64(15), ctr.GetValue())
+	assert.Eventually(t, func() bool { return ctr.GetValue() == int64(15) }, 500*time.Millisecond, 10*time.Millisecond)
 	c.AssertExpectations(t)
 }
 
-func TestForegroundWithLock_ReconcilesRemoteFirst(t *testing.T) {
+func TestTryUpdate_RemoteAhead_IsAdoptedInBackground(t *testing.T) {
 	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(300 * time.Millisecond),
@@ -153,12 +150,15 @@ func TestForegroundWithLock_ReconcilesRemoteFirst(t *testing.T) {
 	// remote ahead at 20
 	c.On("Get", mock.Anything, ConnectorMainIndex, "test/fg", "value", nil).Return([]byte("20"), nil).Once()
 	c.On("Set", mock.Anything, "test/fg", "value", []byte("20"), mock.Anything).Return(nil).Once()
-	c.On("PublishCounterInt64", mock.Anything, "test/fg", int64(20)).Return(nil).Once()
+	// best-effort publish local snapshot first, then publish-after-Set for the reconciled value
+	c.On("PublishCounterInt64", mock.Anything, "test/fg", int64(10)).Return(nil)
+	c.On("PublishCounterInt64", mock.Anything, "test/fg", int64(20)).Return(nil)
 
 	ctr := &counterInt64{registry: r, key: "test/fg", ignoreRollbackOf: 1024}
 	ctr.value.Store(5)
 	val := ctr.TryUpdate(context.Background(), 10)
-	assert.Equal(t, int64(20), val)
+	assert.Equal(t, int64(10), val)
+	assert.Eventually(t, func() bool { return ctr.GetValue() == int64(20) }, 500*time.Millisecond, 10*time.Millisecond)
 	c.AssertExpectations(t)
 }
 
@@ -172,16 +172,14 @@ func TestTryUpdateIfStale_SlowFn_BackgroundPush(t *testing.T) {
 	}
 	r, c := setupMockRegistry(t, cfg)
 
-	// Foreground lock fails fast
-	c.On("Lock", mock.Anything, "test/slow", mock.Anything).Return(nil, errors.New("busy")).Once()
-
 	// Background will acquire lock and push resulting value 77
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil).Once()
 	c.On("Lock", mock.Anything, "test/slow", mock.Anything).Return(lock, nil).Once()
 	c.On("Get", mock.Anything, ConnectorMainIndex, "test/slow", "value", nil).Return([]byte(""), errors.New("not found")).Once()
 	c.On("Set", mock.Anything, "test/slow", "value", []byte("77"), mock.Anything).Return(nil).Once()
-	c.On("PublishCounterInt64", mock.Anything, "test/slow", int64(77)).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/slow", int64(77)).Return(nil)
 
 	ctr := &counterInt64{registry: r, key: "test/slow", ignoreRollbackOf: 1024}
 	ctr.value.Store(1)
@@ -213,16 +211,14 @@ func TestBackgroundPushIsDeduped(t *testing.T) {
 	}
 	r, c := setupMockRegistry(t, cfg)
 
-	// Both foreground attempts fail to acquire lock
-	c.On("Lock", mock.Anything, "test/dedupe", mock.Anything).Return(nil, errors.New("busy")).Twice()
-
 	// Only one background reconcile should run (deduped): acquire lock once and push once
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil).Once()
 	c.On("Lock", mock.Anything, "test/dedupe", mock.Anything).Return(lock, nil).Once()
 	c.On("Get", mock.Anything, ConnectorMainIndex, "test/dedupe", "value", nil).Return([]byte(""), errors.New("not found")).Once()
 	c.On("Set", mock.Anything, "test/dedupe", "value", []byte("20"), mock.Anything).Return(nil).Once()
-	c.On("PublishCounterInt64", mock.Anything, "test/dedupe", int64(20)).Return(nil).Once()
+	// publish can happen multiple times (best-effort publish + publish-after-Set)
+	c.On("PublishCounterInt64", mock.Anything, "test/dedupe", int64(20)).Return(nil)
 
 	ctr := &counterInt64{registry: r, key: "test/dedupe", ignoreRollbackOf: 1024}
 	ctr.value.Store(5)

@@ -160,6 +160,15 @@ func (m *mockStatePoller) LatestBlock() int64 {
 	return lb
 }
 
+func (m *mockStatePoller) FinalizedBlock() int64 {
+	args := m.Called()
+	fb, ok := args.Get(0).(int64)
+	if !ok {
+		panic("FinalizedBlock() returned non-int64 value")
+	}
+	return fb
+}
+
 func (m *mockStatePoller) IsObjectNull() bool {
 	return false
 }
@@ -1258,3 +1267,85 @@ func createTestRequest(filter interface{}) *common.NormalizedRequest {
 	jrq := common.NewJsonRpcRequest("eth_getLogs", params)
 	return common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 }
+
+func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
+	ctx := context.Background()
+	i64ptr := func(v int64) *int64 { return &v }
+
+	makeNetwork := func(maxRetryable *int64) *mockNetwork {
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				Integrity: &common.EvmIntegrityConfig{
+					EnforceGetLogsBlockRange: util.BoolPtr(true),
+				},
+				MaxRetryableBlockDistance: maxRetryable,
+			},
+		}).Maybe()
+		return n
+	}
+
+	t.Run("hard_fails_when_toBlock_ahead_by_1", func(t *testing.T) {
+		n := makeNetwork(i64ptr(128))
+		u := new(mockEvmUpstream)
+		poller := &fixedPoller{latest: 100, finalized: 100}
+
+		u.On("Id").Return("u1").Maybe()
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
+		u.On("EvmStatePoller").Return(poller).Maybe()
+		// toBlock=101, upstream says not available
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(101)).
+			Return(false, nil).
+			Once()
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x65", // 101
+			"toBlock":   "0x65",
+		})
+
+		handled, resp, err := upstreamPreForward_eth_getLogs(ctx, n, u, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
+	})
+
+	t.Run("still_hard_fails_when_toBlock_ahead_beyond_maxRetryableDistance", func(t *testing.T) {
+		n := makeNetwork(i64ptr(128))
+		u := new(mockEvmUpstream)
+		poller := &fixedPoller{latest: 100, finalized: 100}
+
+		u.On("Id").Return("u1").Maybe()
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
+		u.On("EvmStatePoller").Return(poller).Maybe()
+		// toBlock=301 (0x12d), upstream says not available
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(301)).
+			Return(false, nil).
+			Once()
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x12d",
+			"toBlock":   "0x12d",
+		})
+
+		handled, resp, err := upstreamPreForward_eth_getLogs(ctx, n, u, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
+	})
+}
+
+type fixedPoller struct {
+	common.EvmStatePoller
+	latest    int64
+	finalized int64
+}
+
+func (p *fixedPoller) LatestBlock() int64 { return p.latest }
+
+func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
+
+func (p *fixedPoller) IsObjectNull() bool { return false }
