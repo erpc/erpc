@@ -12,7 +12,7 @@
   "scripts": {
     "build": "pnpm build:lib && pnpm build:types",
     "build:lib": "esbuild src/index.ts --outdir=lib --bundle --outbase=src --platform=node --format=cjs --sourcemap",
-    "build:types": "tsc src/index.ts --emitDeclarationOnly --declaration --outDir lib --declarationMap --moduleResolution nodenext"
+    "build:types": "tsc src/index.ts --emitDeclarationOnly --declaration --outDir lib --declarationMap --module nodenext --moduleResolution nodenext"
   },
   "files": [
     "lib",
