@@ -386,6 +386,36 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedNum: 1,
 			expectedErr: false,
 		},
+		{
+			name: "trace_filter",
+			request: &common.JsonRpcRequest{
+				Method: "trace_filter",
+				Params: []interface{}{
+					map[string]interface{}{
+						"fromBlock": "0x1b4",
+						"toBlock":   "0x1b5",
+					},
+				},
+			},
+			expectedRef: "*",
+			expectedNum: 437,
+			expectedErr: false,
+		},
+		{
+			name: "arbtrace_filter",
+			request: &common.JsonRpcRequest{
+				Method: "arbtrace_filter",
+				Params: []interface{}{
+					map[string]interface{}{
+						"fromBlock": "0x1b4",
+						"toBlock":   "0x1b5",
+					},
+				},
+			},
+			expectedRef: "*",
+			expectedNum: 437,
+			expectedErr: false,
+		},
 	}
 
 	for _, tt := range tests {
