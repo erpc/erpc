@@ -375,6 +375,18 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"trace_block": {
 		ReqRefs: FirstParam,
 	},
+	"trace_filter": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+	},
+	"arbtrace_filter": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+	},
 	"debug_traceBlockByNumber": {
 		ReqRefs: FirstParam,
 	},
