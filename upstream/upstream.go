@@ -430,6 +430,9 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			ctx context.Context,
 			exec failsafe.Execution[*common.NormalizedResponse],
 		) (*common.NormalizedResponse, error) {
+			// Span to track pre-request overhead (metrics, finality calculation)
+			_, preReqSpan := common.StartDetailSpan(ctx, "Upstream.tryForward.PreRequest")
+
 			u.metricsTracker.RecordUpstreamRequest(
 				u,
 				method,
@@ -449,7 +452,16 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType(), finality, nrq.UserId())
 
+			preReqSpan.End()
+
+			// Span to track the actual client request
+			ctx, sendSpan := common.StartDetailSpan(ctx, "Upstream.tryForward.SendRequest",
+				trace.WithAttributes(
+					attribute.String("client.type", string(clientType)),
+				),
+			)
 			nrs, errCall := u.Client.SendRequest(ctx, nrq)
+			sendSpan.End()
 			isSuccess := false
 			if errCall == nil && nrs != nil {
 				nrs.SetUpstream(u)
@@ -578,6 +590,9 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			return nil, fmt.Errorf("no failsafe executor found for request")
 		}
 
+		// Track time from failsafe executor start to first callback invocation
+		upstreamFailsafeStartTime := time.Now()
+
 		resp, execErr := failsafeExecutor.executor.
 			WithContext(ctx).
 			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
@@ -588,6 +603,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						attribute.Int("execution.attempt", exec.Attempts()),
 						attribute.Int("execution.retry", exec.Retries()),
 						attribute.Int("execution.hedge", exec.Hedges()),
+						attribute.Int64("failsafe_init_latency_ms", time.Since(upstreamFailsafeStartTime).Milliseconds()),
 					),
 				)
 				defer execSpan.End()

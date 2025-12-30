@@ -438,6 +438,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		attribute.String("failsafe.matched_finalities", fmt.Sprintf("%v", failsafeExecutor.finalities)),
 	)
 
+	// Track time from failsafe executor start to first callback invocation
+	failsafeStartTime := time.Now()
+
 	resp, execErr := failsafeExecutor.executor.
 		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
@@ -445,6 +448,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				Int("attempt", exec.Attempts()).
 				Int("retry", exec.Retries()).
 				Int("hedge", exec.Hedges()).
+				Dur("failsafe_init_latency", time.Since(failsafeStartTime)).
 				Msgf("execution attempt for network forwarding")
 
 			execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
