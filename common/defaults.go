@@ -375,6 +375,22 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"trace_block": {
 		ReqRefs: FirstParam,
 	},
+	"trace_filter": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+		// architecture/evm/trace_filter.go hook enforces lower/upper-bound against per-upstream latest/finality.
+		EnforceBlockAvailability: util.BoolPtr(false),
+	},
+	"arbtrace_filter": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+		// architecture/evm/trace_filter.go hook enforces lower/upper-bound against per-upstream latest/finality.
+		EnforceBlockAvailability: util.BoolPtr(false),
+	},
 	"debug_traceBlockByNumber": {
 		ReqRefs: FirstParam,
 	},
