@@ -1733,7 +1733,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				// Apply defaults to each failsafe config
 				for i, fs := range n.Failsafe {
 					// Find matching default by method/finality
-					var defaultFs *FailsafeConfig
+					defaultFs := &FailsafeConfig{
+						MatchMethod: "*",
+					}
 					for _, dfs := range defaults.Failsafe {
 						// Match method using wildcard (if both are specified)
 						methodMatch := true
@@ -1751,10 +1753,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 							defaultFs = dfs
 							break
 						}
-					}
-					// If no specific match found, use first default as general default
-					if defaultFs == nil && len(defaults.Failsafe) > 0 {
-						defaultFs = defaults.Failsafe[0]
 					}
 					if defaultFs != nil {
 						if err := fs.SetDefaults(defaultFs); err != nil {

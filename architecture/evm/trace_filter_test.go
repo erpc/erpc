@@ -236,4 +236,3 @@ func TestUpstreamPreForward_arbtrace_filter(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
-
