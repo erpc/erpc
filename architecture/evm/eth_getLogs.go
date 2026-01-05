@@ -325,60 +325,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		)
 	}
 
-	statePoller := up.EvmStatePoller()
-	if statePoller == nil || statePoller.IsObjectNull() {
-		return true, nil, common.NewErrUpstreamInitialization(
-			fmt.Errorf("upstream evm state poller is not available"),
-			up.Id(),
-		)
-	}
-
-	// Check if the upstream can handle the requested block range
-	available, err := up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, toBlock)
-	if err != nil {
+	if err := CheckBlockRangeAvailability(ctx, up, "eth_getLogs", fromBlock, toBlock); err != nil {
 		return true, nil, err
-	}
-	if !available {
-		latestBlock := statePoller.LatestBlock()
-		finalizedBlock := statePoller.FinalizedBlock()
-
-		// This is a transient condition (not missing data): the upstream is simply behind its head/finality.
-		// Use a retryable upstream-level error code so network-level retries and Use-Upstream reruns can
-		// re-attempt the SAME upstream after a short delay, instead of permanently blacklisting it like
-		// ErrEndpointMissingData would.
-		return true, nil, &common.ErrUpstreamBlockUnavailable{
-			BaseError: common.BaseError{
-				Code:    common.ErrCodeUpstreamBlockUnavailable,
-				Message: fmt.Sprintf("block not found for eth_getLogs, requested toBlock %d is not yet available on the node (latestBlock: %d, finalizedBlock: %d)", toBlock, latestBlock, finalizedBlock),
-				Details: map[string]interface{}{
-					"upstreamId":     up.Id(),
-					"blockNumber":    toBlock,
-					"latestBlock":    latestBlock,
-					"finalizedBlock": finalizedBlock,
-				},
-			},
-		}
-	}
-	available, err = up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, fromBlock)
-	if err != nil {
-		return true, nil, err
-	}
-	if !available {
-		latestBlock := statePoller.LatestBlock()
-		finalizedBlock := statePoller.FinalizedBlock()
-
-		return true, nil, &common.ErrUpstreamBlockUnavailable{
-			BaseError: common.BaseError{
-				Code:    common.ErrCodeUpstreamBlockUnavailable,
-				Message: fmt.Sprintf("block not found for eth_getLogs, requested fromBlock %d is not available on the node (latestBlock: %d, finalizedBlock: %d)", fromBlock, latestBlock, finalizedBlock),
-				Details: map[string]interface{}{
-					"upstreamId":     up.Id(),
-					"blockNumber":    fromBlock,
-					"latestBlock":    latestBlock,
-					"finalizedBlock": finalizedBlock,
-				},
-			},
-		}
 	}
 
 	// Continue with the original forward flow
