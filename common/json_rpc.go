@@ -669,6 +669,10 @@ func (r *JsonRpcResponse) WriteResultTo(w io.Writer, trimSides bool) (n int64, e
 		return int64(nn), err
 	}
 
+	if r.resultWriter == nil {
+		return 0, nil
+	}
+
 	return r.resultWriter.WriteTo(w, trimSides)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -111,7 +112,8 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
-	// Create gRPC connection
+	// Create gRPC connection with aggressive timeouts suitable for cache services
+	// These should fail fast to allow failover to other upstreams
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(
@@ -120,16 +122,16 @@ func NewGrpcBdsClient(
 		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                2 * time.Minute,
-			Timeout:             20 * time.Second,
+			Timeout:             5 * time.Second, // Fail faster on dead connections
 			PermitWithoutStream: false,
 		}),
 		grpc.WithConnectParams(grpc.ConnectParams{
-			MinConnectTimeout: 5 * time.Second,
+			MinConnectTimeout: 200 * time.Millisecond, // Fail very fast for cache services
 			Backoff: backoff.Config{
-				BaseDelay:  1 * time.Second,
-				Multiplier: 1.6,
+				BaseDelay:  100 * time.Millisecond, // Faster retries
+				Multiplier: 1.5,                    // Slightly less aggressive multiplier
 				Jitter:     0.2,
-				MaxDelay:   30 * time.Second,
+				MaxDelay:   500 * time.Millisecond, // Don't backoff too long
 			},
 		}),
 	)
@@ -163,6 +165,15 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		),
 	)
 	defer span.End()
+
+	// Fail fast if context is already canceled or expired
+	if err := ctx.Err(); err != nil {
+		common.SetTraceSpanError(span, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, common.NewErrEndpointRequestTimeout(0, err)
+		}
+		return nil, common.NewErrEndpointRequestCanceled(err)
+	}
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
@@ -307,7 +318,13 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		Bool("includeTransactions", includeTransactions).
 		Msg("calling gRPC GetBlockByNumber")
 
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetBlockByNumber",
+		trace.WithAttributes(
+			attribute.String("block_number", blockNumber),
+		),
+	)
 	grpcResp, err := c.rpcClient.GetBlockByNumber(ctx, grpcReq)
+	grpcSpan.End()
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
@@ -522,7 +539,14 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 		Int("topicCount", len(topics)).
 		Msg("calling gRPC GetLogs")
 
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs",
+		trace.WithAttributes(
+			attribute.Int64("from_block", int64(*fromBlock)), // #nosec G115
+			attribute.Int64("to_block", int64(*toBlock)),     // #nosec G115
+		),
+	)
 	grpcResp, err := c.rpcClient.GetLogs(ctx, grpcReq)
+	grpcSpan.End()
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
