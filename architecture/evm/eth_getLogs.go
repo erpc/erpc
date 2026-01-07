@@ -17,6 +17,38 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// resolveBlockTagForGetLogs attempts to resolve a block tag (like "latest", "finalized")
+// to a hex block number string and its int64 value. If the value is already a hex number,
+// it parses and returns it. If the tag cannot be resolved (e.g., "safe", "pending", or
+// network state not available), it returns empty string and 0.
+// This allows eth_getLogs hooks to validate block ranges even when tags are used.
+func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, blockValue string) (hexStr string, blockNum int64) {
+	if blockValue == "" {
+		return "", 0
+	}
+
+	// If already a hex number, parse and return it
+	if strings.HasPrefix(blockValue, "0x") {
+		bn, err := strconv.ParseInt(blockValue, 0, 64)
+		if err != nil {
+			return "", 0
+		}
+		return blockValue, bn
+	}
+
+	// Try to resolve block tags using the network's state poller
+	if resolved, ok := resolveBlockTagToHex(ctx, network, blockValue); ok {
+		bn, err := common.HexToInt64(resolved)
+		if err != nil {
+			return "", 0
+		}
+		return resolved, bn
+	}
+
+	// Tag could not be resolved (e.g., "safe", "pending", "earliest", or no state available)
+	return "", 0
+}
+
 func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
 	fb, err := common.NormalizeHex(fromBlock)
 	if err != nil {
@@ -71,19 +103,14 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 		jrq.RUnlock()
 		return false, nil, nil
 	}
-	// Extract numeric range if hex numbers
-	var fromBlock, toBlock int64
-	if v, ok := filter["fromBlock"].(string); ok && strings.HasPrefix(v, "0x") {
-		if bn, e := strconv.ParseInt(v, 0, 64); e == nil {
-			fromBlock = bn
-		}
-	}
-	if v, ok := filter["toBlock"].(string); ok && strings.HasPrefix(v, "0x") {
-		if bn, e := strconv.ParseInt(v, 0, 64); e == nil {
-			toBlock = bn
-		}
-	}
+	// Extract block values (may be hex or tags like "latest")
+	fbStr, _ := filter["fromBlock"].(string)
+	tbStr, _ := filter["toBlock"].(string)
 	jrq.RUnlock()
+
+	// Resolve block tags to numbers for metrics (hex or tags like "latest", "finalized")
+	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
+	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
 
 	if fromBlock > 0 && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
@@ -137,26 +164,8 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return false, nil, nil
 	}
 
-	fbStr, ok := filter["fromBlock"].(string)
-	if !ok || !strings.HasPrefix(fbStr, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	tbStr, ok := filter["toBlock"].(string)
-	if !ok || !strings.HasPrefix(tbStr, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	fromBlock, err := strconv.ParseInt(fbStr, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
-	toBlock, err := strconv.ParseInt(tbStr, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
+	fbStr, _ := filter["fromBlock"].(string)
+	tbStr, _ := filter["toBlock"].(string)
 
 	// Capture address/topics counts while under read lock
 	var addrCount, topicCount int64
@@ -172,6 +181,17 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 	}
 	jrq.RUnlock()
+
+	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
+	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
+	// pass through to upstream without block range validation.
+	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
+	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+
+	// If either block couldn't be resolved to a number, skip validation and pass to upstream
+	if fromBlock == 0 || toBlock == 0 {
+		return false, nil, nil
+	}
 
 	if fromBlock > toBlock {
 		return true, nil, common.NewErrInvalidRequest(
@@ -297,27 +317,20 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	fb, ok := filter["fromBlock"].(string)
-	if !ok || !strings.HasPrefix(fb, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	fromBlock, err := strconv.ParseInt(fb, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
-	tb, ok := filter["toBlock"].(string)
-	if !ok || !strings.HasPrefix(tb, "0x") {
-		jrq.RUnlock()
-		return false, nil, nil
-	}
-	toBlock, err := strconv.ParseInt(tb, 0, 64)
-	if err != nil {
-		jrq.RUnlock()
-		return true, nil, err
-	}
+	fb, _ := filter["fromBlock"].(string)
+	tb, _ := filter["toBlock"].(string)
 	jrq.RUnlock()
+
+	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
+	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
+	// pass through to upstream without block range validation.
+	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fb)
+	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tb)
+
+	// If either block couldn't be resolved to a number, skip validation and pass to upstream
+	if fromBlock == 0 || toBlock == 0 {
+		return false, nil, nil
+	}
 
 	if fromBlock > toBlock {
 		return true, nil, common.NewErrInvalidRequest(
