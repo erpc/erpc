@@ -17,6 +17,13 @@ type EvmUpstream interface {
 	EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error)
 	EvmSyncingState() EvmSyncingState
 	EvmStatePoller() EvmStatePoller
+	// EvmEffectiveLatestBlock returns the latest block adjusted for the upstream's upper availability bound.
+	// If the upstream has a blockAvailability.upper config (e.g., latestBlockMinus: 5), this returns
+	// min(latestBlock, upperBound) instead of the raw latest block.
+	EvmEffectiveLatestBlock() int64
+	// EvmEffectiveFinalizedBlock returns the finalized block adjusted for the upstream's upper availability bound.
+	// If the upstream has a blockAvailability.upper config, this returns min(finalizedBlock, upperBound).
+	EvmEffectiveFinalizedBlock() int64
 }
 
 type AvailbilityConfidence int

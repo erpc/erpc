@@ -128,7 +128,9 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 			}
 		}
 
-		upBlock := statePoller.LatestBlock()
+		// Use effective latest block which considers blockAvailability.upper config
+		// (e.g., if upstream has latestBlockMinus: 5, use latest-5 instead of latest)
+		upBlock := u.EvmEffectiveLatestBlock()
 		if upBlock > maxBlock {
 			maxBlock = upBlock
 		}
@@ -166,7 +168,8 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 			}
 		}
 
-		upBlock := statePoller.FinalizedBlock()
+		// Use effective finalized block which considers blockAvailability.upper config
+		upBlock := u.EvmEffectiveFinalizedBlock()
 		if upBlock > maxBlock {
 			maxBlock = upBlock
 		}
@@ -206,7 +209,8 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 			}
 		}
 
-		upBlock := statePoller.FinalizedBlock()
+		// Use effective finalized block which considers blockAvailability.upper config
+		upBlock := u.EvmEffectiveFinalizedBlock()
 		// Skip upstreams that haven't determined finalized block yet (returning 0)
 		if upBlock > 0 {
 			if !initialized || upBlock < minBlock {

@@ -1035,6 +1035,43 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 	return minVal, maxVal
 }
 
+// EvmEffectiveLatestBlock returns the latest block adjusted for the upstream's upper availability bound.
+// If the upstream has a blockAvailability.upper config (e.g., latestBlockMinus: 5), this returns
+// min(latestBlock, upperBound) instead of the raw latest block.
+func (u *Upstream) EvmEffectiveLatestBlock() int64 {
+	if u == nil || u.evmStatePoller == nil || u.evmStatePoller.IsObjectNull() {
+		return 0
+	}
+	latestBlock := u.evmStatePoller.LatestBlock()
+	if latestBlock <= 0 {
+		return 0
+	}
+
+	_, maxBound := u.resolveAvailabilityBounds()
+	if maxBound != math.MaxInt64 && maxBound < latestBlock {
+		return maxBound
+	}
+	return latestBlock
+}
+
+// EvmEffectiveFinalizedBlock returns the finalized block adjusted for the upstream's upper availability bound.
+// If the upstream has a blockAvailability.upper config, this returns min(finalizedBlock, upperBound).
+func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
+	if u == nil || u.evmStatePoller == nil || u.evmStatePoller.IsObjectNull() {
+		return 0
+	}
+	finalizedBlock := u.evmStatePoller.FinalizedBlock()
+	if finalizedBlock <= 0 {
+		return 0
+	}
+
+	_, maxBound := u.resolveAvailabilityBounds()
+	if maxBound != math.MaxInt64 && maxBound < finalizedBlock {
+		return maxBound
+	}
+	return finalizedBlock
+}
+
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
 // It returns whether the block is within the available range and records metrics if not.
 func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller common.EvmStatePoller, blockNumber int64, maxAvailableRecentBlocks int64, forMethod string, confidence common.AvailbilityConfidence) (available bool, err error) {

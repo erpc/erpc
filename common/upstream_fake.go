@@ -137,6 +137,20 @@ func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod
 	return true, nil
 }
 
+func (u *FakeUpstream) EvmEffectiveLatestBlock() int64 {
+	if u.evmStatePoller == nil {
+		return 0
+	}
+	return u.evmStatePoller.LatestBlock()
+}
+
+func (u *FakeUpstream) EvmEffectiveFinalizedBlock() int64 {
+	if u.evmStatePoller == nil {
+		return 0
+	}
+	return u.evmStatePoller.FinalizedBlock()
+}
+
 type FakeEvmStatePoller struct {
 	latestBlockNumber    int64
 	finalizedBlockNumber int64
