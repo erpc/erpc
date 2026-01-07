@@ -127,7 +127,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		defer httpServer.serverV4.Shutdown(ctx)
 
 		// Wait for the server to start
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		baseURL := fmt.Sprintf("http://localhost:%d", port)
 
@@ -269,7 +269,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		defer httpServer.serverV4.Shutdown(ctx)
 
 		// Wait for the server to start
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		baseURL := fmt.Sprintf("http://localhost:%d", port)
 
@@ -415,7 +415,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		defer httpServer.serverV4.Shutdown(ctx)
 
 		// Wait for the server to start
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		baseURL := fmt.Sprintf("http://localhost:%d", port)
 
@@ -3134,7 +3134,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		time.Sleep(3000 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","id":111}`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
@@ -3911,7 +3911,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				time.Sleep(1000 * time.Millisecond)
+				time.Sleep(200 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
@@ -3950,7 +3950,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				time.Sleep(1000 * time.Millisecond)
+				time.Sleep(200 * time.Millisecond)
 
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
@@ -3998,7 +3998,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				time.Sleep(1000 * time.Millisecond)
+				time.Sleep(200 * time.Millisecond)
 
 				ups1 := pp.upstreamsRegistry.GetAllUpstreams()[0]
 				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*")
@@ -4056,7 +4056,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				time.Sleep(1000 * time.Millisecond)
+				time.Sleep(200 * time.Millisecond)
 
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -4240,7 +4240,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				time.Sleep(1000 * time.Millisecond)
+				time.Sleep(200 * time.Millisecond)
 
 				return &HttpServer{
 					logger: logger,
@@ -4344,7 +4344,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, logger)
 
-				time.Sleep(1000 * time.Millisecond)
+				time.Sleep(200 * time.Millisecond)
 
 				// Cordon the upstream
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
@@ -4465,7 +4465,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			defer ctxCancel()
 
 			s := tt.setupServer(ctx)
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			w := httptest.NewRecorder()
 			startTime := time.Now()
 
@@ -5917,7 +5917,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
@@ -7963,7 +7963,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	go func() { _ = httpServer.serverV4.Serve(listener) }()
 	defer httpServer.serverV4.Shutdown(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 	send := func() (*http.Response, string, error) {

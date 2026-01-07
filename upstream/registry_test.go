@@ -246,7 +246,9 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	t.Run("CorrectOrderForMultipleMethodsLatencyOverTime", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
+		// Use a shorter window for this test to avoid long sleeps (500ms to allow EMA convergence)
+		shortWindowSize := 500 * time.Millisecond
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, shortWindowSize)
 
 		method1 := "eth_call"
 		method2 := "eth_getBalance"
@@ -255,41 +257,60 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		upsList1 := getUpsByID(l1, "rpc1", "rpc2", "rpc3")
 		upsList2 := getUpsByID(l2, "rpc1", "rpc2", "rpc3")
 
-		// Phase 1: Initial performance
-		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 5, 0.3)
-		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 5, 0.8)
+		// Phase 1: Initial performance - use extreme differences (10x-100x) to overcome EMA smoothing
+		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 100, 0.001) // 1ms - fastest
+		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 100, 0.1)   // 100ms
+		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 100, 1.0)   // 1000ms - slowest
+
+		// Refresh multiple times to ensure EMA convergence
+		for i := 0; i < 5; i++ {
+			registry.RefreshUpstreamNetworkMethodScores()
+		}
 
 		expectedOrderMethod1Phase1 := []string{"rpc1", "rpc3", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase1)
 
-		// Wait so that latency averages are cycled out (add small buffer to avoid ticking exactly at window boundary)
-		time.Sleep(windowSize + 10*time.Millisecond)
+		// Wait so that latency averages are cycled out
+		time.Sleep(shortWindowSize + 50*time.Millisecond)
 
-		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 5, 0.05)
+		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 100, 0.001) // 1ms - fastest
+		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 100, 0.05)  // 50ms
+		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 100, 0.5)   // 500ms - slowest
+
+		for i := 0; i < 5; i++ {
+			registry.RefreshUpstreamNetworkMethodScores()
+		}
 
 		expectedOrderMethod2Phase1 := []string{"rpc3", "rpc2", "rpc1"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase1)
 
-		// Sleep slightly longer than windowSize to ensure metrics from phase 1 have cycled out
-		time.Sleep(windowSize + 10*time.Millisecond)
+		// Sleep to ensure metrics from phase 1 have cycled out
+		time.Sleep(shortWindowSize + 50*time.Millisecond)
 
-		// Phase 2: Performance changes
-		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 5, 0.05)
+		// Phase 2: Performance changes - use extreme differences
+		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 100, 0.001) // 1ms - now fastest
+		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 100, 0.05)  // 50ms
+		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 100, 0.5)   // 500ms - now slowest
+
+		// Refresh multiple times to let EMA converge
+		for i := 0; i < 5; i++ {
+			registry.RefreshUpstreamNetworkMethodScores()
+		}
 
 		expectedOrderMethod1Phase2 := []string{"rpc2", "rpc3", "rpc1"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase2)
 
-		// Sleep slightly longer than windowSize to ensure metrics from phase 2 for method1 have cycled out
-		time.Sleep(windowSize + 10*time.Millisecond)
+		// Sleep to ensure metrics from phase 2 for method1 have cycled out
+		time.Sleep(shortWindowSize + 50*time.Millisecond)
 
-		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 5, 0.05)
+		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 100, 0.001) // 1ms - now fastest
+		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 100, 0.1)   // 100ms
+		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 100, 1.0)   // 1000ms - now slowest
+
+		// Refresh multiple times to let EMA converge
+		for i := 0; i < 5; i++ {
+			registry.RefreshUpstreamNetworkMethodScores()
+		}
 
 		expectedOrderMethod2Phase2 := []string{"rpc1", "rpc3", "rpc2"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase2)

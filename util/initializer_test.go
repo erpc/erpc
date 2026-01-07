@@ -217,12 +217,12 @@ func TestInitializer_LongRunningTask(t *testing.T) {
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout: time.Second * 2,
+		TaskTimeout: time.Millisecond * 500,
 		AutoRetry:   false,
 	})
 
 	longTask := NewBootstrapTask("long-task", func(ctx context.Context) error {
-		time.Sleep(time.Second) // Sleep for 1 second
+		time.Sleep(time.Millisecond * 200) // Sleep for 200ms
 		return nil
 	})
 
@@ -242,12 +242,12 @@ func TestInitializer_TaskTimeout(t *testing.T) {
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout: time.Millisecond * 100,
+		TaskTimeout: time.Millisecond * 50,
 		AutoRetry:   false,
 	})
 
 	task := NewBootstrapTask("timeout-task", func(ctx context.Context) error {
-		time.Sleep(time.Second) // Sleep longer than timeout
+		time.Sleep(time.Millisecond * 200) // Sleep longer than timeout
 		return nil
 	})
 
@@ -371,7 +371,7 @@ func TestInitializer_MultipleRapidFailures(t *testing.T) {
 
 func TestInitializer_ForcedCancellationMidTask(t *testing.T) {
 	conf := &InitializerConfig{
-		TaskTimeout:   time.Second * 2, // Somewhat long
+		TaskTimeout:   time.Millisecond * 500, // Reduced for faster tests
 		AutoRetry:     false,
 		RetryMinDelay: time.Millisecond * 50,
 		RetryMaxDelay: time.Millisecond * 100,

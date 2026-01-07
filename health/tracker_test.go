@@ -17,7 +17,7 @@ import (
 
 func TestTracker(t *testing.T) {
 	projectID := "test-project"
-	windowSize := 2000 * time.Millisecond
+	windowSize := 500 * time.Millisecond
 
 	telemetry.SetHistogramBuckets("0.05,0.5,5,30")
 

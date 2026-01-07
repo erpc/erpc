@@ -40,7 +40,7 @@ func TestNetwork_TraceExecutionTimeout(t *testing.T) {
 		Reply(200).
 		BodyString(`{"jsonrpc":"2.0","id":1,"result":[{"error":"execution timeout"}]}`)
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"debug_traceBlockByNumber","params":["0x226AE",{"tracer":"callTracer","timeout":"1ms"}],"id":1}`))
 	resp, err := network.Forward(ctx, req)
@@ -215,7 +215,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 		require.NoError(t, err)
 
 		// Allow async upstream bootstrapping to settle before issuing batch requests
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		// Mock batch responses for two different methods with the same IDs
 		// eth_blockNumber returns block number, eth_chainId returns chain ID

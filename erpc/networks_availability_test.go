@@ -71,7 +71,7 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -229,7 +229,7 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 		})
 
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -319,7 +319,7 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -396,7 +396,7 @@ func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -497,7 +497,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -586,7 +586,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -659,7 +659,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -740,7 +740,7 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -822,7 +822,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideMethod(t *
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
@@ -901,7 +901,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t 
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
@@ -972,7 +972,7 @@ func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -1038,7 +1038,7 @@ func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(false)}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
@@ -1092,7 +1092,7 @@ func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// Enable enforcement
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
@@ -1159,7 +1159,7 @@ func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) 
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// Enable enforcement
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
@@ -1250,7 +1250,7 @@ func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// Enable enforcement so block availability is checked
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
@@ -1331,7 +1331,7 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
 	upr.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// Enable block availability enforcement
 	ntwCfg := &common.NetworkConfig{

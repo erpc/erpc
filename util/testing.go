@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
@@ -353,8 +352,6 @@ func SetupMocksForUpstream(host string, details map[string]interface{}) int {
 }
 
 func ResetGock() {
-	time.Sleep(100 * time.Millisecond)
-
 	gock.OffAll()
 	gock.Clean()
 	gock.CleanUnmatchedRequest()
@@ -366,8 +363,6 @@ func ResetGock() {
 		shouldMakeRealCall := host == "localhost" || host == "127.0.0.1"
 		return shouldMakeRealCall
 	})
-
-	time.Sleep(100 * time.Millisecond)
 }
 
 func SafeReadBody(request *http.Request) string {

@@ -521,10 +521,10 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 	// Initial score order snapshot
 	logCurrentScoreOrder("initial")
 
-	// Schedule a mid-run snapshot after 2s
+	// Schedule a mid-run snapshot
 	go func() {
-		time.Sleep(2 * time.Second)
-		logCurrentScoreOrder("t+2s")
+		time.Sleep(500 * time.Millisecond)
+		logCurrentScoreOrder("t+500ms")
 	}()
 
 	// Helper to build request body for a given index

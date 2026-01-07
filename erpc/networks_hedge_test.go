@@ -683,7 +683,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			_, respErr = network.Forward(ctx, req)
 		}()
 
-		// Wait for hedge to start
+		// Wait for hedge to start (needs enough time for hedge delay + processing)
 		time.Sleep(100 * time.Millisecond)
 		assert.True(t, primaryStarted.Load(), "Primary request should have started")
 		assert.True(t, hedgeStarted.Load(), "Hedge request should have started")
@@ -1013,7 +1013,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)
@@ -1032,7 +1032,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 	time.Sleep(50 * time.Millisecond)
 
 	upstream.ReorderUpstreams(upstreamsRegistry)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	return network
 }

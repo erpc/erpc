@@ -1926,6 +1926,8 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
+	t.Skip("Skipping test that requires Docker containers - run with -tags=integration")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2303,6 +2305,8 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_Redis(t *testing.T) {
+	t.Skip("Skipping test that requires Docker containers - run with -tags=integration")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

@@ -85,7 +85,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 	)
 
 	upsReg.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	if err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 		b.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 	)
 
 	upsReg.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	if err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 		b.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		nil,
 	)
 	upsReg.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	if err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 		b.Fatal(err)
 	}
@@ -417,7 +417,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		nil,
 	)
 	upsReg.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	if err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
 		b.Fatal(err)
 	}
