@@ -112,25 +112,34 @@ func (c *counterInt64) processNewValue(source string, newVal int64) bool {
 	// to coordinate expensive refresh execution in TryUpdateIfStale (thundering herd control).
 	currentValue := c.value.Load()
 	updated := false
-	if newVal > currentValue {
+
+	// Special case: ignoreRollbackOf == 0 means allow ANY value change (increases OR decreases)
+	// This is used for earliest block detection where fresh detection should override stale cache
+	allowAnyChange := c.ignoreRollbackOf == 0
+
+	if newVal > currentValue || (allowAnyChange && newVal != currentValue) {
 		// Use CAS loop to handle race with SetLocalValue
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
 				updated = true
-				c.registry.logger.Trace().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Msg("counter value increased")
+				c.registry.logger.Trace().Str("source", source).Str("key", c.key).Int64("from", currentValue).Int64("to", newVal).Bool("allowAnyChange", allowAnyChange).Msg("counter value changed")
 				c.triggerValueCallback(newVal)
 				break
 			}
 			// CAS failed - someone else updated (likely SetLocalValue)
 			currentValue = c.value.Load()
-			if newVal <= currentValue {
+			if newVal == currentValue {
+				// Value already matches, done
+				break
+			}
+			if !allowAnyChange && newVal <= currentValue {
 				// Our value is no longer an improvement, abort
 				c.registry.logger.Trace().Str("source", source).Str("key", c.key).Int64("newVal", newVal).Int64("currentValue", currentValue).Msg("CAS failed, value no longer an improvement")
 				break
 			}
 			// Retry with updated currentValue
 		}
-	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {
+	} else if currentValue > newVal && c.ignoreRollbackOf > 0 && (currentValue-newVal > c.ignoreRollbackOf) {
 		// Rollback detection: The new value is significantly lower than current.
 		// This could indicate a blockchain reorg OR stale data racing with SetLocalValue.
 		//
@@ -473,7 +482,10 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 				getCancel()
 
 				// If remote is ahead, adopt it locally (briefly take updateMu for thundering herd coordination).
-				if remoteVal > localVal {
+				// EXCEPTION: For counters with ignoreRollbackOf==0 (like earliestBlock), the freshly detected
+				// local value should win over stale remote values. We don't want to overwrite a fresh detection
+				// (e.g., 13M) with a stale remote value (e.g., 46M that was incorrectly cached).
+				if remoteVal > localVal && c.ignoreRollbackOf != 0 {
 					c.updateMu.Lock()
 					_ = c.processNewValue(UpdateSourceRemoteCheck, remoteVal)
 					c.updateMu.Unlock()

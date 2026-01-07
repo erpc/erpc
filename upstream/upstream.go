@@ -967,15 +967,13 @@ func (u *Upstream) resolveAvailabilityBounds() (int64, int64) {
 			if u.evmStatePoller != nil && !u.evmStatePoller.IsObjectNull() {
 				eb = u.evmStatePoller.EarliestBlock(probe)
 			}
+			// eb == 0 means detection not yet complete - compute val = 0 + offset
+			// This may create an invalid range (min > max) which triggers fail-open at the end
+			// eb > 0 means detection successful - use the detected value
 			if eb >= 0 {
 				val = eb + *bound.EarliestBlockPlus
 			} else {
-				// If earliest is unknown, treat as unbounded on this side
-				u.logger.Debug().
-					Str("probe", string(probe)).
-					Str("boundType", map[bool]string{true: "lower", false: "upper"}[isLower]).
-					Str("upstreamId", u.config.Id).
-					Msg("earliest block not yet determined for bound; treating as unbounded")
+				// If earliest is negative (shouldn't happen), treat as unbounded
 				if isLower {
 					val = math.MinInt64
 				} else {

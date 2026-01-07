@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -98,7 +99,7 @@ type EvmStatePoller interface {
 	Poll(ctx context.Context) error
 	PollLatestBlockNumber(ctx context.Context) (int64, error)
 	PollFinalizedBlockNumber(ctx context.Context) (int64, error)
-	PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType) (int64, error)
+	PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType, staleness time.Duration) (int64, error)
 	SyncingState() EvmSyncingState
 	SetSyncingState(state EvmSyncingState)
 	LatestBlock() int64

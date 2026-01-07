@@ -88,9 +88,10 @@ type EvmStatePoller struct {
 	finalizedUpdateInProgress sync.Mutex
 
 	// Earliest per probe tracking
-	earliestByProbe          map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
-	earliestSchedulerStarted map[common.EvmAvailabilityProbeType]bool
-	earliestMu               sync.RWMutex
+	earliestByProbe              map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable
+	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
+	earliestInitialDetectionDone map[common.EvmAvailabilityProbeType]bool // tracks if THIS instance did initial detection
+	earliestMu                   sync.RWMutex
 }
 
 func NewEvmStatePoller(
@@ -108,17 +109,18 @@ func NewEvmStatePoller(
 	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 
 	e := &EvmStatePoller{
-		projectId:                projectId,
-		appCtx:                   appCtx,
-		logger:                   &lg,
-		upstream:                 up,
-		tracker:                  tracker,
-		latestBlockShared:        lbs,
-		finalizedBlockShared:     fbs,
-		sharedStateRegistry:      sharedState,
-		networkLabel:             "n/a",
-		earliestByProbe:          make(map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable),
-		earliestSchedulerStarted: make(map[common.EvmAvailabilityProbeType]bool),
+		projectId:                    projectId,
+		appCtx:                       appCtx,
+		logger:                       &lg,
+		upstream:                     up,
+		tracker:                      tracker,
+		latestBlockShared:            lbs,
+		finalizedBlockShared:         fbs,
+		sharedStateRegistry:          sharedState,
+		networkLabel:                 "n/a",
+		earliestByProbe:              make(map[common.EvmAvailabilityProbeType]data.CounterInt64SharedVariable),
+		earliestSchedulerStarted:     make(map[common.EvmAvailabilityProbeType]bool),
+		earliestInitialDetectionDone: make(map[common.EvmAvailabilityProbeType]bool),
 	}
 
 	lbs.OnValue(func(value int64) {
@@ -350,7 +352,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		e.pollEarliest(ctx)
+		e.initializeEarliestBlockDetectionAndStartScheduler(ctx)
 	}()
 
 	wg.Wait()
@@ -593,7 +595,7 @@ func (e *EvmStatePoller) FinalizedBlock() int64 {
 	return e.finalizedBlockShared.GetValue()
 }
 
-func (e *EvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+func (e *EvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	// Initialize storage for probe
 	e.earliestMu.Lock()
 	if _, ok := e.earliestByProbe[probe]; !ok {
@@ -602,28 +604,44 @@ func (e *EvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe comm
 	}
 	v := e.earliestByProbe[probe]
 	e.earliestMu.Unlock()
-	latest := e.latestBlockShared.GetValue()
-	if latest == 0 {
-		var err error
-		latest, err = e.PollLatestBlockNumber(ctx)
-		if err != nil || latest == 0 {
+
+	// Use TryUpdateIfStale for cross-instance coordination
+	// Only one instance will do the binary search at a time
+	return v.TryUpdateIfStale(ctx, staleness, func(ctx context.Context) (int64, error) {
+		latest := e.latestBlockShared.GetValue()
+		if latest == 0 {
+			var err error
+			latest, err = e.PollLatestBlockNumber(ctx)
+			if err != nil || latest == 0 {
+				e.logger.Error().
+					Err(err).
+					Str("probe", string(probe)).
+					Str("upstreamId", e.upstream.Config().Id).
+					Msg("failed to get latest block for earliest detection; block availability checks will fail-open")
+				return 0, err
+			}
+		}
+
+		val, err := e.binarySearchEarliest(ctx, probe, 0, latest)
+		if err != nil {
+			e.logger.Error().
+				Err(err).
+				Int64("latestBlock", latest).
+				Str("probe", string(probe)).
+				Str("upstreamId", e.upstream.Config().Id).
+				Msg("binary search failed for earliest block detection; block availability checks will fail-open")
 			return 0, err
 		}
-	}
-	val, err := e.binarySearchEarliest(ctx, probe, 0, latest)
-	if err != nil {
-		return 0, err
-	}
-	cctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
-	defer cancel()
-	v.TryUpdate(cctx, val)
-	e.logger.Debug().
-		Int64("earliestBlock", val).
-		Int64("latestBlock", latest).
-		Str("probe", string(probe)).
-		Str("upstreamId", e.upstream.Config().Id).
-		Msg("binary search completed for earliest block availability bound")
-	return val, nil
+
+		e.logger.Debug().
+			Int64("earliestBlock", val).
+			Int64("latestBlock", latest).
+			Str("probe", string(probe)).
+			Str("upstreamId", e.upstream.Config().Id).
+			Msg("binary search completed for earliest block availability bound")
+
+		return val, nil
+	})
 }
 
 func (e *EvmStatePoller) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
@@ -636,9 +654,10 @@ func (e *EvmStatePoller) EarliestBlock(probe common.EvmAvailabilityProbeType) in
 	return 0
 }
 
-// pollEarliest performs earliest per-probe initialization and periodic updates
-// based on upstream's block availability configuration.
-func (e *EvmStatePoller) pollEarliest(ctx context.Context) {
+// initializeEarliestBlockDetectionAndStartScheduler performs one-time earliest block detection
+// for each configured probe, and starts a periodic scheduler if updateRate is configured.
+// Called from Poll() but only does initial detection once per probe.
+func (e *EvmStatePoller) initializeEarliestBlockDetectionAndStartScheduler(ctx context.Context) {
 	e.stateMu.RLock()
 	upCfg := e.upstream.Config()
 	e.stateMu.RUnlock()
@@ -688,12 +707,17 @@ func (e *EvmStatePoller) pollEarliest(ctx context.Context) {
 		var err error
 		latest, err = e.PollLatestBlockNumber(ctx)
 		if err != nil || latest == 0 {
-			// Still unavailable - log and skip for this cycle
+			// Still unavailable - log error and skip for this cycle
 			// The next poll cycle will retry, and the scheduler will also keep retrying
 			if err != nil {
-				e.logger.Debug().Err(err).Msg("failed to fetch latest block for earliest bound detection, will retry on next poll")
+				e.logger.Error().
+					Err(err).
+					Str("upstreamId", e.upstream.Config().Id).
+					Msg("failed to fetch latest block for earliest bound detection; block availability checks will fail-open")
 			} else {
-				e.logger.Debug().Msg("latest block still not available after fresh poll, skipping earliest detection for this cycle")
+				e.logger.Warn().
+					Str("upstreamId", e.upstream.Config().Id).
+					Msg("latest block still not available after fresh poll; skipping earliest detection for this cycle (will retry)")
 			}
 			return
 		}
@@ -701,54 +725,70 @@ func (e *EvmStatePoller) pollEarliest(ctx context.Context) {
 	}
 
 	for probe, ps := range schedules {
-		// Initialize shared var for this probe if missing
 		e.earliestMu.Lock()
+		initialDetectionDone := e.earliestInitialDetectionDone[probe]
+		schedulerStarted := e.earliestSchedulerStarted[probe]
+		// Initialize shared var if missing
 		if _, ok := e.earliestByProbe[probe]; !ok {
 			key := fmt.Sprintf("earliestBlock/%s/%s", common.UniqueUpstreamKey(e.upstream), string(probe))
 			e.earliestByProbe[probe] = e.sharedStateRegistry.GetCounterInt64(key, 0)
 		}
 		e.earliestMu.Unlock()
-		// If not initialized yet, run initial search once using PollEarliestBlockNumber
-		if e.earliestByProbe[probe].GetValue() == 0 {
-			earliest, err := e.PollEarliestBlockNumber(ctx, probe)
+
+		// Skip if this instance already did initial detection AND scheduler is running
+		if initialDetectionDone && schedulerStarted {
+			continue
+		}
+
+		// Do initial detection ONCE per instance startup (regardless of shared variable value)
+		// This ensures fresh binary search on each container bootstrap
+		if !initialDetectionDone {
+			earliest, err := e.PollEarliestBlockNumber(ctx, probe, 1*time.Millisecond)
 			if err != nil {
-				// fail-open: skip if cannot initialize now
-				e.logger.Warn().
+				e.logger.Error().
 					Err(err).
 					Str("probe", string(probe)).
 					Str("upstreamId", e.upstream.Config().Id).
-					Msg("failed to initialize earliest block bound for probe; availability checks will be less accurate")
-			} else if earliest >= 0 {
+					Msg("failed to initialize earliest block bound for probe; block availability checks will fail-open (will retry)")
+				// Don't mark as done so we retry on next Poll() cycle
+			} else {
 				e.logger.Info().
 					Int64("earliestBlock", earliest).
 					Str("probe", string(probe)).
 					Str("upstreamId", e.upstream.Config().Id).
-					Msg("fetched earliest block availability bound")
+					Msg("initial earliest block detection completed for this instance")
+				// Mark as done so we don't redo on subsequent Poll() cycles
+				e.earliestMu.Lock()
+				e.earliestInitialDetectionDone[probe] = true
+				e.earliestMu.Unlock()
 			}
 		}
-		// Start scheduler per probe if updateRate>0 and not started yet
-		if ps.rate > 0 {
+
+		// Start scheduler per probe if updateRate>0 and not already started
+		if ps.rate > 0 && !schedulerStarted {
 			e.earliestMu.Lock()
-			started := e.earliestSchedulerStarted[probe]
-			if !started {
+			// Double-check under lock to prevent race
+			if !e.earliestSchedulerStarted[probe] {
 				e.earliestSchedulerStarted[probe] = true
-			}
-			e.earliestMu.Unlock()
-			if !started {
+				e.earliestMu.Unlock()
+
 				e.logger.Info().
 					Str("probe", string(probe)).
 					Str("updateRate", ps.rate.String()).
 					Str("upstreamId", e.upstream.Config().Id).
 					Msg("started periodic scheduler for earliest block availability bound")
-				go e.runEarliestScheduler(probe, ps.rate)
+				go e.runPeriodicEarliestBlockBoundUpdateLoop(probe, ps.rate)
+			} else {
+				e.earliestMu.Unlock()
 			}
 		}
 	}
 }
 
-// runEarliestScheduler periodically attempts to advance earliest for a probe at the given rate.
-// It is liberal: if latest or probe checks are unavailable, it skips and retries on next tick.
-func (e *EvmStatePoller) runEarliestScheduler(probe common.EvmAvailabilityProbeType, rate time.Duration) {
+// runPeriodicEarliestBlockBoundUpdateLoop runs a goroutine that periodically re-detects
+// the earliest available block for a given probe. Uses TryUpdateIfStale for cross-instance
+// coordination so only one container instance performs the binary search at a time.
+func (e *EvmStatePoller) runPeriodicEarliestBlockBoundUpdateLoop(probe common.EvmAvailabilityProbeType, rate time.Duration) {
 	ticker := time.NewTicker(rate)
 	defer ticker.Stop()
 	for {
@@ -756,89 +796,15 @@ func (e *EvmStatePoller) runEarliestScheduler(probe common.EvmAvailabilityProbeT
 		case <-e.appCtx.Done():
 			return
 		case <-ticker.C:
-			latest := e.latestBlockShared.GetValue()
-			if latest == 0 {
-				// Latest block not available - try to fetch it before giving up
-				// This makes the scheduler more robust to transient failures
-				var err error
-				latest, err = e.PollLatestBlockNumber(e.appCtx)
-				if err != nil || latest == 0 {
-					// Still unavailable - skip this cycle, will retry on next tick
-					continue
-				}
-			}
-			e.earliestMu.RLock()
-			varCounter, ok := e.earliestByProbe[probe]
-			e.earliestMu.RUnlock()
-			if !ok {
-				continue
-			}
-			curr := varCounter.GetValue()
-			if curr <= 0 {
-				// If still uninitialized (race), try initializing quickly using binary search
-				if val, err := e.binarySearchEarliest(e.appCtx, probe, 0, latest); err == nil && val >= 0 {
-					cctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
-					e.earliestByProbe[probe].TryUpdate(cctx, val)
-					cancel()
-				}
-				continue
-			}
-			// Quick current-bound check; if still valid, skip heavy work
-			ok, unsupported, err := e.checkProbe(e.appCtx, probe, curr)
+			// Use PollEarliestBlockNumber with rate as staleness
+			// TryUpdateIfStale handles cross-instance coordination
+			_, err := e.PollEarliestBlockNumber(e.appCtx, probe, rate)
 			if err != nil {
 				e.logger.Debug().
 					Err(err).
-					Int64("block", curr).
 					Str("probe", string(probe)).
 					Str("upstreamId", e.upstream.Config().Id).
-					Msg("probe check failed during earliest bound update cycle")
-				continue
-			}
-			if unsupported {
-				e.logger.Warn().
-					Int64("block", curr).
-					Str("probe", string(probe)).
-					Str("upstreamId", e.upstream.Config().Id).
-					Msg("probe is unsupported on upstream; earliest bound detection will be less accurate")
-				continue
-			}
-			if ok {
-				e.logger.Debug().
-					Int64("block", curr).
-					Str("probe", string(probe)).
-					Str("upstreamId", e.upstream.Config().Id).
-					Msg("earliest bound still valid, skipping update cycle")
-				continue
-			}
-			// Attempt incremental advance
-			e.logger.Debug().
-				Int64("currentEarliest", curr).
-				Int64("latest", latest).
-				Str("probe", string(probe)).
-				Str("upstreamId", e.upstream.Config().Id).
-				Msg("current earliest bound no longer valid, attempting incremental advance")
-			if newVal, changed, err := e.incrementalAdvanceEarliest(e.appCtx, probe, curr, latest); err == nil && changed {
-				cctx, cancel := context.WithTimeout(e.appCtx, 5*time.Second)
-				e.earliestMu.RLock()
-				varCounter2, ok2 := e.earliestByProbe[probe]
-				e.earliestMu.RUnlock()
-				if ok2 {
-					varCounter2.TryUpdate(cctx, newVal)
-					e.logger.Info().
-						Int64("oldEarliest", curr).
-						Int64("newEarliest", newVal).
-						Str("probe", string(probe)).
-						Str("upstreamId", e.upstream.Config().Id).
-						Msg("earliest block availability bound advanced (pruning detected)")
-				}
-				cancel()
-			} else if err != nil {
-				e.logger.Debug().
-					Err(err).
-					Int64("currentEarliest", curr).
-					Str("probe", string(probe)).
-					Str("upstreamId", e.upstream.Config().Id).
-					Msg("failed to advance earliest bound during update cycle")
+					Msg("earliest block update cycle failed; will retry")
 			}
 		}
 	}

@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -303,7 +304,7 @@ func (m *mockEvmStatePoller) EarliestBlock(probe common.EvmAvailabilityProbeType
 	return 0
 }
 
-func (m *mockEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+func (m *mockEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
 }
 
@@ -630,7 +631,7 @@ func (m *mockEvmStatePollerWithUpdate) GetDiagnostics() *common.EvmStatePollerDi
 		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
 	}
 }
-func (m *mockEvmStatePollerWithUpdate) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+func (m *mockEvmStatePollerWithUpdate) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
 }
 

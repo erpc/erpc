@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -179,7 +180,7 @@ func (p *FakeEvmStatePoller) EarliestBlock(probe EvmAvailabilityProbeType) int64
 	return 0
 }
 
-func (p *FakeEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType) (int64, error) {
+func (p *FakeEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
 }
 
