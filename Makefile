@@ -17,6 +17,9 @@ help:
 	@echo " docker-build                  Build docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
 	@echo " docker-run                    Run docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
 
+GO_TEST_PARALLEL ?= $(shell (getconf _NPROCESSORS_ONLN 2>/dev/null || nproc))
+GO_TEST_P ?= $(GO_TEST_PARALLEL)
+
 .PHONY: setup
 setup:
 	@go mod tidy
@@ -49,14 +52,14 @@ build:
 .PHONY: test
 test:
 	@go clean -testcache
-	@go test ./cmd/... -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -v -race -count 1 -parallel 1 -timeout 15m -failfast=false
+	@go test ./cmd/... -count 1 -parallel $(GO_TEST_PARALLEL) -p $(GO_TEST_P)
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -v -race -count 1 -parallel $(GO_TEST_PARALLEL) -p $(GO_TEST_P) -timeout 15m -failfast=false
 
 .PHONY: test-fast
 test-fast:
 	@go clean -testcache
-	@go test ./cmd/... -count 1 -parallel 1 -v
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 1 -parallel 1 -v -timeout 10m -failfast=false
+	@go test ./cmd/... -count 1 -parallel $(GO_TEST_PARALLEL) -p $(GO_TEST_P) -v
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 1 -parallel $(GO_TEST_PARALLEL) -p $(GO_TEST_P) -v -timeout 10m -failfast=false
 
 .PHONY: test-race
 test-race:

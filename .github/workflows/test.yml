@@ -30,12 +30,33 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25.x'
+          cache: true
       - name: Install dependencies
         run: make setup
       - name: Build
         run: make build
       - name: Test with the Go CLI
         run: make test
+
+  gosec:
+    runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
+    timeout-minutes: 20
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - name: Download dependencies
+        run: go mod download
       - name: Run Gosec Security Scanner
         uses: securego/gosec@8a5404eabf56aa8ca2fb9e4e8eb526da0a5a8c48 # master
         with:
