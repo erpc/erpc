@@ -173,6 +173,13 @@ func (m *mockStatePoller) IsObjectNull() bool {
 	return false
 }
 
+func (m *mockStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:      true,
+		SyncingState: common.EvmSyncingStateNotSyncing.String(),
+	}
+}
+
 func TestSplitEthGetLogsRequest(t *testing.T) {
 	tests := []struct {
 		name          string

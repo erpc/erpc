@@ -912,6 +912,65 @@ func (e *EvmStatePoller) IsObjectNull() bool {
 	return e == nil || e.upstream == nil
 }
 
+// GetDiagnostics returns diagnostic information about the state poller including
+// block bounds, probe status, and any detection issues for health check visibility.
+func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	if e == nil {
+		return nil
+	}
+
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
+
+	diag := &common.EvmStatePollerDiagnostics{
+		Enabled:        e.Enabled,
+		LatestBlock:    e.latestBlockShared.GetValue(),
+		FinalizedBlock: e.finalizedBlockShared.GetValue(),
+		SyncingState:   e.syncingState.String(),
+
+		// Syncing check status
+		SkipSyncingCheck: e.skipSyncingCheck,
+
+		// Latest block detection status
+		SkipLatestBlockCheck:      e.skipLatestBlockCheck,
+		LatestBlockFailureCount:   e.latestBlockFailureCount,
+		LatestBlockSuccessfulOnce: e.latestBlockSuccessfulOnce,
+
+		// Finalized block detection status
+		SkipFinalizedCheck:           e.skipFinalizedCheck,
+		FinalizedBlockFailureCount:   e.finalizedBlockFailureCount,
+		FinalizedBlockSuccessfulOnce: e.finalizedBlockSuccessfulOnce,
+	}
+
+	// Build detection issue messages
+	if e.skipSyncingCheck && !e.syncingSuccessfulOnce {
+		diag.SyncingCheckError = "syncing check disabled after consecutive failures (method may not be supported)"
+	}
+	if e.skipLatestBlockCheck && !e.latestBlockSuccessfulOnce {
+		diag.LatestBlockDetectionIssue = "latest block check disabled after consecutive failures (method may not be supported)"
+	}
+	if e.skipFinalizedCheck && !e.finalizedBlockSuccessfulOnce {
+		diag.FinalizedBlockDetectionIssue = "finalized block check disabled after consecutive failures (method may not be supported)"
+	}
+
+	// Collect earliest block bounds per probe type
+	e.earliestMu.RLock()
+	if len(e.earliestByProbe) > 0 {
+		diag.EarliestByProbe = make(map[common.EvmAvailabilityProbeType]*common.EvmProbeEarliestInfo)
+		for probeType, sharedVar := range e.earliestByProbe {
+			info := &common.EvmProbeEarliestInfo{
+				ProbeType:        probeType,
+				EarliestBlock:    sharedVar.GetValue(),
+				SchedulerRunning: e.earliestSchedulerStarted[probeType],
+			}
+			diag.EarliestByProbe[probeType] = info
+		}
+	}
+	e.earliestMu.RUnlock()
+
+	return diag
+}
+
 func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()

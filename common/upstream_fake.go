@@ -227,6 +227,15 @@ func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
 }
 
+func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
+	return &EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    p.latestBlockNumber,
+		FinalizedBlock: p.finalizedBlockNumber,
+		SyncingState:   EvmSyncingStateUnknown.String(),
+	}
+}
+
 // FakeHealthTracker is a no-op implementation of HealthTracker for testing
 type FakeHealthTracker struct {
 	MisbehaviorRecorded bool

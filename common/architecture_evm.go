@@ -109,4 +109,42 @@ type EvmStatePoller interface {
 	SetNetworkConfig(cfg *NetworkConfig)
 	IsObjectNull() bool
 	EarliestBlock(probe EvmAvailabilityProbeType) int64
+	GetDiagnostics() *EvmStatePollerDiagnostics
+}
+
+// EvmStatePollerDiagnostics contains diagnostic information about the state poller
+// including block bounds, probe status, and any detection issues.
+type EvmStatePollerDiagnostics struct {
+	Enabled bool `json:"enabled"`
+
+	// Block head information
+	LatestBlock    int64 `json:"latestBlock"`
+	FinalizedBlock int64 `json:"finalizedBlock"`
+
+	// Syncing state
+	SyncingState      string `json:"syncingState"`
+	SkipSyncingCheck  bool   `json:"skipSyncingCheck,omitempty"`
+	SyncingCheckError string `json:"syncingCheckError,omitempty"`
+
+	// Latest block detection status
+	SkipLatestBlockCheck      bool   `json:"skipLatestBlockCheck,omitempty"`
+	LatestBlockFailureCount   int    `json:"latestBlockFailureCount,omitempty"`
+	LatestBlockSuccessfulOnce bool   `json:"latestBlockSuccessfulOnce,omitempty"`
+	LatestBlockDetectionIssue string `json:"latestBlockDetectionIssue,omitempty"`
+
+	// Finalized block detection status
+	SkipFinalizedCheck           bool   `json:"skipFinalizedCheck,omitempty"`
+	FinalizedBlockFailureCount   int    `json:"finalizedBlockFailureCount,omitempty"`
+	FinalizedBlockSuccessfulOnce bool   `json:"finalizedBlockSuccessfulOnce,omitempty"`
+	FinalizedBlockDetectionIssue string `json:"finalizedBlockDetectionIssue,omitempty"`
+
+	// Earliest block bounds per probe type
+	EarliestByProbe map[EvmAvailabilityProbeType]*EvmProbeEarliestInfo `json:"earliestByProbe,omitempty"`
+}
+
+// EvmProbeEarliestInfo contains information about earliest block detection for a specific probe type
+type EvmProbeEarliestInfo struct {
+	ProbeType        EvmAvailabilityProbeType `json:"probeType"`
+	EarliestBlock    int64                    `json:"earliestBlock"`
+	SchedulerRunning bool                     `json:"schedulerRunning,omitempty"`
 }

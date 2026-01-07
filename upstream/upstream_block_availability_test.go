@@ -65,6 +65,14 @@ func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)   
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
+func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.latestBlock,
+		FinalizedBlock: m.finalizedBlock,
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
+}
 
 func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 	t.Run("NegativeBlockNumber", func(t *testing.T) {
@@ -619,6 +627,14 @@ func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
+func (m *mockEvmStatePollerWithCustomBehavior) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.getLatestBlock(),
+		FinalizedBlock: m.finalizedBlock,
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
+}
 
 func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 	t.Run("ProjectIdHandling", func(t *testing.T) {

@@ -59,6 +59,9 @@ type UpstreamHealthData struct {
 	ActualChainId   int64  `json:"actualChainId,omitempty"`
 	ChainIdStatus   string `json:"chainIdStatus,omitempty"`
 	ChainIdMessage  string `json:"chainIdMessage,omitempty"`
+
+	// EVM state poller diagnostics (for EVM upstreams)
+	EvmDiagnostics *common.EvmStatePollerDiagnostics `json:"evmDiagnostics,omitempty"`
 }
 
 func (s *HttpServer) handleHealthCheck(
@@ -259,6 +262,13 @@ func (s *HttpServer) handleHealthCheck(
 						if !lastEvalTime.IsZero() {
 							upstreamHealth.LastEvaluation = lastEvalTime.Format(time.RFC3339)
 						}
+					}
+				}
+
+				// Add EVM state poller diagnostics for EVM upstreams
+				if ups.Config() != nil && ups.Config().Type == common.UpstreamTypeEvm {
+					if poller := ups.EvmStatePoller(); poller != nil && !poller.IsObjectNull() {
+						upstreamHealth.EvmDiagnostics = poller.GetDiagnostics()
 					}
 				}
 			}
@@ -758,6 +768,9 @@ func (s *HttpServer) formatHealthDataForMode(projectsHealth []*ProjectHealthData
 					}
 					if uh.ChainIdMessage != "" {
 						details["message"] = uh.ChainIdMessage
+					}
+					if uh.EvmDiagnostics != nil {
+						details["evmDiagnostics"] = uh.EvmDiagnostics
 					}
 					upstreamsDetails[upsId] = details
 				}
