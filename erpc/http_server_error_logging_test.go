@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Test that HttpJsonRpcErrorResponse.MarshalZerologObject produces correct JSON structure
 func TestHttpJsonRpcErrorResponse_MarshalZerologObject(t *testing.T) {
 	// Temporarily enable logging for this test
 	origLevel := zerolog.GlobalLevel()
@@ -85,7 +84,6 @@ func TestHttpJsonRpcErrorResponse_MarshalZerologObject(t *testing.T) {
 	}
 }
 
-// Test that addResponseToLog correctly routes different response types
 func TestAddResponseToLog(t *testing.T) {
 	// Temporarily enable logging for this test
 	origLevel := zerolog.GlobalLevel()
@@ -137,7 +135,6 @@ func TestAddResponseToLog(t *testing.T) {
 	}
 }
 
-// Test that error field in HttpJsonRpcErrorResponse is properly serialized
 func TestHttpJsonRpcErrorResponse_ErrorFieldSerialization(t *testing.T) {
 	// Temporarily enable logging for this test
 	origLevel := zerolog.GlobalLevel()
