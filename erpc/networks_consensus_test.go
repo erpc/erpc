@@ -2330,7 +2330,7 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
 		cancel()
-		time.Sleep(10 * time.Millisecond) // allow goroutines to settle
+		time.Sleep(5 * time.Millisecond) // allow goroutines to settle
 	}()
 
 	// Setup mocks BEFORE any network components initialize
@@ -2373,7 +2373,7 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 	}
 
 	// Allow background bootstrap to settle to avoid flakiness in tests
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(15 * time.Millisecond)
 
 	// Make request
 	method := tc.requestMethod
