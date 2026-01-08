@@ -1085,16 +1085,16 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeJsonRpcRequestUnmarshal,
 			common.ErrCodeProjectNotFound,
 		) {
-			addResponseToLog(logger.Debug().Err(err).Object("request", nq), resp).Msgf("forward request errored with client-side exception")
+			logger.Debug().Err(err).Object("request", nq).Object("response", resp).Msgf("forward request errored with client-side exception")
 		} else if errors.Is(err, context.Canceled) {
-			addResponseToLog(logger.Debug().Err(err).Object("request", nq), resp).Msgf("forward request errored with context cancellation")
+			logger.Debug().Err(err).Object("request", nq).Object("response", resp).Msgf("forward request errored with context cancellation")
 		} else if errors.Is(err, context.DeadlineExceeded) {
-			addResponseToLog(logger.Debug().Err(err).Object("request", nq), resp).Msgf("forward request errored with deadline exceeded")
+			logger.Debug().Err(err).Object("request", nq).Object("response", resp).Msgf("forward request errored with deadline exceeded")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
-				addResponseToLog(logger.Warn().Err(err).Object("request", nq), resp).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
+				logger.Warn().Err(err).Object("request", nq).Object("response", resp).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				addResponseToLog(logger.Warn().Err(err).Object("request", nq), resp).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
+				logger.Warn().Err(err).Object("request", nq).Object("response", resp).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
 			}
 		}
 		if nq != nil {
@@ -1105,21 +1105,8 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	return resp
 }
 
-func addResponseToLog(e *zerolog.Event, resp interface{}) *zerolog.Event {
-	switch v := resp.(type) {
-	case *HttpJsonRpcErrorResponse:
-		return e.Object("response", v)
-	case *common.BaseError:
-		return e.Object("response", v)
-	case common.StandardError:
-		return e.Object("response", v)
-	default:
-		return e
-	}
-}
-
 // buildErrorResponseBody constructs the JSON-RPC error response body without logging
-func buildErrorResponseBody(nq *common.NormalizedRequest, err error, origErr error, includeErrorDetails *bool) interface{} {
+func buildErrorResponseBody(nq *common.NormalizedRequest, err error, origErr error, includeErrorDetails *bool) zerolog.LogObjectMarshaler {
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
@@ -1172,8 +1159,8 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err error, origErr err
 		}
 	}
 
-	if _, ok := err.(*common.BaseError); ok {
-		return err
+	if berr, ok := err.(*common.BaseError); ok {
+		return berr
 	} else if serr, ok := err.(common.StandardError); ok {
 		return serr
 	}

@@ -83,19 +83,18 @@ func TestHttpJsonRpcErrorResponse_MarshalZerologObject(t *testing.T) {
 	}
 }
 
-func TestAddResponseToLog(t *testing.T) {
-	// Temporarily enable logging for this test
+func TestLogObjectMarshaler_NativeChaining(t *testing.T) {
 	origLevel := zerolog.GlobalLevel()
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	defer zerolog.SetGlobalLevel(origLevel)
 
 	tests := []struct {
 		name         string
-		resp         interface{}
+		resp         zerolog.LogObjectMarshaler
 		wantContains string
 	}{
 		{
-			name: "HttpJsonRpcErrorResponse uses Object marshaler",
+			name: "HttpJsonRpcErrorResponse with native Object()",
 			resp: &HttpJsonRpcErrorResponse{
 				Jsonrpc: "2.0",
 				Id:      123,
@@ -107,17 +106,12 @@ func TestAddResponseToLog(t *testing.T) {
 			wantContains: `"jsonrpc":"2.0"`,
 		},
 		{
-			name: "BaseError pointer uses Object marshaler",
+			name: "BaseError with native Object()",
 			resp: &common.BaseError{
 				Code:    "ErrTest",
 				Message: "test error message",
 			},
 			wantContains: `"code":"ErrTest"`,
-		},
-		{
-			name:         "unknown type is ignored",
-			resp:         map[string]string{"foo": "bar"},
-			wantContains: `"message":"test"`, // only message, no response field
 		},
 	}
 
@@ -126,8 +120,8 @@ func TestAddResponseToLog(t *testing.T) {
 			var buf bytes.Buffer
 			logger := zerolog.New(&buf)
 
-			event := logger.Info()
-			addResponseToLog(event, tt.resp).Msg("test")
+			// Test native zerolog chaining - this is what we use in processErrorBody
+			logger.Info().Object("response", tt.resp).Msg("test")
 
 			assert.Contains(t, buf.String(), tt.wantContains)
 		})
@@ -135,7 +129,6 @@ func TestAddResponseToLog(t *testing.T) {
 }
 
 func TestHttpJsonRpcErrorResponse_ErrorFieldSerialization(t *testing.T) {
-	// Temporarily enable logging for this test
 	origLevel := zerolog.GlobalLevel()
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	defer zerolog.SetGlobalLevel(origLevel)
