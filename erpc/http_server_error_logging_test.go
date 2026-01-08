@@ -12,7 +12,6 @@ import (
 )
 
 func TestHttpJsonRpcErrorResponse_MarshalZerologObject(t *testing.T) {
-	// Temporarily enable logging for this test
 	origLevel := zerolog.GlobalLevel()
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	defer zerolog.SetGlobalLevel(origLevel)
