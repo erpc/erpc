@@ -1,6 +1,7 @@
 package health
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -60,6 +61,18 @@ func (q *QuantileTracker) GetQuantile(qtile float64) time.Duration {
 	seconds, err := q.sketch.GetValueAtQuantile(qtile)
 	if err != nil {
 		// If there's no data, return 0
+		return 0
+	}
+	// Guard against NaN/Inf values that could propagate through calculations.
+	// While DDSketch normally returns errors for invalid states, this serves as
+	// defense-in-depth against any unexpected floating-point edge cases.
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		log.Warn().
+			Float64("qtile", qtile).
+			Float64("rawSeconds", seconds).
+			Bool("isNaN", math.IsNaN(seconds)).
+			Bool("isInf", math.IsInf(seconds, 0)).
+			Msg("quantile tracker returned invalid value, returning 0")
 		return 0
 	}
 	return time.Duration(seconds * float64(time.Second))
