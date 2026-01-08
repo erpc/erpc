@@ -11,6 +11,7 @@ import (
 )
 
 func TestLoadConfig_FailToReadFile(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	_, err := LoadConfig(fs, "nonexistent.yaml", &DefaultOptions{})
 	if err == nil {
@@ -19,6 +20,7 @@ func TestLoadConfig_FailToReadFile(t *testing.T) {
 }
 
 func TestLoadConfig_InvalidYaml(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
 	if err != nil {
@@ -33,6 +35,7 @@ func TestLoadConfig_InvalidYaml(t *testing.T) {
 }
 
 func TestLoadConfig_ValidYaml(t *testing.T) {
+	t.Parallel()
 	fs := afero.NewMemMapFs()
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
 	if err != nil {
@@ -49,6 +52,7 @@ logLevel: DEBUG
 }
 
 func TestFailsafeConfigBackwardCompatibility(t *testing.T) {
+	t.Parallel()
 	t.Run("NetworkDefaults old format with empty MatchMethod", func(t *testing.T) {
 		yamlData := `
 rateLimitBudget: "test"
@@ -245,6 +249,7 @@ failsafe:
 }
 
 func TestNetworkConfigFailsafeBackwardCompatibility(t *testing.T) {
+	t.Parallel()
 	t.Run("new array format", func(t *testing.T) {
 		yamlData := `
 architecture: evm
@@ -289,6 +294,7 @@ failsafe:
 }
 
 func TestNetworkDefaultsFailsafeBackwardCompatibility(t *testing.T) {
+	t.Parallel()
 	t.Run("new array format", func(t *testing.T) {
 		yamlData := `
 rateLimitBudget: "test"
@@ -327,6 +333,7 @@ failsafe:
 }
 
 func TestUpstreamConfigFailsafeBackwardCompatibility(t *testing.T) {
+	t.Parallel()
 	t.Run("new array format", func(t *testing.T) {
 		yamlData := `
 id: "test-upstream"
@@ -367,6 +374,7 @@ failsafe:
 }
 
 func TestFullConfigWithNetworkFailsafe(t *testing.T) {
+	t.Parallel()
 	t.Run("full config with array failsafe in network", func(t *testing.T) {
 		yamlData := `
 logLevel: debug
@@ -461,6 +469,7 @@ projects:
 }
 
 func TestLoadConfigWithNetworkFailsafe(t *testing.T) {
+	t.Parallel()
 	t.Run("LoadConfig with array failsafe in network", func(t *testing.T) {
 		yamlData := `
 logLevel: debug
@@ -501,6 +510,7 @@ projects:
 }
 
 func TestFailingConfigScenario(t *testing.T) {
+	t.Parallel()
 	t.Run("Mixed old and new failsafe formats with maxCount", func(t *testing.T) {
 		// This test demonstrates that invalid field names now give clear error messages
 		yamlData := `
@@ -572,6 +582,7 @@ projects:
 }
 
 func TestInvalidFieldNameErrorMessage(t *testing.T) {
+	t.Parallel()
 	t.Run("Invalid field maxCount in retry should give clear error", func(t *testing.T) {
 		// Test with just the retry config to isolate the issue
 		yamlData := `
@@ -630,6 +641,7 @@ delay: 10ms
 }
 
 func TestLoadConfigWithInvalidFieldName(t *testing.T) {
+	t.Parallel()
 	t.Run("LoadConfig with invalid maxCount field should give clear error", func(t *testing.T) {
 		// Full config with invalid field name (maxCount instead of maxAttempts)
 		yamlData := `
@@ -763,6 +775,7 @@ projects:
 }
 
 func TestBackwardCompatibilityStillWorks(t *testing.T) {
+	t.Parallel()
 	t.Run("Old single failsafe format still works", func(t *testing.T) {
 		yamlData := `
 logLevel: debug

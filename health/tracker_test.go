@@ -335,6 +335,7 @@ func resetMetrics() {
 }
 
 func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
+	t.Parallel()
 	projectID := "test-project"
 	windowSize := 100 * time.Millisecond // Short window for faster testing
 
@@ -399,6 +400,7 @@ func TestBlockHeadLagPersistsAcrossResets(t *testing.T) {
 }
 
 func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
+	t.Parallel()
 	projectID := "test-project"
 	windowSize := 100 * time.Millisecond // Short window for faster testing
 
@@ -450,6 +452,7 @@ func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
 }
 
 func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
+	t.Parallel()
 	t.Run("SetsTimestampAndRecordsDistance", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		tracker.Bootstrap(context.Background())
