@@ -1071,7 +1071,6 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	// Build the response body first, so we can include it in the log
 	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails)
 
-	// Now log with both request and response
 	if !common.IsNull(err) {
 		if nq != nil {
 			nq.RLock()
