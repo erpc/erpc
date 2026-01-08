@@ -89,6 +89,24 @@ func (m *mockNetwork) Logger() *zerolog.Logger {
 	return &log.Logger
 }
 
+func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil
+	}
+	return args.Get(0).(common.EvmStatePoller)
+}
+
+func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+	args := m.Called(ctx)
+	return args.Get(0).(int64)
+}
+
+func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+	args := m.Called(ctx)
+	return args.Get(0).(int64)
+}
+
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
 type mockEvmUpstream struct {
@@ -1259,6 +1277,115 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 		n.AssertExpectations(t)
 		u.AssertExpectations(t)
+	})
+
+	// Tests for block tag resolution before validation (fixes bypass when using "latest", "finalized", etc.)
+	t.Run("latest_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
+		})
+
+		// Request from block 1 to "latest" (1000) - range of 1000 blocks exceeds limit of 10
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "latest",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("finalized_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000)).Maybe()
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990))
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
+		})
+
+		// Request from block 1 to "finalized" (990) - range of 990 blocks exceeds limit of 10
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "finalized",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedRange))
+		n.AssertExpectations(t)
+	})
+
+	t.Run("latest_toBlock_passes_when_within_range", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(10))
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(5)).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100}, // max 100 blocks
+		})
+
+		// Request from block 1 to "latest" (10) - range of 10 blocks within limit
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "latest",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.False(t, handled) // Not handled means validation passed, continue to upstream
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("safe_and_pending_tags_skip_validation_gracefully", func(t *testing.T) {
+		n := new(mockNetwork)
+		// "safe" and "pending" cannot be resolved to a block number
+		// Config() may or may not be called depending on code path
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10},
+		}).Maybe()
+
+		// Request with "pending" - cannot resolve, so validation is skipped
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "pending",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		// Should not error - validation is skipped when tags cannot be resolved
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("latest_fromBlock_and_latest_toBlock_resolved_correctly", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
+		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100},
+		})
+
+		// Both fromBlock and toBlock are "latest" - range is 1 block (same block)
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "latest",
+			"toBlock":   "latest",
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		assert.False(t, handled) // Validation passed
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+		n.AssertExpectations(t)
 	})
 }
 
