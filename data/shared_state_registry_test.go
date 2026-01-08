@@ -65,7 +65,9 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result)
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for background push goroutine to complete all operations (Lock, Get, Set, Unlock)
+	// 10ms was too short for busy CI runners
+	time.Sleep(100 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)

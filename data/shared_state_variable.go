@@ -317,7 +317,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	// Schedule background push when value was actually updated (increase OR decrease).
 	// With unified semantics, all value changes are propagated to remote.
-	if updated && newValue > 0 {
+	// Note: Value can be 0 for valid cases like earliest block = genesis.
+	if updated {
 		c.scheduleBackgroundPushCurrent()
 	}
 	return c.value.Load()
@@ -573,7 +574,8 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 
 			// Snapshot local state (atomic reads; never block request flow here)
 			local := c.localState()
-			if local.Value <= 0 || local.UpdatedAt <= 0 {
+			// Skip only if UpdatedAt indicates uninitialized; Value can be 0 (e.g., earliest = genesis)
+			if local.UpdatedAt <= 0 {
 				continue
 			}
 
@@ -612,7 +614,8 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 				}
 
 				// If our local state is newer (or remote missing), push it to remote.
-				if local.Value <= 0 || local.UpdatedAt <= 0 {
+				// Skip only if UpdatedAt indicates uninitialized; Value can be 0 (e.g., earliest = genesis)
+				if local.UpdatedAt <= 0 {
 					return
 				}
 

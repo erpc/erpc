@@ -28,9 +28,9 @@ type KeyValuePair struct {
 // CounterInt64State is the canonical JSON payload stored for shared int64 counters.
 //
 // NOTE:
-// - UpdatedAt is unix milliseconds.
+// - UpdatedAt is unix milliseconds; UpdatedAt <= 0 indicates uninitialized state.
 // - UpdatedBy is best-effort (e.g., hostname/pod name) and is used for diagnostics only.
-// - Value <= 0 is treated as "unknown/uninitialized" by higher-level logic.
+// - Value can be 0 for valid cases like earliest block = genesis; use UpdatedAt to check initialization.
 type CounterInt64State struct {
 	Value     int64  `json:"v"`
 	UpdatedAt int64  `json:"t"`

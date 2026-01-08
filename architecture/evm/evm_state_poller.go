@@ -885,9 +885,9 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 		return nil
 	}
 
+	// Collect state under stateMu first, then release before acquiring earliestMu
+	// to avoid nested lock ordering issues (always acquire locks in consistent order).
 	e.stateMu.RLock()
-	defer e.stateMu.RUnlock()
-
 	diag := &common.EvmStatePollerDiagnostics{
 		Enabled:        e.Enabled,
 		LatestBlock:    e.latestBlockShared.GetValue(),
@@ -909,17 +909,25 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	}
 
 	// Build detection issue messages
-	if e.skipSyncingCheck && !e.syncingSuccessfulOnce {
+	skipSyncingCheck := e.skipSyncingCheck
+	syncingSuccessfulOnce := e.syncingSuccessfulOnce
+	skipLatestBlockCheck := e.skipLatestBlockCheck
+	latestBlockSuccessfulOnce := e.latestBlockSuccessfulOnce
+	skipFinalizedCheck := e.skipFinalizedCheck
+	finalizedBlockSuccessfulOnce := e.finalizedBlockSuccessfulOnce
+	e.stateMu.RUnlock()
+
+	if skipSyncingCheck && !syncingSuccessfulOnce {
 		diag.SyncingCheckError = "syncing check disabled after consecutive failures (method may not be supported)"
 	}
-	if e.skipLatestBlockCheck && !e.latestBlockSuccessfulOnce {
+	if skipLatestBlockCheck && !latestBlockSuccessfulOnce {
 		diag.LatestBlockDetectionIssue = "latest block check disabled after consecutive failures (method may not be supported)"
 	}
-	if e.skipFinalizedCheck && !e.finalizedBlockSuccessfulOnce {
+	if skipFinalizedCheck && !finalizedBlockSuccessfulOnce {
 		diag.FinalizedBlockDetectionIssue = "finalized block check disabled after consecutive failures (method may not be supported)"
 	}
 
-	// Collect earliest block bounds per probe type
+	// Collect earliest block bounds per probe type (separate lock)
 	e.earliestMu.RLock()
 	if len(e.earliestByProbe) > 0 {
 		diag.EarliestByProbe = make(map[common.EvmAvailabilityProbeType]*common.EvmProbeEarliestInfo)
