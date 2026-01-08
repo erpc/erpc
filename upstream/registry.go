@@ -593,6 +593,27 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 			)
 			// Previous smoothed score captured during snapshot
 			prev := prevScores[km][upsId]
+			// Guard against NaN/Inf propagation in EMA smoothing.
+			// NaN can occur from metrics collection edge cases (e.g., division by zero)
+			// and once present will propagate indefinitely through EMA calculations.
+			if math.IsNaN(prev) || math.IsInf(prev, 0) {
+				u.logger.Warn().
+					Str("upstreamId", upsId).
+					Str("network", km.network).
+					Str("method", km.method).
+					Float64("prev", prev).
+					Msg("previous EMA score was NaN/Inf, resetting to 0")
+				prev = 0
+			}
+			if math.IsNaN(instant) || math.IsInf(instant, 0) {
+				u.logger.Warn().
+					Str("upstreamId", upsId).
+					Str("network", km.network).
+					Str("method", km.method).
+					Float64("instant", instant).
+					Msg("instant score calculation returned NaN/Inf, using 0")
+				instant = 0
+			}
 			// Apply EMA smoothing even when previous score is zero.
 			// Using prev==0 for first-time entries only scales all scores uniformly,
 			// preserving ordering while ensuring consistent EMA application.
@@ -605,7 +626,8 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 			if u.scoreMetricsMode == telemetry.ScoreModeNone {
 				// Do not emit anything in 'none' mode
 				// Continue to compute and store scores, but skip metric emission
-			} else {
+			} else if !math.IsNaN(smoothed) && !math.IsInf(smoothed, 0) {
+				// Only emit valid scores to Prometheus (defense-in-depth against NaN/Inf)
 				upLabel := "n/a"
 				catLabel := "n/a"
 				if u.scoreMetricsMode == telemetry.ScoreModeDetailed {
@@ -613,6 +635,16 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 					catLabel = km.method
 				}
 				telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel).Set(smoothed)
+			} else {
+				// Defense-in-depth triggered: smoothed score is NaN/Inf despite input guards
+				u.logger.Error().
+					Str("upstreamId", upsId).
+					Str("network", km.network).
+					Str("method", km.method).
+					Float64("prev", prev).
+					Float64("instant", instant).
+					Float64("smoothed", smoothed).
+					Msg("smoothed score is NaN/Inf despite input guards - not emitting to Prometheus")
 			}
 		}
 
@@ -995,14 +1027,23 @@ func normalizeValues(values []float64) []float64 {
 	if len(values) == 0 {
 		return []float64{}
 	}
-	max := values[0]
+	// Find max while skipping NaN/Inf values
+	max := 0.0
 	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			continue
+		}
 		if value > max {
 			max = value
 		}
 	}
 	normalized := make([]float64, len(values))
 	for i, value := range values {
+		// Handle NaN/Inf values by mapping to 0
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			normalized[i] = 0
+			continue
+		}
 		if max > 0 {
 			normalized[i] = value / max
 		} else {
@@ -1017,17 +1058,28 @@ func normalizeValuesLog(values []float64) []float64 {
 		return []float64{}
 	}
 
-	// Find the true min and max values in the input slice.
+	// Find the true min and max values in the input slice, skipping NaN/Inf values.
 	// Assumes values are non-negative based on typical use for latencies, lags etc.
-	dataMin := values[0]
-	dataMax := values[0]
-	for i := 1; i < len(values); i++ {
-		if values[i] < dataMin {
-			dataMin = values[i]
+	// NaN comparisons always return false, so we need explicit checks.
+	dataMin := math.MaxFloat64
+	dataMax := 0.0
+	hasValidValue := false
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			continue
 		}
-		if values[i] > dataMax {
-			dataMax = values[i]
+		hasValidValue = true
+		if v < dataMin {
+			dataMin = v
 		}
+		if v > dataMax {
+			dataMax = v
+		}
+	}
+
+	// If no valid values, return all zeros
+	if !hasValidValue {
+		return make([]float64, len(values))
 	}
 
 	normalized := make([]float64, len(values))
@@ -1058,10 +1110,9 @@ func normalizeValuesLog(values []float64) []float64 {
 	// Thus, no division by zero here.
 
 	for i, v := range values {
-		if v < 0 {
-			// This case should ideally not happen for metrics like latency.
-			// If it can, specific handling might be needed.
-			// For now, map negative values to 0 to avoid math.Log errors with v+1.0 <= 0.
+		// Handle invalid values (NaN, Inf, negative)
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			// Map invalid values to 0 to avoid propagating NaN/Inf
 			normalized[i] = 0.0
 			continue
 		}

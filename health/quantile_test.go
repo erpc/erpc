@@ -148,3 +148,56 @@ func TestWideRange(t *testing.T) {
 		t.Errorf("Expected P99 ~ 1000000, got %f", p99)
 	}
 }
+
+func TestGetQuantile_NaNGuard(t *testing.T) {
+	// Test that GetQuantile never returns NaN or Inf, even in edge cases
+	qt := NewQuantileTracker()
+
+	// Test with empty tracker - should return 0, not NaN
+	result := qt.GetQuantile(0.50)
+	if math.IsNaN(result.Seconds()) || math.IsInf(result.Seconds(), 0) {
+		t.Errorf("Empty tracker should not return NaN/Inf, got %v", result)
+	}
+	if result.Seconds() != 0 {
+		t.Errorf("Empty tracker should return 0, got %v", result)
+	}
+
+	// Test with valid data
+	qt.Add(1.0)
+	qt.Add(2.0)
+	qt.Add(3.0)
+
+	// Test all common quantiles
+	quantiles := []float64{0.50, 0.70, 0.90, 0.95, 0.99}
+	for _, q := range quantiles {
+		result := qt.GetQuantile(q)
+		if math.IsNaN(result.Seconds()) {
+			t.Errorf("GetQuantile(%v) should not return NaN", q)
+		}
+		if math.IsInf(result.Seconds(), 0) {
+			t.Errorf("GetQuantile(%v) should not return Inf", q)
+		}
+		if result.Seconds() < 0 {
+			t.Errorf("GetQuantile(%v) should not return negative value, got %v", q, result)
+		}
+	}
+
+	// Test boundary quantiles
+	boundaryQuantiles := []float64{0.0, 0.01, 0.999, 1.0}
+	for _, q := range boundaryQuantiles {
+		result := qt.GetQuantile(q)
+		if math.IsNaN(result.Seconds()) {
+			t.Errorf("GetQuantile(%v) should not return NaN at boundary", q)
+		}
+		if math.IsInf(result.Seconds(), 0) {
+			t.Errorf("GetQuantile(%v) should not return Inf at boundary", q)
+		}
+	}
+
+	// Test after reset
+	qt.Reset()
+	result = qt.GetQuantile(0.50)
+	if math.IsNaN(result.Seconds()) || math.IsInf(result.Seconds(), 0) {
+		t.Errorf("Reset tracker should not return NaN/Inf, got %v", result)
+	}
+}
