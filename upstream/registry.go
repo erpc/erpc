@@ -606,7 +606,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 				prev = 0
 			}
 			if math.IsNaN(instant) || math.IsInf(instant, 0) {
-				u.logger.Trace().
+				u.logger.Warn().
 					Str("upstreamId", upsId).
 					Str("network", km.network).
 					Str("method", km.method).

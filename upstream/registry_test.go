@@ -1453,28 +1453,28 @@ func TestUpstreamsRegistry_CalculateScoreEdgeCases(t *testing.T) {
 		normMisbehaviorRate float64
 	}{
 		{
-			name:              "All zeros",
-			normTotalRequests: 0, normRespLatency: 0, normErrorRate: 0,
+			name:                "All zeros",
+			normTotalRequests:   0, normRespLatency: 0, normErrorRate: 0,
 			normThrottledRate: 0, normBlockHeadLag: 0, normFinalizationLag: 0, normMisbehaviorRate: 0,
 		},
 		{
-			name:              "All ones",
-			normTotalRequests: 1, normRespLatency: 1, normErrorRate: 1,
+			name:                "All ones",
+			normTotalRequests:   1, normRespLatency: 1, normErrorRate: 1,
 			normThrottledRate: 1, normBlockHeadLag: 1, normFinalizationLag: 1, normMisbehaviorRate: 1,
 		},
 		{
-			name:              "Mixed values",
-			normTotalRequests: 0.5, normRespLatency: 0.3, normErrorRate: 0.1,
+			name:                "Mixed values",
+			normTotalRequests:   0.5, normRespLatency: 0.3, normErrorRate: 0.1,
 			normThrottledRate: 0.2, normBlockHeadLag: 0.4, normFinalizationLag: 0.05, normMisbehaviorRate: 0.01,
 		},
 		{
-			name:              "Boundary high",
-			normTotalRequests: 0.999, normRespLatency: 0.999, normErrorRate: 0.999,
+			name:                "Boundary high",
+			normTotalRequests:   0.999, normRespLatency: 0.999, normErrorRate: 0.999,
 			normThrottledRate: 0.999, normBlockHeadLag: 0.999, normFinalizationLag: 0.999, normMisbehaviorRate: 0.999,
 		},
 		{
-			name:              "Boundary low",
-			normTotalRequests: 0.001, normRespLatency: 0.001, normErrorRate: 0.001,
+			name:                "Boundary low",
+			normTotalRequests:   0.001, normRespLatency: 0.001, normErrorRate: 0.001,
 			normThrottledRate: 0.001, normBlockHeadLag: 0.001, normFinalizationLag: 0.001, normMisbehaviorRate: 0.001,
 		},
 	}
