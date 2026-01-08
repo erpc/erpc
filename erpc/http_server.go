@@ -1187,7 +1187,7 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err error, origErr err
 		return serr
 	}
 
-	return common.BaseError{
+	return &common.BaseError{
 		Code:    "ErrUnknown",
 		Message: "unexpected server error",
 		Cause:   err,
