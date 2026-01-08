@@ -123,8 +123,11 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("WatchCounterInt64", mock.Anything, "test/counter3").
 			Return(updates, cleanup, nil)
 
+		// Use realistic timestamps (current time in ms) for this test
+		// The timestamp advancement fix uses time.Now().UnixMilli() so we need realistic values
+		baseTs := time.Now().UnixMilli()
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter3", "value", nil).
-			Return([]byte(`{"v":10000,"t":1,"b":"test"}`), nil)
+			Return([]byte(fmt.Sprintf(`{"v":10000,"t":%d,"b":"test"}`, baseTs)), nil)
 
 		// ignoreRollbackOf=1024 means ignore rollbacks <= 1024 blocks
 		counter := registry.GetCounterInt64("counter3", 1024)
@@ -134,12 +137,14 @@ func TestSharedVariable(t *testing.T) {
 		assert.Equal(t, int64(10000), counter.GetValue())
 
 		// Small rollback (gap=500 <= 1024) should be IGNORED
-		updates <- CounterInt64State{Value: 9500, UpdatedAt: 2, UpdatedBy: "test"}
+		// Timestamp advances our local timestamp past this remote timestamp
+		updates <- CounterInt64State{Value: 9500, UpdatedAt: baseTs + 100, UpdatedBy: "test"}
 		time.Sleep(100 * time.Millisecond)
 		assert.Equal(t, int64(10000), counter.GetValue(), "small rollback should be ignored")
 
 		// Large rollback (gap=2000 > 1024) should be APPLIED (real reorg)
-		updates <- CounterInt64State{Value: 8000, UpdatedAt: 3, UpdatedBy: "test"}
+		// Use a timestamp that's definitely in the future to ensure it's not rejected as stale
+		updates <- CounterInt64State{Value: 8000, UpdatedAt: time.Now().UnixMilli() + 1000, UpdatedBy: "test"}
 		time.Sleep(100 * time.Millisecond)
 		assert.Equal(t, int64(8000), counter.GetValue(), "large rollback should be applied")
 	})
@@ -1192,23 +1197,24 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 }
 
 // TestCounterInt64_EarliestBlockSemantics tests that earliest block counters (ignoreRollbackOf=0)
-// correctly accept decreases, which is needed when pruning moves the earliest available block forward.
+// correctly accept decreases, which is needed when detection finds an earlier available block.
 func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
 	t.Run("earliest block accepts decrease via local update (processNewValue)", func(t *testing.T) {
 		counter := &counterInt64{
-			ignoreRollbackOf: 0, // earliest block mode
+			ignoreRollbackOf: 0, // earliest block mode: accept all rollbacks
 			registry: &sharedStateRegistry{
 				logger: &log.Logger,
 			},
 		}
-		counter.value.Store(1000) // Initial earliest block
+		counter.value.Store(1500) // Initial earliest block
 
-		// Simulate detection that earliest moved forward due to pruning
-		updated := counter.processNewValue(UpdateSourceTryUpdate, 1500)
+		// Simulate detection that earliest is actually lower (e.g., re-detection found earlier block)
+		// This is a DECREASE: 1500 → 1000
+		updated := counter.processNewValue(UpdateSourceTryUpdate, 1000)
 		assert.True(t, updated, "should accept decrease with ignoreRollbackOf=0")
-		assert.Equal(t, int64(1500), counter.GetValue())
+		assert.Equal(t, int64(1000), counter.GetValue())
 
-		// Also accepts further increases
+		// Also accepts increases (forward progress due to pruning)
 		updated = counter.processNewValue(UpdateSourceTryUpdate, 2000)
 		assert.True(t, updated, "should also accept increases")
 		assert.Equal(t, int64(2000), counter.GetValue())
@@ -1216,23 +1222,24 @@ func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
 
 	t.Run("earliest block accepts decrease via remote update (processNewState)", func(t *testing.T) {
 		counter := &counterInt64{
-			ignoreRollbackOf: 0, // earliest block mode
+			ignoreRollbackOf: 0, // earliest block mode: accept all rollbacks
 			registry: &sharedStateRegistry{
 				logger:     &log.Logger,
 				instanceId: "test",
 			},
 		}
-		counter.value.Store(1000)
+		counter.value.Store(1500)
 		counter.updatedAtUnixMs.Store(1)
 
 		// Remote update with fresher timestamp and lower value
+		// This is a DECREASE: 1500 → 1000
 		updated := counter.processNewState(UpdateSourceRemoteSync, CounterInt64State{
-			Value:     1500, // Decrease from 1000
+			Value:     1000, // Decrease from 1500
 			UpdatedAt: 2,    // Fresher timestamp
 			UpdatedBy: "remote-instance",
 		})
 		assert.True(t, updated, "should accept decrease with ignoreRollbackOf=0 via remote")
-		assert.Equal(t, int64(1500), counter.GetValue())
+		assert.Equal(t, int64(1000), counter.GetValue())
 	})
 
 	t.Run("earliest block remote decrease rejected if timestamp is stale", func(t *testing.T) {
@@ -1327,6 +1334,137 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 		assert.False(t, updated)
 		assert.Equal(t, int64(10000), counter.GetValue())
 		assert.Len(t, callbackCalls, 0, "callback should not fire for small rollback")
+	})
+
+	// This test verifies the fix for a bug where small rollback rejection would not update
+	// the local timestamp correctly, causing reconciliation to fail to push back the higher local value.
+	// The fix: when rejecting a small rollback from remote with newer timestamp, advance local
+	// timestamp past remote's so our higher value wins reconciliation.
+	t.Run("small rollback rejected advances timestamp past remote (reconciliation bug fix)", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 100, // Ignore rollbacks <= 100
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		// Local has value=10000 with timestamp=50
+		counter.value.Store(10000)
+		counter.updatedAtUnixMs.Store(50)
+
+		// Remote sends a small rollback with newer timestamp
+		// Value: 9950 (gap=50 <= 100, small rollback)
+		// UpdatedAt: 100 (newer than local's 50)
+		remoteState := CounterInt64State{
+			Value:     9950,
+			UpdatedAt: 100,
+			UpdatedBy: "remote-instance",
+		}
+
+		updated := counter.processNewState(UpdateSourceRemoteSync, remoteState)
+
+		// Value should NOT be rolled back (small rollback ignored)
+		assert.False(t, updated)
+		assert.Equal(t, int64(10000), counter.GetValue())
+
+		// CRITICAL: Timestamp should be ADVANCED past remote's timestamp!
+		// This ensures our higher local value wins reconciliation:
+		//   local.UpdatedAt (>100) > remote.UpdatedAt (100) => TRUE
+		// And the higher local value WILL be pushed back to remote.
+		localTs := counter.updatedAtMs()
+		assert.Greater(t, localTs, int64(100), "timestamp should be advanced past remote's when small rollback is rejected")
+	})
+
+	t.Run("large rollback accepted DOES update timestamp", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 100, // Ignore rollbacks <= 100
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		// Local has value=10000 with timestamp=50
+		counter.value.Store(10000)
+		counter.updatedAtUnixMs.Store(50)
+
+		// Remote sends a large rollback with newer timestamp
+		// Value: 5000 (gap=5000 > 100, large rollback - should be accepted)
+		// UpdatedAt: 100 (newer than local's 50)
+		remoteState := CounterInt64State{
+			Value:     5000,
+			UpdatedAt: 100,
+			UpdatedBy: "remote-instance",
+		}
+
+		updated := counter.processNewState(UpdateSourceRemoteSync, remoteState)
+
+		// Value should be rolled back (large rollback accepted)
+		assert.True(t, updated)
+		assert.Equal(t, int64(5000), counter.GetValue())
+
+		// Timestamp SHOULD be updated since we accepted the value
+		localTs := counter.updatedAtMs()
+		assert.Equal(t, int64(100), localTs, "timestamp should be updated when large rollback is accepted")
+	})
+
+	t.Run("forward progress update DOES update timestamp", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 100,
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		// Local has value=10000 with timestamp=50
+		counter.value.Store(10000)
+		counter.updatedAtUnixMs.Store(50)
+
+		// Remote sends a higher value with newer timestamp
+		remoteState := CounterInt64State{
+			Value:     11000,
+			UpdatedAt: 100,
+			UpdatedBy: "remote-instance",
+		}
+
+		updated := counter.processNewState(UpdateSourceRemoteSync, remoteState)
+
+		// Value should be updated (forward progress)
+		assert.True(t, updated)
+		assert.Equal(t, int64(11000), counter.GetValue())
+
+		// Timestamp SHOULD be updated since we accepted the value
+		localTs := counter.updatedAtMs()
+		assert.Equal(t, int64(100), localTs, "timestamp should be updated when value increases")
+	})
+
+	t.Run("same value update DOES update timestamp", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 100,
+			registry: &sharedStateRegistry{
+				logger:     &log.Logger,
+				instanceId: "test",
+			},
+		}
+		// Local has value=10000 with timestamp=50
+		counter.value.Store(10000)
+		counter.updatedAtUnixMs.Store(50)
+
+		// Remote sends same value with newer timestamp
+		remoteState := CounterInt64State{
+			Value:     10000,
+			UpdatedAt: 100,
+			UpdatedBy: "remote-instance",
+		}
+
+		updated := counter.processNewState(UpdateSourceRemoteSync, remoteState)
+
+		// Value not changed, but should return false and update timestamp
+		assert.False(t, updated)
+		assert.Equal(t, int64(10000), counter.GetValue())
+
+		// Timestamp SHOULD be updated to mark as fresh since remote is newer
+		localTs := counter.updatedAtMs()
+		assert.Equal(t, int64(100), localTs, "timestamp should be updated when same value but newer remote timestamp")
 	})
 }
 
@@ -1437,6 +1575,103 @@ func TestCounterInt64_BackgroundPushCoalescing(t *testing.T) {
 		publishes := publishCount.Load()
 		t.Logf("Total publishes for 100 updates: %d", publishes)
 		assert.Less(t, publishes, int32(50), "publishes should be coalesced, got %d", publishes)
+	})
+}
+
+// TestCounterInt64_SmallRollbackReconciliation tests that when a small rollback is rejected,
+// the higher local value is still pushed to remote during background reconciliation.
+// This is the integration test for the timestamp advancement fix.
+func TestCounterInt64_SmallRollbackReconciliation(t *testing.T) {
+	t.Run("rejected small rollback triggers push of higher local value to remote", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		connector := NewMockConnector("small-rollback-reconcile-test")
+		lock := &MockLock{}
+		registry := &sharedStateRegistry{
+			appCtx:          ctx,
+			clusterKey:      "test",
+			instanceId:      "test-instance",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			lockTtl:         30 * time.Second,
+			lockMaxWait:     100 * time.Millisecond,
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
+		}
+
+		// Track values pushed to remote
+		var pushedValues []int64
+		var pushedMu sync.Mutex
+
+		connector.On("PublishCounterInt64", mock.Anything, "test/rollback-counter", mock.Anything).
+			Run(func(args mock.Arguments) {
+				st := args.Get(2).(CounterInt64State)
+				pushedMu.Lock()
+				pushedValues = append(pushedValues, st.Value)
+				pushedMu.Unlock()
+			}).Return(nil).Maybe()
+
+		connector.On("Lock", mock.Anything, "test/rollback-counter", mock.Anything).
+			Return(lock, nil)
+		lock.On("Unlock", mock.Anything).Return(nil)
+
+		// Remote has lower value with NEWER timestamp (simulates another instance reporting lower value)
+		// This is the scenario: remote has 9950 (t=100), local has 10000 (t=50)
+		// Small rollback gap=50 <= ignoreRollbackOf=100, so rollback is rejected
+		// But we should still push our higher value to remote
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/rollback-counter", "value", nil).
+			Return([]byte(`{"v":9950,"t":100,"b":"other-instance"}`), nil)
+
+		// Track if Set was called with our higher value
+		var setCallValue int64
+		var setCallCount int
+		var setCallMu sync.Mutex
+
+		connector.On("Set", mock.Anything, "test/rollback-counter", "value", mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				payload := args.Get(3).([]byte)
+				var st CounterInt64State
+				if err := common.SonicCfg.Unmarshal(payload, &st); err == nil {
+					setCallMu.Lock()
+					setCallValue = st.Value
+					setCallCount++
+					setCallMu.Unlock()
+				}
+			}).Return(nil)
+
+		counter := &counterInt64{
+			registry:         registry,
+			key:              "test/rollback-counter",
+			ignoreRollbackOf: 100, // Ignore rollbacks <= 100
+		}
+		// Local has higher value but older timestamp
+		counter.value.Store(10000)
+		counter.updatedAtUnixMs.Store(50) // Older than remote's 100
+
+		// Trigger background push - this should:
+		// 1. See remote.UpdatedAt (100) > local.UpdatedAt (50)
+		// 2. Try to adopt remote's lower value (9950)
+		// 3. Reject it as small rollback (gap=50 <= 100)
+		// 4. Advance local timestamp past 100
+		// 5. Push local's higher value (10000) to remote
+		counter.scheduleBackgroundPushCurrent()
+
+		// Wait for push to complete
+		time.Sleep(300 * time.Millisecond)
+
+		// Verify local value is unchanged (rollback rejected)
+		assert.Equal(t, int64(10000), counter.GetValue())
+
+		// Verify local timestamp was advanced past remote's
+		localTs := counter.updatedAtMs()
+		assert.Greater(t, localTs, int64(100), "local timestamp should be advanced past remote's")
+
+		// CRITICAL: Verify Set was called with our higher local value
+		setCallMu.Lock()
+		assert.Equal(t, int64(10000), setCallValue, "should push higher local value to remote")
+		assert.Greater(t, setCallCount, 0, "Set should have been called")
+		setCallMu.Unlock()
 	})
 }
 

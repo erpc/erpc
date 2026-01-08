@@ -75,6 +75,30 @@ func (v *baseSharedVariable) updateUpdatedAtMs(newUpdatedAt int64) bool {
 	}
 }
 
+// advanceTimestampPast advances updatedAtUnixMs to be strictly greater than remoteTs.
+// Uses current wall clock if it's newer, otherwise uses remoteTs + 1.
+// This is used when rejecting a remote value (e.g., small rollback) but wanting to
+// ensure our local state will "win" the next reconciliation and get pushed to remote.
+func (v *baseSharedVariable) advanceTimestampPast(remoteTs int64) {
+	for {
+		current := v.updatedAtUnixMs.Load()
+		// Explicit check: if already past remoteTs, no action needed
+		if current > remoteTs {
+			return
+		}
+		// current <= remoteTs, need to advance past remoteTs
+		next := time.Now().UnixMilli()
+		if next <= remoteTs {
+			next = remoteTs + 1
+		}
+		// At this point: next > remoteTs (guaranteed)
+		if v.updatedAtUnixMs.CompareAndSwap(current, next) {
+			return
+		}
+		// CAS failed, another goroutine modified timestamp - retry
+	}
+}
+
 type counterInt64 struct {
 	baseSharedVariable
 	registry               *sharedStateRegistry
@@ -106,22 +130,51 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	// This ensures consistent "only-increasing" semantics for latest/finalized across
 	// all instances, preventing noise from propagating via shared state.
 
-	// For local updates, allow UpdatedAt=0 and allocate a unique timestamp.
-	// For remote updates, UpdatedAt must be present and valid.
-	if st.UpdatedAt <= 0 {
+	// Track if this is a remote update (with external timestamp) vs local update.
+	// For remote updates, we only CHECK timestamp ordering here - we DON'T update our local
+	// timestamp until we know we're going to accept the value change (forward progress or large rollback).
+	//
+	// SPECIAL CASE - Small rollback rejection: When we reject a small rollback from a remote update
+	// with a newer timestamp, we advance our local timestamp past the remote's timestamp. This ensures
+	// our higher local value will "win" reconciliation in scheduleBackgroundPushCurrent and get pushed
+	// to remote, since local.UpdatedAt will be > remote.UpdatedAt.
+	isRemoteUpdate := st.UpdatedAt > 0
+
+	if !isRemoteUpdate {
+		// For local updates, allow UpdatedAt=0 and allocate a unique timestamp.
 		st.UpdatedAt = c.allocateUpdatedAtMs()
-	} else if !c.updateUpdatedAtMs(st.UpdatedAt) {
-		// Reject stale/out-of-order states by UpdatedAt ordering.
-		// This provides idempotency and prevents stale remote values from overriding fresh local detections.
-		return false
+	} else {
+		// For remote updates, just check timestamp ordering - don't update local timestamp yet.
+		currentTs := c.updatedAtMs()
+		if st.UpdatedAt <= currentTs {
+			// Reject stale/out-of-order states by UpdatedAt ordering.
+			// This provides idempotency and prevents stale remote values from overriding fresh local detections.
+			return false
+		}
 	}
 
 	currentValue := c.value.Load()
 	newVal := st.Value
-	updated := false
 
 	if newVal == currentValue {
-		// No change needed
+		// Values appear equal - no value change needed.
+		// For remote updates, we want to update timestamp since remote is fresher.
+		// However, we must verify the value hasn't changed concurrently to avoid a TOCTOU race:
+		// a concurrent TryUpdate could change the value between our Load() and this check,
+		// causing us to incorrectly set the remote's stale timestamp for a different local value.
+		if isRemoteUpdate {
+			if c.updateUpdatedAtMs(st.UpdatedAt) {
+				// Timestamp was updated. Verify value is still what we expect.
+				// If a concurrent update changed the value after our initial Load(),
+				// we need to ensure our timestamp reflects that change, not the remote's stale state.
+				if c.value.Load() != newVal {
+					// Value changed concurrently - allocate fresh timestamp to ensure
+					// local state wins in reconciliation. This maintains the invariant that
+					// timestamps accurately reflect when values were last updated locally.
+					c.allocateUpdatedAtMs()
+				}
+			}
+		}
 		return false
 	}
 
@@ -129,7 +182,10 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 		// Forward progress: always accept
 		for {
 			if c.value.CompareAndSwap(currentValue, newVal) {
-				updated = true
+				// Update timestamp AFTER accepting the value (for remote updates)
+				if isRemoteUpdate {
+					c.updateUpdatedAtMs(st.UpdatedAt)
+				}
 				c.registry.logger.Trace().
 					Str("source", source).
 					Str("key", c.key).
@@ -138,14 +194,13 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 					Int64("updatedAt", st.UpdatedAt).
 					Msg("counter value increased (remote)")
 				c.triggerValueCallback(newVal)
-				break
+				return true
 			}
 			currentValue = c.value.Load()
 			if newVal <= currentValue {
-				break
+				return false
 			}
 		}
-		return updated
 	}
 
 	// Rollback handling: only accept rollbacks where gap exceeds the threshold.
@@ -154,7 +209,13 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	gap := currentValue - newVal
 
 	if gap <= c.ignoreRollbackOf {
-		// Small rollback within threshold - ignore as noise
+		// Small rollback within threshold - ignore as noise.
+		// For remote updates with newer timestamps: advance our local timestamp past theirs.
+		// This ensures our higher local value will "win" reconciliation and get pushed to remote,
+		// since local.UpdatedAt will now be > remote.UpdatedAt.
+		if isRemoteUpdate {
+			c.advanceTimestampPast(st.UpdatedAt)
+		}
 		c.registry.logger.Trace().
 			Str("source", source).
 			Str("key", c.key).
@@ -169,7 +230,10 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 	// Large rollback exceeds threshold - apply it and trigger callback
 	for {
 		if c.value.CompareAndSwap(currentValue, newVal) {
-			updated = true
+			// Update timestamp AFTER accepting the value (for remote updates)
+			if isRemoteUpdate {
+				c.updateUpdatedAtMs(st.UpdatedAt)
+			}
 			c.registry.logger.Trace().
 				Str("source", source).
 				Str("key", c.key).
@@ -190,14 +254,13 @@ func (c *counterInt64) processNewState(source string, st CounterInt64State) bool
 					cb(currentValue, newVal)
 				}
 			}
-			break
+			return true
 		}
 		currentValue = c.value.Load()
 		if newVal >= currentValue {
-			break
+			return false
 		}
 	}
-	return updated
 }
 
 // processNewValue handles local updates (TryUpdate, applyRefreshResult) where we don't have
