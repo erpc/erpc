@@ -72,6 +72,14 @@ func (m *mockUpstreamForRetry) EvmGetChainId(ctx context.Context) (string, error
 	return "1", nil
 }
 
+func (m *mockUpstreamForRetry) EvmEffectiveLatestBlock() int64 {
+	return 0
+}
+
+func (m *mockUpstreamForRetry) EvmEffectiveFinalizedBlock() int64 {
+	return 0
+}
+
 // Test helper to execute retry policy
 func executeRetryPolicy(t *testing.T, cfg *common.RetryPolicyConfig, scope common.Scope, response *common.NormalizedResponse, err error) (attempts int, finalErr error) {
 	policy, policyErr := createRetryPolicy(scope, cfg)

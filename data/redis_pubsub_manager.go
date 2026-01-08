@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,7 +17,7 @@ import (
 
 // subscriberChannel wraps a channel with metadata to prevent double-close
 type subscriberChannel struct {
-	ch     chan int64
+	ch     chan CounterInt64State
 	closed bool
 	mu     sync.Mutex
 }
@@ -178,7 +177,7 @@ func (m *RedisPubSubManager) reconnectPubSub() error {
 }
 
 // Subscribe adds a subscription for a specific key
-func (m *RedisPubSubManager) Subscribe(key string) (<-chan int64, func(), error) {
+func (m *RedisPubSubManager) Subscribe(key string) (<-chan CounterInt64State, func(), error) {
 	// Check if context is done (manager is stopped)
 	if m.appCtx.Err() != nil {
 		return nil, nil, fmt.Errorf("pubsub manager is stopped")
@@ -192,7 +191,7 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan int64, func(), error)
 	}
 
 	sc := &subscriberChannel{
-		ch: make(chan int64, 1),
+		ch: make(chan CounterInt64State, 1),
 	}
 
 	// Add the channel to subscribers
@@ -200,7 +199,7 @@ func (m *RedisPubSubManager) Subscribe(key string) (<-chan int64, func(), error)
 
 	// Get initial value in background
 	go func() {
-		if val, err := m.getCurrentValue(m.appCtx, key); err == nil && val > 0 {
+		if val, ok, err := m.getCurrentValue(m.appCtx, key); err == nil && ok {
 			sc.mu.Lock()
 			if !sc.closed {
 				select {
@@ -309,15 +308,21 @@ func (m *RedisPubSubManager) runMessageLoop() error {
 
 			if msg != nil && strings.HasPrefix(msg.Channel, "counter:") {
 				key := strings.TrimPrefix(msg.Channel, "counter:")
-				if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
-					m.logger.Debug().Str("key", key).Int64("value", val).Msg("received counter update via pubsub")
-					m.notifySubscribers(key, val)
-				} else {
+				var st CounterInt64State
+				if err := common.SonicCfg.Unmarshal([]byte(msg.Payload), &st); err == nil && st.UpdatedAt > 0 {
 					m.logger.Debug().
 						Str("key", key).
-						Str("payload", msg.Payload).
-						Msg("failed to parse counter value from pubsub message")
+						Int64("value", st.Value).
+						Int64("updatedAt", st.UpdatedAt).
+						Str("updatedBy", st.UpdatedBy).
+						Msg("received counter update via pubsub")
+					m.notifySubscribers(key, st)
+					continue
 				}
+				m.logger.Debug().
+					Str("key", key).
+					Str("payload", msg.Payload).
+					Msg("failed to parse counter state from pubsub message")
 			}
 		}
 	}
@@ -367,28 +372,31 @@ func (m *RedisPubSubManager) pollAllKeys() {
 	m.logger.Debug().Int("keyCount", len(keys)).Msg("polling counter values")
 
 	for _, key := range keys {
-		if val, err := m.getCurrentValue(m.appCtx, key); err == nil && val > 0 {
+		if val, ok, err := m.getCurrentValue(m.appCtx, key); err == nil && ok {
 			m.notifySubscribers(key, val)
 		}
 	}
 }
 
 // getCurrentValue fetches the current value of a counter
-func (m *RedisPubSubManager) getCurrentValue(ctx context.Context, key string) (int64, error) {
+func (m *RedisPubSubManager) getCurrentValue(ctx context.Context, key string) (CounterInt64State, bool, error) {
 	val, err := m.connector.Get(ctx, ConnectorMainIndex, key, "value", nil)
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-			return 0, nil
+			return CounterInt64State{}, false, nil
 		}
-		return 0, err
+		return CounterInt64State{}, false, err
 	}
 
-	value, err := strconv.ParseInt(string(val), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse counter value: %w", err)
+	var st CounterInt64State
+	if err := common.SonicCfg.Unmarshal(val, &st); err != nil {
+		// No backward compatibility: treat parse errors as missing
+		return CounterInt64State{}, false, nil
 	}
-
-	return value, nil
+	if st.UpdatedAt <= 0 {
+		return CounterInt64State{}, false, nil
+	}
+	return st, true, nil
 }
 
 // addSubscriber adds a channel to the subscribers for a key
@@ -431,7 +439,7 @@ func (m *RedisPubSubManager) removeSubscriber(key string, sc *subscriberChannel)
 }
 
 // notifySubscribers sends a value to all subscribers of a key
-func (m *RedisPubSubManager) notifySubscribers(key string, value int64) {
+func (m *RedisPubSubManager) notifySubscribers(key string, value CounterInt64State) {
 	subsValue, ok := m.subscribers.Load(key)
 	if !ok {
 		return

@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -137,6 +138,20 @@ func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod
 	return true, nil
 }
 
+func (u *FakeUpstream) EvmEffectiveLatestBlock() int64 {
+	if u.evmStatePoller == nil {
+		return 0
+	}
+	return u.evmStatePoller.LatestBlock()
+}
+
+func (u *FakeUpstream) EvmEffectiveFinalizedBlock() int64 {
+	if u.evmStatePoller == nil {
+		return 0
+	}
+	return u.evmStatePoller.FinalizedBlock()
+}
+
 type FakeEvmStatePoller struct {
 	latestBlockNumber    int64
 	finalizedBlockNumber int64
@@ -165,7 +180,7 @@ func (p *FakeEvmStatePoller) EarliestBlock(probe EvmAvailabilityProbeType) int64
 	return 0
 }
 
-func (p *FakeEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType) (int64, error) {
+func (p *FakeEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
 }
 
@@ -211,6 +226,15 @@ func (p *FakeEvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 
 func (p *FakeEvmStatePoller) SyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
+}
+
+func (p *FakeEvmStatePoller) GetDiagnostics() *EvmStatePollerDiagnostics {
+	return &EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    p.latestBlockNumber,
+		FinalizedBlock: p.finalizedBlockNumber,
+		SyncingState:   EvmSyncingStateUnknown.String(),
+	}
 }
 
 // FakeHealthTracker is a no-op implementation of HealthTracker for testing

@@ -3,7 +3,9 @@ package data
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,7 @@ type sharedStateRegistry struct {
 	appCtx          context.Context
 	logger          *zerolog.Logger
 	clusterKey      string
+	instanceId      string
 	connector       Connector
 	variables       sync.Map // map[string]*counterInt64
 	fallbackTimeout time.Duration
@@ -60,10 +63,13 @@ func NewSharedStateRegistry(
 		updateMaxWait = 50 * time.Millisecond
 	}
 
+	instanceId := resolveSharedStateInstanceID()
+
 	return &sharedStateRegistry{
 		appCtx:          appCtx,
 		logger:          &lg,
 		clusterKey:      cfg.ClusterKey,
+		instanceId:      instanceId,
 		connector:       connector,
 		fallbackTimeout: fallbackTimeout,
 		lockTtl:         lockTtl,
@@ -71,6 +77,24 @@ func NewSharedStateRegistry(
 		updateMaxWait:   updateMaxWait,
 		initializer:     util.NewInitializer(appCtx, &lg, nil),
 	}, nil
+}
+
+func resolveSharedStateInstanceID() string {
+	if id := strings.TrimSpace(os.Getenv("INSTANCE_ID")); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(os.Getenv("POD_NAME")); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(os.Getenv("HOSTNAME")); id != "" {
+		return id
+	}
+	if hn, err := os.Hostname(); err == nil {
+		if hn = strings.TrimSpace(hn); hn != "" {
+			return hn
+		}
+	}
+	return "unknown"
 }
 
 func (r *sharedStateRegistry) GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable {
@@ -112,20 +136,30 @@ func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *util
 	return util.NewBootstrapTask(
 		r.getInitialValueTaskName(counter),
 		func(ctx context.Context) error {
-			v, err := r.fetchValue(ctx, counter.key)
+			raw, err := r.connector.Get(ctx, ConnectorMainIndex, counter.key, "value", nil)
 			if err != nil {
 				if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-					r.logger.Debug().Str("key", counter.key).Msg("no local initial value found for counter")
+					r.logger.Debug().Str("key", counter.key).Msg("no remote initial value found for counter")
 					return nil
-				} else {
-					r.logger.Error().Err(err).Str("key", counter.key).Msg("failed to fetch initial value for counter")
-					return err
 				}
+				r.logger.Error().Err(err).Str("key", counter.key).Msg("failed to fetch initial value for counter")
+				return err
 			}
-			r.logger.Debug().Str("key", counter.key).Int64("value", v).Msg("fetched initial value for counter")
-			if v > 0 {
-				counter.processNewValue(UpdateSourceInitialFetch, v)
+
+			var st CounterInt64State
+			if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
+				// No backward compatibility: treat parse errors as missing
+				r.logger.Debug().Str("key", counter.key).Msg("initial counter value is not a valid JSON state; treating as missing")
+				return nil
 			}
+
+			r.logger.Debug().
+				Str("key", counter.key).
+				Int64("value", st.Value).
+				Int64("updatedAt", st.UpdatedAt).
+				Str("updatedBy", st.UpdatedBy).
+				Msg("fetched initial value for counter")
+			counter.processNewState(UpdateSourceInitialFetch, st)
 			return nil
 		},
 	)
@@ -175,9 +209,11 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 
 				r.logger.Debug().
 					Str("key", counter.key).
-					Int64("newValue", newValue).
+					Int64("value", newValue.Value).
+					Int64("updatedAt", newValue.UpdatedAt).
+					Str("updatedBy", newValue.UpdatedBy).
 					Msg("received new value from shared state sync")
-				counter.processNewValue(UpdateSourceRemoteSync, newValue)
+				counter.processNewState(UpdateSourceRemoteSync, newValue)
 			}
 		}
 	}()
