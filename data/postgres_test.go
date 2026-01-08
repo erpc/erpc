@@ -25,7 +25,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 			Image:        "postgres:15-alpine",
 			Env:          map[string]string{"POSTGRES_PASSWORD": "password"},
 			ExposedPorts: []string{"5432/tcp"},
-			WaitingFor:   wait.ForListeningPort("5432/tcp"),
+			WaitingFor:   wait.ForLog("database system is ready to accept connections").WithStartupTimeout(2 * time.Minute),
 		}
 		postgresC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: req,

@@ -339,12 +339,12 @@ func (g *GrpcConnector) Lock(ctx context.Context, key string, ttl time.Duration)
 	return nil, fmt.Errorf("grpc connector is read-only")
 }
 
-func (g *GrpcConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	ch := make(chan int64)
+func (g *GrpcConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
+	ch := make(chan CounterInt64State)
 	return ch, func() {}, fmt.Errorf("grpc connector does not support WatchCounterInt64")
 }
 
-func (g *GrpcConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+func (g *GrpcConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	return fmt.Errorf("grpc connector does not support PublishCounterInt64")
 }
 

@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -49,9 +50,10 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
-	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("10"), mock.Anything).Return(nil)
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
+	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -75,7 +77,7 @@ func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).
 		Return(nil, errors.New("lock acquisition failed"))
 	// Background push now publishes the current value even if lock acquisition fails.
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -129,11 +131,12 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
-	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("10"), mock.Anything).
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
+	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).
 		Return(errors.New("set failed"))
 	// Background push now publishes the current value even if remote set fails.
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -158,9 +161,10 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
-	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("10"), mock.Anything).Return(nil)
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
+	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).
 		Return(errors.New("publish failed"))
 
 	counter := &counterInt64{
@@ -185,12 +189,12 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
 
+	remoteUpdatedAt := time.Now().UnixMilli() + 10_000
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("15"), nil)
-	connector.On("Set", mock.Anything, "my-dev/test", "value", []byte("15"), mock.Anything).Return(nil)
-	// Background push publishes local snapshot first, then publishes the reconciled remote value.
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
-	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(15)).Return(nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+		Return([]byte(fmt.Sprintf(`{"v":15,"t":%d,"b":"test"}`, remoteUpdatedAt)), nil)
+	// Background publish is best-effort and may run multiple times.
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -247,15 +251,16 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 
-	updates := make(chan int64, 1)
+	updates := make(chan CounterInt64State, 1)
 	connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").Return(updates, func() {}, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
 
 	counter := registry.GetCounterInt64("test", 1024)
 	assert.NotNil(t, counter)
 
 	// Simulate an update
-	updates <- 42
+	updates <- CounterInt64State{Value: 42, UpdatedAt: 2, UpdatedBy: "test"}
 	time.Sleep(100 * time.Millisecond) // Give time for the update to process
 
 	assert.Equal(t, int64(42), counter.GetValue())
@@ -270,7 +275,8 @@ func TestSharedStateRegistry_GetCounterInt64_WatchFailure(t *testing.T) {
 	lock.On("Unlock", mock.Anything).Return(nil).Times(1)
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).Return([]byte("5"), nil)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value", nil).
+		Return([]byte(`{"v":5,"t":1,"b":"test"}`), nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 

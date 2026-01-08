@@ -25,6 +25,18 @@ type KeyValuePair struct {
 	Value        []byte
 }
 
+// CounterInt64State is the canonical JSON payload stored for shared int64 counters.
+//
+// NOTE:
+// - UpdatedAt is unix milliseconds.
+// - UpdatedBy is best-effort (e.g., hostname/pod name) and is used for diagnostics only.
+// - Value <= 0 is treated as "unknown/uninitialized" by higher-level logic.
+type CounterInt64State struct {
+	Value     int64  `json:"v"`
+	UpdatedAt int64  `json:"t"`
+	UpdatedBy string `json:"b,omitempty"`
+}
+
 type Connector interface {
 	Id() string
 	Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error)
@@ -34,8 +46,8 @@ type Connector interface {
 	Delete(ctx context.Context, partitionKey, rangeKey string) error
 	List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error)
 	Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error)
-	WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error)
-	PublishCounterInt64(ctx context.Context, key string, value int64) error
+	WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error)
+	PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error
 }
 
 func NewConnector(

@@ -64,17 +64,17 @@ func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration)
 }
 
 // WatchCounterInt64 mocks the WatchCounterInt64 method of the Connector interface
-func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
 	args := m.Called(ctx, key)
-	var a0 <-chan int64 = nil
-	a0, _ = args.Get(0).(chan int64)
+	var a0 <-chan CounterInt64State = nil
+	a0, _ = args.Get(0).(chan CounterInt64State)
 	a1, _ := args.Get(1).(func())
 	a2 := args.Error(2)
 	return a0, a1, a2
 }
 
 // PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface
-func (m *MockConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+func (m *MockConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	args := m.Called(ctx, key, value)
 	return args.Error(0)
 }
