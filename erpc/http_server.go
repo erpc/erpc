@@ -1060,15 +1060,8 @@ func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
 	}
 	e.Str("jsonrpc", r.Jsonrpc)
 	e.Interface("id", r.Id)
-
 	if r.Error != nil {
-		if errBytes, err := common.SonicCfg.Marshal(r.Error); err == nil {
-			if common.IsSemiValidJson(errBytes) {
-				e.RawJSON("error", errBytes)
-			} else {
-				e.Bytes("error", errBytes)
-			}
-		}
+		e.Interface("error", r.Error)
 	}
 }
 
