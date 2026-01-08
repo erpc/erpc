@@ -115,9 +115,9 @@ func TestAddResponseToLog(t *testing.T) {
 			wantContains: `"code":"ErrTest"`,
 		},
 		{
-			name:         "unknown type falls back to Interface",
+			name:         "unknown type is ignored",
 			resp:         map[string]string{"foo": "bar"},
-			wantContains: `"foo":"bar"`,
+			wantContains: `"message":"test"`, // only message, no response field
 		},
 	}
 

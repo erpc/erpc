@@ -1114,8 +1114,7 @@ func addResponseToLog(e *zerolog.Event, resp interface{}) *zerolog.Event {
 	case common.StandardError:
 		return e.Object("response", v)
 	default:
-		// Fallback for unexpected types - uses reflection but shouldn't happen
-		return e.Interface("response", v)
+		return e
 	}
 }
 
