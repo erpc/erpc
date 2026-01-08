@@ -96,7 +96,7 @@ func TestInit_AllGood(t *testing.T) {
 
 	logger := log.Logger
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 	go Init(ctx, cfg, logger)
 	time.Sleep(1 * time.Second)
 
@@ -164,7 +164,7 @@ func TestInit_InvalidHttpPort(t *testing.T) {
 
 	// Launch init
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 	Init(ctx, cfg, logger)
 
 	select {

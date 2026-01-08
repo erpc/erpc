@@ -30,7 +30,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		logger := &log.Logger
 		vr := thirdparty.NewVendorsRegistry()
@@ -84,7 +84,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 
 		// Add a timeout context to prevent actual infinite loop
 		timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		startTime := time.Now()
 		resp, err := ntw.Forward(timeoutCtx, req)
@@ -117,7 +117,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		logger := &log.Logger
 		vr := thirdparty.NewVendorsRegistry()
@@ -189,7 +189,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Create test logger
 		logger := &log.Logger
@@ -376,7 +376,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		logger := &log.Logger
 

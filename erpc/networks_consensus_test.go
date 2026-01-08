@@ -2271,7 +2271,7 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 
 	// Create network with consensus policy
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	ntw, _ := setupNetworkForConsensusTest(t, ctx, consensusTestCase{
 		upstreams: upstreams,

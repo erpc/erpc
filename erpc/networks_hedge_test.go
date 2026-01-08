@@ -69,7 +69,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay:    common.Duration(100 * time.Millisecond),
@@ -130,7 +130,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay:    common.Duration(200 * time.Millisecond),
@@ -209,7 +209,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Set up network with quantile-based hedge
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
@@ -306,7 +306,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Set up network with quantile that would result in very low delay
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
@@ -410,7 +410,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Set up network with quantile that would result in very high delay
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
@@ -478,7 +478,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay:    common.Duration(50 * time.Millisecond),
@@ -533,7 +533,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Create network with 4 upstreams but MaxCount=2
 		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
@@ -600,7 +600,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay:    common.Duration(50 * time.Millisecond),
@@ -666,7 +666,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay:    common.Duration(50 * time.Millisecond),
@@ -731,7 +731,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkWithMultipleUpstreams(t, ctx, 4, &common.HedgePolicyConfig{
 			Delay:    common.Duration(50 * time.Millisecond),
@@ -800,7 +800,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Set up network with quantile-based hedge but no metrics
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
@@ -855,7 +855,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
 			Delay:    common.Duration(100 * time.Millisecond),

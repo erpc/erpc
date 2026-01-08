@@ -108,7 +108,7 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -146,7 +146,7 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -224,7 +224,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesO
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -266,7 +266,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_Preserv
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -304,7 +304,7 @@ func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -352,7 +352,7 @@ func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -401,7 +401,7 @@ func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testin
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -462,7 +462,7 @@ func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T)
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -502,7 +502,7 @@ func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -564,7 +564,7 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -613,7 +613,7 @@ func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -644,7 +644,7 @@ func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Create a request with nested structures
 	req := common.NewNormalizedRequest([]byte(`{
@@ -723,7 +723,7 @@ func TestInterpolation_PreservesSemanticTags(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -789,7 +789,7 @@ func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -837,7 +837,7 @@ func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -889,7 +889,7 @@ func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -945,7 +945,7 @@ func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -997,7 +997,7 @@ func TestInterpolation_HexNormalization(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1028,7 +1028,7 @@ func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
@@ -1093,7 +1093,7 @@ func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Set up mock BEFORE network initialization
 	gock.New("http://rpc1.localhost").
@@ -1159,7 +1159,7 @@ func TestInterpolation_EthGetBlockByNumber_Latest_NotInterpolated(t *testing.T) 
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1186,7 +1186,7 @@ func TestInterpolation_EthGetBlockByNumber_Finalized_NotInterpolated(t *testing.
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1214,7 +1214,7 @@ func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Set up mock BEFORE network initialization
 	// eth_getBalance should have "latest" interpolated to hex
@@ -1268,7 +1268,7 @@ func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1327,7 +1327,7 @@ func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1376,7 +1376,7 @@ func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1425,7 +1425,7 @@ func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1474,7 +1474,7 @@ func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1549,7 +1549,7 @@ func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Create a mock network with state poller data
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
@@ -1609,7 +1609,7 @@ func TestInterpolation_LargeNumericValues(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1659,7 +1659,7 @@ func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1855,7 +1855,7 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 				})
 
 			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			defer util.CancelAndWait(cancel)
 
 			network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -1885,7 +1885,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Create 3 upstreams with different latest blocks via util.SetupMocksForEvmStatePoller
 	upCfgs := []*common.UpstreamConfig{
@@ -2012,7 +2012,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Two upstreams; rpc2 has higher latest (due to poller mocks), but we'll only mock rpc1 user call.
 	upCfgs := []*common.UpstreamConfig{

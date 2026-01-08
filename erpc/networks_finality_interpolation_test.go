@@ -45,7 +45,7 @@ func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -110,7 +110,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 		})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 
@@ -152,7 +152,7 @@ func TestInterpolation_NumericBlockFinality(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network, _ := setupTestNetworkForInterpolation(t, ctx, nil)
 

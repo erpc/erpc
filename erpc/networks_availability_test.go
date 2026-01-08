@@ -33,7 +33,7 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -98,7 +98,7 @@ func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -171,7 +171,7 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 1) // Expect 1 persist mock for block 0
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -258,7 +258,7 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 2) // 2 persist mocks for block 0 and block 1
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -347,7 +347,7 @@ func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -443,7 +443,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 2) // 2 persist mocks for block discovery
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -534,7 +534,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 2) // 2 persist mocks remain after Times(1) is consumed
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -615,7 +615,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 1) // 1 persist mock for block 0
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -683,7 +683,7 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 3) // 3 persist mocks for blocks
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -780,7 +780,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideMethod(t *
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Temporarily force default for eth_getBalance to disable enforcement
 	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
@@ -859,7 +859,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t 
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Temporarily force default for eth_getBalance to disable enforcement
 	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
@@ -930,7 +930,7 @@ func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Temporarily force default for eth_getBalance to disable enforcement
 	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
@@ -995,7 +995,7 @@ func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Regardless of defaults, network-level false should disable enforcement
 	// Ensure default for eth_getBalance does not counteract (set to true to prove network false wins)
@@ -1060,7 +1060,7 @@ func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -1127,7 +1127,7 @@ func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) 
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -1218,7 +1218,7 @@ func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -1298,7 +1298,7 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Single upstream - if it gets re-selected infinitely, the test will timeout
 	upCfg := &common.UpstreamConfig{

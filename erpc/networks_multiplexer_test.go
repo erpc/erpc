@@ -40,7 +40,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		// followers might make their own requests
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Track how many upstream requests are actually made
 		var upstreamRequestCount atomic.Int32
@@ -135,7 +135,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		var upstreamRequestCount atomic.Int32
 
@@ -203,7 +203,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		var upstreamRequestCount atomic.Int32
 
@@ -281,7 +281,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		var upstreamRequestCount atomic.Int32
 

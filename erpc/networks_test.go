@@ -72,7 +72,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
@@ -198,7 +198,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":null}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -320,7 +320,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":null}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -438,7 +438,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":null}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -533,7 +533,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":null}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
 		if err != nil {
@@ -619,7 +619,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":null}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
 		if err != nil {
@@ -715,7 +715,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
@@ -820,7 +820,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
@@ -945,7 +945,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32603,"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
@@ -1081,7 +1081,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":"0x1234567"}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
@@ -1247,7 +1247,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":"0x1234567"}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
@@ -1414,7 +1414,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
@@ -1604,7 +1604,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
@@ -1822,7 +1822,7 @@ func TestNetwork_Forward(t *testing.T) {
 			}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -2014,7 +2014,7 @@ func TestNetwork_Forward(t *testing.T) {
 			}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -2361,7 +2361,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		vr := thirdparty.NewVendorsRegistry()
@@ -2569,7 +2569,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		vr := thirdparty.NewVendorsRegistry()
@@ -2759,7 +2759,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		vr := thirdparty.NewVendorsRegistry()
@@ -2942,7 +2942,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		vr := thirdparty.NewVendorsRegistry()
@@ -3144,7 +3144,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		vr := thirdparty.NewVendorsRegistry()
@@ -3373,7 +3373,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize test components
 		vr := thirdparty.NewVendorsRegistry()
@@ -3564,7 +3564,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		vr := thirdparty.NewVendorsRegistry()
@@ -3752,7 +3752,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Initialize various components for the test environment
 		vr := thirdparty.NewVendorsRegistry()
@@ -3938,7 +3938,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -4067,7 +4067,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32601,"message":"Method not supported"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -4200,7 +4200,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -4372,7 +4372,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -4502,7 +4502,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"jsonrpc":"2.0","id":9179,"error":{"code":-32600,"message":"Monthly capacity limit exceeded."}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -4645,7 +4645,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		vr := thirdparty.NewVendorsRegistry()
@@ -4750,7 +4750,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -4881,7 +4881,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -5014,7 +5014,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		vr := thirdparty.NewVendorsRegistry()
@@ -5142,7 +5142,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -5427,7 +5427,7 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -5578,7 +5578,7 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -5734,7 +5734,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -5863,7 +5863,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -6009,7 +6009,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":{"hash":"0x222340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -6161,7 +6161,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"error":{"code":-39999,"message":"my funky random error"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -6295,7 +6295,7 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -6440,7 +6440,7 @@ func TestNetwork_Forward(t *testing.T) {
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"ignored_method","params":["0x1273c18",false]}`)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -6568,7 +6568,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -6720,7 +6720,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result":[],"fromHost": "rpc1"}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
@@ -6881,7 +6881,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON(emptyResponse)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -7016,7 +7016,7 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -7139,7 +7139,7 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -7261,7 +7261,7 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -7376,7 +7376,7 @@ func TestNetwork_Forward(t *testing.T) {
 		metricsTracker := health.NewTracker(&logger, projectID, 1*time.Hour)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		metricsTracker.Bootstrap(ctx)
 
@@ -7563,7 +7563,7 @@ func TestNetwork_Forward(t *testing.T) {
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -7713,7 +7713,7 @@ func TestNetwork_Forward(t *testing.T) {
 		cacheCfg.SetDefaults()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -7839,7 +7839,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 1)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
 		// One upstream call per iteration; enforce using Times(rounds)
@@ -7916,7 +7916,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the test environment
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -8026,7 +8026,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// build a minimal network with a single EVM upstream
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		upCfg := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -8238,7 +8238,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 1)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
@@ -8275,7 +8275,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
@@ -8312,7 +8312,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 1)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -8347,7 +8347,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				ctx, cancel := context.WithTimeout(ctx, 10000*time.Millisecond)
-				defer cancel()
+				defer util.CancelAndWait(cancel)
 				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(ctx, req)
 				assert.Error(t, err)
@@ -8369,7 +8369,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 		failureRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"]}`)
@@ -8425,7 +8425,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
@@ -8461,7 +8461,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 1)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
 		// Mock the response from the upstream
@@ -8522,7 +8522,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
@@ -8573,7 +8573,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
@@ -8638,7 +8638,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8691,7 +8691,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
 		req := common.NewNormalizedRequest(requestBytes)
 		req.SetNetwork(network)
@@ -8735,7 +8735,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8779,7 +8779,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, "", 0, common.EvmNodeTypeArchive, 0, nil)
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8867,7 +8867,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -8975,7 +8975,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -9033,7 +9033,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
@@ -9086,7 +9086,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Setup network with two upstreams:
 		// - rpc1: Archive node with latest block 0x11119999 but only 128 blocks available
@@ -9145,7 +9145,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11117000","toBlock":"0x11118800","address":"0x0000000000000000000000000000000000000000"}]}`)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Setup network with a Full node that has limited block history (128 blocks)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0, nil)
@@ -9174,7 +9174,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11117000","toBlock":"0x11118800","address":"0x0000000000000000000000000000000000000000"}]}`)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		gock.New("http://rpc2.localhost").
 			Post("").
@@ -9233,7 +9233,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				})
 
 			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			defer util.CancelAndWait(cancel)
 
 			// Build network with tight best-effort budgets to force fallback
 			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
@@ -9352,7 +9352,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Setup network with a Full node that has limited block history (128 blocks)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128, nil)
@@ -9505,7 +9505,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Setup network with a node that has a small GetLogsAutoSplittingRangeThreshold
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
@@ -9640,7 +9640,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Setup network with a node that has GetLogsAutoSplittingRangeThreshold = 1
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120, nil)
@@ -9736,7 +9736,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
@@ -9820,7 +9820,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
@@ -9904,7 +9904,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		cacheCfg.SetDefaults()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000, nil)
 
 		// Wait for background processes to settle before setting up test-specific mocks
@@ -10178,7 +10178,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 2. Network / poller set-up
 		//------------------------------------------------------------
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 5*time.Second)
@@ -10380,7 +10380,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 2) Network / poller set-up
 		//----------------------------------------------------------------------
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -10565,7 +10565,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 2.  Network / poller set-up
 		//------------------------------------------------------------
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -10901,7 +10901,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Create two upstreams with different syncing states
 		up1 := &common.UpstreamConfig{
@@ -11039,7 +11039,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Create eval function that excludes nodes with high error rate
 		evalFn, err := common.CompileFunction(`
@@ -11203,7 +11203,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Configure upper bound: latestBlockMinus = 100
 		latestMinus := int64(100)
@@ -11350,7 +11350,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Configure upper bound that exceeds current latest block
 		exactBlock := int64(5000) // Higher than the latest block we'll set
@@ -11463,7 +11463,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Configure upper bound: latestBlockMinus = 200
 		// This caps the effective finalized to latest - 200
@@ -11615,7 +11615,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Configure upper bound that exceeds current finalized block
 		exactBlock := int64(5000) // Higher than the finalized block we'll set
@@ -11726,7 +11726,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Syncing node with upper bound (should be excluded)
 		latestMinus := int64(50)
@@ -11879,7 +11879,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
@@ -11914,7 +11914,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 

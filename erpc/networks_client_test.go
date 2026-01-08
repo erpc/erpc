@@ -26,7 +26,7 @@ func TestNetwork_TraceExecutionTimeout(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	network := setupTestNetworkSimple(t, ctx, nil, nil)
 
@@ -63,7 +63,7 @@ func TestNetwork_CapacityExceededErrors(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
@@ -101,7 +101,7 @@ func TestNetwork_CapacityExceededErrors(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
@@ -134,7 +134,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		upCfg := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -197,7 +197,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		upCfg := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -279,7 +279,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		upCfg := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -330,7 +330,7 @@ func TestNetwork_SingleRequestErrors(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
@@ -354,7 +354,7 @@ func TestNetwork_SingleRequestErrors(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
@@ -378,7 +378,7 @@ func TestNetwork_SingleRequestErrors(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		upCfg := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,

@@ -64,7 +64,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=false directive default
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -140,7 +140,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=true directive default
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -216,7 +216,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=true
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -297,7 +297,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// retryEmpty=true but ignore list includes receipt
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -369,7 +369,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=false
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -445,7 +445,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=true as default
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -518,7 +518,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=true and emptyResultMaxAttempts=2
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -594,7 +594,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=true (shouldn't matter for non-empty)
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -655,7 +655,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Network with retryEmpty=false
 		network := setupTestNetworkWithRetryConfig(t, ctx,
@@ -859,7 +859,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Policy 1: wildcard method, specific finality (realtime) - delay 100ms
 		// Policy 2: specific method (eth_call), no finality constraint - delay 0ms
@@ -903,7 +903,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Policy 1: wildcard method, specific finality (realtime)
 		// Policy 2: specific method (eth_call), no finality constraint
@@ -947,7 +947,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Policy 1: specific method (eth_call), specific finality (realtime)
 		// Policy 2: wildcard method, no finality (fallback)
@@ -989,7 +989,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Single policy with wildcard method
 		failsafeConfigs := []*common.FailsafeConfig{
@@ -1023,7 +1023,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		failsafeConfigs := []*common.FailsafeConfig{
 			{
@@ -1069,7 +1069,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		failsafeConfigs := []*common.FailsafeConfig{
 			{
@@ -1119,7 +1119,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Policy 1: Only matches realtime (NOT unknown)
 		// Policy 2: Matches unknown only
@@ -1174,7 +1174,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Policy that only matches eth_call with realtime finality
 		failsafeConfigs := []*common.FailsafeConfig{
@@ -1210,7 +1210,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Key test: order matters, first match wins
 		// Policy 1: wildcard (less specific) but comes first
@@ -1249,7 +1249,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Simulates monad.yml config structure
 		failsafeConfigs := []*common.FailsafeConfig{

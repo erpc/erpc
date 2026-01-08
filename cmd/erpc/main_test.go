@@ -25,6 +25,7 @@ var mainMutex sync.Mutex
 
 // Test default command with real config file, using config flag arg
 func TestMain_Default_FlagConfigFile(t *testing.T) {
+	util.SkipIfRaceDetection(t)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -53,6 +54,7 @@ func TestMain_Default_FlagConfigFile(t *testing.T) {
 
 // Test default command with real config file, using positional config arg
 func TestMain_Default_PositionalConfigFile(t *testing.T) {
+	util.SkipIfRaceDetection(t)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -79,6 +81,7 @@ func TestMain_Default_PositionalConfigFile(t *testing.T) {
 
 // Test start command with real config file, using config flag arg
 func TestMain_Start_FlagConfigFile(t *testing.T) {
+	util.SkipIfRaceDetection(t)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -105,6 +108,7 @@ func TestMain_Start_FlagConfigFile(t *testing.T) {
 
 // Test start command with real config file, using positional config arg
 func TestMain_Start_PositionalConfigFile(t *testing.T) {
+	util.SkipIfRaceDetection(t)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -130,7 +134,7 @@ func TestMain_Start_PositionalConfigFile(t *testing.T) {
 }
 
 func TestMain_Start_MissingConfigFile(t *testing.T) {
-	// t.Skip("skipping test that exits the process")
+	util.SkipIfRaceDetection(t)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -166,6 +170,7 @@ func TestMain_Start_MissingConfigFile(t *testing.T) {
 }
 
 func TestMain_Start_InvalidConfig(t *testing.T) {
+	util.SkipIfRaceDetection(t)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 

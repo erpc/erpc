@@ -61,7 +61,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		// Setup
 		logger := log.Logger
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -203,7 +203,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		// Setup
 		logger := log.Logger
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -349,7 +349,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		// Setup
 		logger := log.Logger
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -7690,7 +7690,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 
 	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, map[string]string, string) {
 		rctx, cancel := context.WithTimeout(ctx, 100*time.Second)
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		chainId := "123"
 		if queryParams["chainId"] != "" {
 			chainId = queryParams["chainId"]
@@ -7818,7 +7818,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},

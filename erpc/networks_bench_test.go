@@ -34,7 +34,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		JSON([]byte(`{"result": "0x1"}`))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
@@ -139,7 +139,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		JSON([]byte(`{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not supported"}}`))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
@@ -245,7 +245,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	fsCfg := &common.FailsafeConfig{
 		Retry: &common.RetryPolicyConfig{
@@ -366,7 +366,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"address":"0x0000000000000000000000000000000000000000","topics":["0x0000000000000000000000000000000000000000000000000000000000000000"]}]}`))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
