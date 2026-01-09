@@ -196,14 +196,14 @@ func (l *memoryLock) Unlock(ctx context.Context) error {
 // is unnecessary when all operations are in-memory within the same process.
 // Any updates to counters are immediately visible to all code accessing the
 // memory connector instance.
-func (m *MemoryConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	ch := make(chan int64)
+func (m *MemoryConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
+	ch := make(chan CounterInt64State)
 	return ch, func() {}, nil
 }
 
 // PublishCounterInt64 is a no-op for memory connector since distributed pub/sub
 // is unnecessary when all operations are in-memory within the same process.
-func (m *MemoryConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+func (m *MemoryConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	return nil
 }
 

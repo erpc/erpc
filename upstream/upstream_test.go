@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -303,8 +304,17 @@ func (m *mockEvmStatePoller) EarliestBlock(probe common.EvmAvailabilityProbeType
 	return 0
 }
 
-func (m *mockEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+func (m *mockEvmStatePoller) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
+}
+
+func (m *mockEvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.latestBlock,
+		FinalizedBlock: m.finalizedBlock,
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
 }
 
 func TestUpstream_EvmCanHandleBlock(t *testing.T) {
@@ -612,7 +622,16 @@ func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                      
 func (m *mockEvmStatePollerWithUpdate) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
 	return 0
 }
-func (m *mockEvmStatePollerWithUpdate) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+
+func (m *mockEvmStatePollerWithUpdate) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.LatestBlock(),
+		FinalizedBlock: m.FinalizedBlock(),
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
+}
+func (m *mockEvmStatePollerWithUpdate) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
 }
 

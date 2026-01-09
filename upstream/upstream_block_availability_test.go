@@ -49,7 +49,7 @@ func (m *mockEvmStatePollerEnhanced) SyncingState() common.EvmSyncingState {
 func (m *mockEvmStatePollerEnhanced) SetSyncingState(state common.EvmSyncingState) {}
 func (m *mockEvmStatePollerEnhanced) LatestBlock() int64                           { return m.latestBlock }
 func (m *mockEvmStatePollerEnhanced) FinalizedBlock() int64                        { return m.finalizedBlock }
-func (m *mockEvmStatePollerEnhanced) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+func (m *mockEvmStatePollerEnhanced) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
 }
 func (m *mockEvmStatePollerEnhanced) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
@@ -65,6 +65,14 @@ func (m *mockEvmStatePollerEnhanced) SuggestFinalizedBlock(blockNumber int64)   
 func (m *mockEvmStatePollerEnhanced) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerEnhanced) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerEnhanced) IsObjectNull() bool                         { return m.isNull }
+func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.latestBlock,
+		FinalizedBlock: m.finalizedBlock,
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
+}
 
 func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 	t.Run("NegativeBlockNumber", func(t *testing.T) {
@@ -606,7 +614,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) LatestBlock() int64 {
 	return m.getLatestBlock()
 }
 func (m *mockEvmStatePollerWithCustomBehavior) FinalizedBlock() int64 { return m.finalizedBlock }
-func (m *mockEvmStatePollerWithCustomBehavior) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType) (int64, error) {
+func (m *mockEvmStatePollerWithCustomBehavior) PollEarliestBlockNumber(ctx context.Context, probe common.EvmAvailabilityProbeType, staleness time.Duration) (int64, error) {
 	return 0, nil
 }
 func (m *mockEvmStatePollerWithCustomBehavior) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
@@ -619,6 +627,14 @@ func (m *mockEvmStatePollerWithCustomBehavior) SuggestFinalizedBlock(blockNumber
 func (m *mockEvmStatePollerWithCustomBehavior) SuggestLatestBlock(blockNumber int64)       {}
 func (m *mockEvmStatePollerWithCustomBehavior) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithCustomBehavior) IsObjectNull() bool                         { return false }
+func (m *mockEvmStatePollerWithCustomBehavior) GetDiagnostics() *common.EvmStatePollerDiagnostics {
+	return &common.EvmStatePollerDiagnostics{
+		Enabled:        true,
+		LatestBlock:    m.getLatestBlock(),
+		FinalizedBlock: m.finalizedBlock,
+		SyncingState:   common.EvmSyncingStateNotSyncing.String(),
+	}
+}
 
 func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 	t.Run("ProjectIdHandling", func(t *testing.T) {
@@ -864,6 +880,292 @@ func TestEvmAssertBlockAvailability_ConcurrentAccess(t *testing.T) {
 		// 1. Multiple unnecessary polls
 		// 2. Inconsistent results for the same block
 		assert.Greater(t, pollCount, 1, "Multiple polls occurred due to concurrent access")
+	})
+}
+
+// TestEvmEffectiveLatestBlock tests the EvmEffectiveLatestBlock method
+// which returns latest block adjusted for the upper availability bound.
+func TestEvmEffectiveLatestBlock(t *testing.T) {
+	t.Run("returns 0 when upstream is nil", func(t *testing.T) {
+		var upstream *Upstream = nil
+		result := upstream.EvmEffectiveLatestBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when evmStatePoller is nil", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: nil,
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when evmStatePoller.IsObjectNull returns true", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{isNull: true, latestBlock: 1000},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when latestBlock is 0", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 0},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when latestBlock is negative", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: -1},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns raw latestBlock when no upper bound configured", func(t *testing.T) {
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm:  &common.EvmUpstreamConfig{},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		assert.Equal(t, int64(1000), result)
+	})
+
+	t.Run("returns upper bound when configured and less than latestBlock", func(t *testing.T) {
+		latestMinus := int64(100)
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &latestMinus,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		// Upper bound = 1000 - 100 = 900, which is < 1000, so return 900
+		assert.Equal(t, int64(900), result)
+	})
+
+	t.Run("returns raw latestBlock when upper bound equals latestBlock", func(t *testing.T) {
+		latestMinus := int64(0)
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &latestMinus, // latestBlock - 0 = latestBlock
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		// Upper bound = 1000 - 0 = 1000, which is NOT < 1000, so return raw latestBlock
+		assert.Equal(t, int64(1000), result)
+	})
+
+	t.Run("returns raw latestBlock when upper bound exceeds latestBlock", func(t *testing.T) {
+		exactBlock := int64(2000) // Higher than latestBlock
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							ExactBlock: &exactBlock,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		// Upper bound = 2000, which is NOT < 1000, so return raw latestBlock
+		assert.Equal(t, int64(1000), result)
+	})
+
+	t.Run("respects exactBlock upper bound", func(t *testing.T) {
+		exactBlock := int64(500)
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							ExactBlock: &exactBlock,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000},
+		}
+		result := upstream.EvmEffectiveLatestBlock()
+		// Upper bound = 500, which is < 1000, so return 500
+		assert.Equal(t, int64(500), result)
+	})
+}
+
+// TestEvmEffectiveFinalizedBlock tests the EvmEffectiveFinalizedBlock method
+// which returns finalized block adjusted for the upper availability bound.
+func TestEvmEffectiveFinalizedBlock(t *testing.T) {
+	t.Run("returns 0 when upstream is nil", func(t *testing.T) {
+		var upstream *Upstream = nil
+		result := upstream.EvmEffectiveFinalizedBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when evmStatePoller is nil", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: nil,
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when evmStatePoller.IsObjectNull returns true", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{isNull: true, finalizedBlock: 900},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when finalizedBlock is 0", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{finalizedBlock: 0},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns 0 when finalizedBlock is negative", func(t *testing.T) {
+		upstream := &Upstream{
+			config:         &common.UpstreamConfig{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{finalizedBlock: -1},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		assert.Equal(t, int64(0), result)
+	})
+
+	t.Run("returns raw finalizedBlock when no upper bound configured", func(t *testing.T) {
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm:  &common.EvmUpstreamConfig{},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		assert.Equal(t, int64(900), result)
+	})
+
+	t.Run("returns upper bound when configured and less than finalizedBlock", func(t *testing.T) {
+		latestMinus := int64(200) // Makes upper bound = 800 (if latest = 1000)
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							LatestBlockMinus: &latestMinus,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		// Upper bound = 1000 - 200 = 800, which is < 900, so return 800
+		assert.Equal(t, int64(800), result)
+	})
+
+	t.Run("returns raw finalizedBlock when upper bound equals finalizedBlock", func(t *testing.T) {
+		exactBlock := int64(900) // Same as finalizedBlock
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							ExactBlock: &exactBlock,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		// Upper bound = 900, which is NOT < 900, so return raw finalizedBlock
+		assert.Equal(t, int64(900), result)
+	})
+
+	t.Run("returns raw finalizedBlock when upper bound exceeds finalizedBlock", func(t *testing.T) {
+		exactBlock := int64(950) // Higher than finalizedBlock
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							ExactBlock: &exactBlock,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		// Upper bound = 950, which is NOT < 900, so return raw finalizedBlock
+		assert.Equal(t, int64(900), result)
+	})
+
+	t.Run("respects exactBlock upper bound", func(t *testing.T) {
+		exactBlock := int64(500)
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm: &common.EvmUpstreamConfig{
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Upper: &common.EvmAvailabilityBoundConfig{
+							ExactBlock: &exactBlock,
+						},
+					},
+				},
+			},
+			logger:         &zerolog.Logger{},
+			evmStatePoller: &mockEvmStatePollerEnhanced{latestBlock: 1000, finalizedBlock: 900},
+		}
+		result := upstream.EvmEffectiveFinalizedBlock()
+		// Upper bound = 500, which is < 900, so return 500
+		assert.Equal(t, int64(500), result)
 	})
 }
 

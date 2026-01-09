@@ -128,7 +128,9 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 			}
 		}
 
-		upBlock := statePoller.LatestBlock()
+		// Use effective latest block which considers blockAvailability.upper config
+		// (e.g., if upstream has latestBlockMinus: 5, use latest-5 instead of latest)
+		upBlock := u.EvmEffectiveLatestBlock()
 		if upBlock > maxBlock {
 			maxBlock = upBlock
 		}
@@ -166,7 +168,8 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 			}
 		}
 
-		upBlock := statePoller.FinalizedBlock()
+		// Use effective finalized block which considers blockAvailability.upper config
+		upBlock := u.EvmEffectiveFinalizedBlock()
 		if upBlock > maxBlock {
 			maxBlock = upBlock
 		}
@@ -206,7 +209,8 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 			}
 		}
 
-		upBlock := statePoller.FinalizedBlock()
+		// Use effective finalized block which considers blockAvailability.upper config
+		upBlock := u.EvmEffectiveFinalizedBlock()
 		// Skip upstreams that haven't determined finalized block yet (returning 0)
 		if upBlock > 0 {
 			if !initialized || upBlock < minBlock {
@@ -995,6 +999,9 @@ func (n *Network) resolveEnforceBlockAvailability(method string) bool {
 // Returns (error, isRetryable) if block is not available:
 //   - isRetryable=true: block is just slightly ahead (within MaxRetryableBlockDistance), upstream may catch up
 //   - isRetryable=false: block is too far ahead or below lower bound, not worth retrying this upstream
+//
+// FAIL-OPEN BEHAVIOR: If we cannot determine block availability (e.g., state poller issues),
+// we allow the request to proceed rather than blocking traffic.
 func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
 	if n.cfg.Architecture != common.ArchitectureEvm {
 		return nil, false
@@ -1012,7 +1019,7 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 		}
 	}
 	if bn <= 0 {
-		// If still unknown, skip gating
+		// If still unknown, skip gating (fail-open)
 		return nil, false
 	}
 	eu, ok := u.(common.EvmUpstream)
@@ -1021,8 +1028,15 @@ func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.U
 	}
 	available, err := eu.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, bn)
 	if err != nil {
-		// Error during availability check - treat as block not available yet, retryable
-		return common.NewErrUpstreamBlockUnavailable(u.Id(), bn, 0, 0), true
+		// FAIL-OPEN: Error during availability check - allow the request to proceed
+		// This prevents blocking traffic due to state poller or detection issues
+		n.logger.Debug().
+			Err(err).
+			Str("upstreamId", u.Id()).
+			Int64("blockNumber", bn).
+			Str("method", method).
+			Msg("block availability check failed; failing open to allow request")
+		return nil, false
 	}
 	if !available {
 		// Get poller state for detailed error

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,7 +45,7 @@ type PostgreSQLConnector struct {
 type pgxListener struct {
 	mu       sync.Mutex
 	conn     *pgx.Conn
-	watchers []chan int64
+	watchers []chan CounterInt64State
 }
 
 var _ DistributedLock = &postgresLock{}
@@ -470,8 +469,8 @@ func (l *postgresLock) Unlock(ctx context.Context) error {
 	return nil
 }
 
-func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	updates := make(chan int64, 1)
+func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan CounterInt64State, func(), error) {
+	updates := make(chan CounterInt64State, 1)
 
 	// Create or get listener for this key
 	listener, err := p.getOrCreateListener(ctx, key)
@@ -495,9 +494,9 @@ func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string)
 				p.logger.Debug().Str("key", key).Msg("stopping watcher for key due to context termination")
 				return
 			case <-ticker.C:
-				if val, err := p.getCurrentValue(ctx, key); err == nil {
+				if st, ok, err := p.getCurrentValue(ctx, key); err == nil && ok {
 					select {
-					case updates <- val:
+					case updates <- st:
 					default:
 					}
 				} else {
@@ -508,8 +507,8 @@ func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string)
 	}()
 
 	// Send initial value
-	if val, err := p.getCurrentValue(ctx, key); err == nil {
-		updates <- val
+	if st, ok, err := p.getCurrentValue(ctx, key); err == nil && ok {
+		updates <- st
 	}
 
 	cleanup := func() {
@@ -532,7 +531,7 @@ func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string)
 	return updates, cleanup, nil
 }
 
-func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.PublishCounterInt64",
 		trace.WithAttributes(
 			attribute.String("key", key),
@@ -542,7 +541,9 @@ func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key strin
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
-			attribute.Int64("value", value),
+			attribute.Int64("value", value.Value),
+			attribute.Int64("updated_at", value.UpdatedAt),
+			attribute.String("updated_by", value.UpdatedBy),
 		)
 	}
 
@@ -555,10 +556,15 @@ func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key strin
 		return err
 	}
 
-	p.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to postgres")
+	p.logger.Debug().Str("key", key).Int64("value", value.Value).Msg("publishing counter update to postgres")
 
 	channel := sanitizeChannelName(fmt.Sprintf("counter_%s", key))
-	_, err := p.conn.Exec(ctx, fmt.Sprintf("NOTIFY %s, '%d'", channel, value))
+	payload, err := common.SonicCfg.Marshal(value)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+	_, err = p.conn.Exec(ctx, "SELECT pg_notify($1, $2)", channel, string(payload))
 
 	if err != nil {
 		common.SetTraceSpanError(span, err)
@@ -619,12 +625,13 @@ func (p *PostgreSQLConnector) getOrCreateListener(ctx context.Context, key strin
 
 			p.logger.Trace().Str("key", key).Interface("payload", notification).Msg("received postgres notification")
 
-			// Parse and broadcast value
-			if val, err := strconv.ParseInt(notification.Payload, 10, 64); err == nil {
+			// Parse and broadcast state
+			var st CounterInt64State
+			if err := common.SonicCfg.Unmarshal([]byte(notification.Payload), &st); err == nil && st.UpdatedAt > 0 {
 				listener.mu.Lock()
 				for _, ch := range listener.watchers {
 					select {
-					case ch <- val:
+					case ch <- st:
 					default:
 					}
 				}
@@ -691,7 +698,7 @@ func (p *PostgreSQLConnector) connectListener(ctx context.Context, channel strin
 	}
 }
 
-func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
+func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (CounterInt64State, bool, error) {
 	ctx, span := common.StartDetailSpan(ctx, "PostgreSQLConnector.getCurrentValue",
 		trace.WithAttributes(
 			attribute.String("key", key),
@@ -704,19 +711,19 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-			return 0, nil
+			return CounterInt64State{}, false, nil
 		}
-		return 0, err
+		return CounterInt64State{}, false, err
 	}
 
-	value, err := strconv.ParseInt(string(val), 10, 64)
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return 0, err
+	var st CounterInt64State
+	if err := common.SonicCfg.Unmarshal(val, &st); err != nil || st.UpdatedAt <= 0 {
+		// No backward compatibility: treat parse errors as missing
+		return CounterInt64State{}, false, nil
 	}
 
-	span.SetAttributes(attribute.Int64("value", value))
-	return value, nil
+	span.SetAttributes(attribute.Int64("value", st.Value))
+	return st, true, nil
 }
 
 func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
