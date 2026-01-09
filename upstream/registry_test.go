@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -1347,4 +1348,396 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 		assert.Equal(t, expectedOrder[i], ups.Id())
 	}
 	registry.RUnlockUpstreams()
+}
+
+func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
+	// This test verifies that NaN values in scores don't propagate through
+	// EMA smoothing and don't get emitted to Prometheus metrics.
+	// NaN can occur from edge cases in metrics collection and once present
+	// would propagate indefinitely through EMA calculations without guards.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_getBalance"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Get upstreams
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+	u1 := upsList[0]
+	u2 := upsList[1]
+	u3 := upsList[2]
+
+	// Simulate some requests to establish initial scores
+	simulateRequestsWithLatency(metricsTracker, u1, method, 10, 0.050)
+	simulateRequestsWithLatency(metricsTracker, u2, method, 10, 0.060)
+	simulateRequestsWithLatency(metricsTracker, u3, method, 10, 0.070)
+
+	// Run multiple refresh cycles to verify scores remain valid
+	for i := 0; i < 10; i++ {
+		err := registry.RefreshUpstreamNetworkMethodScores()
+		assert.NoError(t, err)
+
+		// Verify no scores are NaN after refresh
+		for upsID, networkScores := range registry.upstreamScores {
+			for netID, methodScores := range networkScores {
+				for meth, score := range methodScores {
+					assert.False(t, math.IsNaN(score),
+						"Score for upstream %s, network %s, method %s should not be NaN (iteration %d)",
+						upsID, netID, meth, i)
+					assert.False(t, math.IsInf(score, 0),
+						"Score for upstream %s, network %s, method %s should not be Inf (iteration %d)",
+						upsID, netID, meth, i)
+				}
+			}
+		}
+
+		// Add more requests between refreshes to vary conditions
+		simulateRequestsWithLatency(metricsTracker, u1, method, 5, 0.040+float64(i)*0.001)
+		simulateRequestsWithLatency(metricsTracker, u2, method, 5, 0.055+float64(i)*0.002)
+	}
+
+	// Verify final sorted order is valid (no NaN-induced sorting issues)
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.NoError(t, err)
+	assert.Len(t, ordered, 3, "Should have 3 upstreams in sorted order")
+
+	// Verify scores are in descending order (higher score = higher priority)
+	scores := registry.upstreamScores
+	for i := 0; i < len(ordered)-1; i++ {
+		curr := ordered[i]
+		next := ordered[i+1]
+		currScore := scores[curr.Id()][networkID][method]
+		nextScore := scores[next.Id()][networkID][method]
+		assert.GreaterOrEqual(t, currScore, nextScore,
+			"Upstream %s (score %.4f) should have >= score than %s (score %.4f)",
+			curr.Id(), currScore, next.Id(), nextScore)
+	}
+}
+
+func TestUpstreamsRegistry_CalculateScoreEdgeCases(t *testing.T) {
+	// Test that calculateScore handles edge cases without producing NaN
+	registry := &UpstreamsRegistry{
+		scoreRefreshInterval: time.Second,
+		logger:               &log.Logger,
+	}
+
+	routingConfig := &common.RoutingConfig{}
+	err := routingConfig.SetDefaults()
+	assert.NoError(t, err)
+
+	upstream := &Upstream{
+		config: &common.UpstreamConfig{
+			Id:      "test-upstream",
+			Routing: routingConfig,
+		},
+	}
+
+	testCases := []struct {
+		name                string
+		normTotalRequests   float64
+		normRespLatency     float64
+		normErrorRate       float64
+		normThrottledRate   float64
+		normBlockHeadLag    float64
+		normFinalizationLag float64
+		normMisbehaviorRate float64
+	}{
+		{
+			name:                "All zeros",
+			normTotalRequests:   0, normRespLatency: 0, normErrorRate: 0,
+			normThrottledRate: 0, normBlockHeadLag: 0, normFinalizationLag: 0, normMisbehaviorRate: 0,
+		},
+		{
+			name:                "All ones",
+			normTotalRequests:   1, normRespLatency: 1, normErrorRate: 1,
+			normThrottledRate: 1, normBlockHeadLag: 1, normFinalizationLag: 1, normMisbehaviorRate: 1,
+		},
+		{
+			name:                "Mixed values",
+			normTotalRequests:   0.5, normRespLatency: 0.3, normErrorRate: 0.1,
+			normThrottledRate: 0.2, normBlockHeadLag: 0.4, normFinalizationLag: 0.05, normMisbehaviorRate: 0.01,
+		},
+		{
+			name:                "Boundary high",
+			normTotalRequests:   0.999, normRespLatency: 0.999, normErrorRate: 0.999,
+			normThrottledRate: 0.999, normBlockHeadLag: 0.999, normFinalizationLag: 0.999, normMisbehaviorRate: 0.999,
+		},
+		{
+			name:                "Boundary low",
+			normTotalRequests:   0.001, normRespLatency: 0.001, normErrorRate: 0.001,
+			normThrottledRate: 0.001, normBlockHeadLag: 0.001, normFinalizationLag: 0.001, normMisbehaviorRate: 0.001,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			score := registry.calculateScore(
+				upstream,
+				"evm:1",
+				"eth_getBalance",
+				[]common.DataFinalityState{common.DataFinalityStateFinalized},
+				tc.normTotalRequests,
+				tc.normRespLatency,
+				tc.normErrorRate,
+				tc.normThrottledRate,
+				tc.normBlockHeadLag,
+				tc.normFinalizationLag,
+				tc.normMisbehaviorRate,
+			)
+
+			assert.False(t, math.IsNaN(score), "Score should not be NaN for test case: %s", tc.name)
+			assert.False(t, math.IsInf(score, 0), "Score should not be Inf for test case: %s", tc.name)
+			assert.GreaterOrEqual(t, score, 0.0, "Score should be non-negative for test case: %s", tc.name)
+		})
+	}
+}
+
+func TestNormalizeValues_HandlesNaNAndInf(t *testing.T) {
+	// Test that normalizeValues handles NaN and Inf inputs correctly
+	testCases := []struct {
+		name     string
+		input    []float64
+		expected []float64
+	}{
+		{
+			name:     "Normal values",
+			input:    []float64{1.0, 2.0, 4.0},
+			expected: []float64{0.25, 0.5, 1.0},
+		},
+		{
+			name:     "With NaN",
+			input:    []float64{1.0, math.NaN(), 4.0},
+			expected: []float64{0.25, 0.0, 1.0},
+		},
+		{
+			name:     "With Inf",
+			input:    []float64{1.0, math.Inf(1), 4.0},
+			expected: []float64{0.25, 0.0, 1.0},
+		},
+		{
+			name:     "All NaN",
+			input:    []float64{math.NaN(), math.NaN(), math.NaN()},
+			expected: []float64{0.0, 0.0, 0.0},
+		},
+		{
+			name:     "Mixed invalid",
+			input:    []float64{math.NaN(), 2.0, math.Inf(-1), 4.0},
+			expected: []float64{0.0, 0.5, 0.0, 1.0},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := normalizeValues(tc.input)
+			assert.Equal(t, len(tc.expected), len(result))
+			for i := range result {
+				assert.False(t, math.IsNaN(result[i]), "Result[%d] should not be NaN", i)
+				assert.False(t, math.IsInf(result[i], 0), "Result[%d] should not be Inf", i)
+				assert.InDelta(t, tc.expected[i], result[i], 0.001, "Result[%d] mismatch", i)
+			}
+		})
+	}
+}
+
+func TestNormalizeValuesLog_HandlesNaNAndInf(t *testing.T) {
+	// Test that normalizeValuesLog handles NaN and Inf inputs correctly
+	testCases := []struct {
+		name  string
+		input []float64
+	}{
+		{
+			name:  "Normal values",
+			input: []float64{1.0, 10.0, 100.0},
+		},
+		{
+			name:  "With NaN",
+			input: []float64{1.0, math.NaN(), 100.0},
+		},
+		{
+			name:  "With Inf",
+			input: []float64{1.0, math.Inf(1), 100.0},
+		},
+		{
+			name:  "All NaN",
+			input: []float64{math.NaN(), math.NaN(), math.NaN()},
+		},
+		{
+			name:  "Mixed invalid",
+			input: []float64{math.NaN(), 10.0, math.Inf(-1), 100.0},
+		},
+		{
+			name:  "NaN at start",
+			input: []float64{math.NaN(), 1.0, 10.0},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := normalizeValuesLog(tc.input)
+			assert.Equal(t, len(tc.input), len(result))
+			for i := range result {
+				assert.False(t, math.IsNaN(result[i]), "Result[%d] should not be NaN for input %v", i, tc.input)
+				assert.False(t, math.IsInf(result[i], 0), "Result[%d] should not be Inf for input %v", i, tc.input)
+				assert.GreaterOrEqual(t, result[i], 0.0, "Result[%d] should be >= 0", i)
+				assert.LessOrEqual(t, result[i], 1.0, "Result[%d] should be <= 1", i)
+			}
+		})
+	}
+}
+
+func TestUpstreamsRegistry_EMANaNInjection(t *testing.T) {
+	// This test directly injects NaN values into the previous scores map
+	// to verify that the EMA smoothing guards correctly handle them.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_getBalance"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Get upstreams
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+	u1 := upsList[0]
+	u2 := upsList[1]
+	u3 := upsList[2]
+
+	// Simulate some requests to establish initial scores
+	simulateRequestsWithLatency(metricsTracker, u1, method, 10, 0.050)
+	simulateRequestsWithLatency(metricsTracker, u2, method, 10, 0.060)
+	simulateRequestsWithLatency(metricsTracker, u3, method, 10, 0.070)
+
+	// Run initial refresh to populate scores
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	// Inject NaN into the scores map to simulate corrupted previous scores
+	// This tests the guard at the EMA smoothing level
+	for upsID := range registry.upstreamScores {
+		if registry.upstreamScores[upsID][networkID] == nil {
+			registry.upstreamScores[upsID][networkID] = make(map[string]float64)
+		}
+		registry.upstreamScores[upsID][networkID][method] = math.NaN()
+	}
+
+	// Add more requests so calculateScore produces valid instant scores
+	simulateRequestsWithLatency(metricsTracker, u1, method, 5, 0.040)
+	simulateRequestsWithLatency(metricsTracker, u2, method, 5, 0.050)
+	simulateRequestsWithLatency(metricsTracker, u3, method, 5, 0.060)
+
+	// Run refresh - NaN guards should reset prev to 0
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	// Verify all scores are now valid (not NaN/Inf)
+	for upsID, networkScores := range registry.upstreamScores {
+		for netID, methodScores := range networkScores {
+			for meth, score := range methodScores {
+				assert.False(t, math.IsNaN(score),
+					"Score for upstream %s, network %s, method %s should not be NaN after NaN injection recovery",
+					upsID, netID, meth)
+				assert.False(t, math.IsInf(score, 0),
+					"Score for upstream %s, network %s, method %s should not be Inf after NaN injection recovery",
+					upsID, netID, meth)
+				assert.GreaterOrEqual(t, score, 0.0,
+					"Score for upstream %s, network %s, method %s should be non-negative",
+					upsID, netID, meth)
+			}
+		}
+	}
+
+	// Verify sorting still works correctly
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	assert.NoError(t, err)
+	assert.Len(t, ordered, 3, "Should have 3 upstreams in sorted order after NaN recovery")
+}
+
+func TestUpstreamsRegistry_EMAInfInjection(t *testing.T) {
+	// This test directly injects Inf values into the previous scores map
+	// to verify that the EMA smoothing guards correctly handle them.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_getBalance"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 5*time.Second)
+
+	// Get upstreams
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+	u1 := upsList[0]
+	u2 := upsList[1]
+	u3 := upsList[2]
+
+	// Simulate some requests to establish initial scores
+	simulateRequestsWithLatency(metricsTracker, u1, method, 10, 0.050)
+	simulateRequestsWithLatency(metricsTracker, u2, method, 10, 0.060)
+	simulateRequestsWithLatency(metricsTracker, u3, method, 10, 0.070)
+
+	// Run initial refresh to populate scores
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	// Inject positive and negative Inf into the scores map
+	i := 0
+	for upsID := range registry.upstreamScores {
+		if registry.upstreamScores[upsID][networkID] == nil {
+			registry.upstreamScores[upsID][networkID] = make(map[string]float64)
+		}
+		if i%2 == 0 {
+			registry.upstreamScores[upsID][networkID][method] = math.Inf(1) // +Inf
+		} else {
+			registry.upstreamScores[upsID][networkID][method] = math.Inf(-1) // -Inf
+		}
+		i++
+	}
+
+	// Add more requests
+	simulateRequestsWithLatency(metricsTracker, u1, method, 5, 0.040)
+	simulateRequestsWithLatency(metricsTracker, u2, method, 5, 0.050)
+	simulateRequestsWithLatency(metricsTracker, u3, method, 5, 0.060)
+
+	// Run refresh - Inf guards should reset prev to 0
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	// Verify all scores are now valid (not NaN/Inf)
+	for upsID, networkScores := range registry.upstreamScores {
+		for netID, methodScores := range networkScores {
+			for meth, score := range methodScores {
+				assert.False(t, math.IsNaN(score),
+					"Score for upstream %s, network %s, method %s should not be NaN after Inf injection recovery",
+					upsID, netID, meth)
+				assert.False(t, math.IsInf(score, 0),
+					"Score for upstream %s, network %s, method %s should not be Inf after Inf injection recovery",
+					upsID, netID, meth)
+			}
+		}
+	}
 }
