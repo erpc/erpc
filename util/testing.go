@@ -2,6 +2,7 @@ package util
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,15 @@ import (
 
 func IsTest() bool {
 	return flag.Lookup("test.v") != nil
+}
+
+// SkipIfRaceDetection skips the test if running with the race detector.
+// Use this for tests that have inherent races that cannot be fixed without major rewrites
+// (e.g., tests that spawn server goroutines via go main()).
+func SkipIfRaceDetection(t *testing.T) {
+	if raceEnabled {
+		t.Skip("Skipping test under race detector due to inherent race conditions")
+	}
 }
 
 func ConfigureTestLogger() {
@@ -353,8 +363,6 @@ func SetupMocksForUpstream(host string, details map[string]interface{}) int {
 }
 
 func ResetGock() {
-	time.Sleep(100 * time.Millisecond)
-
 	gock.OffAll()
 	gock.Clean()
 	gock.CleanUnmatchedRequest()
@@ -366,8 +374,14 @@ func ResetGock() {
 		shouldMakeRealCall := host == "localhost" || host == "127.0.0.1"
 		return shouldMakeRealCall
 	})
+}
 
-	time.Sleep(100 * time.Millisecond)
+// CancelAndWait cancels the context and waits for background goroutines to settle.
+// Use this in tests that start background goroutines (e.g., state pollers) to prevent
+// race conditions between goroutine cleanup and gock reset.
+func CancelAndWait(cancel context.CancelFunc) {
+	cancel()
+	time.Sleep(50 * time.Millisecond) // Allow background goroutines to observe cancellation
 }
 
 func SafeReadBody(request *http.Request) string {

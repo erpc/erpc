@@ -27,7 +27,7 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
@@ -88,7 +88,7 @@ func TestNetworksBootstrap_UnsupportedNetwork_FatalFast(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
@@ -119,7 +119,7 @@ func TestNetworksBootstrap_ProviderInitializing_503Retry(t *testing.T) {
 
 	// Short context to force the timeout path while provider tasks still initializing
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()

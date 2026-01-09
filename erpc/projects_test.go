@@ -50,7 +50,7 @@ func TestProject_Forward(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -145,7 +145,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -257,7 +257,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
@@ -387,7 +387,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			})
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Create a project config without explicitly defining any NetworkConfig,
 		// but supply some networkDefaults that should be applied to lazy-loaded networks.
@@ -498,7 +498,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{

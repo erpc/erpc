@@ -55,7 +55,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 				require.NotNil(t, conn)
 
 				// Wait for initialization
-				time.Sleep(2 * time.Second)
+				time.Sleep(500 * time.Millisecond)
 				return conn
 			},
 		},
@@ -80,7 +80,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 				require.NotNil(t, conn)
 
 				// Wait for initialization
-				time.Sleep(2 * time.Second)
+				time.Sleep(500 * time.Millisecond)
 				return conn
 			},
 		},
@@ -103,7 +103,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 				require.NotNil(t, conn)
 
 				// Wait for initialization
-				time.Sleep(2 * time.Second)
+				time.Sleep(500 * time.Millisecond)
 				return conn
 			},
 		},
@@ -133,7 +133,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 				pk := fmt.Sprintf("test:ttl:direct:%d", time.Now().UnixNano())
 				rk := "request-hash-1"
 				value := []byte("test-value-1")
-				ttl := 1 * time.Second
+				ttl := 300 * time.Millisecond
 
 				// Set with short TTL
 				err := conn.Set(ctx, pk, rk, value, &ttl)
@@ -150,7 +150,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 				assert.Equal(t, value, result)
 
 				// Wait for expiry
-				time.Sleep(2 * time.Second)
+				time.Sleep(500 * time.Millisecond)
 
 				// Get after expiry - should fail
 				result, err = conn.Get(ctx, ConnectorMainIndex, pk, rk, nil)
@@ -169,7 +169,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					actualPk := fmt.Sprintf("%s:12345", networkId) // Actual stored key
 					rk := fmt.Sprintf("request-hash-%d", time.Now().UnixNano())
 					value := []byte("realtime-value")
-					ttl := 1 * time.Second
+					ttl := 300 * time.Millisecond
 
 					// Set with short TTL (simulating cache write)
 					err := conn.Set(ctx, actualPk, rk, value, &ttl)
@@ -181,7 +181,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					assert.Equal(t, value, result)
 
 					// Wait for expiry
-					time.Sleep(2 * time.Second)
+					time.Sleep(500 * time.Millisecond)
 
 					// Get through reverse index after expiry - should fail
 					result, err = conn.Get(ctx, ConnectorReverseIndex, pk, rk, nil)
@@ -199,7 +199,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					rk := "request-*" // Wildcard range key
 					actualRk := "request-123"
 					value := []byte("wildcard-value")
-					ttl := 1 * time.Second
+					ttl := 300 * time.Millisecond
 
 					// Set with short TTL
 					err := conn.Set(ctx, pk, actualRk, value, &ttl)
@@ -211,7 +211,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					assert.Equal(t, value, result)
 
 					// Wait for expiry
-					time.Sleep(2 * time.Second)
+					time.Sleep(500 * time.Millisecond)
 
 					// Get with wildcard after expiry - should fail
 					result, err = conn.Get(ctx, ConnectorMainIndex, pk, rk, nil)
@@ -246,7 +246,7 @@ func TestConnectorTTLExpiry(t *testing.T) {
 					assert.True(t, string(result) == string(value1) || string(result) == string(value2))
 
 					// Wait for first TTL to expire
-					time.Sleep(2 * time.Second)
+					time.Sleep(500 * time.Millisecond)
 
 					// Get through reverse index - should only get the second one
 					result, err = conn.Get(ctx, ConnectorReverseIndex, wildcardPk, rk, nil)

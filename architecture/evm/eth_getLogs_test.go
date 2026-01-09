@@ -199,6 +199,7 @@ func (m *mockStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 }
 
 func TestSplitEthGetLogsRequest(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		request       *common.NormalizedRequest
@@ -334,6 +335,7 @@ func TestSplitEthGetLogsRequest(t *testing.T) {
 }
 
 func TestExecuteGetLogsSubRequests(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		subRequests []ethGetLogsSubRequest
@@ -425,6 +427,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 }
 
 func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		setup       func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest)
@@ -644,6 +647,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 }
 
 func TestNetworkPostForward_eth_getLogs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		setup       func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest)
@@ -748,6 +752,7 @@ func TestNetworkPostForward_eth_getLogs(t *testing.T) {
 }
 
 func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
+	t.Parallel()
 	nonEmpty := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[{"logIndex":1,"address":"0x123","topics":["0xabc"],"data":"0x1234567890"}]`), nil)
 	emptyResp := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil)
 	nullResp := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`null`), nil)
@@ -871,6 +876,7 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 }
 
 func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing.T) {
+	t.Parallel()
 	r1 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[1]`), nil)
 	r2 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[2,3]`), nil)
 	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{r1, r2})
@@ -887,6 +893,7 @@ func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing
 // race-prone scenario: concurrently writing a merged result while subresponses are freed.
 // This emulates HTTP server writing to client while cleanup kicks in.
 func TestGetLogsMultiResponseWriter_ConcurrentWriteAndFree_NoParseBodyPanic(t *testing.T) {
+	t.Parallel()
 	// Prepare two non-empty JsonRpcResponses
 	r1 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[1]`), nil)
 	r2 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[2]`), nil)
@@ -929,6 +936,7 @@ func TestGetLogsMultiResponseWriter_ConcurrentWriteAndFree_NoParseBodyPanic(t *t
 
 // Ensure WriteResultTo handles a writer that is released mid-stream without panic.
 func TestGetLogsMultiResponseWriter_SubResponseFreedDuringWrite_NoPanic(t *testing.T) {
+	t.Parallel()
 	// Use real JsonRpcResponses only
 	ne := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[9]`), nil)
 	fr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x2"`), []byte(`[1,2,3]`), nil)
@@ -952,6 +960,7 @@ func TestGetLogsMultiResponseWriter_SubResponseFreedDuringWrite_NoPanic(t *testi
 }
 
 func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
+	t.Parallel()
 	n := new(mockNetwork)
 	r := createTestRequest(map[string]interface{}{
 		"fromBlock": "0x1",
@@ -964,6 +973,7 @@ func TestNetworkPostForward_NoSplitOnNonTooLargeError(t *testing.T) {
 }
 
 func TestNetworkPreForward_eth_getLogs_blockHash_with_filters(t *testing.T) {
+	t.Parallel()
 	n := new(mockNetwork)
 	r := createTestRequest(map[string]interface{}{
 		"fromBlock": "0x1",
@@ -979,6 +989,7 @@ func TestNetworkPreForward_eth_getLogs_blockHash_with_filters(t *testing.T) {
 }
 
 func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
+	t.Parallel()
 	mockNetwork := new(mockNetwork)
 	mockUpstream := new(mockEvmUpstream)
 	mockNetwork.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 10}}).Maybe()
@@ -1020,6 +1031,7 @@ func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
 }
 
 func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
+	t.Parallel()
 	// Setup mocks
 	mockNetwork := new(mockNetwork)
 	mockUpstream := new(mockEvmUpstream)
@@ -1127,6 +1139,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 }
 
 func TestNetworkPreForward_eth_getLogs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("short_circuit_on_blockHash", func(t *testing.T) {
@@ -1403,6 +1416,7 @@ func createTestRequest(filter interface{}) *common.NormalizedRequest {
 }
 
 func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	i64ptr := func(v int64) *int64 { return &v }
 

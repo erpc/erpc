@@ -29,7 +29,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.5
@@ -81,7 +81,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		evalFn, err := common.CompileFunction(`
@@ -122,7 +122,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		evalFn, err := common.CompileFunction(`
@@ -163,7 +163,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		evalFn, err := common.CompileFunction(`
@@ -207,7 +207,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		upstream.ReorderUpstreams(ntw.upstreamsRegistry)
@@ -279,7 +279,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.3
@@ -348,7 +348,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that alternates between accepting all and no upstreams
@@ -444,7 +444,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.4
@@ -527,7 +527,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that uses a threshold variable to control upstream selection
@@ -622,7 +622,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, _, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams based on error rate threshold
@@ -703,7 +703,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, _, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that cordons all upstreams
@@ -751,7 +751,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that counts evaluations
@@ -849,7 +849,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
@@ -889,7 +889,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
@@ -936,7 +936,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
@@ -1209,7 +1209,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that uses different error thresholds per method
@@ -1275,7 +1275,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		evalFn, err := common.CompileFunction(`
@@ -1337,7 +1337,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		evalFn, err := common.CompileFunction(`
@@ -1387,7 +1387,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create config with default policy
@@ -1450,7 +1450,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		// Create config with default policy
@@ -1522,7 +1522,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		// Set environment variable for minimum healthy threshold
@@ -1593,7 +1593,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "3")
@@ -1648,7 +1648,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		t.Setenv("ROUTING_POLICY_MAX_ERROR_RATE", "0.25")
@@ -1848,7 +1848,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create a selection policy that filters based on block head lag < 10
@@ -1968,7 +1968,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create a selection policy that filters by group first, then by block head lag
@@ -2042,7 +2042,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Set environment variable for max block head lag
@@ -2106,7 +2106,7 @@ func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create a selection policy with very low threshold

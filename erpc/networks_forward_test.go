@@ -30,7 +30,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		logger := &log.Logger
 		vr := thirdparty.NewVendorsRegistry()
@@ -66,7 +66,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
 		)
 		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 
 		ntw, _ := NewNetwork(
@@ -78,13 +78,13 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			rlr, upsReg, mt,
 		)
 		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
 
 		// Add a timeout context to prevent actual infinite loop
 		timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		startTime := time.Now()
 		resp, err := ntw.Forward(timeoutCtx, req)
@@ -117,7 +117,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		logger := &log.Logger
 		vr := thirdparty.NewVendorsRegistry()
@@ -148,7 +148,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 
 		upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
 		upr.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 
 		ntw, err := NewNetwork(
@@ -189,7 +189,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		// Create test logger
 		logger := &log.Logger
@@ -271,7 +271,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 
 		// Bootstrap upstreams
 		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		// Prepare upstreams for the network
 		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
@@ -304,7 +304,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		// Bootstrap network
 		err = ntw.Bootstrap(ctx)
 		require.NoError(t, err)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		// Create a request for eth_getBlockByNumber which all upstreams will skip
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
@@ -376,7 +376,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		defer util.CancelAndWait(cancel)
 
 		logger := &log.Logger
 
@@ -450,7 +450,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		)
 
 		upsReg.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		require.NoError(t, err)
@@ -473,7 +473,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 
 		err = ntw.Bootstrap(ctx)
 		require.NoError(t, err)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1234",false]}`))
 

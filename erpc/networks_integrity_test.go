@@ -72,7 +72,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testin
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -118,7 +118,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexGap_Error(t *testing.T) {
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -161,7 +161,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexContiguous_NoError(t *test
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -199,7 +199,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *tes
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -235,7 +235,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ResultNotArray_Error(t *testing.T)
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -271,7 +271,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexDecreasing_Error(t *testin
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -305,7 +305,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *te
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -340,7 +340,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -379,7 +379,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -417,7 +417,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_EmptyReceipts_NoError(t *testing.T
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -456,7 +456,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexCheckDisabled_NoError(t *t
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -494,7 +494,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream_Bloom(t 
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -536,7 +536,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InvalidLogIndexHex_Error(t *testin
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -571,7 +571,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 	gock.New("http://rpc1.localhost").
@@ -641,7 +641,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithLogs_Error(t *tes
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -680,7 +680,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithZeroLogs_NoError(
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -718,7 +718,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Mismatch_Error(
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -759,7 +759,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Match_NoError(t
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -799,7 +799,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_BelowThreshol
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -840,7 +840,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_MeetsThreshol
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -880,7 +880,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMismatch_Error(t 
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -923,7 +923,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMatch_NoError(t *
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -965,7 +965,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationMissingAddress_Err
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1009,7 +1009,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationWithAddress_NoErro
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1058,7 +1058,7 @@ func TestNetworkIntegrity_Retry_ValidationError_FallbackToGoodUpstream(t *testin
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1119,7 +1119,7 @@ func TestNetworkIntegrity_Retry_AllUpstreamsInvalid_ExhaustedError(t *testing.T)
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1173,7 +1173,7 @@ func TestNetworkIntegrity_Retry_ReceiptsCountMismatch_FallbackToCorrectUpstream(
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1225,7 +1225,7 @@ func TestNetworkIntegrity_Retry_LogIndexViolation_FallbackToValidUpstream(t *tes
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1274,7 +1274,7 @@ func TestNetworkIntegrity_Retry_LogsWithZeroBloom_FallbackToConsistentUpstream(t
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1323,7 +1323,7 @@ func TestNetworkIntegrity_Retry_MultipleValidationTypes_EventuallySucceeds(t *te
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1388,7 +1388,7 @@ func TestNetworkIntegrity_ValidationDisabled_AcceptsInvalidData(t *testing.T) {
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 1) // rpc2 should NOT be called
@@ -1448,7 +1448,7 @@ func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *te
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1530,7 +1530,7 @@ func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1597,7 +1597,7 @@ func TestNetworkIntegrity_Consensus_DifferentValidationErrors_PicksValid(t *test
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1674,7 +1674,7 @@ func TestNetworkIntegrity_Consensus_ReceiptsCountExact_OnlyValidParticipate(t *t
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1743,7 +1743,7 @@ func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegri
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1845,7 +1845,7 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_ValidationFiltersLarge
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -1927,7 +1927,7 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_PicksLargestValid(t *t
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -2009,7 +2009,7 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_AllLargerInvalid_Falls
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 
@@ -2098,7 +2098,7 @@ func TestNetworkIntegrity_HedgeConsensus_PreferLargerResponses_ValidationIntegri
 	defer util.ResetGock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	util.SetupMocksForEvmStatePoller()
 

@@ -83,7 +83,7 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 	// --- Real server setup (mirrors http_server_test.go style) ---
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
@@ -129,7 +129,7 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 	}()
 	defer httpServer.serverV4.Shutdown(ctx)
 	// Wait a bit for server
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 	send := func(body string, headers map[string]string) (int, string) {
@@ -228,7 +228,7 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	// --- Real server setup ---
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
@@ -271,7 +271,7 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	go func() { _ = httpServer.serverV4.Serve(listener) }()
 	defer httpServer.serverV4.Shutdown(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 	send := func(body string, headers map[string]string) (int, string) {
@@ -368,7 +368,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	// --- Real server setup ---
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
@@ -395,7 +395,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	go func() { _ = httpServer.serverV4.Serve(listener) }()
 	defer httpServer.serverV4.Shutdown(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
 	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x1","address":["0xA","0xB"]}],"id":1}`
@@ -471,7 +471,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 	// Server
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
 		Projects: []*common.ProjectConfig{{
@@ -493,7 +493,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 	port := listener.Addr().(*net.TCPAddr).Port
 	go func() { _ = httpServer.serverV4.Serve(listener) }()
 	defer httpServer.serverV4.Shutdown(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x2","toBlock":"0x2","topics":[["0xT1","0xT2"]]}],"id":1}`
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/test_project/evm/123", port), strings.NewReader(payload))
@@ -557,7 +557,7 @@ func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testin
 	// Server
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
 		Projects: []*common.ProjectConfig{{
@@ -579,7 +579,7 @@ func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testin
 	port := listener.Addr().(*net.TCPAddr).Port
 	go func() { _ = httpServer.serverV4.Serve(listener) }()
 	defer httpServer.serverV4.Shutdown(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x10","toBlock":"0x11"}],"id":1}`
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/test_project/evm/123", port), strings.NewReader(payload))
@@ -622,7 +622,7 @@ func TestHttp_ConcurrentIdenticalRequests_NoEmptyBodyParse(t *testing.T) {
 	// --- Server setup ---
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
@@ -648,7 +648,7 @@ func TestHttp_ConcurrentIdenticalRequests_NoEmptyBodyParse(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	go func() { _ = httpServer.serverV4.Serve(listener) }()
 	defer httpServer.serverV4.Shutdown(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 	mkReq := func(id int) *http.Request {

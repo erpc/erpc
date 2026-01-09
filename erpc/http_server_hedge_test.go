@@ -1939,7 +1939,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
