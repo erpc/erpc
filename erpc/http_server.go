@@ -1060,8 +1060,8 @@ func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
 	}
 	e.Str("jsonrpc", r.Jsonrpc)
 	e.Interface("id", r.Id)
-	if r.Error != nil {
-		e.Interface("error", r.Error)
+	if errObj, ok := r.Error.(*common.ErrJsonRpcExceptionExternal); ok {
+		e.Object("error", errObj)
 	}
 }
 

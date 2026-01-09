@@ -2217,6 +2217,17 @@ func (e *ErrJsonRpcExceptionExternal) GetCause() error {
 	return nil
 }
 
+func (e *ErrJsonRpcExceptionExternal) MarshalZerologObject(v *zerolog.Event) {
+	if e == nil {
+		return
+	}
+	v.Int("code", e.Code)
+	v.Str("message", e.Message)
+	if e.Data != nil {
+		v.Interface("data", e.Data)
+	}
+}
+
 //
 // Store
 //

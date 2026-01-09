@@ -26,12 +26,10 @@ func TestHttpJsonRpcErrorResponse_MarshalZerologObject(t *testing.T) {
 			resp: &HttpJsonRpcErrorResponse{
 				Jsonrpc: "2.0",
 				Id:      1,
-				Error: map[string]interface{}{
-					"code":    -32603,
-					"message": "network not found",
-					"data": map[string]interface{}{
-						"code": "ErrNetworkNotFound",
-					},
+				Error: &common.ErrJsonRpcExceptionExternal{
+					Code:    -32603,
+					Message: "network not found",
+					Data:    "ErrNetworkNotFound",
 				},
 			},
 			wantKeys: []string{"jsonrpc", "id", "error"},
@@ -98,9 +96,9 @@ func TestLogObjectMarshaler_NativeChaining(t *testing.T) {
 			resp: &HttpJsonRpcErrorResponse{
 				Jsonrpc: "2.0",
 				Id:      123,
-				Error: map[string]interface{}{
-					"code":    -32603,
-					"message": "test error",
+				Error: &common.ErrJsonRpcExceptionExternal{
+					Code:    -32603,
+					Message: "test error",
 				},
 			},
 			wantContains: `"jsonrpc":"2.0"`,
@@ -139,16 +137,12 @@ func TestHttpJsonRpcErrorResponse_ErrorFieldSerialization(t *testing.T) {
 	resp := &HttpJsonRpcErrorResponse{
 		Jsonrpc: "2.0",
 		Id:      42,
-		Error: map[string]interface{}{
-			"code":    -32601,
-			"message": "method not found",
-			"data": map[string]interface{}{
+		Error: &common.ErrJsonRpcExceptionExternal{
+			Code:    -32601,
+			Message: "method not found",
+			Data: map[string]interface{}{
 				"code":    "ErrUpstreamsExhausted",
 				"message": "all upstream attempts failed",
-				"details": map[string]interface{}{
-					"attempts": 3,
-					"retries":  2,
-				},
 			},
 		},
 	}
