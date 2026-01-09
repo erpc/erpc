@@ -1911,6 +1911,7 @@ var DefaultMarkEmptyAsErrorMethods = []string{
 	"debug_traceTransaction",
 	"trace_transaction",
 	"trace_block",
+	"trace_filter",
 	"trace_get",
 }
 
