@@ -1135,19 +1135,19 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err error, origErr err
 	}
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
-		message := jre.Message
-		errObj := map[string]interface{}{
-			"code":    jre.NormalizedCode(),
-			"message": message,
+		// Build typed error object for strict marshalling
+		errObj := &common.ErrJsonRpcExceptionExternal{
+			Code:    int(jre.NormalizedCode()),
+			Message: jre.Message,
 		}
 		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
 		if jre.Details["data"] != nil {
-			errObj["data"] = jre.Details["data"]
+			errObj.Data = jre.Details["data"]
 		} else if includeErrorDetails != nil && *includeErrorDetails {
 			if method != "eth_call" {
 				// For eth_calls clients expect "data" to be string for revert reason.
 				// TODO Move this logic to "evm" package.
-				errObj["data"] = origErr
+				errObj.Data = origErr
 			}
 		}
 
