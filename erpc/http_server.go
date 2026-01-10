@@ -1054,8 +1054,23 @@ type HttpJsonRpcErrorResponse struct {
 	Cause   error       `json:"-"`
 }
 
+func (r *HttpJsonRpcErrorResponse) MarshalZerologObject(e *zerolog.Event) {
+	if r == nil {
+		return
+	}
+	e.Str("jsonrpc", r.Jsonrpc)
+	e.Interface("id", r.Id)
+	if errObj, ok := r.Error.(*common.ErrJsonRpcExceptionExternal); ok {
+		e.Object("error", errObj)
+	}
+}
+
 func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool) interface{} {
 	err := origErr
+
+	// Build the response body first, so we can include it in the log
+	resp := buildErrorResponseBody(nq, err, origErr, includeErrorDetails)
+
 	if !common.IsNull(err) {
 		if nq != nil {
 			nq.RLock()
@@ -1070,16 +1085,16 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeJsonRpcRequestUnmarshal,
 			common.ErrCodeProjectNotFound,
 		) {
-			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
+			logger.Debug().Err(err).Object("request", nq).Object("response", resp).Msgf("forward request errored with client-side exception")
 		} else if errors.Is(err, context.Canceled) {
-			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with context cancellation")
+			logger.Debug().Err(err).Object("request", nq).Object("response", resp).Msgf("forward request errored with context cancellation")
 		} else if errors.Is(err, context.DeadlineExceeded) {
-			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with deadline exceeded")
+			logger.Debug().Err(err).Object("request", nq).Object("response", resp).Msgf("forward request errored with deadline exceeded")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
-				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
+				logger.Warn().Err(err).Object("request", nq).Object("response", resp).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
+				logger.Warn().Err(err).Object("request", nq).Object("response", resp).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
 			}
 		}
 		if nq != nil {
@@ -1087,6 +1102,11 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		}
 	}
 
+	return resp
+}
+
+// buildErrorResponseBody constructs the JSON-RPC error response body without logging
+func buildErrorResponseBody(nq *common.NormalizedRequest, err error, origErr error, includeErrorDetails *bool) zerolog.LogObjectMarshaler {
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
@@ -1115,19 +1135,19 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
-		message := jre.Message
-		errObj := map[string]interface{}{
-			"code":    jre.NormalizedCode(),
-			"message": message,
+		// Build typed error object for strict marshalling
+		errObj := &common.ErrJsonRpcExceptionExternal{
+			Code:    int(jre.NormalizedCode()),
+			Message: jre.Message,
 		}
 		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
 		if jre.Details["data"] != nil {
-			errObj["data"] = jre.Details["data"]
+			errObj.Data = jre.Details["data"]
 		} else if includeErrorDetails != nil && *includeErrorDetails {
 			if method != "eth_call" {
 				// For eth_calls clients expect "data" to be string for revert reason.
 				// TODO Move this logic to "evm" package.
-				errObj["data"] = origErr
+				errObj.Data = origErr
 			}
 		}
 
@@ -1139,13 +1159,13 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		}
 	}
 
-	if _, ok := err.(*common.BaseError); ok {
-		return err
+	if berr, ok := err.(*common.BaseError); ok {
+		return berr
 	} else if serr, ok := err.(common.StandardError); ok {
 		return serr
 	}
 
-	return common.BaseError{
+	return &common.BaseError{
 		Code:    "ErrUnknown",
 		Message: "unexpected server error",
 		Cause:   err,
