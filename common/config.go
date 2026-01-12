@@ -1527,6 +1527,13 @@ type EvmNetworkConfig struct {
 	// empty result likely means the upstream hasn't indexed that data yet.
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
+
+	// IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
+	// When enabled (default), "already known" and verified "nonce too low" errors are converted
+	// to success responses with the transaction hash. This allows failsafe policies (retry/hedge)
+	// to work safely with transaction broadcasting.
+	// Set to false to disable this behavior and return raw upstream errors.
+	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

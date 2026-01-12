@@ -338,7 +338,8 @@ func createHedgePolicy(appCtx context.Context, logger *zerolog.Logger, cfg *comm
 
 				method, _ = req.Method()
 				span.SetAttributes(attribute.String("method", method))
-				if method != "" && evm.IsWriteMethod(method) {
+				// Block non-retryable write methods from hedging
+				if method != "" && evm.IsNonRetryableWriteMethod(method) {
 					span.SetAttributes(
 						attribute.Bool("hedge", false),
 						attribute.String("reason", "write_method"),
@@ -438,7 +439,19 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		defer span.End()
 
 		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
+		// Exception: for eth_sendRawTransaction, check retryableTowardNetwork flag
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			// Check if this error is marked as retryable toward network (e.g. eth_sendRawTransaction)
+			if se, ok := err.(common.StandardError); ok {
+				if retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && retryable {
+					span.SetAttributes(
+						attribute.Bool("retry", true),
+						attribute.String("reason", "execution_exception_retryable_to_network"),
+						attribute.String("error_code", "ErrCodeEndpointExecutionException"),
+					)
+					return true
+				}
+			}
 			span.SetAttributes(
 				attribute.Bool("retry", false),
 				attribute.String("reason", "execution_exception"),
@@ -455,10 +468,11 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			return false
 		}
 
-		// Must not retry any 'write' methods
+		// Must not retry any 'write' methods except eth_sendRawTransaction
+		// (idempotency for eth_sendRawTransaction is handled in post-forward hook)
 		if result != nil {
 			if req := result.Request(); req != nil {
-				if method, _ := req.Method(); method != "" && evm.IsWriteMethod(method) {
+				if method, _ := req.Method(); method != "" && evm.IsNonRetryableWriteMethod(method) {
 					span.SetAttributes(
 						attribute.Bool("retry", false),
 						attribute.String("reason", "write_method"),
@@ -763,7 +777,14 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 			// also this means errors are not due to other reasons (like self-imposed rate limiting).
 			err = exr
 		} else {
-			err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
+			// Special case for eth_sendRawTransaction: if all upstreams returned execution exception
+			// (e.g. execution reverted), return that exception as the final response instead of
+			// wrapping in ErrFailsafeRetryExceeded. This ensures clients see the actual revert error.
+			if method == "eth_sendRawTransaction" && common.HasErrorCode(translatedCause, common.ErrCodeEndpointExecutionException) {
+				err = translatedCause
+			} else {
+				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
+			}
 		}
 	} else if errors.Is(execErr, timeout.ErrExceeded) {
 		// Simply translate the failsafe library timeout error type to our own standard error type.

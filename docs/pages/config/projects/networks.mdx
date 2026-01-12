@@ -37,6 +37,10 @@ projects:
           # Defining this fallback helps with increasing cache-hit rate and reducing redundant 'retry' attempts on empty responses, as we know which data is finalized.
           # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
           fallbackFinalityDepth: 1024
+          # (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
+          # When true (default), duplicate transaction errors are converted to success responses,
+          # allowing safe use of retry/hedge policies with transaction sending.
+          idempotentTransactionBroadcast: true
 
         # (OPTIONAL) A friendly alias for this network. This allows you to reference the network using the alias
         # instead of the architecture/chainId format. For example, instead of using /main/evm/1, you can use /main/ethereum.
@@ -164,6 +168,12 @@ export default createConfig({
             * DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
             */
             fallbackFinalityDepth: 1024,
+            /**
+            * (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
+            * When true (default), duplicate transaction errors are converted to success responses,
+            * allowing safe use of retry/hedge policies with transaction sending.
+            */
+            idempotentTransactionBroadcast: true,
           },
 
           /**
@@ -565,6 +575,59 @@ export default createConfig({
 
 <Callout type='info'>
   Splitting preserves order and merges results server-side. Address count is the length of the <code>address</code> array (if present). Topic count considers only <code>topics[0]</code> when it is an OR-list.
+</Callout>
+
+### `eth_sendRawTransaction`
+
+eRPC provides **idempotent transaction broadcasting** for `eth_sendRawTransaction`, enabling safe use of retry and hedge policies with transaction sending.
+
+**How it works:**
+- When an upstream returns "already known" or similar duplicate transaction errors, eRPC converts it to a success response with the transaction hash
+- For "nonce too low" errors, eRPC verifies if the exact transaction exists on-chain before returning success
+- This allows failsafe policies (retry, hedge) to work safely—if a transaction is broadcast to multiple upstreams or retried, duplicate errors are handled gracefully
+
+**Enabled by default.** To disable:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          # Disable idempotent transaction broadcast (default: true)
+          idempotentTransactionBroadcast: false
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+            // Disable idempotent transaction broadcast (default: true)
+            idempotentTransactionBroadcast: false,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  When enabled, `eth_sendRawTransaction` can safely use retry and hedge policies. The transaction hash is deterministically computed from the signed transaction, so duplicate detection works across any upstream.
 </Callout>
 
 ## Name aliasing

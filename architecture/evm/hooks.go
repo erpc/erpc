@@ -100,18 +100,24 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook")
 	defer span.End()
 
-	// If there's already an error, skip validation
-	if re != nil {
-		return rs, re
-	}
-
 	method, err := rq.Method()
 	if err != nil {
 		return rs, err
 	}
 
-	var validationErr error
 	methodLower := strings.ToLower(method)
+
+	// Special case: eth_sendRawTransaction needs to handle errors for idempotency
+	if methodLower == "eth_sendrawtransaction" {
+		return upstreamPostForward_eth_sendRawTransaction(ctx, n, u, rq, rs, re)
+	}
+
+	// For all other methods, skip validation if there's already an error
+	if re != nil {
+		return rs, re
+	}
+
+	var validationErr error
 
 	// Check if this method should have empty results marked as errors
 	shouldMarkEmpty := isMethodInMarkEmptyList(n, methodLower)

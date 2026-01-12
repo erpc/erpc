@@ -439,21 +439,23 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		assert.LessOrEqual(t, hedgeDelay, 160*time.Millisecond, "Hedge delay should respect MaxDelay boundary")
 	})
 
-	t.Run("HedgePolicy_SkipsWriteMethods", func(t *testing.T) {
+	t.Run("HedgePolicy_SkipsNonRetryableWriteMethods", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
 
-		writeRequestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0xabcdef"]}`)
+		// Use eth_sendTransaction (NOT eth_sendRawTransaction) because eth_sendRawTransaction
+		// is now hedgeable due to idempotency handling
+		writeRequestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendTransaction","params":[{"from":"0x123","to":"0x456"}]}`)
 
 		// Set up all mocks BEFORE creating network
-		// Only primary should be called for write methods
+		// Only primary should be called for non-retryable write methods
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
+				return strings.Contains(body, "eth_sendTransaction")
 			}).
 			Reply(200).
 			Delay(300 * time.Millisecond). // Slow enough to trigger hedge normally
@@ -463,12 +465,12 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 				"result":  "0x1234567890abcdef",
 			})
 
-		// This should NOT be called for write methods
+		// This should NOT be called for non-retryable write methods
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
+				return strings.Contains(body, "eth_sendTransaction")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
