@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/rlp"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -79,7 +79,7 @@ func upstreamPostForward_eth_sendRawTransaction(
 		// to distinguish between:
 		// - Same transaction already mined (idempotent success)
 		// - Different transaction with same nonce (error)
-		return verifyAndHandleNonceTooLow(ctx, n, u, rq, txHash, re)
+		return verifyAndHandleNonceTooLow(ctx, u, rq, txHash, re)
 
 	default:
 		// Unknown reason, return original error
@@ -117,10 +117,12 @@ func extractTxHashFromSendRawTransaction(ctx context.Context, rq *common.Normali
 		return "", fmt.Errorf("failed to decode transaction hex: %w", err)
 	}
 
-	// Decode the RLP-encoded transaction
+	// Decode the transaction using UnmarshalBinary which handles both:
+	// - Legacy (type-0) transactions: RLP-encoded
+	// - Typed (EIP-2718) transactions: type byte + RLP-encoded (EIP-1559, EIP-2930, etc.)
 	tx := new(ethtypes.Transaction)
-	if err := rlp.DecodeBytes(rawTx, tx); err != nil {
-		return "", fmt.Errorf("failed to decode RLP transaction: %w", err)
+	if err := tx.UnmarshalBinary(rawTx); err != nil {
+		return "", fmt.Errorf("failed to decode transaction: %w", err)
 	}
 
 	// Get the transaction hash
@@ -151,7 +153,6 @@ func createSyntheticSuccessResponse(ctx context.Context, rq *common.NormalizedRe
 // verifyAndHandleNonceTooLow verifies the transaction on-chain for "nonce too low" errors
 func verifyAndHandleNonceTooLow(
 	ctx context.Context,
-	n common.Network,
 	u common.Upstream,
 	rq *common.NormalizedRequest,
 	txHash string,
@@ -163,14 +164,18 @@ func verifyAndHandleNonceTooLow(
 	span.SetAttributes(attribute.String("tx_hash", txHash))
 
 	// Create a request for eth_getTransactionByHash
+	// Use a new random ID since this is an internal verification request
 	getTxReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
 		`{"jsonrpc":"2.0","id":%d,"method":"eth_getTransactionByHash","params":[%q]}`,
-		rq.ID(),
+		util.RandomID(),
 		txHash,
 	)))
 
 	// Forward the request to the same upstream
 	resp, err := u.Forward(ctx, getTxReq, true)
+	if resp != nil {
+		defer resp.Release()
+	}
 	if err != nil {
 		span.SetAttributes(attribute.String("forward_error", err.Error()))
 		// If we can't verify, return the original error

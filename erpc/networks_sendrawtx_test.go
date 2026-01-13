@@ -23,12 +23,21 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// Sample signed transaction for testing (a valid RLP-encoded Ethereum transaction)
+// Sample signed LEGACY (type-0) transaction for testing (a valid RLP-encoded Ethereum transaction)
 // This is a simple transfer transaction - the hash is deterministic based on the content
 const sampleSignedTx = "0xf86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025a028ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276a067cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83"
 
-// Expected tx hash for the sample transaction
+// Expected tx hash for the sample legacy transaction
 const expectedTxHash = "0x33469b22e9f636356c4160a87eb19df52b7412e8eac32a4a55f0ef7be5c61c8d"
+
+// Sample signed EIP-1559 (type-2) transaction for testing typed transaction support
+// This is a type-2 transaction which uses maxFeePerGas and maxPriorityFeePerGas
+// Format: 0x02 || rlp([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, v, r, s])
+// Generated with ethers.js: wallet.signTransaction({ type: 2, chainId: 1, nonce: 10, ... })
+const sampleEIP1559SignedTx = "0x02f873010a8459682f008506fc23ac0082520894d8da6bf26964af9d7eed9e03e53415d37aa9604588016345785d8a000080c080a0a3d5fd825e582675933b2b6aea774b0454633edb49e94699d6f88d197cd26589a06295b0b43a9e93a3390b308272a65bb063d9f18deb4cb7db5ecf352bf9ba9fe7"
+
+// Expected tx hash for the sample EIP-1559 transaction
+const expectedEIP1559TxHash = "0xb9f61197f9c6c63a6981ba69fb22308469d03a4e013b10bcd69315745110acf7"
 
 func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 	t.Run("AlreadyKnownReturnsSuccess", func(t *testing.T) {
@@ -457,6 +466,52 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 		// Should return error - idempotency is disabled, so "already known" is NOT converted to success
 		require.Error(t, err)
 		_ = resp
+	})
+
+	// Test that EIP-1559 (type-2) transactions work with idempotent handling
+	// This is a regression test for typed transactions not being decoded correctly
+	t.Run("EIP1559AlreadyKnownReturnsSuccess", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleEIP1559SignedTx + `"]}`)
+
+		// Upstream returns "already known" error for EIP-1559 transaction
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32000,
+					"message": "already known",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Should succeed (idempotent) - EIP-1559 transactions should be handled correctly
+		require.NoError(t, err, "EIP-1559 transaction should be parsed and converted to success")
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+
+		// Result should be the expected EIP-1559 transaction hash
+		result := jrr.GetResultString()
+		assert.Contains(t, result, expectedEIP1559TxHash, "Result should contain the EIP-1559 transaction hash")
 	})
 
 	// Test that nonce/duplicate detection works even when upstream uses -32003 code
