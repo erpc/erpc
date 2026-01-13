@@ -838,3 +838,94 @@ projects:
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
 	})
 }
+
+func TestUpstreamConfig_IgnoreNetworks_Validation(t *testing.T) {
+	t.Run("ValidIgnoreNetworks", func(t *testing.T) {
+		yamlData := `
+logLevel: DEBUG
+projects:
+  - id: main
+    upstreams:
+      - id: test-upstream
+        endpoint: http://test.com
+        ignoreNetworks:
+          - "evm:1"
+          - "evm:42161"
+`
+		fs := afero.NewMemMapFs()
+		err := afero.WriteFile(fs, "test-config.yaml", []byte(yamlData), 0644)
+		assert.NoError(t, err)
+
+		config, err := LoadConfig(fs, "test-config.yaml", nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, config)
+		assert.Len(t, config.Projects[0].Upstreams[0].IgnoreNetworks, 2)
+		assert.Equal(t, "evm:1", config.Projects[0].Upstreams[0].IgnoreNetworks[0])
+		assert.Equal(t, "evm:42161", config.Projects[0].Upstreams[0].IgnoreNetworks[1])
+	})
+
+	t.Run("InvalidNetworkFormat", func(t *testing.T) {
+		yamlData := `
+logLevel: DEBUG
+projects:
+  - id: main
+    upstreams:
+      - id: test-upstream
+        endpoint: http://test.com
+        ignoreNetworks:
+          - "invalid-format"
+`
+		fs := afero.NewMemMapFs()
+		err := afero.WriteFile(fs, "test-config.yaml", []byte(yamlData), 0644)
+		assert.NoError(t, err)
+
+		_, err = LoadConfig(fs, "test-config.yaml", nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid, must be like evm:1")
+	})
+
+	t.Run("IgnoreNetworksContradictingChainId", func(t *testing.T) {
+		yamlData := `
+logLevel: DEBUG
+projects:
+  - id: main
+    upstreams:
+      - id: test-upstream
+        endpoint: http://test.com
+        evm:
+          chainId: 1
+        ignoreNetworks:
+          - "evm:1"
+`
+		fs := afero.NewMemMapFs()
+		err := afero.WriteFile(fs, "test-config.yaml", []byte(yamlData), 0644)
+		assert.NoError(t, err)
+
+		_, err = LoadConfig(fs, "test-config.yaml", nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "but upstream is configured for this chain")
+	})
+
+	t.Run("IgnoreNetworksWithoutConflict", func(t *testing.T) {
+		yamlData := `
+logLevel: DEBUG
+projects:
+  - id: main
+    upstreams:
+      - id: test-upstream
+        endpoint: http://test.com
+        evm:
+          chainId: 1
+        ignoreNetworks:
+          - "evm:42161"
+`
+		fs := afero.NewMemMapFs()
+		err := afero.WriteFile(fs, "test-config.yaml", []byte(yamlData), 0644)
+		assert.NoError(t, err)
+
+		config, err := LoadConfig(fs, "test-config.yaml", nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, config)
+		assert.Len(t, config.Projects[0].Upstreams[0].IgnoreNetworks, 1)
+	})
+}

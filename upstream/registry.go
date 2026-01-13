@@ -897,6 +897,19 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	// Initialize network-specific sorted upstreams
 	// (removed: avoid mutating sortedUpstreams during registration; refresh owns ordering)
 
+	// Check if this network is blocklisted for this upstream
+	if cfg.IgnoreNetworks != nil {
+		for _, ignored := range cfg.IgnoreNetworks {
+			if ignored == networkId {
+				u.logger.Debug().
+					Str("upstreamId", cfg.Id).
+					Str("networkId", networkId).
+					Msg("skipping upstream registration for blocklisted network")
+				return
+			}
+		}
+	}
+
 	// Add to network upstreams map
 	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
 	exists := false

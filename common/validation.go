@@ -843,6 +843,22 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
 		}
 	}
+	if u.IgnoreNetworks != nil {
+		for _, network := range u.IgnoreNetworks {
+			if !IsValidNetwork(network) {
+				return fmt.Errorf("upstream.*.ignoreNetworks.* '%s' is invalid, must be like evm:1", network)
+			}
+		}
+		// Validate that IgnoreNetworks doesn't contradict the upstream's own chainId
+		if u.Evm != nil && u.Evm.ChainId > 0 {
+			upstreamNetwork := util.EvmNetworkId(u.Evm.ChainId)
+			for _, ignored := range u.IgnoreNetworks {
+				if ignored == upstreamNetwork {
+					return fmt.Errorf("upstream.*.ignoreNetworks contains '%s' but upstream is configured for this chain (evm.chainId=%d)", ignored, u.Evm.ChainId)
+				}
+			}
+		}
+	}
 	return nil
 }
 
