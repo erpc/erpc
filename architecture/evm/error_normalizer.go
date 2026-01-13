@@ -269,39 +269,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// "Transaction rejected" or "Insufficient funds" or "out of gas" errors
-		//----------------------------------------------------------------
-
-		if code == common.JsonRpcErrorTransactionRejected ||
-			strings.Contains(msg, "insufficient funds") ||
-			strings.Contains(msg, "insufficient balance") ||
-			strings.Contains(msg, "out of gas") ||
-			strings.Contains(msg, "gas too low") ||
-			strings.Contains(msg, "IntrinsicGas") {
-
-			execErr := common.NewErrEndpointExecutionException(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorTransactionRejected,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-			// For eth_sendRawTransaction, these errors are retryable toward other upstreams
-			// because different providers may have different balance-checking or gas-estimation logic
-			if nr != nil && nr.Request() != nil {
-				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
-					if re, ok := execErr.(common.RetryableError); ok {
-						return re.WithRetryableTowardNetwork(true)
-					}
-				}
-			}
-			return execErr
-		}
-
-		//----------------------------------------------------------------
 		// "Duplicate transaction / nonce" errors for eth_sendRawTransaction idempotency
+		// IMPORTANT: This must come BEFORE the generic -32003 handling below, because
+		// some upstreams use -32003 for "already known" or "nonce too low" messages.
 		// Note: "replacement transaction underpriced" is NOT handled here - it should remain an error
 		//----------------------------------------------------------------
 
@@ -343,6 +313,39 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.NonceExceptionReasonNonceTooLow,
 			)
+		}
+
+		//----------------------------------------------------------------
+		// "Transaction rejected" or "Insufficient funds" or "out of gas" errors
+		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors
+		//----------------------------------------------------------------
+
+		if code == common.JsonRpcErrorTransactionRejected ||
+			strings.Contains(msg, "insufficient funds") ||
+			strings.Contains(msg, "insufficient balance") ||
+			strings.Contains(msg, "out of gas") ||
+			strings.Contains(msg, "gas too low") ||
+			strings.Contains(msg, "IntrinsicGas") {
+
+			execErr := common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+			// For eth_sendRawTransaction, these errors are retryable toward other upstreams
+			// because different providers may have different balance-checking or gas-estimation logic
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
 		}
 
 		//----------------------------------------------------------------

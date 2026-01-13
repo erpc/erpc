@@ -458,6 +458,121 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 		require.Error(t, err)
 		_ = resp
 	})
+
+	// Test that nonce/duplicate detection works even when upstream uses -32003 code
+	// Some upstreams return -32003 (transaction rejected) with "already known" or "nonce too low" messages
+	t.Run("AlreadyKnownWith32003CodeReturnsSuccess", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		// Upstream returns "already known" error with -32003 code (some nodes do this)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32003, // JsonRpcErrorTransactionRejected
+					"message": "already known",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Should succeed (idempotent) - error is converted to success even with -32003 code
+		require.NoError(t, err, "already known with -32003 code should be converted to success")
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+
+		// Result should be the transaction hash
+		result := jrr.GetResultString()
+		assert.Contains(t, result, "0x")
+	})
+
+	t.Run("NonceTooLowWith32003CodeAndMatchingTxReturnsSuccess", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
+
+		// First: upstream returns "nonce too low" error with -32003 code
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_sendRawTransaction")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32003, // JsonRpcErrorTransactionRejected
+					"message": "nonce too low",
+				},
+			})
+
+		// Second: verification call returns the transaction (it exists on-chain)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"hash":             expectedTxHash,
+					"nonce":            "0x9",
+					"blockHash":        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+					"blockNumber":      "0x100",
+					"transactionIndex": "0x0",
+					"from":             "0x3535353535353535353535353535353535353535",
+					"to":               "0x3535353535353535353535353535353535353535",
+					"value":            "0xde0b6b3a7640000",
+					"gas":              "0x5208",
+					"gasPrice":         "0x4a817c800",
+					"input":            "0x",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupSendRawTxTestNetworkSingleUpstream(t, ctx)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Should succeed - transaction exists on-chain, idempotent success even with -32003 code
+		require.NoError(t, err, "nonce too low with -32003 code should be verified and converted to success")
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+
+		result := jrr.GetResultString()
+		assert.Contains(t, result, "0x")
+	})
 }
 
 // Helper to set up a single-upstream test network (no load balancing uncertainty)
