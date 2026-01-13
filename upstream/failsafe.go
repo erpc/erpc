@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -74,7 +75,7 @@ func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scop
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
-		p, err := createHedgePolicy(appCtx, &lg, fsCfg.Hedge)
+		p, err := createHedgePolicy(&lg, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
 		}
@@ -255,7 +256,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(appCtx context.Context, logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	var builder hedgepolicy.HedgePolicyBuilder[*common.NormalizedResponse]
 
 	// Observe hedge delay via histogram; no background publisher.
@@ -780,7 +781,7 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 			// Special case for eth_sendRawTransaction: if all upstreams returned execution exception
 			// (e.g. execution reverted), return that exception as the final response instead of
 			// wrapping in ErrFailsafeRetryExceeded. This ensures clients see the actual revert error.
-			if method == "eth_sendRawTransaction" && common.HasErrorCode(translatedCause, common.ErrCodeEndpointExecutionException) {
+			if strings.EqualFold(method, "eth_sendRawTransaction") && common.HasErrorCode(translatedCause, common.ErrCodeEndpointExecutionException) {
 				err = translatedCause
 			} else {
 				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
