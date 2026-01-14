@@ -426,6 +426,29 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
+		// "Malformed transaction" errors (invalid RLP encoding, truncated data, etc.)
+		// These indicate the raw transaction bytes are invalid - not retryable
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "typed transaction too short") ||
+			strings.Contains(ml, "transaction too short") ||
+			strings.Contains(ml, "rlp: expected input list") ||
+			strings.Contains(ml, "rlp: input string too short") ||
+			strings.Contains(ml, "rlp: value size exceeds") ||
+			strings.Contains(ml, "invalid transaction") ||
+			strings.Contains(ml, "transaction type not supported") {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
+		}
+
+		//----------------------------------------------------------------
 		// "Invalid Argument / Params / Request" errors
 		//----------------------------------------------------------------
 
