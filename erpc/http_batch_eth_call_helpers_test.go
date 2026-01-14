@@ -206,7 +206,9 @@ func encodeAggregate3Results(results []evm.Multicall3Result) string {
 }
 
 func encodeAggregate3ResultsBytes(results []evm.Multicall3Result) []byte {
-	headSize := 32 + 32*len(results)
+	// Offsets are relative to start of array content (after length word),
+	// so the offset table size is just N*32 (not including the length word)
+	headSize := 32 * len(results)
 	offsets := make([]uint64, len(results))
 	elems := make([][]byte, len(results))
 	cur := uint64(headSize)

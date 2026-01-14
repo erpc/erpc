@@ -351,10 +351,12 @@ func TestShouldFallbackMulticall3(t *testing.T) {
 }
 
 func encodeAggregate3Results(results []Multicall3Result) []byte {
-	headSize := 32 + 32*len(results)
+	// Offsets are relative to start of array content (after length word),
+	// so the offset table size is just N*32 (not including the length word)
+	offsetTableSize := 32 * len(results)
 	offsets := make([]uint64, len(results))
 	elems := make([][]byte, len(results))
-	cur := uint64(headSize)
+	cur := uint64(offsetTableSize)
 
 	for i, res := range results {
 		elems[i] = encodeAggregate3ResultElement(res)

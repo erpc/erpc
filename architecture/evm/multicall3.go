@@ -213,8 +213,9 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		elemStart := base + int(offsetVal)
-		if elemStart < base || elemStart+64 > len(data) {
+		// Element offsets are relative to where the offset table starts (after length word)
+		elemStart := offsetsStart + int(offsetVal)
+		if elemStart < offsetsStart || elemStart+64 > len(data) {
 			return nil, errors.New("multicall3 result element out of bounds")
 		}
 
@@ -273,11 +274,13 @@ func encodeAggregate3Calls(calls []Multicall3Call) ([]byte, error) {
 }
 
 func encodeAggregate3Array(calls []Multicall3Call) ([]byte, error) {
-	// ABI array head = length (1 word) + offsets (1 word each).
-	headSize := abiWordSize + abiWordSize*len(calls)
+	// ABI array: length (1 word) + offsets (1 word each) + element data.
+	// Offsets are relative to start of array data (right after length word),
+	// so the first element starts at offset = N*32 (after the N offset words).
+	offsetTableSize := abiWordSize * len(calls)
 	elements := make([][]byte, len(calls))
 	offsets := make([]uint64, len(calls))
-	cur := uint64(headSize)
+	cur := uint64(offsetTableSize)
 
 	for i, call := range calls {
 		elem := encodeAggregate3Element(call)

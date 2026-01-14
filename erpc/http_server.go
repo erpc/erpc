@@ -411,7 +411,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			if detectErr != nil {
 				lg.Debug().Err(detectErr).Msg("eth_call batch detection failed")
 			}
-			if batchInfo != nil {
+			if batchInfo != nil && isMulticall3AggregationEnabled(project, batchInfo.networkId) {
 				batchHandled = s.handleEthCallBatchAggregation(
 					httpCtx,
 					&startedAt,
@@ -1667,4 +1667,26 @@ func stripAddrDecorations(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// isMulticall3AggregationEnabled checks if multicall3 aggregation is enabled for a given network.
+// Returns true (default) if no explicit config is set, or if the config is explicitly set to true.
+func isMulticall3AggregationEnabled(project *PreparedProject, networkId string) bool {
+	if project == nil || project.Config == nil {
+		return true // Default to enabled
+	}
+
+	project.cfgMu.RLock()
+	defer project.cfgMu.RUnlock()
+
+	for _, nwCfg := range project.Config.Networks {
+		if nwCfg != nil && nwCfg.NetworkId() == networkId {
+			if nwCfg.Evm != nil && nwCfg.Evm.Multicall3Aggregation != nil {
+				return *nwCfg.Evm.Multicall3Aggregation
+			}
+			break
+		}
+	}
+
+	return true // Default to enabled
 }

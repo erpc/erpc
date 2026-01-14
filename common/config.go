@@ -1548,6 +1548,12 @@ type EvmNetworkConfig struct {
 	// to work safely with transaction broadcasting.
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
+
+	// Multicall3Aggregation enables aggregating batched eth_call requests into a single
+	// Multicall3 contract call. This can significantly reduce latency for JSON-RPC batch
+	// requests containing multiple eth_call methods by combining them into one upstream call.
+	// Default: true (enabled)
+	Multicall3Aggregation *bool `yaml:"multicall3Aggregation,omitempty" json:"multicall3Aggregation,omitempty"`
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
