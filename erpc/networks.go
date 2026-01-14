@@ -49,6 +49,24 @@ type Network struct {
 	initializer              *util.Initializer
 }
 
+type skipNetworkRateLimitKey struct{}
+
+func withSkipNetworkRateLimit(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipNetworkRateLimitKey{}, true)
+}
+
+func shouldSkipNetworkRateLimit(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if v := ctx.Value(skipNetworkRateLimitKey{}); v != nil {
+		if skip, ok := v.(bool); ok && skip {
+			return true
+		}
+	}
+	return false
+}
+
 func (n *Network) Bootstrap(ctx context.Context) error {
 	// Initialize policy evaluator if configured
 	if n.cfg.SelectionPolicy != nil {
@@ -378,11 +396,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// 3) Apply rate limits
-	if err := n.acquireRateLimitPermit(ctx, req); err != nil {
-		if mlx != nil {
-			mlx.Close(ctx, nil, err)
+	if !shouldSkipNetworkRateLimit(ctx) {
+		if err := n.acquireRateLimitPermit(ctx, req); err != nil {
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 
 	// 4) Prepare the request

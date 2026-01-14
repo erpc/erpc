@@ -405,9 +405,28 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		// We no longer need the top-level body; drop reference early to free its backing array
 		body = nil
 
-		for i, reqBody := range requests {
-			wg.Add(1)
-			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
+		batchHandled := false
+		if isBatch && !isAdmin && !isHealthCheck {
+			if batchInfo := detectEthCallBatchInfo(requests, architecture, chainId); batchInfo != nil {
+				batchHandled = s.handleEthCallBatchAggregation(
+					httpCtx,
+					&startedAt,
+					r,
+					project,
+					lg,
+					batchInfo,
+					requests,
+					headers,
+					queryArgs,
+					responses,
+				)
+			}
+		}
+
+		if !batchHandled {
+			for i, reqBody := range requests {
+				wg.Add(1)
+				go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
 				defer func() {
 					defer wg.Done()
 					if rec := recover(); rec != nil {
@@ -565,10 +584,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				responses[index] = resp
 				common.EndRequestSpan(requestCtx, resp, nil)
-			}(i, reqBody, headers, queryArgs)
-		}
+				}(i, reqBody, headers, queryArgs)
+			}
 
-		wg.Wait()
+			wg.Wait()
+		}
 
 		httpCtx, writeResponseSpan := common.StartDetailSpan(httpCtx, "HttpServer.WriteResponse")
 		defer writeResponseSpan.End()

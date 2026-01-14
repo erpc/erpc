@@ -1,0 +1,344 @@
+package evm
+
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"math/big"
+	"strings"
+	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
+	"golang.org/x/crypto/sha3"
+)
+
+const multicall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
+
+var ErrMulticall3BatchNotEligible = errors.New("multicall3 batch not eligible")
+
+type Multicall3Call struct {
+	Request  *common.NormalizedRequest
+	Target   []byte
+	CallData []byte
+}
+
+type Multicall3Result struct {
+	Success    bool
+	ReturnData []byte
+}
+
+func NormalizeBlockParam(param interface{}) (string, error) {
+	if param == nil {
+		return "latest", nil
+	}
+
+	blockNumberStr, blockHash, err := util.ParseBlockParameter(param)
+	if err != nil {
+		return "", err
+	}
+	if blockHash != nil {
+		return fmt.Sprintf("0x%x", blockHash), nil
+	}
+	if blockNumberStr == "" {
+		return "", errors.New("block parameter is empty")
+	}
+	if strings.HasPrefix(blockNumberStr, "0x") {
+		bn, err := common.HexToInt64(blockNumberStr)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%d", bn), nil
+	}
+	return blockNumberStr, nil
+}
+
+func BuildMulticall3Request(requests []*common.NormalizedRequest, blockParam interface{}) (*common.NormalizedRequest, []Multicall3Call, error) {
+	if len(requests) < 1 {
+		return nil, nil, ErrMulticall3BatchNotEligible
+	}
+
+	if blockParam == nil {
+		blockParam = "latest"
+	}
+
+	calls := make([]Multicall3Call, 0, len(requests))
+	for _, req := range requests {
+		if req == nil {
+			return nil, nil, ErrMulticall3BatchNotEligible
+		}
+
+		jrq, err := req.JsonRpcRequest()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		jrq.RLock()
+		method := jrq.Method
+		params := jrq.Params
+		jrq.RUnlock()
+
+		if !strings.EqualFold(method, "eth_call") {
+			return nil, nil, ErrMulticall3BatchNotEligible
+		}
+		if len(params) < 1 || len(params) > 2 {
+			return nil, nil, ErrMulticall3BatchNotEligible
+		}
+
+		callObj, ok := params[0].(map[string]interface{})
+		if !ok {
+			return nil, nil, ErrMulticall3BatchNotEligible
+		}
+
+		targetHex, ok := callObj["to"].(string)
+		if !ok || targetHex == "" {
+			return nil, nil, ErrMulticall3BatchNotEligible
+		}
+
+		dataHex := "0x"
+		if dataValue, ok := callObj["data"]; ok {
+			dataStr, ok := dataValue.(string)
+			if !ok {
+				return nil, nil, ErrMulticall3BatchNotEligible
+			}
+			dataHex = dataStr
+		} else if inputValue, ok := callObj["input"]; ok {
+			inputStr, ok := inputValue.(string)
+			if !ok {
+				return nil, nil, ErrMulticall3BatchNotEligible
+			}
+			dataHex = inputStr
+		}
+
+		for key := range callObj {
+			switch key {
+			case "to", "data", "input":
+				continue
+			default:
+				return nil, nil, ErrMulticall3BatchNotEligible
+			}
+		}
+
+		targetBytes, err := common.HexToBytes(targetHex)
+		if err != nil || len(targetBytes) != 20 {
+			return nil, nil, ErrMulticall3BatchNotEligible
+		}
+
+		callData, err := common.HexToBytes(dataHex)
+		if err != nil {
+			return nil, nil, ErrMulticall3BatchNotEligible
+		}
+
+		calls = append(calls, Multicall3Call{
+			Request:  req,
+			Target:   targetBytes,
+			CallData: callData,
+		})
+	}
+
+	encodedCalls, err := encodeAggregate3Calls(calls)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	callObj := map[string]interface{}{
+		"to":   multicall3Address,
+		"data": "0x" + hex.EncodeToString(encodedCalls),
+	}
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{callObj, blockParam})
+	jrq.ID = fmt.Sprintf("multicall3-%d", time.Now().UnixNano())
+
+	nrq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	nrq.CopyHttpContextFrom(requests[0])
+	if dirs := requests[0].Directives(); dirs != nil {
+		nrq.SetDirectives(dirs.Clone())
+	}
+
+	return nrq, calls, nil
+}
+
+func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
+	if len(data) < 32 {
+		return nil, errors.New("multicall3 result too short")
+	}
+
+	offset, err := readUint256(data[:32])
+	if err != nil {
+		return nil, err
+	}
+	base := int(offset)
+	if base < 0 || base+32 > len(data) {
+		return nil, errors.New("multicall3 result offset out of bounds")
+	}
+
+	count, err := readUint256(data[base : base+32])
+	if err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return []Multicall3Result{}, nil
+	}
+
+	offsetsStart := base + 32
+	offsetsEnd := offsetsStart + int(count)*32
+	if offsetsEnd > len(data) {
+		return nil, errors.New("multicall3 result offsets out of bounds")
+	}
+
+	results := make([]Multicall3Result, int(count))
+	for i := 0; i < int(count); i++ {
+		offsetStart := offsetsStart + i*32
+		offsetVal, err := readUint256(data[offsetStart : offsetStart+32])
+		if err != nil {
+			return nil, err
+		}
+		elemStart := base + int(offsetVal)
+		if elemStart < base || elemStart+64 > len(data) {
+			return nil, errors.New("multicall3 result element out of bounds")
+		}
+
+		success, err := readBool(data[elemStart : elemStart+32])
+		if err != nil {
+			return nil, err
+		}
+
+		dataOffset, err := readUint256(data[elemStart+32 : elemStart+64])
+		if err != nil {
+			return nil, err
+		}
+		bytesStart := elemStart + int(dataOffset)
+		if bytesStart < elemStart || bytesStart+32 > len(data) {
+			return nil, errors.New("multicall3 result bytes offset out of bounds")
+		}
+
+		dataLen, err := readUint256(data[bytesStart : bytesStart+32])
+		if err != nil {
+			return nil, err
+		}
+		dataStart := bytesStart + 32
+		dataEnd := dataStart + int(dataLen)
+		if dataStart < bytesStart || dataEnd > len(data) {
+			return nil, errors.New("multicall3 result bytes length out of bounds")
+		}
+
+		returnData := append([]byte(nil), data[dataStart:dataEnd]...)
+		results[i] = Multicall3Result{
+			Success:    success,
+			ReturnData: returnData,
+		}
+	}
+
+	return results, nil
+}
+
+func ShouldFallbackMulticall3(err error) bool {
+	if err == nil {
+		return false
+	}
+	return common.HasErrorCode(err, common.ErrCodeEndpointExecutionException, common.ErrCodeEndpointUnsupported)
+}
+
+func encodeAggregate3Calls(calls []Multicall3Call) ([]byte, error) {
+	arrayData, err := encodeAggregate3Array(calls)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]byte, 0, 4+32+len(arrayData))
+	out = append(out, multicall3Aggregate3Selector...)
+	out = append(out, encodeUint64(32)...)
+	out = append(out, arrayData...)
+	return out, nil
+}
+
+func encodeAggregate3Array(calls []Multicall3Call) ([]byte, error) {
+	headSize := 32 + 32*len(calls)
+	elements := make([][]byte, len(calls))
+	offsets := make([]uint64, len(calls))
+	cur := uint64(headSize)
+
+	for i, call := range calls {
+		elem := encodeAggregate3Element(call)
+		elements[i] = elem
+		offsets[i] = cur
+		cur += uint64(len(elem))
+	}
+
+	out := make([]byte, 0, int(cur))
+	out = append(out, encodeUint64(uint64(len(calls)))...)
+	for _, off := range offsets {
+		out = append(out, encodeUint64(off)...)
+	}
+	for _, elem := range elements {
+		out = append(out, elem...)
+	}
+	return out, nil
+}
+
+func encodeAggregate3Element(call Multicall3Call) []byte {
+	head := make([]byte, 0, 96)
+	head = append(head, encodeAddress(call.Target)...)
+	head = append(head, encodeBool(true)...)
+	head = append(head, encodeUint64(96)...)
+	tail := encodeBytes(call.CallData)
+	return append(head, tail...)
+}
+
+func encodeAddress(addr []byte) []byte {
+	out := make([]byte, 32)
+	copy(out[32-len(addr):], addr)
+	return out
+}
+
+func encodeBool(value bool) []byte {
+	out := make([]byte, 32)
+	if value {
+		out[31] = 1
+	}
+	return out
+}
+
+func encodeUint64(value uint64) []byte {
+	out := make([]byte, 32)
+	binary.BigEndian.PutUint64(out[24:], value)
+	return out
+}
+
+func encodeBytes(data []byte) []byte {
+	out := make([]byte, 0, 32+len(data)+32)
+	out = append(out, encodeUint64(uint64(len(data)))...)
+	out = append(out, data...)
+	pad := (32 - (len(data) % 32)) % 32
+	if pad > 0 {
+		out = append(out, make([]byte, pad)...)
+	}
+	return out
+}
+
+func readUint256(data []byte) (uint64, error) {
+	if len(data) != 32 {
+		return 0, errors.New("invalid uint256 length")
+	}
+	val := new(big.Int).SetBytes(data)
+	if !val.IsUint64() {
+		return 0, errors.New("uint256 overflows uint64")
+	}
+	return val.Uint64(), nil
+}
+
+func readBool(data []byte) (bool, error) {
+	val, err := readUint256(data)
+	if err != nil {
+		return false, err
+	}
+	return val != 0, nil
+}
+
+var multicall3Aggregate3Selector = func() []byte {
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write([]byte("aggregate3((address,bool,bytes)[])"))
+	sum := hasher.Sum(nil)
+	return sum[:4]
+}()
