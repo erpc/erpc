@@ -407,7 +407,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		batchHandled := false
 		if isBatch && !isAdmin && !isHealthCheck {
-			if batchInfo := detectEthCallBatchInfo(requests, architecture, chainId); batchInfo != nil {
+			batchInfo, detectErr := detectEthCallBatchInfo(requests, architecture, chainId)
+			if detectErr != nil {
+				lg.Debug().Err(detectErr).Msg("eth_call batch detection failed")
+			}
+			if batchInfo != nil {
 				batchHandled = s.handleEthCallBatchAggregation(
 					httpCtx,
 					&startedAt,

@@ -139,6 +139,31 @@ func TestBuildMulticall3Request_Success(t *testing.T) {
 	assert.Equal(t, 32, len(calls[1].CallData))
 }
 
+func TestBuildMulticall3Request_LargeBatchOrder(t *testing.T) {
+	requests := make([]*common.NormalizedRequest, 0, 12)
+	for i := 0; i < 12; i++ {
+		callObj := map[string]interface{}{
+			"to":   hexAddr(i + 1),
+			"data": hexData(i + 1),
+		}
+		requests = append(requests, newEthCallRequest(t, i+1, callObj, "latest"))
+	}
+
+	_, calls, err := BuildMulticall3Request(requests, "latest")
+	require.NoError(t, err)
+	require.Len(t, calls, len(requests))
+
+	for i, call := range calls {
+		assert.Same(t, requests[i], call.Request)
+		wantTarget, err := common.HexToBytes(hexAddr(i + 1))
+		require.NoError(t, err)
+		assert.Equal(t, wantTarget, call.Target)
+		wantData, err := common.HexToBytes(hexData(i + 1))
+		require.NoError(t, err)
+		assert.Equal(t, wantData, call.CallData)
+	}
+}
+
 func TestBuildMulticall3Request_Errors(t *testing.T) {
 	validCall := map[string]interface{}{
 		"to":   hexAddr(3),
@@ -230,6 +255,25 @@ func TestBuildMulticall3Request_Errors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewMulticall3Call(t *testing.T) {
+	req := newEthCallRequest(t, 1, map[string]interface{}{"to": hexAddr(1)}, "latest")
+
+	call, err := NewMulticall3Call(req, hexAddr(1), "0x")
+	require.NoError(t, err)
+	assert.Equal(t, req, call.Request)
+	assert.Len(t, call.Target, 20)
+	assert.Empty(t, call.CallData)
+
+	_, err = NewMulticall3Call(nil, hexAddr(1), "0x")
+	assert.ErrorIs(t, err, ErrMulticall3BatchNotEligible)
+
+	_, err = NewMulticall3Call(req, "0x1234", "0x")
+	assert.ErrorIs(t, err, ErrMulticall3BatchNotEligible)
+
+	_, err = NewMulticall3Call(req, hexAddr(1), "0xzz")
+	assert.ErrorIs(t, err, ErrMulticall3BatchNotEligible)
 }
 
 func TestDecodeMulticall3Aggregate3Result(t *testing.T) {

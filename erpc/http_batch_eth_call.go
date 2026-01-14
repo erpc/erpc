@@ -44,12 +44,12 @@ var (
 	newBatchJsonRpcResponse = common.NewJsonRpcResponse
 )
 
-func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId string) *ethCallBatchInfo {
+func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId string) (*ethCallBatchInfo, error) {
 	if len(requests) < 2 {
-		return nil
+		return nil, nil
 	}
 	if architecture != "" && architecture != string(common.ArchitectureEvm) {
-		return nil
+		return nil, nil
 	}
 
 	defaultNetworkId := ""
@@ -64,10 +64,10 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 	for _, raw := range requests {
 		var probe ethCallBatchProbe
 		if err := common.SonicCfg.Unmarshal(raw, &probe); err != nil {
-			return nil
+			return nil, err
 		}
 		if strings.ToLower(probe.Method) != "eth_call" {
-			return nil
+			return nil, nil
 		}
 
 		reqNetworkId := defaultNetworkId
@@ -75,12 +75,12 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 			reqNetworkId = probe.NetworkId
 		}
 		if reqNetworkId == "" || !strings.HasPrefix(reqNetworkId, "evm:") {
-			return nil
+			return nil, nil
 		}
 		if networkId == "" {
 			networkId = reqNetworkId
 		} else if networkId != reqNetworkId {
-			return nil
+			return nil, nil
 		}
 
 		param := interface{}("latest")
@@ -89,25 +89,25 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 		}
 		bref, err := evm.NormalizeBlockParam(param)
 		if err != nil {
-			return nil
+			return nil, err
 		}
 		if blockRef == "" {
 			blockRef = bref
 			blockParam = param
 		} else if blockRef != bref {
-			return nil
+			return nil, nil
 		}
 	}
 
 	if networkId == "" || blockRef == "" {
-		return nil
+		return nil, nil
 	}
 
 	return &ethCallBatchInfo{
 		networkId:  networkId,
 		blockRef:   blockRef,
 		blockParam: blockParam,
-	}
+	}, nil
 }
 
 func (s *HttpServer) forwardEthCallBatchCandidates(
@@ -249,6 +249,10 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 
 	mcReq, calls, err := evm.BuildMulticall3Request(reqs, batchInfo.blockParam)
 	if err != nil {
+		baseLogger.Debug().Err(err).
+			Int("candidateCount", len(candidates)).
+			Str("networkId", batchInfo.networkId).
+			Msg("multicall3 build failed, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
@@ -260,6 +264,10 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			mcResp.Release()
 		}
 		if evm.ShouldFallbackMulticall3(mcErr) {
+			baseLogger.Debug().Err(mcErr).
+				Int("candidateCount", len(candidates)).
+				Str("networkId", batchInfo.networkId).
+				Msg("multicall3 request failed, falling back")
 			s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 			return true
 		}
@@ -270,6 +278,10 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		return true
 	}
 	if mcResp == nil {
+		baseLogger.Debug().
+			Int("candidateCount", len(candidates)).
+			Str("networkId", batchInfo.networkId).
+			Msg("multicall3 response missing, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
@@ -277,6 +289,12 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	jrr, err := mcResp.JsonRpcResponse(mcCtx)
 	if err != nil || jrr == nil || jrr.Error != nil {
 		mcResp.Release()
+		baseLogger.Debug().Err(err).
+			Int("candidateCount", len(candidates)).
+			Str("networkId", batchInfo.networkId).
+			Bool("missingResponse", jrr == nil).
+			Bool("hasRpcError", jrr != nil && jrr.Error != nil).
+			Msg("multicall3 response invalid, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
@@ -284,19 +302,42 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	var resultHex string
 	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &resultHex); err != nil {
 		mcResp.Release()
+		baseLogger.Debug().Err(err).
+			Int("candidateCount", len(candidates)).
+			Str("networkId", batchInfo.networkId).
+			Msg("multicall3 result unmarshal failed, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
 	resultBytes, err := common.HexToBytes(resultHex)
 	if err != nil {
 		mcResp.Release()
+		baseLogger.Debug().Err(err).
+			Int("candidateCount", len(candidates)).
+			Str("networkId", batchInfo.networkId).
+			Msg("multicall3 result decode failed, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
 
 	decoded, err := evm.DecodeMulticall3Aggregate3Result(resultBytes)
-	if err != nil || len(decoded) != len(calls) {
+	if err != nil {
 		mcResp.Release()
+		baseLogger.Debug().Err(err).
+			Int("candidateCount", len(candidates)).
+			Str("networkId", batchInfo.networkId).
+			Msg("multicall3 result parsing failed, falling back")
+		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
+		return true
+	}
+	if len(decoded) != len(calls) {
+		mcResp.Release()
+		baseLogger.Error().
+			Int("candidateCount", len(candidates)).
+			Int("decodedCount", len(decoded)).
+			Int("callCount", len(calls)).
+			Str("networkId", batchInfo.networkId).
+			Msg("multicall3 result length mismatch, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}

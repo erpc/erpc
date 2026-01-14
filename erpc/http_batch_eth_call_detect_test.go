@@ -34,6 +34,7 @@ func TestDetectEthCallBatchInfo(t *testing.T) {
 		arch         string
 		chainId      string
 		wantNil      bool
+		wantErr      bool
 		wantNetwork  string
 		wantBlockRef string
 		wantBlock    interface{}
@@ -53,6 +54,7 @@ func TestDetectEthCallBatchInfo(t *testing.T) {
 			name:     "invalid json",
 			requests: []json.RawMessage{json.RawMessage("{"), buildRaw(t, "eth_call", []interface{}{callObj}, "evm:1")},
 			wantNil:  true,
+			wantErr:  true,
 		},
 		{
 			name:     "non-eth_call",
@@ -76,8 +78,9 @@ func TestDetectEthCallBatchInfo(t *testing.T) {
 		},
 		{
 			name:     "invalid block param",
-			requests: []json.RawMessage{buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234"}}, "evm:1"), buildRaw(t, "eth_call", []interface{}{callObj, "latest"}, "evm:1")},
+			requests: []json.RawMessage{buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0xzz"}}, "evm:1"), buildRaw(t, "eth_call", []interface{}{callObj, "latest"}, "evm:1")},
 			wantNil:  true,
+			wantErr:  true,
 		},
 		{
 			name:         "success explicit network",
@@ -99,7 +102,12 @@ func TestDetectEthCallBatchInfo(t *testing.T) {
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			info := detectEthCallBatchInfo(tt.requests, tt.arch, tt.chainId)
+			info, err := detectEthCallBatchInfo(tt.requests, tt.arch, tt.chainId)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
 			if tt.wantNil {
 				assert.Nil(t, info)
 				return

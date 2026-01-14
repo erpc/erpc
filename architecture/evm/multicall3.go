@@ -1,3 +1,7 @@
+// Package evm includes Multicall3 helpers for aggregating eth_call batches.
+// Multicall3 aggregate3((address,bool,bytes)[]) expects ABI-encoded calls and
+// returns a dynamic array of (bool success, bytes returnData) with offsets
+// relative to the array head. This file encodes calldata and decodes results.
 package evm
 
 import (
@@ -18,6 +22,12 @@ const multicall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
 
 var ErrMulticall3BatchNotEligible = errors.New("multicall3 batch not eligible")
 
+const (
+	abiWordSize              = 32
+	aggregate3ElementHeadLen = 3 * abiWordSize // address + allowFailure + data offset
+	evmAddressLength         = 20
+)
+
 type Multicall3Call struct {
 	Request  *common.NormalizedRequest
 	Target   []byte
@@ -27,6 +37,25 @@ type Multicall3Call struct {
 type Multicall3Result struct {
 	Success    bool
 	ReturnData []byte
+}
+
+func NewMulticall3Call(req *common.NormalizedRequest, targetHex, dataHex string) (Multicall3Call, error) {
+	if req == nil {
+		return Multicall3Call{}, ErrMulticall3BatchNotEligible
+	}
+	targetBytes, err := common.HexToBytes(targetHex)
+	if err != nil || len(targetBytes) != evmAddressLength {
+		return Multicall3Call{}, ErrMulticall3BatchNotEligible
+	}
+	callData, err := common.HexToBytes(dataHex)
+	if err != nil {
+		return Multicall3Call{}, ErrMulticall3BatchNotEligible
+	}
+	return Multicall3Call{
+		Request:  req,
+		Target:   targetBytes,
+		CallData: callData,
+	}, nil
 }
 
 func NormalizeBlockParam(param interface{}) (string, error) {
@@ -120,21 +149,11 @@ func BuildMulticall3Request(requests []*common.NormalizedRequest, blockParam int
 			}
 		}
 
-		targetBytes, err := common.HexToBytes(targetHex)
-		if err != nil || len(targetBytes) != 20 {
-			return nil, nil, ErrMulticall3BatchNotEligible
-		}
-
-		callData, err := common.HexToBytes(dataHex)
+		call, err := NewMulticall3Call(req, targetHex, dataHex)
 		if err != nil {
-			return nil, nil, ErrMulticall3BatchNotEligible
+			return nil, nil, err
 		}
-
-		calls = append(calls, Multicall3Call{
-			Request:  req,
-			Target:   targetBytes,
-			CallData: callData,
-		})
+		calls = append(calls, call)
 	}
 
 	encodedCalls, err := encodeAggregate3Calls(calls)
@@ -246,15 +265,16 @@ func encodeAggregate3Calls(calls []Multicall3Call) ([]byte, error) {
 		return nil, err
 	}
 
-	out := make([]byte, 0, 4+32+len(arrayData))
+	out := make([]byte, 0, 4+abiWordSize+len(arrayData))
 	out = append(out, multicall3Aggregate3Selector...)
-	out = append(out, encodeUint64(32)...)
+	out = append(out, encodeUint64(abiWordSize)...)
 	out = append(out, arrayData...)
 	return out, nil
 }
 
 func encodeAggregate3Array(calls []Multicall3Call) ([]byte, error) {
-	headSize := 32 + 32*len(calls)
+	// ABI array head = length (1 word) + offsets (1 word each).
+	headSize := abiWordSize + abiWordSize*len(calls)
 	elements := make([][]byte, len(calls))
 	offsets := make([]uint64, len(calls))
 	cur := uint64(headSize)
@@ -278,10 +298,10 @@ func encodeAggregate3Array(calls []Multicall3Call) ([]byte, error) {
 }
 
 func encodeAggregate3Element(call Multicall3Call) []byte {
-	head := make([]byte, 0, 96)
+	head := make([]byte, 0, aggregate3ElementHeadLen)
 	head = append(head, encodeAddress(call.Target)...)
 	head = append(head, encodeBool(true)...)
-	head = append(head, encodeUint64(96)...)
+	head = append(head, encodeUint64(aggregate3ElementHeadLen)...)
 	tail := encodeBytes(call.CallData)
 	return append(head, tail...)
 }
@@ -307,10 +327,10 @@ func encodeUint64(value uint64) []byte {
 }
 
 func encodeBytes(data []byte) []byte {
-	out := make([]byte, 0, 32+len(data)+32)
+	out := make([]byte, 0, abiWordSize+len(data)+abiWordSize)
 	out = append(out, encodeUint64(uint64(len(data)))...)
 	out = append(out, data...)
-	pad := (32 - (len(data) % 32)) % 32
+	pad := (abiWordSize - (len(data) % abiWordSize)) % abiWordSize
 	if pad > 0 {
 		out = append(out, make([]byte, pad)...)
 	}
