@@ -86,3 +86,120 @@ func TestCallKeyDerivation_NilRequest(t *testing.T) {
 	require.Contains(t, err.Error(), "request is nil")
 	require.Empty(t, key)
 }
+
+func TestIsEligibleForBatching(t *testing.T) {
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                 true,
+		AllowPendingTagBatching: false,
+	}
+	cfg.SetDefaults()
+
+	tests := []struct {
+		name     string
+		method   string
+		params   []interface{}
+		eligible bool
+		reason   string
+	}{
+		{
+			name:   "eligible basic eth_call",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"latest",
+			},
+			eligible: true,
+		},
+		{
+			name:   "eligible with finalized tag",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"finalized",
+			},
+			eligible: true,
+		},
+		{
+			name:   "ineligible - pending tag",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"pending",
+			},
+			eligible: false,
+			reason:   "pending tag not allowed",
+		},
+		{
+			name:   "ineligible - has from field",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{
+					"to":   "0x1234567890123456789012345678901234567890",
+					"data": "0xabcd",
+					"from": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				},
+				"latest",
+			},
+			eligible: false,
+			reason:   "has from field",
+		},
+		{
+			name:   "ineligible - has value field",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{
+					"to":    "0x1234567890123456789012345678901234567890",
+					"data":  "0xabcd",
+					"value": "0x1",
+				},
+				"latest",
+			},
+			eligible: false,
+			reason:   "has value field",
+		},
+		{
+			name:   "ineligible - has state override (3rd param)",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"latest",
+				map[string]interface{}{}, // state override
+			},
+			eligible: false,
+			reason:   "has state override",
+		},
+		{
+			name:     "ineligible - not eth_call",
+			method:   "eth_getBalance",
+			params:   []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			eligible: false,
+			reason:   "not eth_call",
+		},
+		{
+			name:   "ineligible - already multicall (recursion guard)",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{
+					"to":   "0xcA11bde05977b3631167028862bE2a173976CA11", // multicall3 address
+					"data": "0x82ad56cb",                                 // aggregate3 selector
+				},
+				"latest",
+			},
+			eligible: false,
+			reason:   "already multicall",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jrq := common.NewJsonRpcRequest(tt.method, tt.params)
+			req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+			eligible, reason := IsEligibleForBatching(req, cfg)
+			require.Equal(t, tt.eligible, eligible, "reason: %s", reason)
+			if !tt.eligible {
+				require.Contains(t, reason, tt.reason)
+			}
+		})
+	}
+}

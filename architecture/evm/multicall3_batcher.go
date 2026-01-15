@@ -116,3 +116,132 @@ func NewBatch(key BatchingKey, flushTime time.Time) *Batch {
 		FlushTime: flushTime,
 	}
 }
+
+// ineligibleCallFields are fields that make an eth_call ineligible for batching.
+// Multicall3 aggregate3 only supports target + calldata, not gas/value/etc.
+var ineligibleCallFields = []string{
+	"from", "gas", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas", "value",
+}
+
+// IsEligibleForBatching checks if a request can be batched via Multicall3.
+// Returns (eligible, reason) where reason explains why not eligible.
+func IsEligibleForBatching(req *common.NormalizedRequest, cfg *common.Multicall3AggregationConfig) (bool, string) {
+	if req == nil {
+		return false, "request is nil"
+	}
+	if cfg == nil || !cfg.Enabled {
+		return false, "batching disabled"
+	}
+
+	jrq, err := req.JsonRpcRequest()
+	if err != nil {
+		return false, fmt.Sprintf("json-rpc error: %v", err)
+	}
+
+	jrq.RLock()
+	method := strings.ToLower(jrq.Method)
+	params := jrq.Params
+	jrq.RUnlock()
+
+	// Must be eth_call
+	if method != "eth_call" {
+		return false, "not eth_call"
+	}
+
+	// Must have 1-3 params (call object, optional block, optional state override)
+	if len(params) < 1 {
+		return false, fmt.Sprintf("invalid param count: %d", len(params))
+	}
+
+	// Check for state override (3rd param) - not supported with multicall3
+	if len(params) > 2 {
+		return false, "has state override"
+	}
+
+	// Parse call object
+	callObj, ok := params[0].(map[string]interface{})
+	if !ok {
+		return false, "invalid call object type"
+	}
+
+	// Must have 'to' address
+	toVal, hasTo := callObj["to"]
+	if !hasTo {
+		return false, "missing to address"
+	}
+	toStr, ok := toVal.(string)
+	if !ok || toStr == "" {
+		return false, "invalid to address"
+	}
+
+	// Check for ineligible fields
+	for _, field := range ineligibleCallFields {
+		if _, has := callObj[field]; has {
+			return false, fmt.Sprintf("has %s field", field)
+		}
+	}
+
+	// Recursion guard: don't batch calls to multicall3 contract
+	if strings.EqualFold(toStr, multicall3Address) {
+		return false, "already multicall"
+	}
+
+	// Check block tag
+	blockTag := "latest"
+	if len(params) >= 2 && params[1] != nil {
+		normalized, err := NormalizeBlockParam(params[1])
+		if err != nil {
+			return false, fmt.Sprintf("invalid block param: %v", err)
+		}
+		blockTag = strings.ToLower(normalized)
+	}
+
+	// Check if pending tag is allowed
+	if blockTag == "pending" && !cfg.AllowPendingTagBatching {
+		return false, "pending tag not allowed"
+	}
+
+	return true, ""
+}
+
+// ExtractCallInfo extracts target and calldata from an eligible eth_call request.
+func ExtractCallInfo(req *common.NormalizedRequest) (target []byte, callData []byte, blockRef string, err error) {
+	jrq, err := req.JsonRpcRequest()
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	jrq.RLock()
+	params := jrq.Params
+	jrq.RUnlock()
+
+	callObj := params[0].(map[string]interface{})
+	toStr := callObj["to"].(string)
+
+	target, err = common.HexToBytes(toStr)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	dataHex := "0x"
+	if dataVal, ok := callObj["data"]; ok {
+		dataHex = dataVal.(string)
+	} else if inputVal, ok := callObj["input"]; ok {
+		dataHex = inputVal.(string)
+	}
+
+	callData, err = common.HexToBytes(dataHex)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	blockRef = "latest"
+	if len(params) >= 2 && params[1] != nil {
+		blockRef, err = NormalizeBlockParam(params[1])
+		if err != nil {
+			return nil, nil, "", err
+		}
+	}
+
+	return target, callData, blockRef, nil
+}
