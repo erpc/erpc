@@ -57,9 +57,10 @@ var consensusRules = []consensusRule{
 			// Group responses by their numeric value (not by hash).
 			// This handles cases where same value has different JSON formatting.
 			type valueGroup struct {
-				values   []*big.Int
-				count    int
-				response *common.NormalizedResponse
+				values       []*big.Int
+				count        int
+				response     *common.NormalizedResponse
+				responseSize int
 			}
 			valueGroups := make(map[string]*valueGroup) // key is string representation of values
 
@@ -77,14 +78,16 @@ var consensusRules = []consensusRule{
 					if vg, exists := valueGroups[key]; exists {
 						vg.count++
 						// Keep the largest response in case of ties
-						if result.CachedResponseSize > 0 {
+						if result.CachedResponseSize > vg.responseSize {
 							vg.response = result.Result
+							vg.responseSize = result.CachedResponseSize
 						}
 					} else {
 						valueGroups[key] = &valueGroup{
-							values:   values,
-							count:    1,
-							response: result.Result,
+							values:       values,
+							count:        1,
+							response:     result.Result,
+							responseSize: result.CachedResponseSize,
 						}
 					}
 				}
