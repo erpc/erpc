@@ -1069,6 +1069,12 @@ type ConsensusPolicyConfig struct {
 	PreferNonEmpty          *bool                            `yaml:"preferNonEmpty,omitempty" json:"preferNonEmpty"`
 	PreferLargerResponses   *bool                            `yaml:"preferLargerResponses,omitempty" json:"preferLargerResponses"`
 	MisbehaviorsDestination *MisbehaviorsDestinationConfig   `yaml:"misbehaviorsDestination,omitempty" json:"misbehaviorsDestination"`
+	// PreferHighestValueFor specifies methods that should use highest-value comparison
+	// instead of hash-based consensus. Map key is method name, value is array of field paths.
+	// Field paths: "result" for direct result value (e.g., eth_getTransactionCount returns hex),
+	// or field name for nested result objects (e.g., "nonce" for result.nonce).
+	// When multiple fields are specified, they act as tie-breakers in order.
+	PreferHighestValueFor map[string][]string `yaml:"preferHighestValueFor,omitempty" json:"preferHighestValueFor"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1091,6 +1097,14 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 		for method, fields := range c.IgnoreFields {
 			copied.IgnoreFields[method] = make([]string, len(fields))
 			copy(copied.IgnoreFields[method], fields)
+		}
+	}
+
+	if c.PreferHighestValueFor != nil {
+		copied.PreferHighestValueFor = make(map[string][]string, len(c.PreferHighestValueFor))
+		for method, fields := range c.PreferHighestValueFor {
+			copied.PreferHighestValueFor[method] = make([]string, len(fields))
+			copy(copied.PreferHighestValueFor[method], fields)
 		}
 	}
 

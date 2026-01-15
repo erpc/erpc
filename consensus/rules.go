@@ -1,6 +1,8 @@
 package consensus
 
 import (
+	"math/big"
+
 	"github.com/erpc/erpc/common"
 
 	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
@@ -22,6 +24,99 @@ type shortCircuitRule struct {
 // consensusRules defines all consensus rules in priority order
 // Rules are evaluated from most specific/nuanced to most generic, and ideally those that error must come before those that return a result.
 var consensusRules = []consensusRule{
+	// PreferHighestValueFor: when configured for this method, return the response with highest field values
+	// that meets the agreementThreshold. This rule takes precedence over all other consensus rules.
+	{
+		Description: "prefer-highest-value-for: return highest value where at least agreementThreshold upstreams agree",
+		Condition: func(a *consensusAnalysis) bool {
+			// Check if this method has preferHighestValueFor configured
+			if a.config.preferHighestValueFor == nil || a.method == "" {
+				return false
+			}
+			fields, ok := a.config.preferHighestValueFor[a.method]
+			if !ok || len(fields) == 0 {
+				return false
+			}
+			// Only match if at least one valid group has extractable values
+			for _, group := range a.getValidGroups() {
+				if group.LargestResult != nil {
+					if extractFieldValues(group.LargestResult, fields) != nil {
+						return true
+					}
+				}
+			}
+			return false // No extractable values, fall through to other rules
+		},
+		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			fields := a.config.preferHighestValueFor[a.method]
+			threshold := a.config.agreementThreshold
+			if threshold < 1 {
+				threshold = 1
+			}
+
+			// Group responses by their numeric value (not by hash).
+			// This handles cases where same value has different JSON formatting.
+			type valueGroup struct {
+				values   []*big.Int
+				count    int
+				response *common.NormalizedResponse
+			}
+			valueGroups := make(map[string]*valueGroup) // key is string representation of values
+
+			for _, group := range a.getValidGroups() {
+				for _, result := range group.Results {
+					if result == nil || result.Result == nil || result.Err != nil {
+						continue
+					}
+					values := extractFieldValues(result.Result, fields)
+					if values == nil {
+						continue
+					}
+					// Create a key from the values for grouping
+					key := valuesToKey(values)
+					if vg, exists := valueGroups[key]; exists {
+						vg.count++
+						// Keep the largest response in case of ties
+						if result.CachedResponseSize > 0 {
+							vg.response = result.Result
+						}
+					} else {
+						valueGroups[key] = &valueGroup{
+							values:   values,
+							count:    1,
+							response: result.Result,
+						}
+					}
+				}
+			}
+
+			// Find the highest value that meets the threshold
+			var best *valueGroup
+			for _, vg := range valueGroups {
+				if vg.count < threshold {
+					continue // Doesn't meet minimum agreement
+				}
+				if best == nil || compareValueChains(vg.values, best.values) > 0 {
+					best = vg
+				}
+			}
+
+			if best != nil {
+				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+					Result: best.response,
+				}
+			}
+
+			// No value met the threshold - return dispute error
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: common.NewErrConsensusDispute(
+					"no value met agreement threshold for highest-value comparison",
+					a.participants(),
+					nil,
+				),
+			}
+		},
+	},
 	// BlockHeadLeader: OnlyBlockHeadLeader behavior for disputes
 	{
 		Description: "only-block-head-leader on dispute: prefer leader; non-error if available else leader error",

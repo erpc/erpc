@@ -730,6 +730,9 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	if cfg.PreferLargerResponses != nil {
 		builder = builder.WithPreferLargerResponses(*cfg.PreferLargerResponses)
 	}
+	if cfg.PreferHighestValueFor != nil {
+		builder = builder.WithPreferHighestValueFor(cfg.PreferHighestValueFor)
+	}
 
 	// Parse dispute log level if specified
 	if cfg.DisputeLogLevel != "" {
