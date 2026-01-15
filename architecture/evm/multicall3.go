@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"time"
@@ -21,6 +22,15 @@ import (
 const multicall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
 
 var ErrMulticall3BatchNotEligible = errors.New("multicall3 batch not eligible")
+
+// safeUint64ToInt converts uint64 to int with overflow protection.
+// Returns an error if the value would overflow on the current platform.
+func safeUint64ToInt(v uint64) (int, error) {
+	if v > uint64(math.MaxInt) {
+		return 0, fmt.Errorf("integer overflow: %d exceeds max int", v)
+	}
+	return int(v), nil
+}
 
 const (
 	abiWordSize              = 32
@@ -187,7 +197,10 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	base := int(offset)
+	base, err := safeUint64ToInt(offset)
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 result offset overflow: %w", err)
+	}
 	if base < 0 || base+32 > len(data) {
 		return nil, errors.New("multicall3 result offset out of bounds")
 	}
@@ -200,21 +213,30 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 		return []Multicall3Result{}, nil
 	}
 
+	countInt, err := safeUint64ToInt(count)
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 result count overflow: %w", err)
+	}
+
 	offsetsStart := base + 32
-	offsetsEnd := offsetsStart + int(count)*32
+	offsetsEnd := offsetsStart + countInt*32
 	if offsetsEnd > len(data) {
 		return nil, errors.New("multicall3 result offsets out of bounds")
 	}
 
-	results := make([]Multicall3Result, int(count))
-	for i := 0; i < int(count); i++ {
+	results := make([]Multicall3Result, countInt)
+	for i := 0; i < countInt; i++ {
 		offsetStart := offsetsStart + i*32
 		offsetVal, err := readUint256(data[offsetStart : offsetStart+32])
 		if err != nil {
 			return nil, err
 		}
 		// Element offsets are relative to where the offset table starts (after length word)
-		elemStart := offsetsStart + int(offsetVal)
+		offsetValInt, err := safeUint64ToInt(offsetVal)
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 result element offset overflow: %w", err)
+		}
+		elemStart := offsetsStart + offsetValInt
 		if elemStart < offsetsStart || elemStart+64 > len(data) {
 			return nil, errors.New("multicall3 result element out of bounds")
 		}
@@ -228,7 +250,11 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		bytesStart := elemStart + int(dataOffset)
+		dataOffsetInt, err := safeUint64ToInt(dataOffset)
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 result data offset overflow: %w", err)
+		}
+		bytesStart := elemStart + dataOffsetInt
 		if bytesStart < elemStart || bytesStart+32 > len(data) {
 			return nil, errors.New("multicall3 result bytes offset out of bounds")
 		}
@@ -237,8 +263,12 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 		if err != nil {
 			return nil, err
 		}
+		dataLenInt, err := safeUint64ToInt(dataLen)
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 result data length overflow: %w", err)
+		}
 		dataStart := bytesStart + 32
-		dataEnd := dataStart + int(dataLen)
+		dataEnd := dataStart + dataLenInt
 		if dataStart < bytesStart || dataEnd > len(data) {
 			return nil, errors.New("multicall3 result bytes length out of bounds")
 		}
@@ -280,7 +310,9 @@ func encodeAggregate3Array(calls []Multicall3Call) ([]byte, error) {
 	offsetTableSize := abiWordSize * len(calls)
 	elements := make([][]byte, len(calls))
 	offsets := make([]uint64, len(calls))
-	cur := uint64(offsetTableSize)
+	// offsetTableSize is derived from len(calls) which is bounded by int,
+	// so this conversion to uint64 is safe (always non-negative).
+	cur := uint64(offsetTableSize) // #nosec G115
 
 	for i, call := range calls {
 		elem := encodeAggregate3Element(call)
@@ -289,7 +321,13 @@ func encodeAggregate3Array(calls []Multicall3Call) ([]byte, error) {
 		cur += uint64(len(elem))
 	}
 
-	out := make([]byte, 0, int(cur))
+	// cur accumulates sizes of in-memory slices, so it must fit in int.
+	// Add explicit check for safety.
+	capacity, err := safeUint64ToInt(cur)
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 encoded data too large: %w", err)
+	}
+	out := make([]byte, 0, capacity)
 	out = append(out, encodeUint64(uint64(len(calls)))...)
 	for _, off := range offsets {
 		out = append(out, encodeUint64(off)...)
