@@ -1098,13 +1098,11 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with deadline exceeded")
 		} else {
-			var msg string
 			if e, ok := err.(common.StandardError); ok {
-				msg = fmt.Sprintf("failed to forward request: %s", e.DeepestMessage())
+				logger.Warn().Err(err).Object("request", nq).Object("response", respMarshaler).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				msg = fmt.Sprintf("failed to forward request: %s", err.Error())
+				logger.Warn().Err(err).Object("request", nq).Object("response", respMarshaler).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
 			}
-			logger.Warn().Err(err).Object("request", nq).Object("response", respMarshaler).Dur("durationMs", time.Since(*startedAt)).Msg(msg)
 		}
 		if nq != nil {
 			nq.RUnlock()
