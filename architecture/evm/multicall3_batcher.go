@@ -243,6 +243,8 @@ func isBlockRefEligibleForBatching(blockRef string) bool {
 }
 
 // ExtractCallInfo extracts target and calldata from an eligible eth_call request.
+// PRECONDITION: req must have passed IsEligibleForBatching - this function assumes
+// the request structure has been validated.
 func ExtractCallInfo(req *common.NormalizedRequest) (target []byte, callData []byte, blockRef string, err error) {
 	jrq, err := req.JsonRpcRequest()
 	if err != nil {
@@ -253,8 +255,19 @@ func ExtractCallInfo(req *common.NormalizedRequest) (target []byte, callData []b
 	params := jrq.Params
 	jrq.RUnlock()
 
-	callObj := params[0].(map[string]interface{})
-	toStr := callObj["to"].(string)
+	callObj, ok := params[0].(map[string]interface{})
+	if !ok {
+		return nil, nil, "", fmt.Errorf("invalid call object type")
+	}
+
+	toVal, ok := callObj["to"]
+	if !ok {
+		return nil, nil, "", fmt.Errorf("missing to address")
+	}
+	toStr, ok := toVal.(string)
+	if !ok {
+		return nil, nil, "", fmt.Errorf("invalid to address type")
+	}
 
 	target, err = common.HexToBytes(toStr)
 	if err != nil {
@@ -263,9 +276,13 @@ func ExtractCallInfo(req *common.NormalizedRequest) (target []byte, callData []b
 
 	dataHex := "0x"
 	if dataVal, ok := callObj["data"]; ok {
-		dataHex = dataVal.(string)
+		if dataStr, ok := dataVal.(string); ok {
+			dataHex = dataStr
+		}
 	} else if inputVal, ok := callObj["input"]; ok {
-		dataHex = inputVal.(string)
+		if inputStr, ok := inputVal.(string); ok {
+			dataHex = inputStr
+		}
 	}
 
 	callData, err = common.HexToBytes(dataHex)

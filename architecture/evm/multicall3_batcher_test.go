@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -248,4 +249,103 @@ func TestIsEligibleForBatching(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExtractCallInfo(t *testing.T) {
+	tests := []struct {
+		name           string
+		params         []interface{}
+		expectedTarget string
+		expectedData   string
+		expectedBlock  string
+		expectError    bool
+	}{
+		{
+			name: "basic extraction with data field",
+			params: []interface{}{
+				map[string]interface{}{
+					"to":   "0x1234567890123456789012345678901234567890",
+					"data": "0xabcdef",
+				},
+				"latest",
+			},
+			expectedTarget: "0x1234567890123456789012345678901234567890",
+			expectedData:   "0xabcdef",
+			expectedBlock:  "latest",
+		},
+		{
+			name: "extraction with input field instead of data",
+			params: []interface{}{
+				map[string]interface{}{
+					"to":    "0x1234567890123456789012345678901234567890",
+					"input": "0x12345678",
+				},
+				"finalized",
+			},
+			expectedTarget: "0x1234567890123456789012345678901234567890",
+			expectedData:   "0x12345678",
+			expectedBlock:  "finalized",
+		},
+		{
+			name: "extraction with empty data",
+			params: []interface{}{
+				map[string]interface{}{
+					"to": "0x1234567890123456789012345678901234567890",
+				},
+				"latest",
+			},
+			expectedTarget: "0x1234567890123456789012345678901234567890",
+			expectedData:   "0x",
+			expectedBlock:  "latest",
+		},
+		{
+			name: "extraction with no block param (defaults to latest)",
+			params: []interface{}{
+				map[string]interface{}{
+					"to":   "0x1234567890123456789012345678901234567890",
+					"data": "0xaa",
+				},
+			},
+			expectedTarget: "0x1234567890123456789012345678901234567890",
+			expectedData:   "0xaa",
+			expectedBlock:  "latest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jrq := common.NewJsonRpcRequest("eth_call", tt.params)
+			req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+			target, data, blockRef, err := ExtractCallInfo(req)
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.expectedTarget, "0x"+hex.EncodeToString(target))
+			require.Equal(t, tt.expectedData, "0x"+hex.EncodeToString(data))
+			require.Equal(t, tt.expectedBlock, blockRef)
+		})
+	}
+}
+
+func TestIsEligibleForBatching_AllowPendingTag(t *testing.T) {
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                 true,
+		AllowPendingTagBatching: true,
+	}
+	cfg.SetDefaults()
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1234567890123456789012345678901234567890",
+			"data": "0xabcd",
+		},
+		"pending",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	eligible, reason := IsEligibleForBatching(req, cfg)
+	require.True(t, eligible, "pending should be allowed when AllowPendingTagBatching is true: %s", reason)
 }
