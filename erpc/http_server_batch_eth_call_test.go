@@ -71,7 +71,7 @@ func TestHttpServer_BatchEthCall_MulticallAggregationDisabled(t *testing.T) {
 
 	// Create config with multicall3 aggregation disabled
 	cfg := baseBatchConfig()
-	cfg.Projects[0].Networks[0].Evm.Multicall3Aggregation = &common.FALSE
+	cfg.Projects[0].Networks[0].Evm.Multicall3Aggregation = &common.Multicall3AggregationConfig{Enabled: false}
 
 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 	defer shutdown()

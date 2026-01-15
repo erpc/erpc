@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -836,5 +837,164 @@ projects:
 		assert.Equal(t, 3, network.Failsafe[0].Retry.MaxAttempts)
 		assert.Equal(t, "eth_*", network.Failsafe[1].MatchMethod)
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
+	})
+}
+
+func TestMulticall3AggregationConfigYAML(t *testing.T) {
+	yamlStr := `
+evm:
+  chainId: 1
+  multicall3Aggregation:
+    enabled: true
+    windowMs: 25
+    minWaitMs: 2
+    safetyMarginMs: 2
+    maxCalls: 20
+    maxCalldataBytes: 64000
+    maxQueueSize: 1000
+    maxPendingBatches: 200
+    cachePerCall: true
+    allowCrossUserBatching: true
+    allowPendingTagBatching: false
+`
+	var cfg NetworkConfig
+	err := yaml.Unmarshal([]byte(yamlStr), &cfg)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Evm)
+	require.NotNil(t, cfg.Evm.Multicall3Aggregation)
+	require.True(t, cfg.Evm.Multicall3Aggregation.Enabled)
+	require.Equal(t, 25, cfg.Evm.Multicall3Aggregation.WindowMs)
+	require.Equal(t, 2, cfg.Evm.Multicall3Aggregation.MinWaitMs)
+	require.Equal(t, 2, cfg.Evm.Multicall3Aggregation.SafetyMarginMs)
+	require.Equal(t, 20, cfg.Evm.Multicall3Aggregation.MaxCalls)
+	require.Equal(t, 64000, cfg.Evm.Multicall3Aggregation.MaxCalldataBytes)
+	require.Equal(t, 1000, cfg.Evm.Multicall3Aggregation.MaxQueueSize)
+	require.Equal(t, 200, cfg.Evm.Multicall3Aggregation.MaxPendingBatches)
+	require.NotNil(t, cfg.Evm.Multicall3Aggregation.CachePerCall)
+	require.True(t, *cfg.Evm.Multicall3Aggregation.CachePerCall)
+	require.NotNil(t, cfg.Evm.Multicall3Aggregation.AllowCrossUserBatching)
+	require.True(t, *cfg.Evm.Multicall3Aggregation.AllowCrossUserBatching)
+	require.False(t, cfg.Evm.Multicall3Aggregation.AllowPendingTagBatching)
+}
+
+func TestMulticall3AggregationConfigBoolBackcompat(t *testing.T) {
+	// Test backward compatibility with bool value
+	yamlStr := `
+evm:
+  chainId: 1
+  multicall3Aggregation: true
+`
+	var cfg NetworkConfig
+	err := yaml.Unmarshal([]byte(yamlStr), &cfg)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Evm)
+	require.NotNil(t, cfg.Evm.Multicall3Aggregation)
+	require.True(t, cfg.Evm.Multicall3Aggregation.Enabled)
+	// Check defaults are applied when bool is true
+	require.Equal(t, 25, cfg.Evm.Multicall3Aggregation.WindowMs)
+	require.Equal(t, 20, cfg.Evm.Multicall3Aggregation.MaxCalls)
+}
+
+func TestMulticall3AggregationConfigBoolFalse(t *testing.T) {
+	// Test backward compatibility with false value
+	yamlStr := `
+evm:
+  chainId: 1
+  multicall3Aggregation: false
+`
+	var cfg NetworkConfig
+	err := yaml.Unmarshal([]byte(yamlStr), &cfg)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Evm)
+	require.NotNil(t, cfg.Evm.Multicall3Aggregation)
+	require.False(t, cfg.Evm.Multicall3Aggregation.Enabled)
+}
+
+func TestMulticall3AggregationConfigDefaults(t *testing.T) {
+	cfg := &Multicall3AggregationConfig{Enabled: true}
+	cfg.SetDefaults()
+	require.Equal(t, 25, cfg.WindowMs)
+	require.Equal(t, 2, cfg.MinWaitMs)
+	require.Equal(t, 2, cfg.SafetyMarginMs)
+	require.Equal(t, 20, cfg.MaxCalls)
+	require.Equal(t, 64000, cfg.MaxCalldataBytes)
+	require.Equal(t, 1000, cfg.MaxQueueSize)
+	require.Equal(t, 200, cfg.MaxPendingBatches)
+	require.NotNil(t, cfg.CachePerCall)
+	require.True(t, *cfg.CachePerCall)
+	require.NotNil(t, cfg.AllowCrossUserBatching)
+	require.True(t, *cfg.AllowCrossUserBatching)
+}
+
+func TestMulticall3AggregationConfigIsValid(t *testing.T) {
+	t.Run("valid config", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{Enabled: true}
+		cfg.SetDefaults()
+		err := cfg.IsValid()
+		require.NoError(t, err)
+	})
+
+	t.Run("windowMs must be positive", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{Enabled: true, WindowMs: 0}
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "windowMs must be > 0")
+	})
+
+	t.Run("minWaitMs must not be negative", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{Enabled: true, WindowMs: 25, MinWaitMs: -1}
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "minWaitMs must be >= 0")
+	})
+
+	t.Run("minWaitMs must be <= windowMs", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{Enabled: true, WindowMs: 10, MinWaitMs: 20}
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "minWaitMs must be <= windowMs")
+	})
+
+	t.Run("maxCalls must be > 1", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{Enabled: true, WindowMs: 25, MinWaitMs: 2, MaxCalls: 1}
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "maxCalls must be > 1")
+	})
+
+	t.Run("maxCalldataBytes must be positive", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{Enabled: true, WindowMs: 25, MinWaitMs: 2, MaxCalls: 20, MaxCalldataBytes: 0}
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "maxCalldataBytes must be > 0")
+	})
+
+	t.Run("maxQueueSize must be positive", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled:          true,
+			WindowMs:         25,
+			MinWaitMs:        2,
+			MaxCalls:         20,
+			MaxCalldataBytes: 64000,
+			MaxQueueSize:     0,
+		}
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "maxQueueSize must be > 0")
+	})
+
+	t.Run("maxPendingBatches must be positive", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled:           true,
+			WindowMs:          25,
+			MinWaitMs:         2,
+			MaxCalls:          20,
+			MaxCalldataBytes:  64000,
+			MaxQueueSize:      1000,
+			MaxPendingBatches: 0,
+		}
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "maxPendingBatches must be > 0")
 	})
 }

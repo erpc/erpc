@@ -1672,7 +1672,7 @@ func stripAddrDecorations(s string) string {
 }
 
 // isMulticall3AggregationEnabled checks if multicall3 aggregation is enabled for a given network.
-// Returns true (default) if no explicit config is set, or if the config is explicitly set to true.
+// Returns true (default) if no explicit config is set, or if the config is explicitly set to enabled.
 func isMulticall3AggregationEnabled(project *PreparedProject, networkId string) bool {
 	if project == nil || project.Config == nil {
 		return true // Default to enabled
@@ -1684,7 +1684,7 @@ func isMulticall3AggregationEnabled(project *PreparedProject, networkId string) 
 	for _, nwCfg := range project.Config.Networks {
 		if nwCfg != nil && nwCfg.NetworkId() == networkId {
 			if nwCfg.Evm != nil && nwCfg.Evm.Multicall3Aggregation != nil {
-				return *nwCfg.Evm.Multicall3Aggregation
+				return nwCfg.Evm.Multicall3Aggregation.Enabled
 			}
 			break
 		}

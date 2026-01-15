@@ -1549,11 +1549,142 @@ type EvmNetworkConfig struct {
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
 
-	// Multicall3Aggregation enables aggregating batched eth_call requests into a single
-	// Multicall3 contract call. This can significantly reduce latency for JSON-RPC batch
-	// requests containing multiple eth_call methods by combining them into one upstream call.
-	// Default: true (enabled)
-	Multicall3Aggregation *bool `yaml:"multicall3Aggregation,omitempty" json:"multicall3Aggregation,omitempty"`
+	// Multicall3Aggregation configures aggregating eth_call requests into Multicall3.
+	// Accepts either a boolean (backward compat) or a full config object.
+	// Default: enabled with default settings
+	Multicall3Aggregation *Multicall3AggregationConfig `yaml:"multicall3Aggregation,omitempty" json:"multicall3Aggregation,omitempty"`
+}
+
+// Multicall3AggregationConfig configures network-level batching of eth_call requests
+// into Multicall3 aggregate calls. This batches requests across all entrypoints
+// (HTTP single, HTTP batch, gRPC) rather than just JSON-RPC batch requests.
+type Multicall3AggregationConfig struct {
+	// Enabled enables/disables Multicall3 aggregation. Default: true
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// WindowMs is the maximum time (milliseconds) to wait for a batch to fill.
+	// Default: 25ms
+	WindowMs int `yaml:"windowMs,omitempty" json:"windowMs"`
+
+	// MinWaitMs is the minimum time (milliseconds) to wait for additional requests
+	// to join a batch. Default: 2ms
+	MinWaitMs int `yaml:"minWaitMs,omitempty" json:"minWaitMs"`
+
+	// SafetyMarginMs is subtracted from request deadlines when computing flush time.
+	// Default: min(2, MinWaitMs)
+	SafetyMarginMs int `yaml:"safetyMarginMs,omitempty" json:"safetyMarginMs"`
+
+	// OnlyIfPending: if true, don't add latency unless a batch is already open.
+	// Default: false
+	OnlyIfPending bool `yaml:"onlyIfPending,omitempty" json:"onlyIfPending"`
+
+	// MaxCalls is the maximum number of calls per batch. Default: 20
+	MaxCalls int `yaml:"maxCalls,omitempty" json:"maxCalls"`
+
+	// MaxCalldataBytes is the maximum total calldata size per batch. Default: 64000
+	MaxCalldataBytes int `yaml:"maxCalldataBytes,omitempty" json:"maxCalldataBytes"`
+
+	// MaxQueueSize is the maximum total enqueued requests across all batches.
+	// Default: 1000
+	MaxQueueSize int `yaml:"maxQueueSize,omitempty" json:"maxQueueSize"`
+
+	// MaxPendingBatches is the maximum number of distinct batch keys.
+	// Default: 200
+	MaxPendingBatches int `yaml:"maxPendingBatches,omitempty" json:"maxPendingBatches"`
+
+	// CachePerCall enables per-call cache writes after successful Multicall3.
+	// Default: true
+	CachePerCall *bool `yaml:"cachePerCall,omitempty" json:"cachePerCall"`
+
+	// AllowCrossUserBatching: if true, requests from different users can share a batch.
+	// Default: true
+	AllowCrossUserBatching *bool `yaml:"allowCrossUserBatching,omitempty" json:"allowCrossUserBatching"`
+
+	// AllowPendingTagBatching: if true, allow batching calls with "pending" block tag.
+	// Default: false
+	AllowPendingTagBatching bool `yaml:"allowPendingTagBatching,omitempty" json:"allowPendingTagBatching"`
+}
+
+// SetDefaults applies default values to unset fields
+func (c *Multicall3AggregationConfig) SetDefaults() {
+	if c.WindowMs == 0 {
+		c.WindowMs = 25
+	}
+	if c.MinWaitMs == 0 {
+		c.MinWaitMs = 2
+	}
+	if c.SafetyMarginMs == 0 {
+		c.SafetyMarginMs = min(2, c.MinWaitMs)
+	}
+	if c.MaxCalls == 0 {
+		c.MaxCalls = 20
+	}
+	if c.MaxCalldataBytes == 0 {
+		c.MaxCalldataBytes = 64000
+	}
+	if c.MaxQueueSize == 0 {
+		c.MaxQueueSize = 1000
+	}
+	if c.MaxPendingBatches == 0 {
+		c.MaxPendingBatches = 200
+	}
+	if c.CachePerCall == nil {
+		c.CachePerCall = &TRUE
+	}
+	if c.AllowCrossUserBatching == nil {
+		c.AllowCrossUserBatching = &TRUE
+	}
+}
+
+// IsValid checks if the config values are valid
+func (c *Multicall3AggregationConfig) IsValid() error {
+	if c.WindowMs <= 0 {
+		return fmt.Errorf("multicall3Aggregation.windowMs must be > 0")
+	}
+	if c.MinWaitMs < 0 {
+		return fmt.Errorf("multicall3Aggregation.minWaitMs must be >= 0")
+	}
+	if c.MinWaitMs > c.WindowMs {
+		return fmt.Errorf("multicall3Aggregation.minWaitMs must be <= windowMs")
+	}
+	if c.MaxCalls <= 1 {
+		return fmt.Errorf("multicall3Aggregation.maxCalls must be > 1")
+	}
+	if c.MaxCalldataBytes <= 0 {
+		return fmt.Errorf("multicall3Aggregation.maxCalldataBytes must be > 0")
+	}
+	if c.MaxQueueSize <= 0 {
+		return fmt.Errorf("multicall3Aggregation.maxQueueSize must be > 0")
+	}
+	if c.MaxPendingBatches <= 0 {
+		return fmt.Errorf("multicall3Aggregation.maxPendingBatches must be > 0")
+	}
+	return nil
+}
+
+// UnmarshalYAML implements backward compatibility for boolean config values
+func (c *Multicall3AggregationConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try bool first (backward compat)
+	var boolVal bool
+	if err := unmarshal(&boolVal); err == nil {
+		c.Enabled = boolVal
+		if boolVal {
+			c.SetDefaults()
+		}
+		return nil
+	}
+
+	// Try full config
+	type rawConfig Multicall3AggregationConfig
+	var raw rawConfig
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	*c = Multicall3AggregationConfig(raw)
+	if c.Enabled {
+		c.SetDefaults()
+	}
+	return nil
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
