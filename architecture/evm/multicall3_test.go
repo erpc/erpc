@@ -365,6 +365,17 @@ func TestDecodeMulticall3Aggregate3Result_Errors(t *testing.T) {
 			data: append(encodeUint64(32), encodeUint64(2)...),
 		},
 		{
+			name: "count exceeds available data",
+			// Create data with huge count that would overflow if multiplied by 32
+			// offset=32, then count=maxInt/16 (which when *32 would overflow)
+			data: func() []byte {
+				d := make([]byte, 96)
+				copy(d[0:32], encodeUint64(32))            // offset to array
+				copy(d[32:64], encodeUint64(0x7FFFFFFF))   // huge count that exceeds data
+				return d
+			}(),
+		},
+		{
 			name: "element out of bounds",
 			data: buildAggregate3ResultWithOffset(96, nil, nil),
 		},

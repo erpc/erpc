@@ -225,6 +225,12 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 	}
 
 	offsetsStart := base + 32
+	// Check bounds before multiplication to prevent integer overflow
+	// Each element needs 32 bytes in the offset table
+	maxElements := (len(data) - offsetsStart) / 32
+	if countInt > maxElements {
+		return nil, errors.New("multicall3 result count exceeds available data")
+	}
 	offsetsEnd := offsetsStart + countInt*32
 	if offsetsEnd > len(data) {
 		return nil, errors.New("multicall3 result offsets out of bounds")
