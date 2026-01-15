@@ -1081,6 +1081,7 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		if nq != nil {
 			nq.RLock()
 		}
+		respMarshaler, _ := resp.(zerolog.LogObjectMarshaler)
 		if common.HasErrorCode(
 			err,
 			common.ErrCodeEndpointExecutionException,
@@ -1091,11 +1092,11 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeJsonRpcRequestUnmarshal,
 			common.ErrCodeProjectNotFound,
 		) {
-			logErrorWithResponse(logger.Debug(), err, nq, resp).Msg("forward request errored with client-side exception")
+			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with client-side exception")
 		} else if errors.Is(err, context.Canceled) {
-			logErrorWithResponse(logger.Debug(), err, nq, resp).Msg("forward request errored with context cancellation")
+			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with context cancellation")
 		} else if errors.Is(err, context.DeadlineExceeded) {
-			logErrorWithResponse(logger.Debug(), err, nq, resp).Msg("forward request errored with deadline exceeded")
+			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with deadline exceeded")
 		} else {
 			var msg string
 			if e, ok := err.(common.StandardError); ok {
@@ -1103,7 +1104,7 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			} else {
 				msg = fmt.Sprintf("failed to forward request: %s", err.Error())
 			}
-			logErrorWithResponse(logger.Warn(), err, nq, resp).Dur("durationMs", time.Since(*startedAt)).Msg(msg)
+			logger.Warn().Err(err).Object("request", nq).Object("response", respMarshaler).Dur("durationMs", time.Since(*startedAt)).Msg(msg)
 		}
 		if nq != nil {
 			nq.RUnlock()
@@ -1111,20 +1112,6 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 
 	return resp
-}
-
-// logErrorWithResponse chains the error, request, and response onto a zerolog event
-func logErrorWithResponse(event *zerolog.Event, err error, nq *common.NormalizedRequest, resp interface{}) *zerolog.Event {
-	event = event.Err(err).Object("request", nq)
-	switch v := resp.(type) {
-	case *HttpJsonRpcErrorResponse:
-		event = event.Object("response", v)
-	case *common.BaseError:
-		event = event.Object("response", v)
-	case common.StandardError:
-		event = event.Object("response", v)
-	}
-	return event
 }
 
 // buildErrorResponseBody constructs the error response without logging
