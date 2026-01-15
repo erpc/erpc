@@ -409,7 +409,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		if isBatch && !isAdmin && !isHealthCheck {
 			batchInfo, detectErr := detectEthCallBatchInfo(requests, architecture, chainId)
 			if detectErr != nil {
-				lg.Debug().Err(detectErr).Msg("eth_call batch detection failed")
+				lg.Info().Err(detectErr).
+				Int("requestCount", len(requests)).
+				Msg("eth_call batch detection failed, processing individually")
 			}
 			if batchInfo != nil && isMulticall3AggregationEnabled(project, batchInfo.networkId) {
 				batchHandled = s.handleEthCallBatchAggregation(

@@ -175,7 +175,8 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 			name:     "forward error fallback",
 			requests: validRequests,
 			networkResponse: func() (*common.NormalizedResponse, error) {
-				return nil, common.NewErrEndpointExecutionException(errors.New("boom"))
+				// Use "execution reverted" to trigger ShouldFallbackMulticall3
+				return nil, common.NewErrEndpointExecutionException(errors.New("execution reverted"))
 			},
 			expectedProjCalls: 2,
 			expectedNetCalls:  1,

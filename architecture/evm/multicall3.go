@@ -12,12 +12,16 @@ import (
 	"math"
 	"math/big"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"golang.org/x/crypto/sha3"
 )
+
+// multicall3RequestCounter provides unique IDs for multicall3 requests to prevent collisions
+var multicall3RequestCounter uint64
 
 const multicall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
 
@@ -177,7 +181,9 @@ func BuildMulticall3Request(requests []*common.NormalizedRequest, blockParam int
 	}
 
 	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{callObj, blockParam})
-	jrq.ID = fmt.Sprintf("multicall3-%d", time.Now().UnixNano())
+	// Use atomic counter combined with timestamp for guaranteed unique IDs
+	counter := atomic.AddUint64(&multicall3RequestCounter, 1)
+	jrq.ID = fmt.Sprintf("multicall3-%d-%d", time.Now().UnixNano(), counter)
 
 	nrq := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	nrq.CopyHttpContextFrom(requests[0])
@@ -283,11 +289,31 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 	return results, nil
 }
 
+// ShouldFallbackMulticall3 determines if an error should trigger fallback to individual requests.
+// Returns true only when the multicall3 contract is unavailable (unsupported endpoint) or when
+// there are specific execution errors indicating the contract doesn't exist on this network.
+// Other execution errors (like reverts) should NOT trigger fallback as they would also fail individually.
 func ShouldFallbackMulticall3(err error) bool {
 	if err == nil {
 		return false
 	}
-	return common.HasErrorCode(err, common.ErrCodeEndpointExecutionException, common.ErrCodeEndpointUnsupported)
+	// Always fallback if endpoint is unsupported (e.g., network doesn't support eth_call)
+	if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
+		return true
+	}
+	// For execution errors, only fallback if it indicates multicall3 contract unavailability
+	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		errStr := strings.ToLower(err.Error())
+		// Check for indicators that the multicall3 contract doesn't exist
+		if strings.Contains(errStr, "contract not found") ||
+			strings.Contains(errStr, "no code at address") ||
+			strings.Contains(errStr, "execution reverted") {
+			return true
+		}
+		// Other execution errors (like authentication, rate limits, etc.) should not fallback
+		return false
+	}
+	return false
 }
 
 func encodeAggregate3Calls(calls []Multicall3Call) ([]byte, error) {

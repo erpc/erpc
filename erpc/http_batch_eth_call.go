@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -44,6 +46,14 @@ var (
 	newBatchJsonRpcResponse = common.NewJsonRpcResponse
 )
 
+// detectEthCallBatchInfo checks if a batch request is eligible for Multicall3 aggregation.
+// Returns nil (no error) if the batch is not eligible due to:
+// - Fewer than 2 requests in the batch
+// - Any non-eth_call method in the batch
+// - Requests targeting different networks
+// - Requests targeting different block references
+// - Non-EVM architecture
+// Returns an error only for actual parsing/validation failures.
 func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId string) (*ethCallBatchInfo, error) {
 	if len(requests) < 2 {
 		return nil, nil
@@ -110,6 +120,12 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 	}, nil
 }
 
+// forwardEthCallBatchCandidates forwards individual eth_call requests in parallel as a fallback
+// when Multicall3 aggregation fails or is not applicable.
+//
+// Rate limiting note: The network rate limit is skipped (withSkipNetworkRateLimit) because
+// rate limits were already acquired for each request during the aggregation flow preparation.
+// This prevents double-counting rate limits when falling back to individual requests.
 func (s *HttpServer) forwardEthCallBatchCandidates(
 	startedAt *time.Time,
 	project *PreparedProject,
@@ -126,20 +142,27 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 		return
 	}
 
+	// Process candidates in parallel for better performance during fallback
+	var wg sync.WaitGroup
 	for _, cand := range candidates {
-		resp, err := forwardBatchProject(withSkipNetworkRateLimit(cand.ctx), project, network, cand.req)
-		if err != nil {
-			if resp != nil {
-				go resp.Release()
+		wg.Add(1)
+		go func(c ethCallBatchCandidate) {
+			defer wg.Done()
+			resp, err := forwardBatchProject(withSkipNetworkRateLimit(c.ctx), project, network, c.req)
+			if err != nil {
+				if resp != nil {
+					go resp.Release()
+				}
+				responses[c.index] = processErrorBody(&c.logger, startedAt, c.req, err, s.serverCfg.IncludeErrorDetails)
+				common.EndRequestSpan(c.ctx, nil, err)
+				return
 			}
-			responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, err, s.serverCfg.IncludeErrorDetails)
-			common.EndRequestSpan(cand.ctx, nil, err)
-			continue
-		}
 
-		responses[cand.index] = resp
-		common.EndRequestSpan(cand.ctx, resp, nil)
+			responses[c.index] = resp
+			common.EndRequestSpan(c.ctx, resp, nil)
+		}(cand)
 	}
+	wg.Wait()
 }
 
 func (s *HttpServer) handleEthCallBatchAggregation(
@@ -179,7 +202,12 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			continue
 		}
 
-		method, _ := nq.Method()
+		method, methodErr := nq.Method()
+		if methodErr != nil {
+			responses[i] = processErrorBody(&baseLogger, startedAt, nq, methodErr, &common.TRUE)
+			common.EndRequestSpan(requestCtx, nil, methodErr)
+			continue
+		}
 		rlg := baseLogger.With().Str("method", method).Logger()
 
 		ap, err := auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
@@ -247,8 +275,14 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		reqs[i] = cand.req
 	}
 
+	projectId := ""
+	if project.Config != nil {
+		projectId = project.Config.Id
+	}
+
 	mcReq, calls, err := evm.BuildMulticall3Request(reqs, batchInfo.blockParam)
 	if err != nil {
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "build_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
@@ -264,6 +298,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			mcResp.Release()
 		}
 		if evm.ShouldFallbackMulticall3(mcErr) {
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "forward_failed").Inc()
 			baseLogger.Debug().Err(mcErr).
 				Int("candidateCount", len(candidates)).
 				Str("networkId", batchInfo.networkId).
@@ -271,6 +306,8 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 			return true
 		}
+		// Non-recoverable error - don't fallback, propagate to all candidates
+		telemetry.MetricMulticall3AggregationTotal.WithLabelValues(projectId, batchInfo.networkId, "error").Inc()
 		for _, cand := range candidates {
 			responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, mcErr, s.serverCfg.IncludeErrorDetails)
 			common.EndRequestSpan(cand.ctx, nil, mcErr)
@@ -278,6 +315,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		return true
 	}
 	if mcResp == nil {
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "nil_response").Inc()
 		baseLogger.Debug().
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
@@ -289,12 +327,17 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	jrr, err := mcResp.JsonRpcResponse(mcCtx)
 	if err != nil || jrr == nil || jrr.Error != nil {
 		mcResp.Release()
-		baseLogger.Debug().Err(err).
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "invalid_response").Inc()
+		logEvent := baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
 			Bool("missingResponse", jrr == nil).
-			Bool("hasRpcError", jrr != nil && jrr.Error != nil).
-			Msg("multicall3 response invalid, falling back")
+			Bool("hasRpcError", jrr != nil && jrr.Error != nil)
+		if jrr != nil && jrr.Error != nil {
+			logEvent = logEvent.Int("rpcErrorCode", jrr.Error.Code).
+				Str("rpcErrorMessage", jrr.Error.Message)
+		}
+		logEvent.Msg("multicall3 response invalid, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
@@ -302,6 +345,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	var resultHex string
 	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &resultHex); err != nil {
 		mcResp.Release()
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "unmarshal_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
@@ -312,6 +356,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	resultBytes, err := common.HexToBytes(resultHex)
 	if err != nil {
 		mcResp.Release()
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "hex_decode_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
@@ -323,6 +368,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	decoded, err := evm.DecodeMulticall3Aggregate3Result(resultBytes)
 	if err != nil {
 		mcResp.Release()
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "abi_decode_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
@@ -332,12 +378,14 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	}
 	if len(decoded) != len(calls) {
 		mcResp.Release()
+		// Length mismatch is a critical issue - use separate metric and Error level logging
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "length_mismatch").Inc()
 		baseLogger.Error().
 			Int("candidateCount", len(candidates)).
 			Int("decodedCount", len(decoded)).
 			Int("callCount", len(calls)).
 			Str("networkId", batchInfo.networkId).
-			Msg("multicall3 result length mismatch, falling back")
+			Msg("CRITICAL: multicall3 result length mismatch - possible data corruption, falling back")
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
@@ -382,6 +430,8 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		common.EndRequestSpan(cand.ctx, nil, callErr)
 	}
 
+	// Aggregation succeeded
+	telemetry.MetricMulticall3AggregationTotal.WithLabelValues(projectId, batchInfo.networkId, "success").Inc()
 	mcResp.Release()
 	return true
 }

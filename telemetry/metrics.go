@@ -410,6 +410,19 @@ var (
 		Help:      "eth_getLogs requested block-range sizes.",
 		Buckets:   EvmGetLogsRangeHistogramBuckets,
 	}, []string{"project", "network", "category", "user", "finality"})
+
+	// Multicall3 aggregation metrics
+	MetricMulticall3AggregationTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_aggregation_total",
+		Help:      "Total number of multicall3 aggregation attempts.",
+	}, []string{"project", "network", "outcome"})
+
+	MetricMulticall3FallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_fallback_total",
+		Help:      "Total number of multicall3 fallbacks to individual requests.",
+	}, []string{"project", "network", "reason"})
 )
 
 var DefaultHistogramBuckets = []float64{

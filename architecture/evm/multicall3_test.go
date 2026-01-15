@@ -3,6 +3,7 @@ package evm
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -10,6 +11,59 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSafeUint64ToInt(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   uint64
+		want    int
+		wantErr bool
+	}{
+		{
+			name:    "zero",
+			input:   0,
+			want:    0,
+			wantErr: false,
+		},
+		{
+			name:    "small positive",
+			input:   100,
+			want:    100,
+			wantErr: false,
+		},
+		{
+			name:    "max int boundary",
+			input:   uint64(math.MaxInt),
+			want:    math.MaxInt,
+			wantErr: false,
+		},
+		{
+			name:    "overflow - max int plus one",
+			input:   uint64(math.MaxInt) + 1,
+			want:    0,
+			wantErr: true,
+		},
+		{
+			name:    "overflow - max uint64",
+			input:   math.MaxUint64,
+			want:    0,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := safeUint64ToInt(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "overflow")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
 
 func TestNormalizeBlockParam(t *testing.T) {
 	cases := []struct {
@@ -344,10 +398,59 @@ func TestDecodeMulticall3Aggregate3Result_Errors(t *testing.T) {
 }
 
 func TestShouldFallbackMulticall3(t *testing.T) {
-	assert.False(t, ShouldFallbackMulticall3(nil))
-	assert.True(t, ShouldFallbackMulticall3(common.NewErrEndpointExecutionException(errors.New("boom"))))
-	assert.True(t, ShouldFallbackMulticall3(common.NewErrEndpointUnsupported(errors.New("boom"))))
-	assert.False(t, ShouldFallbackMulticall3(errors.New("nope")))
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "unsupported endpoint",
+			err:  common.NewErrEndpointUnsupported(errors.New("boom")),
+			want: true,
+		},
+		{
+			name: "execution exception with contract not found",
+			err:  common.NewErrEndpointExecutionException(errors.New("contract not found")),
+			want: true,
+		},
+		{
+			name: "execution exception with no code at address",
+			err:  common.NewErrEndpointExecutionException(errors.New("no code at address 0x123")),
+			want: true,
+		},
+		{
+			name: "execution exception with execution reverted",
+			err:  common.NewErrEndpointExecutionException(errors.New("execution reverted")),
+			want: true,
+		},
+		{
+			name: "execution exception with generic error - no fallback",
+			err:  common.NewErrEndpointExecutionException(errors.New("some other error")),
+			want: false,
+		},
+		{
+			name: "execution exception with rate limit - no fallback",
+			err:  common.NewErrEndpointExecutionException(errors.New("rate limited")),
+			want: false,
+		},
+		{
+			name: "non-execution error",
+			err:  errors.New("nope"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ShouldFallbackMulticall3(tt.err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func encodeAggregate3Results(results []Multicall3Result) []byte {
