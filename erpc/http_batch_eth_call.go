@@ -507,7 +507,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 					defer resp.RUnlock()
 					defer resp.DoneRef()
 
-					timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(network.AppCtx(), 10*time.Second, errors.New("cache driver timeout during multicall3 per-call set"))
+					timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(network.AppCtx(), 10*time.Second, errors.New("cache driver timeout during multicall3 per-call cache write"))
 					defer timeoutCtxCancel()
 					tracedCtx := trace.ContextWithSpanContext(timeoutCtx, trace.SpanContextFromContext(reqCtx))
 					if err := cacheDal.Set(tracedCtx, req, resp); err != nil {

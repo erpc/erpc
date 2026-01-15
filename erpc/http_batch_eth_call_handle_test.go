@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,8 +177,9 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 			name:     "forward error fallback",
 			requests: validRequests,
 			networkResponse: func() (*common.NormalizedResponse, error) {
-				// Use "execution reverted" to trigger ShouldFallbackMulticall3
-				return nil, common.NewErrEndpointExecutionException(errors.New("execution reverted"))
+				// Use "contract not found" to trigger ShouldFallbackMulticall3
+				// Note: "execution reverted" does NOT trigger fallback (would also fail individually)
+				return nil, common.NewErrEndpointExecutionException(errors.New("contract not found"))
 			},
 			expectedProjCalls: 2,
 			expectedNetCalls:  1,
@@ -244,16 +246,21 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
 			projCalls := 0
 			netCalls := 0
 
 			withBatchStubs(t,
 				func(ctx context.Context, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+					mu.Lock()
 					netCalls++
+					mu.Unlock()
 					return tt.networkResponse()
 				},
 				func(ctx context.Context, project *PreparedProject, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+					mu.Lock()
 					projCalls++
+					mu.Unlock()
 					return fallbackResponse(t, req), nil
 				},
 				nil,
@@ -261,8 +268,10 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 
 			handled, responses := runHandle(t, ctx, server, project, defaultBatchInfo(), tt.requests, nil)
 			require.True(t, handled)
+			mu.Lock()
 			assert.Equal(t, tt.expectedProjCalls, projCalls)
 			assert.Equal(t, tt.expectedNetCalls, netCalls)
+			mu.Unlock()
 			if len(responses) > 0 {
 				_, ok := responses[0].(*common.NormalizedResponse)
 				assert.True(t, ok)
