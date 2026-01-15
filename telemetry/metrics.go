@@ -423,6 +423,12 @@ var (
 		Name:      "multicall3_fallback_total",
 		Help:      "Total number of multicall3 fallbacks to individual requests.",
 	}, []string{"project", "network", "reason"})
+
+	MetricMulticall3CacheHitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_hits_total",
+		Help:      "Total number of per-call cache hits in multicall3 batch aggregation.",
+	}, []string{"project", "network"})
 )
 
 var DefaultHistogramBuckets = []float64{

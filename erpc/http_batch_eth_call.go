@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ethCallBatchInfo struct {
@@ -239,6 +242,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		}
 
 		nq.SetNetwork(network)
+		nq.SetCacheDal(network.CacheDal())
 		nq.ApplyDirectiveDefaults(network.Config().DirectiveDefaults)
 		nq.EnrichFromHttp(headers, queryArgs, uaMode)
 		rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
@@ -272,6 +276,49 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	if len(candidates) == 0 {
 		return true
 	}
+
+	projectId := ""
+	if project.Config != nil {
+		projectId = project.Config.Id
+	}
+
+	// Check cache for individual requests before aggregating
+	cacheDal := network.CacheDal()
+	var uncachedCandidates []ethCallBatchCandidate
+	if cacheDal != nil && !cacheDal.IsObjectNull() {
+		uncachedCandidates = make([]ethCallBatchCandidate, 0, len(candidates))
+		cacheHits := 0
+		for _, cand := range candidates {
+			cachedResp, err := cacheDal.Get(cand.ctx, cand.req)
+			if err == nil && cachedResp != nil && !cachedResp.IsObjectNull(cand.ctx) {
+				// Cache hit - use cached response directly
+				cachedResp.SetFromCache(true)
+				responses[cand.index] = cachedResp
+				common.EndRequestSpan(cand.ctx, cachedResp, nil)
+				cacheHits++
+				continue
+			}
+			// Cache miss - needs to be fetched
+			uncachedCandidates = append(uncachedCandidates, cand)
+		}
+		if cacheHits > 0 {
+			telemetry.MetricMulticall3CacheHitsTotal.WithLabelValues(projectId, batchInfo.networkId).Add(float64(cacheHits))
+			baseLogger.Debug().
+				Int("cacheHits", cacheHits).
+				Int("uncached", len(uncachedCandidates)).
+				Int("total", len(candidates)).
+				Str("networkId", batchInfo.networkId).
+				Msg("multicall3 pre-aggregation cache check")
+		}
+		candidates = uncachedCandidates
+	}
+
+	// All requests served from cache
+	if len(candidates) == 0 {
+		telemetry.MetricMulticall3AggregationTotal.WithLabelValues(projectId, batchInfo.networkId, "all_cached").Inc()
+		return true
+	}
+
 	if len(candidates) < 2 {
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
@@ -280,11 +327,6 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	reqs := make([]*common.NormalizedRequest, len(candidates))
 	for i, cand := range candidates {
 		reqs[i] = cand.req
-	}
-
-	projectId := ""
-	if project.Config != nil {
-		projectId = project.Config.Id
 	}
 
 	mcReq, calls, err := evm.BuildMulticall3Request(reqs, batchInfo.blockParam)
@@ -397,6 +439,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		return true
 	}
 
+	shouldCache := !mcResp.FromCache() && cacheDal != nil && !cacheDal.IsObjectNull()
 	for i, result := range decoded {
 		cand := candidates[i]
 		if result.Success {
@@ -418,6 +461,36 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			nr.SetEvmBlockNumber(mcResp.EvmBlockNumber())
 			responses[cand.index] = nr
 			common.EndRequestSpan(cand.ctx, nr, nil)
+
+			// Cache individual response asynchronously
+			if shouldCache {
+				nr.RLockWithTrace(cand.ctx)
+				nr.AddRef()
+				go func(resp *common.NormalizedResponse, req *common.NormalizedRequest, reqCtx context.Context, lg zerolog.Logger) {
+					defer func() {
+						if rec := recover(); rec != nil {
+							telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+								"multicall3-cache-set",
+								fmt.Sprintf("network:%s", batchInfo.networkId),
+								common.ErrorFingerprint(rec),
+							).Inc()
+							lg.Error().
+								Interface("panic", rec).
+								Str("stack", string(debug.Stack())).
+								Msg("unexpected panic on multicall3 per-call cache-set")
+						}
+					}()
+					defer resp.RUnlock()
+					defer resp.DoneRef()
+
+					timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(network.AppCtx(), 10*time.Second, errors.New("cache driver timeout during multicall3 per-call set"))
+					defer timeoutCtxCancel()
+					tracedCtx := trace.ContextWithSpanContext(timeoutCtx, trace.SpanContextFromContext(reqCtx))
+					if err := cacheDal.Set(tracedCtx, req, resp); err != nil {
+						lg.Warn().Err(err).Msg("could not store multicall3 per-call response in cache")
+					}
+				}(nr, cand.req, cand.ctx, cand.logger)
+			}
 			continue
 		}
 

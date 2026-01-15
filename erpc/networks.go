@@ -891,6 +891,14 @@ func (n *Network) Config() *common.NetworkConfig {
 	return n.cfg
 }
 
+func (n *Network) CacheDal() common.CacheDAL {
+	return n.cacheDal
+}
+
+func (n *Network) AppCtx() context.Context {
+	return n.appCtx
+}
+
 func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) common.DataFinalityState {
 	ctx, span := common.StartDetailSpan(ctx, "Network.GetFinality")
 	defer span.End()
