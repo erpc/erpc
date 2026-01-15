@@ -146,6 +146,14 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 	// Enqueue request
 	entry, bypass, err := batcher.Enqueue(ctx, key, nq)
 	if err != nil || bypass {
+		// Log enqueue errors for debugging (bypass without error is normal)
+		if err != nil && network.Logger() != nil {
+			network.Logger().Debug().
+				Err(err).
+				Str("projectId", projectId).
+				Str("networkId", network.Id()).
+				Msg("multicall3 enqueue failed, forwarding normally")
+		}
 		// Bypass batching, forward normally
 		resp, err := network.Forward(ctx, nq)
 		return true, resp, err

@@ -474,6 +474,12 @@ var (
 		Name:      "multicall3_fallback_requests_total",
 		Help:      "Total number of individual requests during multicall3 fallback, labeled by outcome.",
 	}, []string{"project", "network", "outcome"})
+
+	MetricMulticall3AbandonedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_abandoned_total",
+		Help:      "Total number of multicall3 batch results not delivered because caller context was cancelled.",
+	}, []string{"project", "network"})
 )
 
 var DefaultHistogramBuckets = []float64{

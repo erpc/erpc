@@ -370,7 +370,8 @@ func TestBatcherEnqueueAndFlush(t *testing.T) {
 	cfg.SetDefaults()
 
 	ctx := context.Background()
-	batcher := NewBatcher(cfg, nil, nil) // nil forwarder for now
+	forwarder := &mockForwarder{} // Not used in this test but required
+	batcher := NewBatcher(cfg, forwarder, nil)
 
 	// Create test requests
 	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
@@ -435,7 +436,8 @@ func TestBatcherDeduplication(t *testing.T) {
 	cfg.SetDefaults()
 
 	ctx := context.Background()
-	batcher := NewBatcher(cfg, nil, nil)
+	forwarder := &mockForwarder{} // Not used in this test but required
+	batcher := NewBatcher(cfg, forwarder, nil)
 
 	// Two identical requests - using the same jrq to ensure call key consistency
 	// (JSON serialization of map[string]interface{} can have non-deterministic key order)
@@ -488,7 +490,8 @@ func TestBatcherCapsEnforcement(t *testing.T) {
 	cfg.SetDefaults()
 
 	ctx := context.Background()
-	batcher := NewBatcher(cfg, nil, nil)
+	forwarder := &mockForwarder{} // Not used in this test but required
+	batcher := NewBatcher(cfg, forwarder, nil)
 
 	key := BatchingKey{
 		ProjectId:     "test-project",
@@ -906,7 +909,8 @@ func TestBatcherCancellation(t *testing.T) {
 	}
 	cfg.SetDefaults()
 
-	batcher := NewBatcher(cfg, nil, nil)
+	forwarder := &mockForwarder{} // Not used in this test but required
+	batcher := NewBatcher(cfg, forwarder, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	key := BatchingKey{
@@ -947,7 +951,8 @@ func TestBatcherDeadlineAwareness(t *testing.T) {
 	}
 	cfg.SetDefaults()
 
-	batcher := NewBatcher(cfg, nil, nil)
+	forwarder := &mockForwarder{} // Not used in this test but required
+	batcher := NewBatcher(cfg, forwarder, nil)
 
 	key := BatchingKey{
 		ProjectId: "test",
@@ -1261,7 +1266,8 @@ func TestBatcher_MaxCalldataBytes_Bypass(t *testing.T) {
 	cfg.SetDefaults()
 
 	ctx := context.Background()
-	batcher := NewBatcher(cfg, nil, nil)
+	forwarder := &mockForwarder{} // Not used in this test but required
+	batcher := NewBatcher(cfg, forwarder, nil)
 	require.NotNil(t, batcher)
 	defer batcher.Shutdown()
 
@@ -1318,7 +1324,8 @@ func TestBatcher_OnlyIfPending_NoBatch(t *testing.T) {
 	cfg.SetDefaults()
 
 	ctx := context.Background()
-	batcher := NewBatcher(cfg, nil, nil)
+	forwarder := &mockForwarder{} // Not used in this test but required
+	batcher := NewBatcher(cfg, forwarder, nil)
 	require.NotNil(t, batcher)
 	defer batcher.Shutdown()
 

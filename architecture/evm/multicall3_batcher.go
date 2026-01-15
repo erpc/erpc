@@ -38,9 +38,13 @@ type Batcher struct {
 // NewBatcher creates a new Multicall3 batcher.
 // Returns nil if cfg is nil or disabled - callers should check the return value.
 // The logger parameter is optional (can be nil) - if nil, debug logging is disabled.
+// Panics if forwarder is nil (programming error - caller must provide a valid forwarder).
 func NewBatcher(cfg *common.Multicall3AggregationConfig, forwarder Forwarder, logger *zerolog.Logger) *Batcher {
 	if cfg == nil || !cfg.Enabled {
 		return nil
+	}
+	if forwarder == nil {
+		panic("NewBatcher: forwarder cannot be nil")
 	}
 	b := &Batcher{
 		cfg:       cfg,
@@ -340,7 +344,8 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	// Build the multicall3 request
 	mcReq, _, err := BuildMulticall3Request(requests, batch.Key.BlockRef)
 	if err != nil {
-		b.deliverError(entries, err)
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkId, "build_failed").Inc()
+		b.deliverError(entries, err, projectId, networkId)
 		return
 	}
 
@@ -381,7 +386,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 		if ctx.Err() != nil {
 			err = fmt.Errorf("multicall3 batch forward failed (batch size: %d): %w", len(uniqueCalls), err)
 		}
-		b.deliverError(entries, err)
+		b.deliverError(entries, err, projectId, networkId)
 		return
 	}
 
@@ -394,13 +399,13 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 			b.fallbackIndividual(entries, projectId, networkId)
 			return
 		}
-		b.deliverError(entries, err)
+		b.deliverError(entries, err, projectId, networkId)
 		return
 	}
 
 	// Verify result count matches unique calls
 	if len(results) != len(uniqueCalls) {
-		b.deliverError(entries, fmt.Errorf("multicall3 result count mismatch: got %d, expected %d", len(results), len(uniqueCalls)))
+		b.deliverError(entries, fmt.Errorf("multicall3 result count mismatch: got %d, expected %d", len(results), len(uniqueCalls)), projectId, networkId)
 		return
 	}
 
@@ -423,7 +428,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 			for _, entry := range entriesForCall {
 				jrr, err := common.NewJsonRpcResponse(entry.Request.ID(), resultHex, nil)
 				if err != nil {
-					b.sendResult(entry, BatchResult{Error: err})
+					b.sendResult(entry, BatchResult{Error: err}, projectId, networkId)
 					continue
 				}
 				resp := common.NewNormalizedResponse().WithRequest(entry.Request).WithJsonRpcResponse(jrr)
@@ -449,7 +454,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 					cachedOnce = true
 				}
 
-				b.sendResult(entry, BatchResult{Response: resp})
+				b.sendResult(entry, BatchResult{Response: resp}, projectId, networkId)
 			}
 		} else {
 			// Build error for reverted call with proper JSON-RPC format
@@ -468,7 +473,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 				),
 			)
 			for _, entry := range entriesForCall {
-				b.sendResult(entry, BatchResult{Error: revertErr})
+				b.sendResult(entry, BatchResult{Error: revertErr}, projectId, networkId)
 			}
 		}
 	}
@@ -517,10 +522,23 @@ func (b *Batcher) decodeMulticallResponse(resp *common.NormalizedResponse) ([]Mu
 
 // sendResult safely sends a result to an entry, skipping if context is cancelled.
 // Returns true if sent, false if skipped due to cancelled context.
-func (b *Batcher) sendResult(entry *BatchEntry, result BatchResult) bool {
+// Records a metric when context is cancelled to track abandoned requests.
+func (b *Batcher) sendResult(entry *BatchEntry, result BatchResult, projectId, networkId string) bool {
 	// Check if the entry's context is cancelled - no point sending if caller has given up
 	select {
 	case <-entry.Ctx.Done():
+		telemetry.MetricMulticall3AbandonedTotal.WithLabelValues(projectId, networkId).Inc()
+		if b.logger != nil {
+			b.logger.Debug().
+				Str("projectId", projectId).
+				Str("networkId", networkId).
+				Err(entry.Ctx.Err()).
+				Msg("multicall3 batch result not delivered: caller context cancelled")
+		}
+		// Release response if present to avoid memory leak
+		if result.Response != nil {
+			result.Response.Release()
+		}
 		return false // Caller abandoned request, skip sending
 	default:
 	}
@@ -531,10 +549,10 @@ func (b *Batcher) sendResult(entry *BatchEntry, result BatchResult) bool {
 
 // deliverError sends an error to all entries in a batch.
 // Skips entries whose context has been cancelled.
-func (b *Batcher) deliverError(entries []*BatchEntry, err error) {
+func (b *Batcher) deliverError(entries []*BatchEntry, err error, projectId, networkId string) {
 	result := BatchResult{Error: err}
 	for _, entry := range entries {
-		b.sendResult(entry, result)
+		b.sendResult(entry, result, projectId, networkId)
 	}
 }
 
@@ -551,20 +569,20 @@ func (b *Batcher) fallbackIndividual(entries []*BatchEntry, projectId, networkId
 				if r := recover(); r != nil {
 					// Panic in forwarder - send error to entry
 					err := fmt.Errorf("panic in fallback forward: %v", r)
-					b.sendResult(e, BatchResult{Error: err})
+					b.sendResult(e, BatchResult{Error: err}, projectId, networkId)
 					telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "panic").Inc()
 				}
 			}()
 			// Skip if context is already cancelled
 			select {
 			case <-e.Ctx.Done():
-				b.sendResult(e, BatchResult{Error: e.Ctx.Err()})
+				b.sendResult(e, BatchResult{Error: e.Ctx.Err()}, projectId, networkId)
 				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "cancelled").Inc()
 				return
 			default:
 			}
 			resp, err := b.forwarder.Forward(e.Ctx, e.Request)
-			b.sendResult(e, BatchResult{Response: resp, Error: err})
+			b.sendResult(e, BatchResult{Response: resp, Error: err}, projectId, networkId)
 			if err != nil {
 				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "error").Inc()
 			} else {
@@ -619,7 +637,7 @@ func (b *Batcher) flushWithShutdownError(keyStr string, batch *Batch) {
 		nil,
 		nil,
 	)
-	b.deliverError(entries, shutdownErr)
+	b.deliverError(entries, shutdownErr, batch.Key.ProjectId, batch.Key.NetworkId)
 }
 
 // DirectivesKeyVersion should be bumped when the set of directives

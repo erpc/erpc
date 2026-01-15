@@ -292,6 +292,13 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 				continue
 			}
 			cachedResp, err := cacheDal.Get(cand.ctx, cand.req)
+			if err != nil {
+				// Log cache errors for debugging - they're non-fatal but useful for diagnosing issues
+				cand.logger.Debug().
+					Err(err).
+					Str("networkId", batchInfo.networkId).
+					Msg("multicall3 pre-aggregation cache get failed, treating as miss")
+			}
 			if err == nil && cachedResp != nil && !cachedResp.IsObjectNull(cand.ctx) {
 				// Cache hit - use cached response directly
 				cachedResp.SetFromCache(true)
