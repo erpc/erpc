@@ -440,6 +440,21 @@ func TestShouldFallbackMulticall3(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "execution exception with code is empty",
+			err:  common.NewErrEndpointExecutionException(errors.New("code is empty at 0xCA11bde05977b3631167028862bE2a173976CA11")),
+			want: true,
+		},
+		{
+			name: "execution exception with missing trie node",
+			err:  common.NewErrEndpointExecutionException(errors.New("missing trie node abc123")),
+			want: true,
+		},
+		{
+			name: "execution exception with account not found",
+			err:  common.NewErrEndpointExecutionException(errors.New("account not found")),
+			want: true,
+		},
+		{
 			name: "execution exception with generic error - no fallback",
 			err:  common.NewErrEndpointExecutionException(errors.New("some other error")),
 			want: false,

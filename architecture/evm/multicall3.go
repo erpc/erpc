@@ -310,11 +310,23 @@ func ShouldFallbackMulticall3(err error) bool {
 	// For execution errors, only fallback if it indicates multicall3 contract unavailability
 	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 		errStr := strings.ToLower(err.Error())
-		// Check for indicators that the multicall3 contract doesn't exist
-		if strings.Contains(errStr, "contract not found") ||
-			strings.Contains(errStr, "no code at address") ||
-			strings.Contains(errStr, "execution reverted") {
-			return true
+		// Check for indicators that the multicall3 contract doesn't exist.
+		// Different providers use different error messages, so we match multiple patterns.
+		contractUnavailablePatterns := []string{
+			"contract not found",
+			"no code at address",
+			"execution reverted",  // empty revert from non-existent contract
+			"code is empty",
+			"not a contract",
+			"invalid opcode",      // can indicate missing contract
+			"missing trie node",   // pre-deployment block query
+			"does not exist",
+			"account not found",
+		}
+		for _, pattern := range contractUnavailablePatterns {
+			if strings.Contains(errStr, pattern) {
+				return true
+			}
 		}
 		// Other execution errors (like authentication, rate limits, etc.) should not fallback
 		return false
