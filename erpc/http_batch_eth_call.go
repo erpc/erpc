@@ -254,6 +254,13 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			continue
 		}
 
+		// Record per-request metric for billing/analytics
+		// This ensures aggregated requests are counted individually
+		reqFinality := nq.Finality(requestCtx)
+		telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
+			project.Config.Id, network.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(),
+		).Inc()
+
 		candidates = append(candidates, ethCallBatchCandidate{
 			index:  i,
 			ctx:    requestCtx,
