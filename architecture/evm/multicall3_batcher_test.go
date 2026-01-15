@@ -188,6 +188,52 @@ func TestIsEligibleForBatching(t *testing.T) {
 			eligible: false,
 			reason:   "already multicall",
 		},
+		{
+			name:   "eligible with safe tag",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"safe",
+			},
+			eligible: true,
+		},
+		{
+			name:   "eligible with earliest tag",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"earliest",
+			},
+			eligible: true,
+		},
+		{
+			name:   "eligible with numeric block number (hex)",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"0x1234",
+			},
+			eligible: true,
+		},
+		{
+			name:   "eligible with block hash",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", // 32-byte hash
+			},
+			eligible: true,
+		},
+		{
+			name:   "ineligible - unknown block tag",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				"unknown_tag",
+			},
+			eligible: false,
+			reason:   "block tag not allowed",
+		},
 	}
 
 	for _, tt := range tests {

@@ -123,6 +123,14 @@ var ineligibleCallFields = []string{
 	"from", "gas", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas", "value",
 }
 
+// allowedBlockTags are block tags that can be batched by default.
+var allowedBlockTags = map[string]bool{
+	"latest":    true,
+	"finalized": true,
+	"safe":      true,
+	"earliest":  true,
+}
+
 // IsEligibleForBatching checks if a request can be batched via Multicall3.
 // Returns (eligible, reason) where reason explains why not eligible.
 func IsEligibleForBatching(req *common.NormalizedRequest, cfg *common.Multicall3AggregationConfig) (bool, string) {
@@ -201,7 +209,37 @@ func IsEligibleForBatching(req *common.NormalizedRequest, cfg *common.Multicall3
 		return false, "pending tag not allowed"
 	}
 
+	// Check if block tag is eligible for batching:
+	// - Known named tags (latest, finalized, safe, earliest) are always allowed
+	// - pending is allowed if AllowPendingTagBatching is true (checked above)
+	// - Numeric block numbers (decimal strings after normalization) are allowed
+	// - Block hashes (0x + 64 hex chars) are allowed
+	if !isBlockRefEligibleForBatching(blockTag) {
+		return false, fmt.Sprintf("block tag not allowed: %s", blockTag)
+	}
+
 	return true, ""
+}
+
+// isBlockRefEligibleForBatching checks if a normalized block reference is eligible for batching.
+// It allows: known block tags, numeric block numbers, and block hashes.
+func isBlockRefEligibleForBatching(blockRef string) bool {
+	// Check known block tags (including pending, which is handled separately)
+	if allowedBlockTags[blockRef] || blockRef == "pending" {
+		return true
+	}
+
+	// Check if it's a numeric block number (decimal string after normalization)
+	if len(blockRef) > 0 && blockRef[0] >= '0' && blockRef[0] <= '9' {
+		return true
+	}
+
+	// Check if it's a block hash (0x + 64 hex chars = 66 chars total for 32 bytes)
+	if strings.HasPrefix(blockRef, "0x") && len(blockRef) == 66 {
+		return true
+	}
+
+	return false
 }
 
 // ExtractCallInfo extracts target and calldata from an eligible eth_call request.
