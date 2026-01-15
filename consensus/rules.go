@@ -817,6 +817,13 @@ var shortCircuitRules = []shortCircuitRule{
 			if best.Count < a.config.agreementThreshold {
 				return false
 			}
+			// Don't short-circuit when preferHighestValueFor is configured for this method;
+			// we need all responses to find the truly highest value.
+			if a.config.preferHighestValueFor != nil && a.method != "" {
+				if _, ok := a.config.preferHighestValueFor[a.method]; ok {
+					return false
+				}
+			}
 			// Don't short-circuit to an error under AcceptMostCommon when a preference
 			// could change the winner (PreferNonEmpty or PreferLargerResponses).
 			// We intentionally avoid early termination even if a non-empty/larger has
@@ -838,6 +845,13 @@ var shortCircuitRules = []shortCircuitRule{
 			// larger response can override a smaller above-threshold winner regardless of counts.
 			best := a.getBestByCount()
 			if a.hasRemaining() {
+				// Do not short-circuit when preferHighestValueFor is configured for this method;
+				// we need all responses to find the truly highest value.
+				if a.config.preferHighestValueFor != nil && a.method != "" {
+					if _, ok := a.config.preferHighestValueFor[a.method]; ok {
+						return false
+					}
+				}
 				// Do not short-circuit while PreferLargerResponses is enabled; a larger result
 				// arriving later may change the final decision even if the current leader is
 				// above threshold.
