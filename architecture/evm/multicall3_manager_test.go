@@ -26,17 +26,21 @@ func TestBatcherManagerGetOrCreate(t *testing.T) {
 
 	forwarder := &mockForwarder{}
 
-	// Get batcher for network
-	batcher1 := mgr.GetOrCreate("evm:1", cfg, forwarder)
+	// Get batcher for project+network
+	batcher1 := mgr.GetOrCreate("project1", "evm:1", cfg, forwarder, nil)
 	require.NotNil(t, batcher1)
 
-	// Same network should return same batcher
-	batcher2 := mgr.GetOrCreate("evm:1", cfg, forwarder)
+	// Same project+network should return same batcher
+	batcher2 := mgr.GetOrCreate("project1", "evm:1", cfg, forwarder, nil)
 	require.Same(t, batcher1, batcher2)
 
-	// Different network should return different batcher
-	batcher3 := mgr.GetOrCreate("evm:137", cfg, forwarder)
+	// Different network (same project) should return different batcher
+	batcher3 := mgr.GetOrCreate("project1", "evm:137", cfg, forwarder, nil)
 	require.NotSame(t, batcher1, batcher3)
+
+	// Different project (same network) should return different batcher
+	batcher4 := mgr.GetOrCreate("project2", "evm:1", cfg, forwarder, nil)
+	require.NotSame(t, batcher1, batcher4)
 
 	mgr.Shutdown()
 }
@@ -62,7 +66,7 @@ func TestBatcherManagerConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			batchers[idx] = mgr.GetOrCreate("evm:1", cfg, forwarder)
+			batchers[idx] = mgr.GetOrCreate("project1", "evm:1", cfg, forwarder, nil)
 		}(i)
 	}
 	wg.Wait()
@@ -89,20 +93,24 @@ func TestBatcherManagerGet(t *testing.T) {
 	forwarder := &mockForwarder{}
 
 	// Get before create should return nil
-	batcher := mgr.Get("evm:1")
+	batcher := mgr.Get("project1", "evm:1")
 	require.Nil(t, batcher)
 
 	// Create batcher
-	created := mgr.GetOrCreate("evm:1", cfg, forwarder)
+	created := mgr.GetOrCreate("project1", "evm:1", cfg, forwarder, nil)
 	require.NotNil(t, created)
 
 	// Get after create should return the same batcher
-	retrieved := mgr.Get("evm:1")
+	retrieved := mgr.Get("project1", "evm:1")
 	require.Same(t, created, retrieved)
 
 	// Get for different network should return nil
-	other := mgr.Get("evm:137")
+	other := mgr.Get("project1", "evm:137")
 	require.Nil(t, other)
+
+	// Get for different project should return nil
+	otherProject := mgr.Get("project2", "evm:1")
+	require.Nil(t, otherProject)
 
 	mgr.Shutdown()
 }
@@ -120,16 +128,16 @@ func TestBatcherManagerShutdown(t *testing.T) {
 
 	forwarder := &mockForwarder{}
 
-	// Create multiple batchers
-	mgr.GetOrCreate("evm:1", cfg, forwarder)
-	mgr.GetOrCreate("evm:137", cfg, forwarder)
-	mgr.GetOrCreate("evm:42161", cfg, forwarder)
+	// Create multiple batchers across projects and networks
+	mgr.GetOrCreate("project1", "evm:1", cfg, forwarder, nil)
+	mgr.GetOrCreate("project1", "evm:137", cfg, forwarder, nil)
+	mgr.GetOrCreate("project2", "evm:1", cfg, forwarder, nil)
 
 	// Shutdown should clean up all batchers
 	mgr.Shutdown()
 
 	// After shutdown, batchers map should be empty
-	require.Nil(t, mgr.Get("evm:1"))
-	require.Nil(t, mgr.Get("evm:137"))
-	require.Nil(t, mgr.Get("evm:42161"))
+	require.Nil(t, mgr.Get("project1", "evm:1"))
+	require.Nil(t, mgr.Get("project1", "evm:137"))
+	require.Nil(t, mgr.Get("project2", "evm:1"))
 }

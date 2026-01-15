@@ -312,14 +312,16 @@ func ShouldFallbackMulticall3(err error) bool {
 		errStr := strings.ToLower(err.Error())
 		// Check for indicators that the multicall3 contract doesn't exist.
 		// Different providers use different error messages, so we match multiple patterns.
+		// NOTE: We intentionally do NOT include "execution reverted" as that pattern is too
+		// broad and would match legitimate contract reverts. Legitimate reverts should NOT
+		// trigger fallback - they would also revert when called individually.
 		contractUnavailablePatterns := []string{
 			"contract not found",
 			"no code at address",
-			"execution reverted",  // empty revert from non-existent contract
 			"code is empty",
 			"not a contract",
-			"invalid opcode",      // can indicate missing contract
-			"missing trie node",   // pre-deployment block query
+			"invalid opcode",    // can indicate missing contract
+			"missing trie node", // pre-deployment block query
 			"does not exist",
 			"account not found",
 		}

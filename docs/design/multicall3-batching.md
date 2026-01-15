@@ -1,6 +1,6 @@
 # Multicall3 Batching (Network-Level)
 
-Status: Proposed
+Status: Implemented
 
 ## Context
 The current Multicall3 batching lives in the HTTP batch handler. It only applies

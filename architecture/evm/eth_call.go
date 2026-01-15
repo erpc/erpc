@@ -22,6 +22,14 @@ func GetBatcherManager() *BatcherManager {
 	return globalBatcherManager
 }
 
+// ShutdownBatcherManager shuts down the global batcher manager.
+// Should be called during application shutdown.
+func ShutdownBatcherManager() {
+	if globalBatcherManager != nil {
+		globalBatcherManager.Shutdown()
+	}
+}
+
 // networkForwarder wraps a Network to implement Forwarder interface.
 type networkForwarder struct {
 	network common.Network
@@ -31,6 +39,28 @@ func (f *networkForwarder) Forward(ctx context.Context, req *common.NormalizedRe
 	return f.network.Forward(ctx, req)
 }
 
+func (f *networkForwarder) SetCache(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	cache := f.network.Cache()
+	if cache == nil || cache.IsObjectNull() {
+		return nil
+	}
+	return cache.Set(ctx, req, resp)
+}
+
+// projectPreForward_eth_call is the pre-forward hook for eth_call requests.
+// It handles Multicall3 batching when enabled, aggregating multiple eth_call requests
+// into a single Multicall3 call for improved throughput.
+//
+// Returns:
+//   - handled: true if the request was handled (either batched or forwarded directly)
+//   - response: the response if handled, nil otherwise
+//   - error: any error that occurred
+//
+// The function will forward the request directly (bypassing batching) when:
+//   - Multicall3 aggregation is disabled in config
+//   - The request is not eligible for batching (has gas/value/from fields, etc.)
+//   - The batcher queue is full or at capacity
+//   - The request's deadline is too tight for batching
 func projectPreForward_eth_call(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	jrq, err := nq.JsonRpcRequest()
 	if err != nil {
@@ -64,9 +94,15 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 	aggCfg := cfg.Evm.Multicall3Aggregation
 
 	// Check eligibility for batching
-	eligible, _ := IsEligibleForBatching(nq, aggCfg)
+	eligible, reason := IsEligibleForBatching(nq, aggCfg)
 	if !eligible {
 		// Not eligible, forward normally
+		if logger := network.Logger(); logger != nil {
+			logger.Debug().
+				Str("reason", reason).
+				Str("method", "eth_call").
+				Msg("request not eligible for multicall3 batching")
+		}
 		resp, err := network.Forward(ctx, nq)
 		return true, resp, err
 	}
@@ -97,10 +133,15 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 		UserId:        userId,
 	}
 
-	// Get or create batcher for this network
+	// Get or create batcher for this project+network
 	mgr := GetBatcherManager()
 	forwarder := &networkForwarder{network: network}
-	batcher := mgr.GetOrCreate(network.Id(), aggCfg, forwarder)
+	batcher := mgr.GetOrCreate(projectId, network.Id(), aggCfg, forwarder, network.Logger())
+	if batcher == nil {
+		// Batching disabled, forward normally
+		resp, err := network.Forward(ctx, nq)
+		return true, resp, err
+	}
 
 	// Enqueue request
 	entry, bypass, err := batcher.Enqueue(ctx, key, nq)

@@ -449,19 +449,31 @@ var (
 		Namespace: "erpc",
 		Name:      "multicall3_queue_len",
 		Help:      "Current number of requests queued for batching.",
-	}, []string{"network"})
+	}, []string{"project", "network"})
 
 	MetricMulticall3QueueOverflowTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "multicall3_queue_overflow_total",
 		Help:      "Total number of requests that bypassed batching due to queue overflow.",
-	}, []string{"network", "reason"})
+	}, []string{"project", "network", "reason"})
 
 	MetricMulticall3DedupeTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "multicall3_dedupe_total",
 		Help:      "Total number of deduplicated requests within batches.",
 	}, []string{"project", "network"})
+
+	MetricMulticall3CacheWriteErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_write_errors_total",
+		Help:      "Total number of per-call cache write errors in multicall3 batch responses.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3FallbackRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_fallback_requests_total",
+		Help:      "Total number of individual requests during multicall3 fallback, labeled by outcome.",
+	}, []string{"project", "network", "outcome"})
 )
 
 var DefaultHistogramBuckets = []float64{

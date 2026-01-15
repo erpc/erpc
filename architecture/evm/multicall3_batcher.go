@@ -11,33 +11,59 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/rs/zerolog"
 )
 
 // Forwarder is the interface for forwarding requests through the network layer.
 type Forwarder interface {
 	Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+	// SetCache writes a response to the cache for a request.
+	// Returns nil if caching is disabled or not available.
+	SetCache(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error
 }
 
 // Batcher aggregates eth_call requests into Multicall3 batches.
 type Batcher struct {
-	cfg       *common.Multicall3AggregationConfig
-	forwarder Forwarder
-	batches   map[string]*Batch // keyed by BatchingKey.String()
-	mu        sync.RWMutex
-	queueSize int64 // counter for backpressure
-	shutdown  chan struct{}
-	wg        sync.WaitGroup
+	cfg          *common.Multicall3AggregationConfig
+	forwarder    Forwarder
+	logger       *zerolog.Logger
+	batches      map[string]*Batch // keyed by BatchingKey.String()
+	mu           sync.RWMutex
+	queueSize    int64 // counter for backpressure
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
+	wg           sync.WaitGroup
 }
 
 // NewBatcher creates a new Multicall3 batcher.
-func NewBatcher(cfg *common.Multicall3AggregationConfig, forwarder Forwarder) *Batcher {
+// Returns nil if cfg is nil or disabled - callers should check the return value.
+// The logger parameter is optional (can be nil) - if nil, debug logging is disabled.
+func NewBatcher(cfg *common.Multicall3AggregationConfig, forwarder Forwarder, logger *zerolog.Logger) *Batcher {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
 	b := &Batcher{
 		cfg:       cfg,
 		forwarder: forwarder,
+		logger:    logger,
 		batches:   make(map[string]*Batch),
 		shutdown:  make(chan struct{}),
 	}
 	return b
+}
+
+// logBypass logs a debug message when a request bypasses batching.
+// Does nothing if logger is nil.
+func (b *Batcher) logBypass(key BatchingKey, reason string) {
+	if b.logger == nil {
+		return
+	}
+	b.logger.Debug().
+		Str("reason", reason).
+		Str("projectId", key.ProjectId).
+		Str("networkId", key.NetworkId).
+		Str("blockRef", key.BlockRef).
+		Msg("request bypassing multicall3 batching")
 }
 
 // Enqueue adds a request to a batch. Returns:
@@ -48,12 +74,14 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	// Extract call info
 	target, callData, _, err := ExtractCallInfo(req)
 	if err != nil {
+		b.logBypass(key, fmt.Sprintf("extract_call_info_error: %v", err))
 		return nil, true, err
 	}
 
 	// Derive call key for deduplication
 	callKey, err := DeriveCallKey(req)
 	if err != nil {
+		b.logBypass(key, fmt.Sprintf("derive_call_key_error: %v", err))
 		return nil, true, err
 	}
 
@@ -67,7 +95,7 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	now := time.Now()
 	minWait := time.Duration(b.cfg.MinWaitMs) * time.Millisecond
 	if deadline.Before(now.Add(minWait)) {
-		// Deadline too tight, bypass batching
+		b.logBypass(key, "deadline_too_tight")
 		return nil, true, nil
 	}
 
@@ -76,14 +104,16 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 
 	// Check caps
 	if b.queueSize >= int64(b.cfg.MaxQueueSize) {
-		telemetry.MetricMulticall3QueueOverflowTotal.WithLabelValues(key.NetworkId, "queue_full").Inc()
-		return nil, true, nil // bypass: queue full
+		telemetry.MetricMulticall3QueueOverflowTotal.WithLabelValues(key.ProjectId, key.NetworkId, "queue_full").Inc()
+		b.logBypass(key, "queue_full")
+		return nil, true, nil
 	}
 	if len(b.batches) >= b.cfg.MaxPendingBatches {
 		// Check if this is a new batch key
 		if _, exists := b.batches[key.String()]; !exists {
-			telemetry.MetricMulticall3QueueOverflowTotal.WithLabelValues(key.NetworkId, "max_batches").Inc()
-			return nil, true, nil // bypass: too many pending batches
+			telemetry.MetricMulticall3QueueOverflowTotal.WithLabelValues(key.ProjectId, key.NetworkId, "max_batches").Inc()
+			b.logBypass(key, "max_pending_batches")
+			return nil, true, nil
 		}
 	}
 
@@ -91,6 +121,11 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	keyStr := key.String()
 	batch, exists := b.batches[keyStr]
 	if !exists {
+		// If OnlyIfPending is true, bypass batching when no batch is pending
+		if b.cfg.OnlyIfPending {
+			b.logBypass(key, "only_if_pending_no_batch")
+			return nil, true, nil
+		}
 		flushTime := now.Add(time.Duration(b.cfg.WindowMs) * time.Millisecond)
 		batch = NewBatch(key, flushTime)
 		b.batches[keyStr] = batch
@@ -104,6 +139,12 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	batch.mu.Lock()
 	if batch.Flushing {
 		batch.mu.Unlock()
+		// If OnlyIfPending is true, bypass batching since the current batch is flushing
+		// and we'd need to create a new one
+		if b.cfg.OnlyIfPending {
+			b.logBypass(key, "only_if_pending_batch_flushing")
+			return nil, true, nil
+		}
 		// Create new batch for this key
 		flushTime := now.Add(time.Duration(b.cfg.WindowMs) * time.Millisecond)
 		batch = NewBatch(key, flushTime)
@@ -120,7 +161,8 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	if _, isDupe := batch.CallKeys[callKey]; !isDupe {
 		if uniqueCalls >= b.cfg.MaxCalls {
 			batch.mu.Unlock()
-			return nil, true, nil // bypass: batch full
+			b.logBypass(key, "batch_full")
+			return nil, true, nil
 		}
 	}
 
@@ -134,7 +176,8 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	if _, isDupe := batch.CallKeys[callKey]; !isDupe {
 		if currentSize+len(callData) > b.cfg.MaxCalldataBytes {
 			batch.mu.Unlock()
-			return nil, true, nil // bypass: calldata too large
+			b.logBypass(key, "calldata_too_large")
+			return nil, true, nil
 		}
 	}
 
@@ -164,11 +207,17 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 		if batch.FlushTime.Before(minFlush) {
 			batch.FlushTime = minFlush
 		}
+		// Notify the flush goroutine that FlushTime was shortened
+		select {
+		case batch.notifyCh <- struct{}{}:
+		default:
+			// Already has a pending notification
+		}
 	}
 
 	batch.mu.Unlock()
 	b.queueSize++
-	telemetry.MetricMulticall3QueueLen.WithLabelValues(key.NetworkId).Inc()
+	telemetry.MetricMulticall3QueueLen.WithLabelValues(key.ProjectId, key.NetworkId).Inc()
 
 	return entry, false, nil
 }
@@ -193,8 +242,14 @@ func (b *Batcher) scheduleFlush(keyStr string, batch *Batch) {
 		case <-timer.C:
 			b.flush(keyStr, batch)
 			return
+		case <-batch.notifyCh:
+			// FlushTime was shortened, stop current timer and recalculate
+			timer.Stop()
+			continue
 		case <-b.shutdown:
 			timer.Stop()
+			// On shutdown, flush the batch with error to avoid orphaned entries
+			b.flushWithShutdownError(keyStr, batch)
 			return
 		}
 	}
@@ -227,7 +282,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	b.mu.Unlock()
 
 	// Decrement queue length metric
-	telemetry.MetricMulticall3QueueLen.WithLabelValues(batch.Key.NetworkId).Sub(float64(len(entries)))
+	telemetry.MetricMulticall3QueueLen.WithLabelValues(batch.Key.ProjectId, batch.Key.NetworkId).Sub(float64(len(entries)))
 
 	if len(entries) == 0 {
 		return
@@ -292,9 +347,24 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	// Mark request as composite type for metrics/tracing
 	mcReq.SetCompositeType(common.CompositeTypeMulticall3)
 
-	// Use any entry context (they all share same project/network)
-	ctx := entries[0].Ctx
-	if ctx == nil {
+	// Create a context with the earliest deadline from all entries.
+	// We don't use a single entry's context to avoid canceling the whole batch
+	// if one entry's context is canceled.
+	var earliestDeadline time.Time
+	for _, entry := range entries {
+		if entry.Deadline.IsZero() {
+			continue
+		}
+		if earliestDeadline.IsZero() || entry.Deadline.Before(earliestDeadline) {
+			earliestDeadline = entry.Deadline
+		}
+	}
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if !earliestDeadline.IsZero() {
+		ctx, cancel = context.WithDeadline(context.Background(), earliestDeadline)
+		defer cancel()
+	} else {
 		ctx = context.Background()
 	}
 
@@ -303,8 +373,13 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	if err != nil {
 		// Check if we should fallback to individual requests
 		if ShouldFallbackMulticall3(err) {
-			b.fallbackIndividual(entries)
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkId, "forward_error").Inc()
+			b.fallbackIndividual(entries, projectId, networkId)
 			return
+		}
+		// Wrap context errors with batching context for better debugging (after fallback check)
+		if ctx.Err() != nil {
+			err = fmt.Errorf("multicall3 batch forward failed (batch size: %d): %w", len(uniqueCalls), err)
 		}
 		b.deliverError(entries, err)
 		return
@@ -315,7 +390,8 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	if err != nil {
 		// Check if we should fallback to individual requests
 		if ShouldFallbackMulticall3(err) {
-			b.fallbackIndividual(entries)
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkId, "decode_error").Inc()
+			b.fallbackIndividual(entries, projectId, networkId)
 			return
 		}
 		b.deliverError(entries, err)
@@ -328,6 +404,9 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 		return
 	}
 
+	// Check if per-call caching is enabled (defaults to true)
+	cachePerCall := b.cfg.CachePerCall == nil || *b.cfg.CachePerCall
+
 	// Map results to entries, fanning out deduplicated results
 	for i, uc := range uniqueCalls {
 		result := results[i]
@@ -336,17 +415,41 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 		if result.Success {
 			// Build success response for each entry
 			resultHex := "0x" + hex.EncodeToString(result.ReturnData)
+
+			// For per-call caching, we only need to cache once per unique call
+			// Use the first entry's request for the cache write
+			var cachedOnce bool
+
 			for _, entry := range entriesForCall {
 				jrr, err := common.NewJsonRpcResponse(entry.Request.ID(), resultHex, nil)
 				if err != nil {
-					entry.ResultCh <- BatchResult{Error: err}
+					b.sendResult(entry, BatchResult{Error: err})
 					continue
 				}
 				resp := common.NewNormalizedResponse().WithRequest(entry.Request).WithJsonRpcResponse(jrr)
 				// Propagate upstream metadata from multicall response
 				resp.SetUpstream(mcResp.Upstream())
 				resp.SetFromCache(mcResp.FromCache())
-				entry.ResultCh <- BatchResult{Response: resp}
+
+				// Write to cache once per unique call (not once per duplicate entry)
+				if cachePerCall && !cachedOnce {
+					// Use background context for cache write to avoid request deadline issues
+					if err := b.forwarder.SetCache(context.Background(), entry.Request, resp); err != nil {
+						// Cache write failures are non-critical but we track them for observability
+						telemetry.MetricMulticall3CacheWriteErrorsTotal.WithLabelValues(projectId, networkId).Inc()
+						if b.logger != nil {
+							b.logger.Debug().
+								Err(err).
+								Str("projectId", projectId).
+								Str("networkId", networkId).
+								Str("callKey", uc.callKey).
+								Msg("multicall3 per-call cache write failed")
+						}
+					}
+					cachedOnce = true
+				}
+
+				b.sendResult(entry, BatchResult{Response: resp})
 			}
 		} else {
 			// Build error for reverted call with proper JSON-RPC format
@@ -365,7 +468,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 				),
 			)
 			for _, entry := range entriesForCall {
-				entry.ResultCh <- BatchResult{Error: revertErr}
+				b.sendResult(entry, BatchResult{Error: revertErr})
 			}
 		}
 	}
@@ -412,29 +515,60 @@ func (b *Batcher) decodeMulticallResponse(resp *common.NormalizedResponse) ([]Mu
 	return DecodeMulticall3Aggregate3Result(resultBytes)
 }
 
+// sendResult safely sends a result to an entry, skipping if context is cancelled.
+// Returns true if sent, false if skipped due to cancelled context.
+func (b *Batcher) sendResult(entry *BatchEntry, result BatchResult) bool {
+	// Check if the entry's context is cancelled - no point sending if caller has given up
+	select {
+	case <-entry.Ctx.Done():
+		return false // Caller abandoned request, skip sending
+	default:
+	}
+	// ResultCh is buffered size 1, so this won't block
+	entry.ResultCh <- result
+	return true
+}
+
 // deliverError sends an error to all entries in a batch.
+// Skips entries whose context has been cancelled.
 func (b *Batcher) deliverError(entries []*BatchEntry, err error) {
 	result := BatchResult{Error: err}
 	for _, entry := range entries {
-		select {
-		case entry.ResultCh <- result:
-		default:
-		}
+		b.sendResult(entry, result)
 	}
 }
 
 // fallbackIndividual forwards each entry individually when multicall3 fails.
-// Uses parallel goroutines for concurrent forwarding.
-func (b *Batcher) fallbackIndividual(entries []*BatchEntry) {
+// Uses parallel goroutines for concurrent forwarding with panic recovery.
+// Records metrics for each fallback request outcome.
+func (b *Batcher) fallbackIndividual(entries []*BatchEntry, projectId, networkId string) {
 	var wg sync.WaitGroup
 	for _, entry := range entries {
 		wg.Add(1)
 		go func(e *BatchEntry) {
 			defer wg.Done()
-			resp, err := b.forwarder.Forward(e.Ctx, e.Request)
+			defer func() {
+				if r := recover(); r != nil {
+					// Panic in forwarder - send error to entry
+					err := fmt.Errorf("panic in fallback forward: %v", r)
+					b.sendResult(e, BatchResult{Error: err})
+					telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "panic").Inc()
+				}
+			}()
+			// Skip if context is already cancelled
 			select {
-			case e.ResultCh <- BatchResult{Response: resp, Error: err}:
+			case <-e.Ctx.Done():
+				b.sendResult(e, BatchResult{Error: e.Ctx.Err()})
+				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "cancelled").Inc()
+				return
 			default:
+			}
+			resp, err := b.forwarder.Forward(e.Ctx, e.Request)
+			b.sendResult(e, BatchResult{Response: resp, Error: err})
+			if err != nil {
+				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "error").Inc()
+			} else {
+				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "success").Inc()
 			}
 		}(entry)
 	}
@@ -442,9 +576,50 @@ func (b *Batcher) fallbackIndividual(entries []*BatchEntry) {
 }
 
 // Shutdown stops the batcher and waits for pending operations.
+// Safe to call multiple times.
 func (b *Batcher) Shutdown() {
-	close(b.shutdown)
+	b.shutdownOnce.Do(func() {
+		close(b.shutdown)
+	})
 	b.wg.Wait()
+}
+
+// flushWithShutdownError delivers shutdown errors to all pending entries.
+func (b *Batcher) flushWithShutdownError(keyStr string, batch *Batch) {
+	batch.mu.Lock()
+	if batch.Flushing {
+		batch.mu.Unlock()
+		return
+	}
+	batch.Flushing = true
+	entries := batch.Entries
+	batch.mu.Unlock()
+
+	// Remove from active batches
+	b.mu.Lock()
+	if b.batches[keyStr] == batch {
+		delete(b.batches, keyStr)
+	}
+	entriesLen := int64(len(entries))
+	if b.queueSize >= entriesLen {
+		b.queueSize -= entriesLen
+	} else {
+		b.queueSize = 0
+	}
+	b.mu.Unlock()
+
+	// Decrement queue length metric
+	telemetry.MetricMulticall3QueueLen.WithLabelValues(batch.Key.ProjectId, batch.Key.NetworkId).Sub(float64(len(entries)))
+
+	// Deliver shutdown error to all entries
+	shutdownErr := common.NewErrJsonRpcExceptionInternal(
+		0,
+		common.JsonRpcErrorServerSideException,
+		"batcher shutting down",
+		nil,
+		nil,
+	)
+	b.deliverError(entries, shutdownErr)
 }
 
 // DirectivesKeyVersion should be bumped when the set of directives
@@ -512,14 +687,14 @@ func DeriveCallKey(req *common.NormalizedRequest) (string, error) {
 
 // BatchEntry represents a request waiting in a batch.
 type BatchEntry struct {
-	Ctx       context.Context
-	Request   *common.NormalizedRequest
-	CallKey   string
-	Target    []byte
-	CallData  []byte
-	ResultCh  chan BatchResult
-	CreatedAt time.Time
-	Deadline  time.Time
+	Ctx       context.Context             // Original request context (for individual fallback)
+	Request   *common.NormalizedRequest   // The original eth_call request
+	CallKey   string                      // Deduplication key (target + calldata + blockRef)
+	Target    []byte                      // Contract address (20 bytes)
+	CallData  []byte                      // Encoded function call data
+	ResultCh  chan BatchResult            // Channel to receive the result (buffered, size 1)
+	CreatedAt time.Time                   // When the entry was created (for wait time metrics)
+	Deadline  time.Time                   // Deadline from context (for deadline-aware flushing)
 }
 
 // BatchResult is the outcome delivered to a waiting request.
@@ -529,13 +704,15 @@ type BatchResult struct {
 }
 
 // Batch holds pending requests for a single batching key.
+// All entries in a batch share the same project, network, block reference, directives, and user ID.
 type Batch struct {
-	Key       BatchingKey
-	Entries   []*BatchEntry
-	CallKeys  map[string][]*BatchEntry // for deduplication
-	FlushTime time.Time
-	Flushing  bool
-	mu        sync.Mutex
+	Key       BatchingKey                // Composite key identifying this batch
+	Entries   []*BatchEntry              // All entries (may include duplicates)
+	CallKeys  map[string][]*BatchEntry   // Map from call key to entries (for deduplication)
+	FlushTime time.Time                  // When this batch should be flushed (deadline-aware)
+	Flushing  bool                       // True once flush has started (prevents double-flush)
+	notifyCh  chan struct{}              // Signals flush time was shortened (buffered, size 1)
+	mu        sync.Mutex                 // Protects all fields
 }
 
 func NewBatch(key BatchingKey, flushTime time.Time) *Batch {
@@ -544,6 +721,7 @@ func NewBatch(key BatchingKey, flushTime time.Time) *Batch {
 		Entries:   make([]*BatchEntry, 0, 16),
 		CallKeys:  make(map[string][]*BatchEntry),
 		FlushTime: flushTime,
+		notifyCh:  make(chan struct{}, 1),
 	}
 }
 

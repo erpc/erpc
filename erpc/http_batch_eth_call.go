@@ -247,12 +247,8 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		nq.EnrichFromHttp(headers, queryArgs, uaMode)
 		rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
+		// Acquire project rate limit early (for billing/analytics purposes)
 		if err := project.acquireRateLimitPermit(requestCtx, nq); err != nil {
-			responses[i] = processErrorBody(&rlg, startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
-			common.EndRequestSpan(requestCtx, nil, err)
-			continue
-		}
-		if err := network.acquireRateLimitPermit(requestCtx, nq); err != nil {
 			responses[i] = processErrorBody(&rlg, startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 			common.EndRequestSpan(requestCtx, nil, err)
 			continue
@@ -283,12 +279,18 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	}
 
 	// Check cache for individual requests before aggregating
+	// Respects skip-cache-read directive - requests with this directive skip cache probe
 	cacheDal := network.CacheDal()
 	var uncachedCandidates []ethCallBatchCandidate
 	if cacheDal != nil && !cacheDal.IsObjectNull() {
 		uncachedCandidates = make([]ethCallBatchCandidate, 0, len(candidates))
 		cacheHits := 0
 		for _, cand := range candidates {
+			// Respect skip-cache-read directive - if set, skip cache probe entirely
+			if cand.req.SkipCacheRead() {
+				uncachedCandidates = append(uncachedCandidates, cand)
+				continue
+			}
 			cachedResp, err := cacheDal.Get(cand.ctx, cand.req)
 			if err == nil && cachedResp != nil && !cachedResp.IsObjectNull(cand.ctx) {
 				// Cache hit - use cached response directly
@@ -319,6 +321,24 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		return true
 	}
 
+	// Acquire network rate limits only for uncached requests that will hit the network
+	// This prevents wasting rate limit permits on cache hits
+	var rateLimitedCandidates []ethCallBatchCandidate
+	for _, cand := range candidates {
+		if err := network.acquireRateLimitPermit(cand.ctx, cand.req); err != nil {
+			responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, err, s.serverCfg.IncludeErrorDetails)
+			common.EndRequestSpan(cand.ctx, nil, err)
+			continue
+		}
+		rateLimitedCandidates = append(rateLimitedCandidates, cand)
+	}
+	candidates = rateLimitedCandidates
+
+	// All uncached requests were rate limited
+	if len(candidates) == 0 {
+		return true
+	}
+
 	if len(candidates) < 2 {
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
@@ -339,6 +359,10 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
 		return true
 	}
+
+	// Mark as composite to disable hedging - multicall3 requests should not be
+	// hedged like normal requests as this would create duplicate batches
+	mcReq.SetCompositeType(common.CompositeTypeMulticall3)
 
 	mcCtx := withSkipNetworkRateLimit(httpCtx)
 	mcResp, mcErr := forwardBatchNetwork(mcCtx, network, mcReq)

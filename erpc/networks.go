@@ -895,6 +895,10 @@ func (n *Network) CacheDal() common.CacheDAL {
 	return n.cacheDal
 }
 
+func (n *Network) Cache() common.CacheDAL {
+	return n.cacheDal
+}
+
 func (n *Network) AppCtx() context.Context {
 	return n.appCtx
 }

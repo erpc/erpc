@@ -435,9 +435,9 @@ func TestShouldFallbackMulticall3(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "execution exception with execution reverted",
+			name: "execution exception with execution reverted - no fallback",
 			err:  common.NewErrEndpointExecutionException(errors.New("execution reverted")),
-			want: true,
+			want: false, // Generic reverts should NOT trigger fallback - they would also revert individually
 		},
 		{
 			name: "execution exception with code is empty",

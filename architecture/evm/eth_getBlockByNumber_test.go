@@ -70,6 +70,10 @@ func (t *testNetwork) GetFinality(ctx context.Context, req *common.NormalizedReq
 	return common.DataFinalityStateFinalized
 }
 
+func (t *testNetwork) Cache() common.CacheDAL {
+	return nil
+}
+
 func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 	t.Run("TaggedBlockWithEnforcementDisabled_ReturnsNull", func(t *testing.T) {
 		// Create a request with a block tag ("pending") and directive disabled

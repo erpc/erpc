@@ -44,6 +44,7 @@ func (m *mockNetworkForEthCall) GetFinality(ctx context.Context, req *common.Nor
 func (m *mockNetworkForEthCall) EvmHighestLatestBlockNumber(ctx context.Context) int64    { return 0 }
 func (m *mockNetworkForEthCall) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 { return 0 }
 func (m *mockNetworkForEthCall) EvmLeaderUpstream(ctx context.Context) common.Upstream    { return nil }
+func (m *mockNetworkForEthCall) Cache() common.CacheDAL                                   { return nil }
 
 func (m *mockNetworkForEthCall) GetCallCount() int {
 	m.mu.Lock()
