@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -362,4 +363,144 @@ func TestHandleEthCallBatchAggregation_SuccessAndFailureResults(t *testing.T) {
 	errMap, ok := errResp.Error.(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "0x"+hex.EncodeToString(results[1].ReturnData), errMap["data"])
+}
+
+func TestHandleEthCallBatchAggregation_CacheHits(t *testing.T) {
+	t.Run("all cached - no multicall3 call", func(t *testing.T) {
+		cfg := baseBatchConfig()
+		server, project, network, ctx, cleanup := setupBatchHandlerWithCache(t, cfg)
+		defer cleanup()
+
+		// Set up mock cache
+		mockCache := &common.MockCacheDal{}
+		network.cacheDal = mockCache
+
+		// Create cached responses
+		cachedResp1 := createCachedResponse(t, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`)), "0xcached1")
+		cachedResp2 := createCachedResponse(t, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`)), "0xcached2")
+
+		// Mock cache hits for both requests
+		mockCache.On("Get", mock.Anything, mock.Anything).Return(cachedResp1, nil).Once()
+		mockCache.On("Get", mock.Anything, mock.Anything).Return(cachedResp2, nil).Once()
+
+		// Track if multicall3 was called (it shouldn't be)
+		multicall3Called := false
+		withBatchStubs(t,
+			func(ctx context.Context, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				multicall3Called = true
+				return nil, errors.New("should not be called")
+			},
+			nil,
+			nil,
+		)
+
+		handled, responses := runHandle(t, ctx, server, project, defaultBatchInfo(), validBatchRequests(t), nil)
+		require.True(t, handled)
+		require.False(t, multicall3Called, "multicall3 should not be called when all requests are cached")
+		require.Len(t, responses, 2)
+
+		// Verify both responses are from cache
+		for i, resp := range responses {
+			nr, ok := resp.(*common.NormalizedResponse)
+			require.True(t, ok, "response %d should be NormalizedResponse", i)
+			assert.True(t, nr.FromCache(), "response %d should be from cache", i)
+		}
+
+		mockCache.AssertExpectations(t)
+	})
+
+	t.Run("mixed cached and uncached", func(t *testing.T) {
+		cfg := baseBatchConfig()
+		server, project, network, ctx, cleanup := setupBatchHandlerWithCache(t, cfg)
+		defer cleanup()
+
+		// Set up mock cache - first request cached, second not
+		mockCache := &common.MockCacheDal{}
+		network.cacheDal = mockCache
+
+		// Create cached response for first request
+		cachedResp := createCachedResponse(t, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x"},"latest"]}`)), "0xcached_first")
+
+		// First request - cache hit, second request - cache miss
+		mockCache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
+		mockCache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
+
+		// Cache set should be called for the uncached request
+		mockCache.On("Set", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+		// Only the second (uncached) request should go through multicall3
+		// But since we only have 1 uncached request, it falls back to individual forwarding
+		withBatchStubs(t,
+			nil,
+			func(ctx context.Context, project *PreparedProject, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				// This is the fallback for single uncached request
+				return fallbackResponse(t, req), nil
+			},
+			nil,
+		)
+
+		handled, responses := runHandle(t, ctx, server, project, defaultBatchInfo(), validBatchRequests(t), nil)
+		require.True(t, handled)
+		require.Len(t, responses, 2)
+
+		// First response should be from cache
+		resp0, ok := responses[0].(*common.NormalizedResponse)
+		require.True(t, ok)
+		assert.True(t, resp0.FromCache())
+
+		// Second response should be from fallback (not cache)
+		_, ok = responses[1].(*common.NormalizedResponse)
+		require.True(t, ok)
+
+		mockCache.AssertExpectations(t)
+	})
+
+	t.Run("cache write after successful multicall3", func(t *testing.T) {
+		cfg := baseBatchConfig()
+		server, project, network, ctx, cleanup := setupBatchHandlerWithCache(t, cfg)
+		defer cleanup()
+
+		// Set up mock cache - all cache misses
+		mockCache := &common.MockCacheDal{}
+		network.cacheDal = mockCache
+
+		mockCache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Times(2)
+
+		// Expect cache Set to be called for each successful response
+		setCalled := make(chan struct{}, 2)
+		mockCache.On("Set", mock.Anything, mock.Anything, mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+			setCalled <- struct{}{}
+		}).Times(2)
+
+		results := []evm.Multicall3Result{
+			{Success: true, ReturnData: []byte{0xaa}},
+			{Success: true, ReturnData: []byte{0xbb}},
+		}
+		resultHex := encodeAggregate3Results(results)
+
+		withBatchStubs(t,
+			func(ctx context.Context, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jrr := mustJsonRpcResponse(t, 1, resultHex, nil)
+				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+			},
+			nil,
+			nil,
+		)
+
+		handled, responses := runHandle(t, ctx, server, project, defaultBatchInfo(), validBatchRequests(t), nil)
+		require.True(t, handled)
+		require.Len(t, responses, 2)
+
+		// Wait for async cache writes (with timeout)
+		for i := 0; i < 2; i++ {
+			select {
+			case <-setCalled:
+				// Good, cache set was called
+			case <-time.After(2 * time.Second):
+				t.Fatal("timeout waiting for cache Set to be called")
+			}
+		}
+
+		mockCache.AssertExpectations(t)
+	})
 }

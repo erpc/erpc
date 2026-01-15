@@ -273,3 +273,22 @@ func encodeBytes(data []byte) []byte {
 	}
 	return out
 }
+
+func setupBatchHandlerWithCache(t *testing.T, cfg *common.Config) (*HttpServer, *PreparedProject, *Network, context.Context, func()) {
+	t.Helper()
+	server, project, ctx, cleanup := setupBatchHandler(t, cfg)
+
+	network, err := project.GetNetwork(ctx, "evm:123")
+	require.NoError(t, err)
+
+	return server, project, network, ctx, cleanup
+}
+
+func createCachedResponse(t *testing.T, req *common.NormalizedRequest, result string) *common.NormalizedResponse {
+	t.Helper()
+	jrr, err := common.NewJsonRpcResponse(req.ID(), result, nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	resp.SetFromCache(true)
+	return resp
+}
