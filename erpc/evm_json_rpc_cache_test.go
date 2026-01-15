@@ -2030,6 +2030,10 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		},
 	}
 
+	// Set up gock mocks for upstream state poller HTTP requests
+	util.SetupMocksForEvmStatePoller()
+	defer util.ResetGock()
+
 	// Create test upstreams with different finalized blocks
 	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
 
