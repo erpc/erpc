@@ -2397,6 +2397,10 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 		},
 	}
 
+	// Set up gock mocks for upstream state poller HTTP requests
+	util.SetupMocksForEvmStatePoller()
+	defer util.ResetGock()
+
 	// Create test upstream with finalized blocks
 	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
 
