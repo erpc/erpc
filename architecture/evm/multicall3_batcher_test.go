@@ -1510,3 +1510,209 @@ func TestBatcher_DuplicateCallsShareResult(t *testing.T) {
 	require.Equal(t, 1, forwarder.called)
 	forwarder.mu.Unlock()
 }
+
+// TestBatcher_ShutdownDuringActiveFlush verifies that shutdown during an active
+// flush delivers shutdown errors to pending entries and cleans up properly.
+func TestBatcher_ShutdownDuringActiveFlush(t *testing.T) {
+	// Create a forwarder that blocks to simulate a long-running flush
+	flushStarted := make(chan struct{})
+	flushBlock := make(chan struct{})
+
+	forwarder := &mockForwarderFunc{
+		forwardFunc: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			close(flushStarted) // Signal that flush has started
+			<-flushBlock        // Block until test unblocks
+			return nil, fmt.Errorf("should not reach here")
+		},
+	}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10,
+		MinWaitMs:              1,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Enqueue a request
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1111111111111111111111111111111111111111",
+			"data": "0x01020304",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.False(t, bypass)
+
+	// Wait for flush to start (forwarder called)
+	select {
+	case <-flushStarted:
+		// Good - flush has started
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timeout waiting for flush to start")
+	}
+
+	// Now enqueue another request for a DIFFERENT batch key
+	// This creates a new batch that hasn't started flushing yet
+	key2 := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "0x12345", // Different block ref = different batch
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	jrq2 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x2222222222222222222222222222222222222222",
+			"data": "0x05060708",
+		},
+		"0x12345",
+	})
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	entry2, bypass2, err2 := batcher.Enqueue(ctx, key2, req2)
+	require.NoError(t, err2)
+	require.False(t, bypass2)
+
+	// Call shutdown while first flush is blocked
+	// This should trigger flushWithShutdownError for the second batch
+	go func() {
+		time.Sleep(10 * time.Millisecond) // Give shutdown a head start
+		close(flushBlock)                 // Unblock the first flush
+	}()
+
+	batcher.Shutdown()
+
+	// The second entry should receive a shutdown error
+	select {
+	case result := <-entry2.ResultCh:
+		require.Error(t, result.Error)
+		require.Contains(t, result.Error.Error(), "shutting down")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for shutdown error on entry2")
+	}
+
+	// First entry gets error because forwarder returns error after unblock
+	select {
+	case result := <-entry.ResultCh:
+		// Either an error from forwarder or from shutdown is acceptable
+		require.Error(t, result.Error)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for result on entry1")
+	}
+}
+
+// TestBatcher_DoubleFlushPrevention verifies that concurrent flush calls
+// on the same batch don't result in double-processing (race condition test).
+func TestBatcher_DoubleFlushPrevention(t *testing.T) {
+	var forwardCallCount int64
+	var mu sync.Mutex
+
+	// Create a forwarder that counts calls
+	forwarder := &mockForwarderFunc{
+		forwardFunc: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			mu.Lock()
+			forwardCallCount++
+			mu.Unlock()
+
+			// Return multicall3 results with 1 successful call
+			results := []Multicall3Result{
+				{Success: true, ReturnData: []byte{0xaa, 0xbb}},
+			}
+			encodedResult := encodeAggregate3Results(results)
+			resultHex := "0x" + hex.EncodeToString(encodedResult)
+			jrr, _ := common.NewJsonRpcResponse(nil, resultHex, nil)
+			return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+		},
+	}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               1000, // Long window so we control when flush happens
+		MinWaitMs:              500,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Enqueue a request
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1111111111111111111111111111111111111111",
+			"data": "0x01020304",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.False(t, bypass)
+
+	// Get the batch directly from the batcher's internal map
+	keyStr := key.String()
+	batcher.mu.Lock()
+	batch := batcher.batches[keyStr]
+	batcher.mu.Unlock()
+	require.NotNil(t, batch, "batch should exist")
+
+	// Simulate concurrent flush calls (race condition scenario)
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			batcher.flush(keyStr, batch)
+		}()
+	}
+	wg.Wait()
+
+	// Verify forwarder was only called once (double-flush prevented)
+	mu.Lock()
+	finalCallCount := forwardCallCount
+	mu.Unlock()
+	require.Equal(t, int64(1), finalCallCount, "forwarder should only be called once despite concurrent flush attempts")
+
+	// Entry should receive exactly one result
+	select {
+	case result := <-entry.ResultCh:
+		require.NoError(t, result.Error)
+		require.NotNil(t, result.Response)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
