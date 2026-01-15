@@ -10,6 +10,8 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -27,25 +29,33 @@ func upstreamPostForward_eth_sendRawTransaction(
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_sendRawTransaction")
 	defer span.End()
 
+	lg := log.With().Str("component", "eth_sendRawTransaction").Str("network", n.Id()).Logger()
+
 	// Check if idempotent transaction broadcast is disabled
 	if cfg := n.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.IdempotentTransactionBroadcast != nil && !*cfg.Evm.IdempotentTransactionBroadcast {
 		span.SetAttributes(attribute.Bool("idempotent_broadcast_disabled", true))
+		lg.Debug().Msg("idempotent transaction broadcast is disabled, skipping")
 		return rs, re
 	}
 
 	// If there's no error, no special handling needed
 	if re == nil {
+		lg.Debug().Msg("no error from upstream, returning success as-is")
 		return rs, re
 	}
 
+	lg.Debug().Err(re).Msg("received error from upstream, checking for idempotency handling")
+
 	// Check if the error is a duplicate nonce error
 	if !common.HasErrorCode(re, common.ErrCodeEndpointNonceException) {
+		lg.Debug().Str("errorCode", string(common.ErrorCode(re.Error()))).Msg("error is not a nonce exception, returning original error")
 		return rs, re
 	}
 
 	// Extract the duplicate nonce reason from the error
 	var nonceErr *common.ErrEndpointNonceException
 	if !errors.As(re, &nonceErr) {
+		lg.Debug().Msg("could not extract nonce exception details, returning original error")
 		return rs, re
 	}
 
@@ -56,22 +66,25 @@ func upstreamPostForward_eth_sendRawTransaction(
 		}
 	}
 
+	lg.Debug().Str("nonceExceptionReason", string(reason)).Msg("detected nonce exception")
 	span.SetAttributes(attribute.String("nonce_exception_reason", string(reason)))
 
 	// Parse the transaction from request to get the txHash
 	txHash, err := extractTxHashFromSendRawTransaction(ctx, rq)
 	if err != nil {
 		span.SetAttributes(attribute.String("parse_error", err.Error()))
-		// If we can't parse the transaction, return the original error
+		lg.Debug().Err(err).Msg("failed to extract txHash from request, returning original error")
 		return rs, re
 	}
 
+	lg.Debug().Str("txHash", txHash).Msg("extracted txHash from raw transaction")
 	span.SetAttributes(attribute.String("tx_hash", txHash))
 
 	switch reason {
 	case common.NonceExceptionReasonAlreadyKnown:
 		// For "already known" errors, we can safely return success with the txHash
 		// because the same transaction is already in the mempool or has been processed
+		lg.Info().Str("txHash", txHash).Msg("converting 'already known' error to idempotent success")
 		return createSyntheticSuccessResponse(ctx, rq, txHash)
 
 	case common.NonceExceptionReasonNonceTooLow:
@@ -79,10 +92,11 @@ func upstreamPostForward_eth_sendRawTransaction(
 		// to distinguish between:
 		// - Same transaction already mined (idempotent success)
 		// - Different transaction with same nonce (error)
-		return verifyAndHandleNonceTooLow(ctx, u, rq, txHash, re)
+		lg.Debug().Str("txHash", txHash).Msg("verifying 'nonce too low' error by checking on-chain")
+		return verifyAndHandleNonceTooLow(ctx, u, rq, txHash, re, &lg)
 
 	default:
-		// Unknown reason, return original error
+		lg.Debug().Str("reason", string(reason)).Msg("unknown nonce exception reason, returning original error")
 		return rs, re
 	}
 }
@@ -157,6 +171,7 @@ func verifyAndHandleNonceTooLow(
 	rq *common.NormalizedRequest,
 	txHash string,
 	originalErr error,
+	lg *zerolog.Logger,
 ) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartDetailSpan(ctx, "verifyAndHandleNonceTooLow")
 	defer span.End()
@@ -171,6 +186,8 @@ func verifyAndHandleNonceTooLow(
 		txHash,
 	)))
 
+	lg.Debug().Str("txHash", txHash).Str("upstream", u.Id()).Msg("sending eth_getTransactionByHash to verify tx exists")
+
 	// Forward the request to the same upstream
 	resp, err := u.Forward(ctx, getTxReq, true)
 	if resp != nil {
@@ -178,14 +195,14 @@ func verifyAndHandleNonceTooLow(
 	}
 	if err != nil {
 		span.SetAttributes(attribute.String("forward_error", err.Error()))
-		// If we can't verify, return the original error
+		lg.Debug().Err(err).Str("txHash", txHash).Msg("failed to verify tx on-chain, returning original error")
 		return nil, createNormalizedNonceTooLowError(originalErr)
 	}
 
 	// Check if the transaction was found
 	if resp == nil || resp.IsResultEmptyish() {
 		span.SetAttributes(attribute.Bool("tx_found", false))
-		// Transaction not found - this is a different transaction with same nonce
+		lg.Debug().Str("txHash", txHash).Msg("tx NOT found on-chain - different tx with same nonce, returning error")
 		return nil, createNormalizedNonceTooLowError(originalErr)
 	}
 
@@ -193,18 +210,21 @@ func verifyAndHandleNonceTooLow(
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		span.SetAttributes(attribute.String("parse_response_error", err.Error()))
+		lg.Debug().Err(err).Str("txHash", txHash).Msg("failed to parse verification response, returning original error")
 		return nil, createNormalizedNonceTooLowError(originalErr)
 	}
 
 	// Parse the transaction response to verify it matches
 	if jrr == nil || jrr.Error != nil {
 		span.SetAttributes(attribute.Bool("response_has_error", true))
+		lg.Debug().Str("txHash", txHash).Msg("verification response has error, returning original error")
 		return nil, createNormalizedNonceTooLowError(originalErr)
 	}
 
 	// The transaction exists on-chain with the same hash, so this is idempotent
 	span.SetAttributes(attribute.Bool("tx_found", true))
 	span.SetAttributes(attribute.Bool("idempotent_success", true))
+	lg.Info().Str("txHash", txHash).Msg("tx FOUND on-chain - converting 'nonce too low' to idempotent success")
 
 	return createSyntheticSuccessResponse(ctx, rq, txHash)
 }
