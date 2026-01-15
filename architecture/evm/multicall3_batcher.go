@@ -11,6 +11,236 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+// Forwarder is the interface for forwarding requests through the network layer.
+type Forwarder interface {
+	Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+}
+
+// Batcher aggregates eth_call requests into Multicall3 batches.
+type Batcher struct {
+	cfg       *common.Multicall3AggregationConfig
+	forwarder Forwarder
+	batches   map[string]*Batch // keyed by BatchingKey.String()
+	mu        sync.RWMutex
+	queueSize int64 // counter for backpressure
+	shutdown  chan struct{}
+	wg        sync.WaitGroup
+}
+
+// NewBatcher creates a new Multicall3 batcher.
+func NewBatcher(cfg *common.Multicall3AggregationConfig, forwarder Forwarder) *Batcher {
+	b := &Batcher{
+		cfg:       cfg,
+		forwarder: forwarder,
+		batches:   make(map[string]*Batch),
+		shutdown:  make(chan struct{}),
+	}
+	return b
+}
+
+// Enqueue adds a request to a batch. Returns:
+// - entry: the batch entry (nil if bypass)
+// - bypass: true if request should be forwarded individually
+// - error: any error during processing
+func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.NormalizedRequest) (*BatchEntry, bool, error) {
+	// Extract call info
+	target, callData, _, err := ExtractCallInfo(req)
+	if err != nil {
+		return nil, true, err
+	}
+
+	// Derive call key for deduplication
+	callKey, err := DeriveCallKey(req)
+	if err != nil {
+		return nil, true, err
+	}
+
+	// Calculate deadline from context
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(time.Duration(b.cfg.WindowMs) * time.Millisecond)
+	}
+
+	// Check if deadline is too tight
+	now := time.Now()
+	minWait := time.Duration(b.cfg.MinWaitMs) * time.Millisecond
+	if deadline.Before(now.Add(minWait)) {
+		// Deadline too tight, bypass batching
+		return nil, true, nil
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Check caps
+	if b.queueSize >= int64(b.cfg.MaxQueueSize) {
+		return nil, true, nil // bypass: queue full
+	}
+	if len(b.batches) >= b.cfg.MaxPendingBatches {
+		// Check if this is a new batch key
+		if _, exists := b.batches[key.String()]; !exists {
+			return nil, true, nil // bypass: too many pending batches
+		}
+	}
+
+	// Get or create batch
+	keyStr := key.String()
+	batch, exists := b.batches[keyStr]
+	if !exists {
+		flushTime := now.Add(time.Duration(b.cfg.WindowMs) * time.Millisecond)
+		batch = NewBatch(key, flushTime)
+		b.batches[keyStr] = batch
+
+		// Start flush timer
+		b.wg.Add(1)
+		go b.scheduleFlush(keyStr, batch)
+	}
+
+	// Check if batch is flushing - create new batch if so
+	batch.mu.Lock()
+	if batch.Flushing {
+		batch.mu.Unlock()
+		// Create new batch for this key
+		flushTime := now.Add(time.Duration(b.cfg.WindowMs) * time.Millisecond)
+		batch = NewBatch(key, flushTime)
+		b.batches[keyStr] = batch
+
+		b.wg.Add(1)
+		go b.scheduleFlush(keyStr, batch)
+
+		batch.mu.Lock()
+	}
+
+	// Check if batch is at capacity (unique calls, not entries)
+	uniqueCalls := len(batch.CallKeys)
+	if _, isDupe := batch.CallKeys[callKey]; !isDupe {
+		if uniqueCalls >= b.cfg.MaxCalls {
+			batch.mu.Unlock()
+			return nil, true, nil // bypass: batch full
+		}
+	}
+
+	// Check calldata size cap
+	currentSize := 0
+	for _, entries := range batch.CallKeys {
+		if len(entries) > 0 {
+			currentSize += len(entries[0].CallData)
+		}
+	}
+	if _, isDupe := batch.CallKeys[callKey]; !isDupe {
+		if currentSize+len(callData) > b.cfg.MaxCalldataBytes {
+			batch.mu.Unlock()
+			return nil, true, nil // bypass: calldata too large
+		}
+	}
+
+	// Create entry
+	entry := &BatchEntry{
+		Ctx:       ctx,
+		Request:   req,
+		CallKey:   callKey,
+		Target:    target,
+		CallData:  callData,
+		ResultCh:  make(chan BatchResult, 1),
+		CreatedAt: now,
+		Deadline:  deadline,
+	}
+
+	// Add to batch
+	batch.Entries = append(batch.Entries, entry)
+	batch.CallKeys[callKey] = append(batch.CallKeys[callKey], entry)
+
+	// Update flush time based on deadline (deadline-aware)
+	safetyMargin := time.Duration(b.cfg.SafetyMarginMs) * time.Millisecond
+	proposedFlush := deadline.Add(-safetyMargin)
+	if proposedFlush.Before(batch.FlushTime) {
+		batch.FlushTime = proposedFlush
+		// Clamp to minimum wait
+		minFlush := now.Add(minWait)
+		if batch.FlushTime.Before(minFlush) {
+			batch.FlushTime = minFlush
+		}
+	}
+
+	batch.mu.Unlock()
+	b.queueSize++
+
+	return entry, false, nil
+}
+
+// scheduleFlush waits until flush time and then flushes the batch.
+func (b *Batcher) scheduleFlush(keyStr string, batch *Batch) {
+	defer b.wg.Done()
+
+	for {
+		batch.mu.Lock()
+		flushTime := batch.FlushTime
+		batch.mu.Unlock()
+
+		waitDuration := time.Until(flushTime)
+		if waitDuration <= 0 {
+			b.flush(keyStr, batch)
+			return
+		}
+
+		timer := time.NewTimer(waitDuration)
+		select {
+		case <-timer.C:
+			b.flush(keyStr, batch)
+			return
+		case <-b.shutdown:
+			timer.Stop()
+			return
+		}
+	}
+}
+
+// flush processes a batch and delivers results.
+func (b *Batcher) flush(keyStr string, batch *Batch) {
+	batch.mu.Lock()
+	if batch.Flushing {
+		batch.mu.Unlock()
+		return
+	}
+	batch.Flushing = true
+	entries := batch.Entries
+	callKeys := batch.CallKeys
+	batch.mu.Unlock()
+
+	// Remove from active batches
+	b.mu.Lock()
+	if b.batches[keyStr] == batch {
+		delete(b.batches, keyStr)
+	}
+	// Defensive: ensure queueSize doesn't go negative
+	entriesLen := int64(len(entries))
+	if b.queueSize >= entriesLen {
+		b.queueSize -= entriesLen
+	} else {
+		b.queueSize = 0
+	}
+	b.mu.Unlock()
+
+	// Deliver error for now (actual forwarding implemented in Task 2.4)
+	result := BatchResult{
+		Error: fmt.Errorf("flush not implemented"),
+	}
+	for _, entry := range entries {
+		select {
+		case entry.ResultCh <- result:
+		default:
+		}
+	}
+	// TODO(Task 2.4): callKeys will be used for per-call cache writes and dedup fanout
+	_ = callKeys
+}
+
+// Shutdown stops the batcher and waits for pending operations.
+func (b *Batcher) Shutdown() {
+	close(b.shutdown)
+	b.wg.Wait()
+}
+
 // DirectivesKeyVersion should be bumped when the set of directives
 // included in the key changes. This prevents cross-node key mismatches.
 const DirectivesKeyVersion = 1
@@ -57,27 +287,21 @@ func DeriveDirectivesKey(dirs *common.RequestDirectives) string {
 }
 
 // DeriveCallKey creates a unique key for deduplication within a batch.
-// Uses the same derivation as cache keys for consistency.
+// For eth_call, uses target + calldata + blockRef to create a deterministic key
+// that doesn't depend on JSON map key ordering.
 func DeriveCallKey(req *common.NormalizedRequest) (string, error) {
 	if req == nil {
 		return "", fmt.Errorf("request is nil")
 	}
-	jrq, err := req.JsonRpcRequest()
+
+	// Extract the call components deterministically
+	target, callData, blockRef, err := ExtractCallInfo(req)
 	if err != nil {
 		return "", err
 	}
 
-	jrq.RLock()
-	method := jrq.Method
-	params := jrq.Params
-	jrq.RUnlock()
-
-	// Use method + params as key (same as cache key derivation)
-	paramsJSON, err := common.SonicCfg.Marshal(params)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s:%s", method, string(paramsJSON)), nil
+	// Create key from the extracted components (deterministic order)
+	return fmt.Sprintf("eth_call:%x:%x:%s", target, callData, blockRef), nil
 }
 
 // BatchEntry represents a request waiting in a batch.

@@ -1,11 +1,14 @@
 package evm
 
 import (
+	"context"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/require"
 )
 
@@ -348,4 +351,177 @@ func TestIsEligibleForBatching_AllowPendingTag(t *testing.T) {
 
 	eligible, reason := IsEligibleForBatching(req, cfg)
 	require.True(t, eligible, "pending should be allowed when AllowPendingTagBatching is true: %s", reason)
+}
+
+func TestBatcherEnqueueAndFlush(t *testing.T) {
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               50,
+		MinWaitMs:              5,
+		SafetyMarginMs:         2,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	ctx := context.Background()
+	batcher := NewBatcher(cfg, nil) // nil forwarder for now
+
+	// Create test requests
+	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1234567890123456789012345678901234567890",
+			"data": "0xabcdef01",
+		},
+		"latest",
+	})
+	req1 := common.NewNormalizedRequestFromJsonRpcRequest(jrq1)
+
+	jrq2 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x2234567890123456789012345678901234567890",
+			"data": "0xabcdef02",
+		},
+		"latest",
+	})
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Enqueue first request
+	entry1, bypass1, err := batcher.Enqueue(ctx, key, req1)
+	require.NoError(t, err)
+	require.False(t, bypass1)
+	require.NotNil(t, entry1)
+
+	// Enqueue second request
+	entry2, bypass2, err := batcher.Enqueue(ctx, key, req2)
+	require.NoError(t, err)
+	require.False(t, bypass2)
+	require.NotNil(t, entry2)
+
+	// Check batch exists
+	batcher.mu.RLock()
+	batch, exists := batcher.batches[key.String()]
+	batcher.mu.RUnlock()
+	require.True(t, exists)
+	require.Len(t, batch.Entries, 2)
+
+	// Cleanup
+	batcher.Shutdown()
+}
+
+func TestBatcherDeduplication(t *testing.T) {
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               50,
+		MinWaitMs:              5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	ctx := context.Background()
+	batcher := NewBatcher(cfg, nil)
+
+	// Two identical requests - using the same jrq to ensure call key consistency
+	// (JSON serialization of map[string]interface{} can have non-deterministic key order)
+	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1234567890123456789012345678901234567890",
+			"data": "0xabcdef01",
+		},
+		"latest",
+	})
+	jrq2 := common.NewJsonRpcRequest("eth_call", jrq1.Params) // Use same params object
+	req1 := common.NewNormalizedRequestFromJsonRpcRequest(jrq1)
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	entry1, _, _ := batcher.Enqueue(ctx, key, req1)
+	entry2, _, _ := batcher.Enqueue(ctx, key, req2)
+
+	// Both should share the same callKey slot
+	require.Equal(t, entry1.CallKey, entry2.CallKey)
+
+	batcher.mu.RLock()
+	batch := batcher.batches[key.String()]
+	batcher.mu.RUnlock()
+
+	// Two entries but deduplicated
+	require.Len(t, batch.Entries, 2)
+	require.Len(t, batch.CallKeys[entry1.CallKey], 2)
+
+	batcher.Shutdown()
+}
+
+func TestBatcherCapsEnforcement(t *testing.T) {
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               50,
+		MinWaitMs:              5,
+		MaxCalls:               2, // Very low limit
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	ctx := context.Background()
+	batcher := NewBatcher(cfg, nil)
+
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Add requests up to cap
+	for i := 0; i < 2; i++ {
+		jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+			map[string]interface{}{
+				"to":   fmt.Sprintf("0x%040d", i),
+				"data": "0xabcdef",
+			},
+			"latest",
+		})
+		req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+		_, bypass, err := batcher.Enqueue(ctx, key, req)
+		require.NoError(t, err)
+		require.False(t, bypass)
+	}
+
+	// Next request should trigger bypass (caps reached)
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x9999999999999999999999999999999999999999",
+			"data": "0xabcdef",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	_, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.True(t, bypass, "should bypass when caps reached")
+
+	batcher.Shutdown()
 }
