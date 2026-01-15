@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 )
 
 // Forwarder is the interface for forwarding requests through the network layer.
@@ -75,11 +76,13 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 
 	// Check caps
 	if b.queueSize >= int64(b.cfg.MaxQueueSize) {
+		telemetry.MetricMulticall3QueueOverflowTotal.WithLabelValues(key.NetworkId, "queue_full").Inc()
 		return nil, true, nil // bypass: queue full
 	}
 	if len(b.batches) >= b.cfg.MaxPendingBatches {
 		// Check if this is a new batch key
 		if _, exists := b.batches[key.String()]; !exists {
+			telemetry.MetricMulticall3QueueOverflowTotal.WithLabelValues(key.NetworkId, "max_batches").Inc()
 			return nil, true, nil // bypass: too many pending batches
 		}
 	}
@@ -165,6 +168,7 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 
 	batch.mu.Unlock()
 	b.queueSize++
+	telemetry.MetricMulticall3QueueLen.WithLabelValues(key.NetworkId).Inc()
 
 	return entry, false, nil
 }
@@ -222,9 +226,15 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	}
 	b.mu.Unlock()
 
+	// Decrement queue length metric
+	telemetry.MetricMulticall3QueueLen.WithLabelValues(batch.Key.NetworkId).Sub(float64(len(entries)))
+
 	if len(entries) == 0 {
 		return
 	}
+
+	// Capture flush time for wait time calculations
+	flushTime := time.Now()
 
 	// Build ordered unique calls list (maintains insertion order via CallKeys map iteration order)
 	// We need to build unique calls in the order they were first seen
@@ -243,6 +253,27 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 				entry:   entry,
 			})
 		}
+	}
+
+	// Emit batching metrics
+	projectId := batch.Key.ProjectId
+	networkId := batch.Key.NetworkId
+
+	// Record batch size (unique calls)
+	telemetry.MetricMulticall3BatchSize.WithLabelValues(projectId, networkId).Observe(float64(len(uniqueCalls)))
+
+	// Record wait time for each entry
+	for _, entry := range entries {
+		waitMs := float64(flushTime.Sub(entry.CreatedAt).Milliseconds())
+		telemetry.MetricMulticall3BatchWaitMs.WithLabelValues(projectId, networkId).Observe(waitMs)
+	}
+
+	// Record dedupe count if there were duplicates
+	totalEntries := len(entries)
+	uniqueCount := len(uniqueCalls)
+	if totalEntries > uniqueCount {
+		dedupeCount := totalEntries - uniqueCount
+		telemetry.MetricMulticall3DedupeTotal.WithLabelValues(projectId, networkId).Add(float64(dedupeCount))
 	}
 
 	// Build requests for BuildMulticall3Request

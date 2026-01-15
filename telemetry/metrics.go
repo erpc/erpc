@@ -429,6 +429,39 @@ var (
 		Name:      "multicall3_cache_hits_total",
 		Help:      "Total number of per-call cache hits in multicall3 batch aggregation.",
 	}, []string{"project", "network"})
+
+	// Network-level Multicall3 batching metrics
+	MetricMulticall3BatchSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_batch_size",
+		Help:      "Number of unique calls per Multicall3 batch.",
+		Buckets:   []float64{1, 2, 5, 10, 15, 20, 30, 50},
+	}, []string{"project", "network"})
+
+	MetricMulticall3BatchWaitMs = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_batch_wait_ms",
+		Help:      "Time requests waited in batch before flush (milliseconds).",
+		Buckets:   []float64{1, 2, 5, 10, 15, 20, 25, 30, 50},
+	}, []string{"project", "network"})
+
+	MetricMulticall3QueueLen = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_queue_len",
+		Help:      "Current number of requests queued for batching.",
+	}, []string{"network"})
+
+	MetricMulticall3QueueOverflowTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_queue_overflow_total",
+		Help:      "Total number of requests that bypassed batching due to queue overflow.",
+	}, []string{"network", "reason"})
+
+	MetricMulticall3DedupeTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_dedupe_total",
+		Help:      "Total number of deduplicated requests within batches.",
+	}, []string{"project", "network"})
 )
 
 var DefaultHistogramBuckets = []float64{
