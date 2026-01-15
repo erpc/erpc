@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -524,4 +525,357 @@ func TestBatcherCapsEnforcement(t *testing.T) {
 	require.True(t, bypass, "should bypass when caps reached")
 
 	batcher.Shutdown()
+}
+
+// mockForwarder implements Forwarder for testing
+type mockForwarder struct {
+	response *common.NormalizedResponse
+	err      error
+	called   int
+	mu       sync.Mutex
+}
+
+func (m *mockForwarder) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.called++
+	return m.response, m.err
+}
+
+func TestBatcherFlushAndResultMapping(t *testing.T) {
+	// Create valid multicall3 result with 2 calls
+	// Each call returns success=true with some data
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xde, 0xad, 0xbe, 0xef}},
+		{Success: true, ReturnData: []byte{0xca, 0xfe, 0xba, 0xbe}},
+	}
+	encodedResult := encodeAggregate3Results(results)
+	resultHex := "0x" + hex.EncodeToString(encodedResult)
+
+	jrr, err := common.NewJsonRpcResponse(nil, resultHex, nil)
+	require.NoError(t, err)
+	mockResp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	forwarder := &mockForwarder{response: mockResp}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10, // Short window for test
+		MinWaitMs:              1,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false), // disable caching for test
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder)
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Add two requests
+	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x1111111111111111111111111111111111111111", "data": "0x01"},
+		"latest",
+	})
+	jrq1.ID = "req1"
+	req1 := common.NewNormalizedRequestFromJsonRpcRequest(jrq1)
+
+	jrq2 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x2222222222222222222222222222222222222222", "data": "0x02"},
+		"latest",
+	})
+	jrq2.ID = "req2"
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	entry1, _, err := batcher.Enqueue(ctx, key, req1)
+	require.NoError(t, err)
+	entry2, _, err := batcher.Enqueue(ctx, key, req2)
+	require.NoError(t, err)
+
+	// Wait for results
+	result1 := <-entry1.ResultCh
+	result2 := <-entry2.ResultCh
+
+	require.NoError(t, result1.Error)
+	require.NoError(t, result2.Error)
+	require.NotNil(t, result1.Response)
+	require.NotNil(t, result2.Response)
+
+	// Verify forwarder was called exactly once
+	forwarder.mu.Lock()
+	require.Equal(t, 1, forwarder.called)
+	forwarder.mu.Unlock()
+
+	// Verify the responses contain the expected data
+	jrr1, err := result1.Response.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Equal(t, "\"0xdeadbeef\"", jrr1.GetResultString())
+
+	jrr2, err := result2.Response.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Equal(t, "\"0xcafebabe\"", jrr2.GetResultString())
+
+	batcher.Shutdown()
+}
+
+func TestBatcherFlushDeduplication(t *testing.T) {
+	// Create result with 1 call (deduplication means only 1 unique call is made)
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xab, 0xcd}},
+	}
+	encodedResult := encodeAggregate3Results(results)
+	resultHex := "0x" + hex.EncodeToString(encodedResult)
+
+	jrr, err := common.NewJsonRpcResponse(nil, resultHex, nil)
+	require.NoError(t, err)
+	mockResp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	forwarder := &mockForwarder{response: mockResp}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10,
+		MinWaitMs:              1,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder)
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Add two IDENTICAL requests (same target and calldata)
+	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x1111111111111111111111111111111111111111", "data": "0x01"},
+		"latest",
+	})
+	jrq1.ID = "req1"
+	req1 := common.NewNormalizedRequestFromJsonRpcRequest(jrq1)
+
+	jrq2 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x1111111111111111111111111111111111111111", "data": "0x01"},
+		"latest",
+	})
+	jrq2.ID = "req2"
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	entry1, _, err := batcher.Enqueue(ctx, key, req1)
+	require.NoError(t, err)
+	entry2, _, err := batcher.Enqueue(ctx, key, req2)
+	require.NoError(t, err)
+
+	// Both should share the same call key
+	require.Equal(t, entry1.CallKey, entry2.CallKey)
+
+	// Wait for results
+	result1 := <-entry1.ResultCh
+	result2 := <-entry2.ResultCh
+
+	require.NoError(t, result1.Error)
+	require.NoError(t, result2.Error)
+
+	// Both should get the same result (fanned out)
+	jrr1, err := result1.Response.JsonRpcResponse()
+	require.NoError(t, err)
+	jrr2, err := result2.Response.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Equal(t, jrr1.GetResultString(), jrr2.GetResultString())
+
+	// Forwarder should only be called once
+	forwarder.mu.Lock()
+	require.Equal(t, 1, forwarder.called)
+	forwarder.mu.Unlock()
+
+	batcher.Shutdown()
+}
+
+func TestBatcherFlushRevertHandling(t *testing.T) {
+	// Create result where second call reverts
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xde, 0xad, 0xbe, 0xef}},
+		{Success: false, ReturnData: []byte{0x08, 0xc3, 0x79, 0xa0}}, // Error(string) selector
+	}
+	encodedResult := encodeAggregate3Results(results)
+	resultHex := "0x" + hex.EncodeToString(encodedResult)
+
+	jrr, err := common.NewJsonRpcResponse(nil, resultHex, nil)
+	require.NoError(t, err)
+	mockResp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	forwarder := &mockForwarder{response: mockResp}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10,
+		MinWaitMs:              1,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder)
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Add two requests
+	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x1111111111111111111111111111111111111111", "data": "0x01"},
+		"latest",
+	})
+	jrq1.ID = "req1"
+	req1 := common.NewNormalizedRequestFromJsonRpcRequest(jrq1)
+
+	jrq2 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x2222222222222222222222222222222222222222", "data": "0x02"},
+		"latest",
+	})
+	jrq2.ID = "req2"
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	entry1, _, err := batcher.Enqueue(ctx, key, req1)
+	require.NoError(t, err)
+	entry2, _, err := batcher.Enqueue(ctx, key, req2)
+	require.NoError(t, err)
+
+	// Wait for results
+	result1 := <-entry1.ResultCh
+	result2 := <-entry2.ResultCh
+
+	// First call should succeed
+	require.NoError(t, result1.Error)
+	require.NotNil(t, result1.Response)
+
+	// Second call should fail with revert error
+	require.Error(t, result2.Error)
+	require.Contains(t, result2.Error.Error(), "execution reverted")
+
+	batcher.Shutdown()
+}
+
+func TestBatcherFlushFallbackOnMulticall3Unavailable(t *testing.T) {
+	// Track individual calls made during fallback
+	var individualCalls []*common.NormalizedRequest
+	var mu sync.Mutex
+
+	forwarder := &mockForwarderFunc{
+		forwardFunc: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			// Check if this is a multicall3 request (to multicall3 address)
+			jrq, _ := req.JsonRpcRequest()
+			if jrq != nil && len(jrq.Params) > 0 {
+				if callObj, ok := jrq.Params[0].(map[string]interface{}); ok {
+					if toAddr, ok := callObj["to"].(string); ok {
+						if strings.EqualFold(toAddr, "0xcA11bde05977b3631167028862bE2a173976CA11") {
+							// This is a multicall3 request - return "contract not found" error
+							return nil, common.NewErrEndpointExecutionException(fmt.Errorf("contract not found"))
+						}
+					}
+				}
+			}
+
+			// Individual call - track and return success
+			individualCalls = append(individualCalls, req)
+			jrr, _ := common.NewJsonRpcResponse(req.ID(), "0xdeadbeef", nil)
+			return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+		},
+	}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10,
+		MinWaitMs:              1,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder)
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Add two requests
+	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x1111111111111111111111111111111111111111", "data": "0x01"},
+		"latest",
+	})
+	jrq1.ID = "req1"
+	req1 := common.NewNormalizedRequestFromJsonRpcRequest(jrq1)
+
+	jrq2 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x2222222222222222222222222222222222222222", "data": "0x02"},
+		"latest",
+	})
+	jrq2.ID = "req2"
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	entry1, _, err := batcher.Enqueue(ctx, key, req1)
+	require.NoError(t, err)
+	entry2, _, err := batcher.Enqueue(ctx, key, req2)
+	require.NoError(t, err)
+
+	// Wait for results
+	result1 := <-entry1.ResultCh
+	result2 := <-entry2.ResultCh
+
+	// Both should succeed via fallback
+	require.NoError(t, result1.Error)
+	require.NoError(t, result2.Error)
+
+	// Verify individual fallback calls were made
+	mu.Lock()
+	require.Equal(t, 2, len(individualCalls))
+	mu.Unlock()
+
+	batcher.Shutdown()
+}
+
+// mockForwarderFunc allows custom forward behavior for testing
+type mockForwarderFunc struct {
+	forwardFunc func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+}
+
+func (m *mockForwarderFunc) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	return m.forwardFunc(ctx, req)
 }

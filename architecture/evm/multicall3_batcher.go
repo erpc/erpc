@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -221,18 +222,192 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	}
 	b.mu.Unlock()
 
-	// Deliver error for now (actual forwarding implemented in Task 2.4)
-	result := BatchResult{
-		Error: fmt.Errorf("flush not implemented"),
+	if len(entries) == 0 {
+		return
 	}
+
+	// Build ordered unique calls list (maintains insertion order via CallKeys map iteration order)
+	// We need to build unique calls in the order they were first seen
+	type uniqueCall struct {
+		callKey string
+		entry   *BatchEntry // first entry for this callKey
+	}
+	seenCallKeys := make(map[string]bool)
+	uniqueCalls := make([]uniqueCall, 0, len(callKeys))
+
+	for _, entry := range entries {
+		if !seenCallKeys[entry.CallKey] {
+			seenCallKeys[entry.CallKey] = true
+			uniqueCalls = append(uniqueCalls, uniqueCall{
+				callKey: entry.CallKey,
+				entry:   entry,
+			})
+		}
+	}
+
+	// Build requests for BuildMulticall3Request
+	requests := make([]*common.NormalizedRequest, len(uniqueCalls))
+	for i, uc := range uniqueCalls {
+		requests[i] = uc.entry.Request
+	}
+
+	// Build the multicall3 request
+	mcReq, _, err := BuildMulticall3Request(requests, batch.Key.BlockRef)
+	if err != nil {
+		b.deliverError(entries, err)
+		return
+	}
+
+	// Mark request as composite type for metrics/tracing
+	mcReq.SetCompositeType(common.CompositeTypeMulticall3)
+
+	// Use any entry context (they all share same project/network)
+	ctx := entries[0].Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Forward the multicall request
+	mcResp, err := b.forwarder.Forward(ctx, mcReq)
+	if err != nil {
+		// Check if we should fallback to individual requests
+		if ShouldFallbackMulticall3(err) {
+			b.fallbackIndividual(entries)
+			return
+		}
+		b.deliverError(entries, err)
+		return
+	}
+
+	// Decode the multicall response
+	results, err := b.decodeMulticallResponse(mcResp)
+	if err != nil {
+		// Check if we should fallback to individual requests
+		if ShouldFallbackMulticall3(err) {
+			b.fallbackIndividual(entries)
+			return
+		}
+		b.deliverError(entries, err)
+		return
+	}
+
+	// Verify result count matches unique calls
+	if len(results) != len(uniqueCalls) {
+		b.deliverError(entries, fmt.Errorf("multicall3 result count mismatch: got %d, expected %d", len(results), len(uniqueCalls)))
+		return
+	}
+
+	// Map results to entries, fanning out deduplicated results
+	for i, uc := range uniqueCalls {
+		result := results[i]
+		entriesForCall := callKeys[uc.callKey]
+
+		if result.Success {
+			// Build success response for each entry
+			resultHex := "0x" + hex.EncodeToString(result.ReturnData)
+			for _, entry := range entriesForCall {
+				jrr, err := common.NewJsonRpcResponse(entry.Request.ID(), resultHex, nil)
+				if err != nil {
+					entry.ResultCh <- BatchResult{Error: err}
+					continue
+				}
+				resp := common.NewNormalizedResponse().WithRequest(entry.Request).WithJsonRpcResponse(jrr)
+				// Propagate upstream metadata from multicall response
+				resp.SetUpstream(mcResp.Upstream())
+				resp.SetFromCache(mcResp.FromCache())
+				entry.ResultCh <- BatchResult{Response: resp}
+			}
+		} else {
+			// Build error for reverted call with proper JSON-RPC format
+			dataHex := "0x" + hex.EncodeToString(result.ReturnData)
+			revertErr := common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(common.JsonRpcErrorEvmReverted), // original code
+					common.JsonRpcErrorEvmReverted,     // normalized code
+					"execution reverted",
+					nil,
+					map[string]interface{}{
+						"data":       dataHex,
+						"multicall3": true,
+						"stage":      "per-call",
+					},
+				),
+			)
+			for _, entry := range entriesForCall {
+				entry.ResultCh <- BatchResult{Error: revertErr}
+			}
+		}
+	}
+}
+
+// decodeMulticallResponse extracts and decodes the multicall3 result from a response.
+func (b *Batcher) decodeMulticallResponse(resp *common.NormalizedResponse) ([]Multicall3Result, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("nil response")
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return nil, err
+	}
+	if jrr == nil {
+		return nil, fmt.Errorf("nil json-rpc response")
+	}
+
+	// Check for JSON-RPC error
+	if jrr.Error != nil {
+		return nil, common.NewErrEndpointExecutionException(jrr.Error)
+	}
+
+	// Get result as hex string (JSON encoded, so has quotes)
+	resultStr := jrr.GetResultString()
+	if resultStr == "" || resultStr == "null" {
+		return nil, fmt.Errorf("empty result")
+	}
+
+	// Parse the JSON string to get the hex value
+	var hexStr string
+	if err := common.SonicCfg.UnmarshalFromString(resultStr, &hexStr); err != nil {
+		return nil, fmt.Errorf("failed to parse result: %w", err)
+	}
+
+	// Decode the hex bytes
+	resultBytes, err := common.HexToBytes(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode hex result: %w", err)
+	}
+
+	// Decode the multicall3 result
+	return DecodeMulticall3Aggregate3Result(resultBytes)
+}
+
+// deliverError sends an error to all entries in a batch.
+func (b *Batcher) deliverError(entries []*BatchEntry, err error) {
+	result := BatchResult{Error: err}
 	for _, entry := range entries {
 		select {
 		case entry.ResultCh <- result:
 		default:
 		}
 	}
-	// TODO(Task 2.4): callKeys will be used for per-call cache writes and dedup fanout
-	_ = callKeys
+}
+
+// fallbackIndividual forwards each entry individually when multicall3 fails.
+// Uses parallel goroutines for concurrent forwarding.
+func (b *Batcher) fallbackIndividual(entries []*BatchEntry) {
+	var wg sync.WaitGroup
+	for _, entry := range entries {
+		wg.Add(1)
+		go func(e *BatchEntry) {
+			defer wg.Done()
+			resp, err := b.forwarder.Forward(e.Ctx, e.Request)
+			select {
+			case e.ResultCh <- BatchResult{Response: resp, Error: err}:
+			default:
+			}
+		}(entry)
+	}
+	wg.Wait()
 }
 
 // Shutdown stops the batcher and waits for pending operations.
