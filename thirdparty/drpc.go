@@ -13,7 +13,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	// "github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -77,7 +77,7 @@ func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 		recheckInterval = DefaultDrpcRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, recheckInterval, chainsURL)
+	err = v.ensureRemoteData(ctx, logger, recheckInterval, chainsURL)
 	if err != nil {
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
@@ -120,7 +120,7 @@ func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 			recheckInterval = DefaultDrpcRecheckInterval
 		}
 
-		if err := v.ensureRemoteData(ctx, recheckInterval, chainsURL); err != nil {
+		if err := v.ensureRemoteData(ctx, logger, recheckInterval, chainsURL); err != nil {
 			return nil, fmt.Errorf("unable to load remote data: %w", err)
 		}
 
@@ -202,7 +202,7 @@ func (v *DrpcVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.Contains(ups.Endpoint, ".drpc.org")
 }
 
-func (v *DrpcVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration, chainsURL string) error {
+func (v *DrpcVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, chainsURL string) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -210,10 +210,10 @@ func (v *DrpcVendor) ensureRemoteData(ctx context.Context, recheckInterval time.
 		return nil
 	}
 
-	newData, err := v.fetchDrpcNetworks(ctx, chainsURL)
+	newData, err := v.fetchDrpcNetworks(ctx, logger, chainsURL)
 	if err != nil {
 		if _, ok := v.remoteData[chainsURL]; ok {
-			log.Warn().Err(err).Msg("could not refresh DRPC chains data; will use stale data")
+			logger.Warn().Err(err).Msg("could not refresh DRPC chains data; will use stale data")
 			return nil
 		}
 		return err
@@ -224,7 +224,7 @@ func (v *DrpcVendor) ensureRemoteData(ctx context.Context, recheckInterval time.
 	return nil
 }
 
-func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, chainsURL string) (map[int64]string, error) {
+func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, logger *zerolog.Logger, chainsURL string) (map[int64]string, error) {
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -281,7 +281,7 @@ func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, chainsURL string) (m
 			}
 			chainID, err := strconv.ParseInt(chainIDStr, 16, 64)
 			if err != nil {
-				log.Debug().
+				logger.Debug().
 					Str("chain_id", chain.ChainID).
 					Err(err).
 					Msg("Failed to parse chain ID")
@@ -301,17 +301,17 @@ func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, chainsURL string) (m
 	networkNames := make(map[int64]string, len(best))
 	for cid, c := range best {
 		networkNames[cid] = c.name
-		log.Debug().
+		logger.Trace().
 			Int64("chain_id", cid).
 			Str("name", c.name).
 			Int("priority", c.priority).
-			Msg("Selected DRPC network name")
+			Msg("selected DRPC network name")
 	}
 
-	log.Info().
+	logger.Info().
 		Int("count", len(networkNames)).
 		Str("url", chainsURL).
-		Msg("Successfully fetched DRPC network names")
+		Msg("successfully fetched DRPC network names")
 
 	return networkNames, nil
 }

@@ -226,7 +226,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "transaction: revert") ||
 			strings.Contains(msg, "VM Exception") ||
 			strings.Contains(strings.ToLower(msg), "intrinsic gas too high") {
-			return common.NewErrEndpointExecutionException(
+			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmReverted,
@@ -235,10 +235,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+			// For eth_sendRawTransaction, execution reverted is retryable toward other upstreams
+			// because different providers may have different simulation/pre-check behavior
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
 		}
 		// Hack for some chains (Berachain) to make the message compatible with Subgraph and other tools.
 		if strings.Contains(msg, "EVM error: InvalidJump") {
-			return common.NewErrEndpointExecutionException(
+			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmReverted,
@@ -247,10 +257,67 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+			// For eth_sendRawTransaction, execution reverted is retryable toward other upstreams
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
+		}
+
+		//----------------------------------------------------------------
+		// "Duplicate transaction / nonce" errors for eth_sendRawTransaction idempotency
+		// IMPORTANT: This must come BEFORE the generic -32003 handling below, because
+		// some upstreams use -32003 for "already known" or "nonce too low" messages.
+		// Note: "replacement transaction underpriced" is NOT handled here - it should remain an error
+		//----------------------------------------------------------------
+
+		ml := strings.ToLower(msg)
+		if strings.Contains(ml, "already known") ||
+			strings.Contains(ml, "known transaction") ||
+			strings.Contains(ml, "already imported") ||
+			strings.Contains(ml, "transaction already in mempool") ||
+			strings.Contains(ml, "tx already in mempool") ||
+			strings.Contains(ml, "already in the mempool") ||
+			strings.Contains(ml, "transaction already exists") ||
+			strings.Contains(ml, "already have transaction") ||
+			strings.Contains(ml, "already exists in mempool") {
+			// These indicate the exact same transaction is already known - idempotent success case
+			return common.NewErrEndpointNonceException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+				common.NonceExceptionReasonAlreadyKnown,
+			)
+		}
+
+		if strings.Contains(ml, "nonce too low") ||
+			strings.Contains(ml, "nonce is too low") ||
+			strings.Contains(ml, "nonce has already been used") {
+			// These indicate a nonce conflict - requires verification to distinguish
+			// between duplicate tx (idempotent) vs different tx with same nonce (error)
+			return common.NewErrEndpointNonceException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+				common.NonceExceptionReasonNonceTooLow,
+			)
 		}
 
 		//----------------------------------------------------------------
 		// "Transaction rejected" or "Insufficient funds" or "out of gas" errors
+		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors
 		//----------------------------------------------------------------
 
 		if code == common.JsonRpcErrorTransactionRejected ||
@@ -260,7 +327,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "gas too low") ||
 			strings.Contains(msg, "IntrinsicGas") {
 
-			return common.NewErrEndpointExecutionException(
+			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorTransactionRejected,
@@ -269,6 +336,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+			// For eth_sendRawTransaction, these errors are retryable toward other upstreams
+			// because different providers may have different balance-checking or gas-estimation logic
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
 		}
 
 		//----------------------------------------------------------------
@@ -346,6 +423,29 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		}
+
+		//----------------------------------------------------------------
+		// "Malformed transaction" errors (invalid RLP encoding, truncated data, etc.)
+		// These indicate the raw transaction bytes are invalid - not retryable
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "typed transaction too short") ||
+			strings.Contains(ml, "transaction too short") ||
+			strings.Contains(ml, "rlp: expected input list") ||
+			strings.Contains(ml, "rlp: input string too short") ||
+			strings.Contains(ml, "rlp: value size exceeds") ||
+			strings.Contains(ml, "invalid transaction") ||
+			strings.Contains(ml, "transaction type not supported") {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
 		}
 
 		//----------------------------------------------------------------
