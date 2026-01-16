@@ -49,23 +49,23 @@ projects:
             # DEFAULT: true
             enabled: true
             # Time window in milliseconds to collect requests before batching.
-            # DEFAULT: 50
-            windowMs: 50
+            # DEFAULT: 25
+            windowMs: 25
             # Minimum wait time in milliseconds before flushing a batch.
-            # DEFAULT: 10
-            minWaitMs: 10
+            # DEFAULT: 2
+            minWaitMs: 2
             # Maximum number of calls per batch.
-            # DEFAULT: 50
-            maxCalls: 50
+            # DEFAULT: 20
+            maxCalls: 20
             # Maximum total calldata size in bytes for a batch.
-            # DEFAULT: 128000
-            maxCalldataBytes: 128000
+            # DEFAULT: 64000
+            maxCalldataBytes: 64000
             # Maximum number of requests waiting to be batched.
             # DEFAULT: 1000
             maxQueueSize: 1000
             # Maximum number of pending batches being processed.
-            # DEFAULT: 100
-            maxPendingBatches: 100
+            # DEFAULT: 200
+            maxPendingBatches: 200
             # Allow batching requests from different users together.
             # Set to false to isolate user requests into separate batches.
             # DEFAULT: true
@@ -211,18 +211,18 @@ export default createConfig({
             multicall3Aggregation: {
               // Enable or disable Multicall3 aggregation. DEFAULT: true
               enabled: true,
-              // Time window in milliseconds to collect requests before batching. DEFAULT: 50
-              windowMs: 50,
-              // Minimum wait time in milliseconds before flushing a batch. DEFAULT: 10
-              minWaitMs: 10,
-              // Maximum number of calls per batch. DEFAULT: 50
-              maxCalls: 50,
-              // Maximum total calldata size in bytes for a batch. DEFAULT: 128000
-              maxCalldataBytes: 128000,
+              // Time window in milliseconds to collect requests before batching. DEFAULT: 25
+              windowMs: 25,
+              // Minimum wait time in milliseconds before flushing a batch. DEFAULT: 2
+              minWaitMs: 2,
+              // Maximum number of calls per batch. DEFAULT: 20
+              maxCalls: 20,
+              // Maximum total calldata size in bytes for a batch. DEFAULT: 64000
+              maxCalldataBytes: 64000,
               // Maximum number of requests waiting to be batched. DEFAULT: 1000
               maxQueueSize: 1000,
-              // Maximum number of pending batches being processed. DEFAULT: 100
-              maxPendingBatches: 100,
+              // Maximum number of pending batches being processed. DEFAULT: 200
+              maxPendingBatches: 200,
               // Allow batching requests from different users together. DEFAULT: true
               allowCrossUserBatching: true,
             },
