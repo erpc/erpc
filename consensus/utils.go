@@ -1,7 +1,9 @@
 package consensus
 
 import (
+	"encoding/json"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
@@ -60,7 +62,8 @@ func extractFieldValues(resp *common.NormalizedResponse, fields []string) []*big
 }
 
 // parseNumericValue converts various types to big.Int.
-// Handles hex strings (0x...), decimal strings, and numeric types.
+// Handles hex strings (0x...), decimal strings, json.Number, and numeric types.
+// For float64, converts via string representation to preserve precision for large values.
 func parseNumericValue(v interface{}) *big.Int {
 	if v == nil {
 		return nil
@@ -84,8 +87,29 @@ func parseNumericValue(v interface{}) *big.Int {
 			return n
 		}
 		return nil
+	case json.Number:
+		// json.Number preserves the exact string representation from JSON
+		n, ok := new(big.Int).SetString(string(val), 10)
+		if ok {
+			return n
+		}
+		return nil
 	case float64:
-		return big.NewInt(int64(val)) // #nosec G115
+		// Convert via string to avoid int64 truncation for large values.
+		// FormatFloat with 'f' and precision -1 gives the shortest representation
+		// that will round-trip correctly (i.e., preserves all significant digits).
+		// Note: float64 only has ~15-17 significant decimal digits, so values > 2^53
+		// will already have lost precision before reaching this point.
+		str := strconv.FormatFloat(val, 'f', -1, 64)
+		// Remove decimal point if present (for values like 1.0)
+		if idx := strings.Index(str, "."); idx != -1 {
+			str = str[:idx]
+		}
+		n, ok := new(big.Int).SetString(str, 10)
+		if ok {
+			return n
+		}
+		return nil
 	case int64:
 		return big.NewInt(val)
 	case int:

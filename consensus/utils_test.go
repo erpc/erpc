@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -52,6 +53,16 @@ func TestParseNumericValue(t *testing.T) {
 			expected: big.NewInt(42),
 		},
 		{
+			name:     "float64_with_decimal",
+			input:    float64(42.7),
+			expected: big.NewInt(42), // Truncates decimal
+		},
+		{
+			name:     "float64_large_safe",
+			input:    float64(9007199254740992), // 2^53 - max safe integer for float64
+			expected: new(big.Int).SetInt64(9007199254740992),
+		},
+		{
 			name:     "int64",
 			input:    int64(100),
 			expected: big.NewInt(100),
@@ -60,6 +71,27 @@ func TestParseNumericValue(t *testing.T) {
 			name:     "int",
 			input:    int(200),
 			expected: big.NewInt(200),
+		},
+		// json.Number type (preserves precision from JSON)
+		{
+			name:     "json_number_small",
+			input:    json.Number("42"),
+			expected: big.NewInt(42),
+		},
+		{
+			name:     "json_number_large",
+			input:    json.Number("9007199254740993"), // 2^53 + 1 - would lose precision as float64
+			expected: func() *big.Int { n, _ := new(big.Int).SetString("9007199254740993", 10); return n }(),
+		},
+		{
+			name:     "json_number_very_large",
+			input:    json.Number("18446744073709551615"), // max uint64
+			expected: func() *big.Int { n, _ := new(big.Int).SetString("18446744073709551615", 10); return n }(),
+		},
+		{
+			name:     "json_number_invalid",
+			input:    json.Number("not_a_number"),
+			expected: nil,
 		},
 		// Edge cases
 		{
