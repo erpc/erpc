@@ -158,7 +158,10 @@ func TestProjectPreForward_eth_call_NoBatching_Disabled(t *testing.T) {
 	cfg := &common.NetworkConfig{
 		Evm: &common.EvmNetworkConfig{
 			ChainId: 1,
-			// Multicall3Aggregation is nil - batching disabled
+			// Explicitly disable batching (nil config uses default which has Enabled: true)
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				Enabled: false,
+			},
 		},
 	}
 
@@ -249,7 +252,11 @@ func TestProjectPreForward_eth_call_AddsBlockParam(t *testing.T) {
 	cfg := &common.NetworkConfig{
 		Evm: &common.EvmNetworkConfig{
 			ChainId: 1,
-			// Batching disabled to test block param normalization
+			// Explicitly disable batching to test block param normalization
+			// (nil config uses default which has Enabled: true)
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				Enabled: false,
+			},
 		},
 	}
 
