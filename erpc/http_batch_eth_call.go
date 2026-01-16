@@ -501,14 +501,14 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 					defer func() {
 						if rec := recover(); rec != nil {
 							telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-								"multicall3-cache-set",
+								"multicall3-cache-write",
 								fmt.Sprintf("network:%s", batchInfo.networkId),
 								common.ErrorFingerprint(rec),
 							).Inc()
 							lg.Error().
 								Interface("panic", rec).
 								Str("stack", string(debug.Stack())).
-								Msg("unexpected panic on multicall3 per-call cache-set")
+								Msg("unexpected panic on multicall3 per-call cache write")
 						}
 					}()
 					defer resp.RUnlock()

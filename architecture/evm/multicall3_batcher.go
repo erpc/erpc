@@ -884,6 +884,17 @@ func IsEligibleForBatching(req *common.NormalizedRequest, cfg *common.Multicall3
 	// Check block tag
 	blockTag := "latest"
 	if len(params) >= 2 && params[1] != nil {
+		// Check for EIP-1898 block params with requireCanonical: false
+		// These cannot be safely batched because the flag would be lost when
+		// rebuilding the block param as {blockHash: "0x..."}
+		if blockObj, ok := params[1].(map[string]interface{}); ok {
+			if reqCanonical, hasReqCanonical := blockObj["requireCanonical"]; hasReqCanonical {
+				if reqCanonicalBool, ok := reqCanonical.(bool); ok && !reqCanonicalBool {
+					return false, "has requireCanonical:false"
+				}
+			}
+		}
+
 		normalized, err := NormalizeBlockParam(params[1])
 		if err != nil {
 			return false, fmt.Sprintf("invalid block param: %v", err)

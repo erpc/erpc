@@ -14,6 +14,14 @@ var (
 	batcherManagerOnce   sync.Once
 )
 
+// defaultMulticall3AggregationConfig is the default config when Multicall3Aggregation
+// is not explicitly configured. Enabled by default to match documented behavior.
+var defaultMulticall3AggregationConfig = func() *common.Multicall3AggregationConfig {
+	cfg := &common.Multicall3AggregationConfig{Enabled: true}
+	cfg.SetDefaults()
+	return cfg
+}()
+
 // GetBatcherManager returns the global batcher manager.
 func GetBatcherManager() *BatcherManager {
 	batcherManagerOnce.Do(func() {
@@ -83,15 +91,22 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 		jrq.Unlock()
 	}
 
-	// Check if Multicall3 aggregation is enabled
+	// Get Multicall3 aggregation config, using defaults if not explicitly configured
 	cfg := network.Config()
-	if cfg == nil || cfg.Evm == nil || cfg.Evm.Multicall3Aggregation == nil || !cfg.Evm.Multicall3Aggregation.Enabled {
+	var aggCfg *common.Multicall3AggregationConfig
+	if cfg != nil && cfg.Evm != nil && cfg.Evm.Multicall3Aggregation != nil {
+		aggCfg = cfg.Evm.Multicall3Aggregation
+	} else {
+		// Use default config (enabled by default)
+		aggCfg = defaultMulticall3AggregationConfig
+	}
+
+	// Check if Multicall3 aggregation is explicitly disabled
+	if !aggCfg.Enabled {
 		// Batching disabled, use normal forward
 		resp, err := network.Forward(ctx, nq)
 		return true, resp, err
 	}
-
-	aggCfg := cfg.Evm.Multicall3Aggregation
 
 	// Check eligibility for batching
 	eligible, reason := IsEligibleForBatching(nq, aggCfg)

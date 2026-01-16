@@ -254,6 +254,42 @@ func TestIsEligibleForBatching(t *testing.T) {
 			eligible: false,
 			reason:   "block tag not allowed",
 		},
+		{
+			name:   "ineligible - EIP-1898 block param with requireCanonical:false",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				map[string]interface{}{
+					"blockHash":        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+					"requireCanonical": false,
+				},
+			},
+			eligible: false,
+			reason:   "has requireCanonical:false",
+		},
+		{
+			name:   "eligible - EIP-1898 block param with requireCanonical:true",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				map[string]interface{}{
+					"blockHash":        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+					"requireCanonical": true,
+				},
+			},
+			eligible: true,
+		},
+		{
+			name:   "eligible - EIP-1898 block param without requireCanonical (default true)",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{"to": "0x1234567890123456789012345678901234567890", "data": "0xabcd"},
+				map[string]interface{}{
+					"blockHash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+				},
+			},
+			eligible: true,
+		},
 	}
 
 	for _, tt := range tests {
