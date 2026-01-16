@@ -16,6 +16,18 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// stopAndDrainTimer safely stops a timer and drains its channel if needed.
+// This pattern is required because timer.Stop() returns false if the timer already fired,
+// and in that case the channel must be drained to avoid goroutine leaks.
+func stopAndDrainTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
 // Forwarder is the interface for forwarding requests through the network layer.
 type Forwarder interface {
 	Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
@@ -77,10 +89,23 @@ func (b *Batcher) logBypass(key BatchingKey, reason string) {
 // - bypass: true if request should be forwarded individually
 // - error: any error during processing
 func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.NormalizedRequest) (*BatchEntry, bool, error) {
+	// Validate batching key
+	if err := key.Validate(); err != nil {
+		b.logBypass(key, fmt.Sprintf("invalid_key: %v", err))
+		return nil, true, err
+	}
+
 	// Extract call info
 	target, callData, _, err := ExtractCallInfo(req)
 	if err != nil {
 		b.logBypass(key, fmt.Sprintf("extract_call_info_error: %v", err))
+		return nil, true, err
+	}
+
+	// Validate target address length (must be 20 bytes for EVM)
+	if len(target) != 20 {
+		err := fmt.Errorf("invalid target address length: got %d, expected 20", len(target))
+		b.logBypass(key, fmt.Sprintf("invalid_target: %v", err))
 		return nil, true, err
 	}
 
@@ -277,22 +302,10 @@ func (b *Batcher) scheduleFlush(keyStr string, batch *Batch) {
 			return
 		case <-batch.notifyCh:
 			// FlushTime was shortened, stop current timer and recalculate
-			// Drain timer channel if Stop() returns false (timer already fired)
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			stopAndDrainTimer(timer)
 			continue
 		case <-b.shutdown:
-			// Drain timer channel if Stop() returns false (timer already fired)
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			stopAndDrainTimer(timer)
 			// On shutdown, flush the batch with error to avoid orphaned entries
 			b.flushWithShutdownError(keyStr, batch)
 			return
@@ -493,7 +506,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 						// Cache write failures are non-critical but we track them for observability
 						telemetry.MetricMulticall3CacheWriteErrorsTotal.WithLabelValues(projectId, networkId).Inc()
 						if b.logger != nil {
-							b.logger.Debug().
+							b.logger.Warn().
 								Err(err).
 								Str("projectId", projectId).
 								Str("networkId", networkId).
@@ -713,6 +726,21 @@ type BatchingKey struct {
 	BlockRef      string
 	DirectivesKey string
 	UserId        string // empty if cross-user batching is allowed
+}
+
+// Validate checks that the BatchingKey has required fields set.
+// Returns an error if any required field is empty.
+func (k BatchingKey) Validate() error {
+	if k.ProjectId == "" {
+		return fmt.Errorf("BatchingKey.ProjectId is required")
+	}
+	if k.NetworkId == "" {
+		return fmt.Errorf("BatchingKey.NetworkId is required")
+	}
+	if k.BlockRef == "" {
+		return fmt.Errorf("BatchingKey.BlockRef is required")
+	}
+	return nil
 }
 
 func (k BatchingKey) String() string {

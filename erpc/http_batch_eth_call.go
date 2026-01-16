@@ -20,9 +20,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// maxConcurrentCacheWrites limits concurrent multicall3 per-call cache write goroutines.
+// This value balances memory usage with throughput - too low causes dropped writes under load,
+// too high risks memory pressure. 100 is chosen as a reasonable default for most workloads.
+const maxConcurrentCacheWrites = 100
+
 // cacheWriteSem limits concurrent multicall3 per-call cache write goroutines
 // to prevent unbounded goroutine growth under high load.
-var cacheWriteSem = make(chan struct{}, 100)
+var cacheWriteSem = make(chan struct{}, maxConcurrentCacheWrites)
 
 type ethCallBatchInfo struct {
 	networkId  string

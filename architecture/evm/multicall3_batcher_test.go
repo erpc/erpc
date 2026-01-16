@@ -1929,3 +1929,242 @@ func TestBatcher_ScheduleFlush_PanicRecovery(t *testing.T) {
 		t.Fatal("timeout waiting for result - panic recovery may have failed")
 	}
 }
+
+// mockFallbackThenPanicForwarder returns an error triggering fallback on first call,
+// then panics on subsequent (individual) calls to test fallback panic recovery
+type mockFallbackThenPanicForwarder struct {
+	callCount    int
+	panicMessage string
+	mu           sync.Mutex
+}
+
+func (m *mockFallbackThenPanicForwarder) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	m.mu.Lock()
+	m.callCount++
+	count := m.callCount
+	m.mu.Unlock()
+
+	if count == 1 {
+		// First call is the multicall - return error that triggers fallback
+		return nil, common.NewErrEndpointExecutionException(
+			fmt.Errorf("contract not found"),
+		)
+	}
+	// Subsequent calls (individual fallback) - panic
+	panic(m.panicMessage)
+}
+
+func (m *mockFallbackThenPanicForwarder) SetCache(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	return nil
+}
+
+func TestBatcher_FallbackIndividual_PanicRecovery(t *testing.T) {
+	forwarder := &mockFallbackThenPanicForwarder{panicMessage: "test panic in fallback"}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10,
+		MinWaitMs:              5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Enqueue a request
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1111111111111111111111111111111111111111",
+			"data": "0x01020304",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.False(t, bypass)
+
+	// Wait for the batch to flush (multicall fails with "contract not found",
+	// triggers fallback, fallback panics and recovers)
+	select {
+	case result := <-entry.ResultCh:
+		// Should receive an error due to the panic in fallback
+		require.Error(t, result.Error)
+		require.Contains(t, result.Error.Error(), "panic in fallback forward")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for result - fallback panic recovery may have failed")
+	}
+}
+
+func TestBatcher_MaxQueueSize_Enforcement(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               1000, // Long window to prevent auto-flush
+		MinWaitMs:              5,
+		MaxCalls:               100,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           3, // Small queue for testing
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Fill up the queue
+	for i := 0; i < 3; i++ {
+		jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+			map[string]interface{}{
+				"to":   fmt.Sprintf("0x%040d", i+1),
+				"data": "0x01020304",
+			},
+			"latest",
+		})
+		req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+		_, bypass, err := batcher.Enqueue(ctx, key, req)
+		require.NoError(t, err)
+		require.False(t, bypass, "request %d should be enqueued", i)
+	}
+
+	// Next request should bypass due to full queue
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x0000000000000000000000000000000000000099",
+			"data": "0x01020304",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	_, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.True(t, bypass, "4th request should bypass due to full queue")
+}
+
+func TestBatchingKey_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     BatchingKey
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid key",
+			key: BatchingKey{
+				ProjectId:     "proj1",
+				NetworkId:     "evm:1",
+				BlockRef:      "latest",
+				DirectivesKey: "v1:",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing project id",
+			key: BatchingKey{
+				NetworkId: "evm:1",
+				BlockRef:  "latest",
+			},
+			wantErr: true,
+			errMsg:  "ProjectId is required",
+		},
+		{
+			name: "missing network id",
+			key: BatchingKey{
+				ProjectId: "proj1",
+				BlockRef:  "latest",
+			},
+			wantErr: true,
+			errMsg:  "NetworkId is required",
+		},
+		{
+			name: "missing block ref",
+			key: BatchingKey{
+				ProjectId: "proj1",
+				NetworkId: "evm:1",
+			},
+			wantErr: true,
+			errMsg:  "BlockRef is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.key.Validate()
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestBatcher_InvalidTargetLength_Bypass(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               50,
+		MinWaitMs:              5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Request with invalid target address (21 bytes instead of 20)
+	// 42 hex chars = 21 bytes
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x00112233445566778899aabbccddeeff00112233ab", // 21 bytes (42 hex chars)
+			"data": "0x01020304",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	_, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.Error(t, err)
+	require.True(t, bypass, "request with invalid target should bypass")
+	require.Contains(t, err.Error(), "invalid target address length")
+}
