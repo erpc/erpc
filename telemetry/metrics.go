@@ -469,6 +469,12 @@ var (
 		Help:      "Total number of per-call cache write errors in multicall3 batch responses.",
 	}, []string{"project", "network"})
 
+	MetricMulticall3CacheReadErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_read_errors_total",
+		Help:      "Total number of cache read errors during multicall3 pre-aggregation cache check.",
+	}, []string{"project", "network"})
+
 	MetricMulticall3FallbackRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "multicall3_fallback_requests_total",

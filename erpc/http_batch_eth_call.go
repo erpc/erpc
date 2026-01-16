@@ -180,10 +180,27 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 		wg.Add(1)
 		go func(c ethCallBatchCandidate) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicErr := common.NewErrJsonRpcExceptionInternal(
+						0,
+						common.JsonRpcErrorServerSideException,
+						fmt.Sprintf("internal error: panic in batch fallback: %v", r),
+						nil,
+						nil,
+					)
+					c.logger.Error().
+						Str("panic", fmt.Sprintf("%v", r)).
+						Str("stack", string(debug.Stack())).
+						Msg("panic in forwardEthCallBatchCandidates goroutine")
+					responses[c.index] = processErrorBody(&c.logger, startedAt, c.req, panicErr, s.serverCfg.IncludeErrorDetails)
+					common.EndRequestSpan(c.ctx, nil, panicErr)
+				}
+			}()
 			resp, err := forwardBatchProject(withSkipNetworkRateLimit(c.ctx), project, network, c.req)
 			if err != nil {
 				if resp != nil {
-					go resp.Release()
+					resp.Release()
 				}
 				responses[c.index] = processErrorBody(&c.logger, startedAt, c.req, err, s.serverCfg.IncludeErrorDetails)
 				common.EndRequestSpan(c.ctx, nil, err)
@@ -322,7 +339,8 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			}
 			cachedResp, err := cacheDal.Get(cand.ctx, cand.req)
 			if err != nil {
-				// Log cache errors - they're non-fatal but indicate potential cache issues
+				// Log and track cache errors - they're non-fatal but indicate potential cache issues
+				telemetry.MetricMulticall3CacheReadErrorsTotal.WithLabelValues(projectId, batchInfo.networkId).Inc()
 				cand.logger.Warn().
 					Err(err).
 					Str("networkId", batchInfo.networkId).

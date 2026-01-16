@@ -1234,6 +1234,24 @@ func TestNewBatcher_EnabledConfig(t *testing.T) {
 	batcher.Shutdown()
 }
 
+func TestNewBatcher_NilForwarder_Panics(t *testing.T) {
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	// Test that nil forwarder causes panic
+	require.Panics(t, func() {
+		NewBatcher(cfg, nil, nil)
+	}, "NewBatcher should panic when forwarder is nil")
+}
+
 // mockForwarderWithCacheError is a forwarder that returns errors from SetCache
 type mockForwarderWithCacheError struct {
 	response   *common.NormalizedResponse
@@ -1844,5 +1862,70 @@ func TestBatcher_DoubleFlushPrevention(t *testing.T) {
 		require.NotNil(t, result.Response)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for result")
+	}
+}
+
+// mockPanicForwarder panics when Forward is called to test panic recovery
+type mockPanicForwarder struct {
+	panicMessage string
+}
+
+func (m *mockPanicForwarder) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	panic(m.panicMessage)
+}
+
+func (m *mockPanicForwarder) SetCache(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	return nil
+}
+
+func TestBatcher_ScheduleFlush_PanicRecovery(t *testing.T) {
+	forwarder := &mockPanicForwarder{panicMessage: "test panic in forwarder"}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10,
+		MinWaitMs:              5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// Enqueue a request
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1111111111111111111111111111111111111111",
+			"data": "0x01020304",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.False(t, bypass)
+
+	// Wait for the batch to flush (will panic and recover)
+	select {
+	case result := <-entry.ResultCh:
+		// Should receive an error due to the panic
+		require.Error(t, result.Error)
+		require.Contains(t, result.Error.Error(), "panic")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for result - panic recovery may have failed")
 	}
 }
