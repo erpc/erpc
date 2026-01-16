@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -230,6 +231,30 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 // scheduleFlush waits until flush time and then flushes the batch.
 func (b *Batcher) scheduleFlush(keyStr string, batch *Batch) {
 	defer b.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			// Log panic with stack trace and deliver errors to all waiting entries
+			if b.logger != nil {
+				b.logger.Error().
+					Str("panic", fmt.Sprintf("%v", r)).
+					Str("stack", string(debug.Stack())).
+					Str("batchKey", keyStr).
+					Msg("panic in scheduleFlush goroutine")
+			}
+			// Deliver error to all entries in the batch
+			batch.mu.Lock()
+			entries := batch.Entries
+			batch.mu.Unlock()
+			panicErr := common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorServerSideException,
+				fmt.Sprintf("internal error: panic in batch scheduler: %v", r),
+				nil,
+				nil,
+			)
+			b.deliverError(entries, panicErr, batch.Key.ProjectId, batch.Key.NetworkId)
+		}
+	}()
 
 	for {
 		batch.mu.Lock()
@@ -296,8 +321,8 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	// Capture flush time for wait time calculations
 	flushTime := time.Now()
 
-	// Build ordered unique calls list (maintains insertion order via CallKeys map iteration order)
-	// We need to build unique calls in the order they were first seen
+	// Build ordered unique calls list by iterating entries slice (which preserves insertion order)
+	// and deduplicating based on CallKey. This ensures deterministic ordering.
 	type uniqueCall struct {
 		callKey string
 		entry   *BatchEntry // first entry for this callKey
@@ -536,7 +561,7 @@ func (b *Batcher) sendResult(entry *BatchEntry, result BatchResult, projectId, n
 	case <-entry.Ctx.Done():
 		telemetry.MetricMulticall3AbandonedTotal.WithLabelValues(projectId, networkId).Inc()
 		if b.logger != nil {
-			b.logger.Debug().
+			b.logger.Warn().
 				Str("projectId", projectId).
 				Str("networkId", networkId).
 				Err(entry.Ctx.Err()).
@@ -574,7 +599,16 @@ func (b *Batcher) fallbackIndividual(entries []*BatchEntry, projectId, networkId
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					// Panic in forwarder - send error to entry
+					// Log panic with stack trace
+					if b.logger != nil {
+						b.logger.Error().
+							Str("panic", fmt.Sprintf("%v", r)).
+							Str("stack", string(debug.Stack())).
+							Str("projectId", projectId).
+							Str("networkId", networkId).
+							Msg("panic in fallback forward goroutine")
+					}
+					// Send error to entry
 					err := fmt.Errorf("panic in fallback forward: %v", r)
 					b.sendResult(e, BatchResult{Error: err}, projectId, networkId)
 					telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "panic").Inc()
@@ -661,7 +695,8 @@ type BatchingKey struct {
 }
 
 func (k BatchingKey) String() string {
-	return fmt.Sprintf("%s|%s|%s|%s|%s", k.ProjectId, k.NetworkId, k.BlockRef, k.DirectivesKey, k.UserId)
+	// Use null byte separator to prevent key collisions from field values containing the separator
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", k.ProjectId, k.NetworkId, k.BlockRef, k.DirectivesKey, k.UserId)
 }
 
 // DeriveDirectivesKey creates a stable, versioned key from relevant directives.
