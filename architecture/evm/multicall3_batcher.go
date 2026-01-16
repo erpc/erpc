@@ -91,16 +91,15 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 		return nil, true, err
 	}
 
-	// Calculate deadline from context
-	deadline, hasDeadline := ctx.Deadline()
-	if !hasDeadline {
-		deadline = time.Now().Add(time.Duration(b.cfg.WindowMs) * time.Millisecond)
-	}
-
-	// Check if deadline is too tight
+	// Get deadline from context (if any)
+	// We don't create a synthetic deadline for no-timeout requests to avoid
+	// causing unnecessary timeouts on the upstream multicall call.
 	now := time.Now()
+	deadline, hasDeadline := ctx.Deadline()
+
+	// Check if deadline is too tight (only if there's a deadline)
 	minWait := time.Duration(b.cfg.MinWaitMs) * time.Millisecond
-	if deadline.Before(now.Add(minWait)) {
+	if hasDeadline && deadline.Before(now.Add(minWait)) {
 		b.logBypass(key, "deadline_too_tight")
 		return nil, true, nil
 	}
@@ -204,20 +203,24 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	batch.CallKeys[callKey] = append(batch.CallKeys[callKey], entry)
 
 	// Update flush time based on deadline (deadline-aware)
-	safetyMargin := time.Duration(b.cfg.SafetyMarginMs) * time.Millisecond
-	proposedFlush := deadline.Add(-safetyMargin)
-	if proposedFlush.Before(batch.FlushTime) {
-		batch.FlushTime = proposedFlush
-		// Clamp to minimum wait
-		minFlush := now.Add(minWait)
-		if batch.FlushTime.Before(minFlush) {
-			batch.FlushTime = minFlush
-		}
-		// Notify the flush goroutine that FlushTime was shortened
-		select {
-		case batch.notifyCh <- struct{}{}:
-		default:
-			// Already has a pending notification
+	// Only update if the request has a deadline - requests without deadlines
+	// should not cause early flushes.
+	if hasDeadline {
+		safetyMargin := time.Duration(b.cfg.SafetyMarginMs) * time.Millisecond
+		proposedFlush := deadline.Add(-safetyMargin)
+		if proposedFlush.Before(batch.FlushTime) {
+			batch.FlushTime = proposedFlush
+			// Clamp to minimum wait
+			minFlush := now.Add(minWait)
+			if batch.FlushTime.Before(minFlush) {
+				batch.FlushTime = minFlush
+			}
+			// Notify the flush goroutine that FlushTime was shortened
+			select {
+			case batch.notifyCh <- struct{}{}:
+			default:
+				// Already has a pending notification
+			}
 		}
 	}
 

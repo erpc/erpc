@@ -98,6 +98,42 @@ func TestDetectEthCallBatchInfo(t *testing.T) {
 			wantBlockRef: "latest",
 			wantBlock:    "latest",
 		},
+		{
+			name: "mixed requireCanonical - one false one true",
+			requests: []json.RawMessage{
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": false}}, "evm:1"),
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": true}}, "evm:1"),
+			},
+			wantNil: true,
+		},
+		{
+			name: "mixed requireCanonical - one false one default",
+			requests: []json.RawMessage{
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": false}}, "evm:1"),
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234"}}, "evm:1"),
+			},
+			wantNil: true,
+		},
+		{
+			name: "same requireCanonical - both true",
+			requests: []json.RawMessage{
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": true}}, "evm:1"),
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": true}}, "evm:1"),
+			},
+			wantNetwork:  "evm:1",
+			wantBlockRef: "0x1234567890123456789012345678901234567890123456789012345678901234",
+			wantBlock:    map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": true},
+		},
+		{
+			name: "same requireCanonical - explicit true and default compatible",
+			requests: []json.RawMessage{
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": true}}, "evm:1"),
+				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234"}}, "evm:1"),
+			},
+			wantNetwork:  "evm:1",
+			wantBlockRef: "0x1234567890123456789012345678901234567890123456789012345678901234",
+			wantBlock:    map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": true},
+		},
 	}
 
 	for _, tt := range cases {
