@@ -374,6 +374,56 @@ func TestHandleEthCallBatchAggregation_SuccessAndFailureResults(t *testing.T) {
 	assert.Equal(t, "0x"+hex.EncodeToString(results[1].ReturnData), errMap["data"])
 }
 
+func TestHandleEthCallBatchAggregation_PanicRecovery(t *testing.T) {
+	t.Run("panic in fallback forward is recovered", func(t *testing.T) {
+		cfg := baseBatchConfig()
+		server, project, ctx, cleanup := setupBatchHandler(t, cfg)
+		defer cleanup()
+
+		// Panic recovery exists in forwardEthCallBatchCandidates (fallback path)
+		// The multicall3 network forward doesn't have panic recovery, but the
+		// fallback path does. So we make network forward fail to trigger fallback,
+		// then have the project forward (fallback) panic.
+		withBatchStubs(t,
+			func(ctx context.Context, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				// Return "contract not found" error to trigger fallback via ShouldFallbackMulticall3
+				return nil, common.NewErrEndpointExecutionException(errors.New("contract not found"))
+			},
+			func(ctx context.Context, project *PreparedProject, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				// Panic in the fallback forward - this should be recovered
+				panic("test panic in fallback forward")
+			},
+			nil,
+		)
+
+		// The function should not crash - panic in fallback path should be recovered
+		handled, responses := runHandle(t, ctx, server, project, defaultBatchInfo(), validBatchRequests(t), nil)
+		require.True(t, handled)
+		// We expect error responses due to the panic
+		require.Len(t, responses, 2)
+		for _, resp := range responses {
+			require.NotNil(t, resp, "response should not be nil after panic recovery")
+		}
+	})
+}
+
+func TestHandleEthCallBatchAggregation_DetectEthCallBatchInfo_EmptyParams(t *testing.T) {
+	// Empty params in eth_call is valid - the block param defaults to "latest".
+	// This test verifies that empty params requests are handled correctly.
+	requests := []json.RawMessage{
+		json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[]}`),
+		json.RawMessage(`{"jsonrpc":"2.0","id":2,"method":"eth_call","params":[]}`),
+	}
+
+	// detectEthCallBatchInfo should return valid info with "latest" block ref
+	info, err := detectEthCallBatchInfo(requests, "evm", "123")
+	require.NoError(t, err)
+	require.NotNil(t, info, "empty params defaults to latest - should be valid for batching")
+	assert.Equal(t, "evm:123", info.networkId)
+	assert.Equal(t, "latest", info.blockRef)
+	assert.Equal(t, interface{}("latest"), info.blockParam)
+}
+
 func TestHandleEthCallBatchAggregation_CacheHits(t *testing.T) {
 	t.Run("all cached - no multicall3 call", func(t *testing.T) {
 		cfg := baseBatchConfig()

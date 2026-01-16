@@ -2168,3 +2168,428 @@ func TestBatcher_InvalidTargetLength_Bypass(t *testing.T) {
 	require.True(t, bypass, "request with invalid target should bypass")
 	require.Contains(t, err.Error(), "invalid target address length")
 }
+
+func TestDecodeMulticallResponse_NilResponse(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Test with nil response
+	results, err := batcher.decodeMulticallResponse(nil)
+	require.Error(t, err)
+	require.Nil(t, results)
+	require.Contains(t, err.Error(), "nil response")
+}
+
+func TestDecodeMulticallResponse_NilJsonRpc(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Test with response that has no JsonRpcResponse set
+	resp := common.NewNormalizedResponse()
+	results, err := batcher.decodeMulticallResponse(resp)
+	require.Error(t, err)
+	require.Nil(t, results)
+	// Error comes from JsonRpcResponse() which returns an error when no body is available
+	require.Contains(t, err.Error(), "no body available to parse JsonRpcResponse")
+}
+
+func TestDecodeMulticallResponse_JsonRpcError(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Create a response with JSON-RPC error
+	jrr := &common.JsonRpcResponse{
+		Error: common.NewErrJsonRpcExceptionExternal(
+			-32000,
+			"execution error",
+			"",
+		),
+	}
+	resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	results, err := batcher.decodeMulticallResponse(resp)
+	require.Error(t, err)
+	require.Nil(t, results)
+	require.Contains(t, err.Error(), "execution error")
+}
+
+func TestDecodeMulticallResponse_EmptyResult(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Create a response with empty/null result
+	jrr, err := common.NewJsonRpcResponse(nil, nil, nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	results, err := batcher.decodeMulticallResponse(resp)
+	require.Error(t, err)
+	require.Nil(t, results)
+	require.Contains(t, err.Error(), "empty result")
+}
+
+func TestBlockParamForMulticall_BlockHashEIP1898(t *testing.T) {
+	tests := []struct {
+		name     string
+		blockRef string
+		expected interface{}
+		wantErr  bool
+	}{
+		{
+			name:     "block hash wraps to EIP-1898",
+			blockRef: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			expected: map[string]interface{}{"blockHash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"},
+			wantErr:  false,
+		},
+		{
+			name:     "hex block number stays as-is",
+			blockRef: "0x10",
+			expected: "0x10",
+			wantErr:  false,
+		},
+		{
+			name:     "decimal block number converts to hex",
+			blockRef: "16",
+			expected: "0x10",
+			wantErr:  false,
+		},
+		{
+			name:     "named block tag stays as-is",
+			blockRef: "latest",
+			expected: "latest",
+			wantErr:  false,
+		},
+		{
+			name:     "finalized stays as-is",
+			blockRef: "finalized",
+			expected: "finalized",
+			wantErr:  false,
+		},
+		{
+			name:     "safe stays as-is",
+			blockRef: "safe",
+			expected: "safe",
+			wantErr:  false,
+		},
+		{
+			name:     "empty string becomes latest",
+			blockRef: "",
+			expected: "latest",
+			wantErr:  false,
+		},
+		{
+			name:     "short hex (not block hash) stays as-is",
+			blockRef: "0xabc123",
+			expected: "0xabc123",
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := blockParamForMulticall(tt.blockRef)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestSendResult_ContextCancelled_ReleasesResponse(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	entry := &BatchEntry{
+		Ctx:      ctx,
+		ResultCh: make(chan BatchResult, 1),
+	}
+
+	// Create a mock response to track release
+	jrr, err := common.NewJsonRpcResponse(nil, "0xdeadbeef", nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	// sendResult should return false because context is cancelled
+	sent := batcher.sendResult(entry, BatchResult{Response: resp}, "test-project", "evm:1")
+	require.False(t, sent, "sendResult should return false for cancelled context")
+
+	// ResultCh should be empty since the result was not sent
+	select {
+	case <-entry.ResultCh:
+		t.Fatal("result should not have been sent to channel")
+	default:
+		// Expected - channel is empty
+	}
+}
+
+func TestBatcher_SendResult_SuccessfulDelivery(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Create a valid (non-cancelled) context
+	ctx := context.Background()
+
+	entry := &BatchEntry{
+		Ctx:      ctx,
+		ResultCh: make(chan BatchResult, 1),
+	}
+
+	// Create a mock response
+	jrr, err := common.NewJsonRpcResponse(nil, "0xdeadbeef", nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	// sendResult should return true for successful delivery
+	sent := batcher.sendResult(entry, BatchResult{Response: resp}, "test-project", "evm:1")
+	require.True(t, sent, "sendResult should return true for successful delivery")
+
+	// ResultCh should have the result
+	select {
+	case result := <-entry.ResultCh:
+		require.NotNil(t, result.Response)
+		require.NoError(t, result.Error)
+	default:
+		t.Fatal("result should have been sent to channel")
+	}
+}
+
+func TestBatcher_DeliverError_SkipsCancelledContexts(t *testing.T) {
+	forwarder := &mockForwarder{}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Create one cancelled and one active context
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	activeCtx := context.Background()
+
+	entries := []*BatchEntry{
+		{Ctx: cancelledCtx, ResultCh: make(chan BatchResult, 1)},
+		{Ctx: activeCtx, ResultCh: make(chan BatchResult, 1)},
+	}
+
+	testErr := fmt.Errorf("test error")
+	batcher.deliverError(entries, testErr, "test-project", "evm:1")
+
+	// Cancelled context entry should not receive the error
+	select {
+	case <-entries[0].ResultCh:
+		t.Fatal("cancelled entry should not receive result")
+	default:
+		// Expected
+	}
+
+	// Active context entry should receive the error
+	select {
+	case result := <-entries[1].ResultCh:
+		require.Error(t, result.Error)
+		require.Equal(t, testErr, result.Error)
+	default:
+		t.Fatal("active entry should receive error")
+	}
+}
+
+func TestBatcher_MultipleDeadlinesPickEarliest(t *testing.T) {
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xaa}},
+		{Success: true, ReturnData: []byte{0xbb}},
+	}
+	encodedResult := encodeAggregate3Results(results)
+	resultHex := "0x" + hex.EncodeToString(encodedResult)
+
+	jrr, err := common.NewJsonRpcResponse(nil, resultHex, nil)
+	require.NoError(t, err)
+	mockResp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+
+	forwarder := &mockForwarder{response: mockResp}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               100,
+		MinWaitMs:              5,
+		SafetyMarginMs:         5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	// First request with a later deadline
+	laterDeadline := time.Now().Add(200 * time.Millisecond)
+	ctx1, cancel1 := context.WithDeadline(context.Background(), laterDeadline)
+	defer cancel1()
+
+	jrq1 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x1111111111111111111111111111111111111111", "data": "0x01"},
+		"latest",
+	})
+	req1 := common.NewNormalizedRequestFromJsonRpcRequest(jrq1)
+
+	entry1, bypass1, err := batcher.Enqueue(ctx1, key, req1)
+	require.NoError(t, err)
+	require.False(t, bypass1)
+
+	// Get initial flush time
+	batcher.mu.Lock()
+	batch := batcher.batches[key.String()]
+	batcher.mu.Unlock()
+	require.NotNil(t, batch)
+	batch.mu.Lock()
+	initialFlushTime := batch.FlushTime
+	batch.mu.Unlock()
+
+	// Second request with an earlier deadline (should update flush time)
+	earlierDeadline := time.Now().Add(50 * time.Millisecond)
+	ctx2, cancel2 := context.WithDeadline(context.Background(), earlierDeadline)
+	defer cancel2()
+
+	jrq2 := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": "0x2222222222222222222222222222222222222222", "data": "0x02"},
+		"latest",
+	})
+	req2 := common.NewNormalizedRequestFromJsonRpcRequest(jrq2)
+
+	entry2, bypass2, err := batcher.Enqueue(ctx2, key, req2)
+	require.NoError(t, err)
+	require.False(t, bypass2)
+
+	// Check that flush time was updated to the earlier deadline
+	batch.mu.Lock()
+	updatedFlushTime := batch.FlushTime
+	batch.mu.Unlock()
+
+	require.True(t, updatedFlushTime.Before(initialFlushTime), "flush time should be updated to earlier deadline")
+
+	// Wait for both results
+	select {
+	case result1 := <-entry1.ResultCh:
+		require.NoError(t, result1.Error)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for entry1 result")
+	}
+
+	select {
+	case result2 := <-entry2.ResultCh:
+		require.NoError(t, result2.Error)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for entry2 result")
+	}
+}
