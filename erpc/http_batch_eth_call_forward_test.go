@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,10 +60,10 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 
 	t.Run("panic recovery in forward goroutine", func(t *testing.T) {
 		responses := make([]interface{}, 2)
-		callCount := 0
+		var callCount int32
 		forwardBatchProject = func(ctx context.Context, project *PreparedProject, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			callCount++
-			if callCount == 1 {
+			count := atomic.AddInt32(&callCount, 1)
+			if count == 1 {
 				panic("test panic in forward")
 			}
 			return common.NewNormalizedResponse(), nil
