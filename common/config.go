@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -1678,6 +1679,31 @@ func (c *Multicall3AggregationConfig) UnmarshalYAML(unmarshal func(interface{}) 
 	type rawConfig Multicall3AggregationConfig
 	var raw rawConfig
 	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	*c = Multicall3AggregationConfig(raw)
+	if c.Enabled {
+		c.SetDefaults()
+	}
+	return nil
+}
+
+// UnmarshalJSON implements backward compatibility for boolean config values (for TypeScript configs)
+func (c *Multicall3AggregationConfig) UnmarshalJSON(data []byte) error {
+	// Try bool first (backward compat)
+	var boolVal bool
+	if err := json.Unmarshal(data, &boolVal); err == nil {
+		c.Enabled = boolVal
+		if boolVal {
+			c.SetDefaults()
+		}
+		return nil
+	}
+
+	// Try full config
+	type rawConfig Multicall3AggregationConfig
+	var raw rawConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*c = Multicall3AggregationConfig(raw)

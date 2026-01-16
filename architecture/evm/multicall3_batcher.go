@@ -425,6 +425,8 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	// Decode the multicall response
 	results, err := b.decodeMulticallResponse(mcResp)
 	if err != nil {
+		// Release the multicall response before fallback/error
+		mcResp.Release()
 		// Check if we should fallback to individual requests
 		if ShouldFallbackMulticall3(err) {
 			telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkId, "decode_error").Inc()
@@ -437,6 +439,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 
 	// Verify result count matches unique calls
 	if len(results) != len(uniqueCalls) {
+		mcResp.Release()
 		b.deliverError(entries, fmt.Errorf("multicall3 result count mismatch: got %d, expected %d", len(results), len(uniqueCalls)), projectId, networkId)
 		return
 	}
@@ -509,6 +512,9 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 			}
 		}
 	}
+
+	// Release the multicall response after all results have been mapped
+	mcResp.Release()
 }
 
 // decodeMulticallResponse extracts and decodes the multicall3 result from a response.
@@ -928,6 +934,12 @@ func blockParamForMulticall(blockRef string) (interface{}, error) {
 		return "latest", nil
 	}
 	if strings.HasPrefix(blockRef, "0x") {
+		// Check if this is a block hash (66 chars = 0x + 64 hex chars = 32 bytes)
+		// Block hashes need to be wrapped in EIP-1898 format for correct interpretation
+		if len(blockRef) == 66 {
+			return map[string]interface{}{"blockHash": blockRef}, nil
+		}
+		// Regular hex block number - pass through
 		return blockRef, nil
 	}
 	if isDecimalBlockRef(blockRef) {

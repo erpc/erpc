@@ -133,6 +133,27 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 		UserId:        userId,
 	}
 
+	// Check cache before batching (unless skip-cache-read is set)
+	if !nq.SkipCacheRead() {
+		cache := network.Cache()
+		if cache != nil && !cache.IsObjectNull() {
+			cachedResp, cacheErr := cache.Get(ctx, nq)
+			if cacheErr != nil {
+				// Log cache errors but continue to batching
+				if logger := network.Logger(); logger != nil {
+					logger.Warn().
+						Err(cacheErr).
+						Str("networkId", network.Id()).
+						Msg("multicall3 pre-batch cache get failed, continuing to batch")
+				}
+			} else if cachedResp != nil && !cachedResp.IsObjectNull(ctx) {
+				// Cache hit - return cached response directly
+				cachedResp.SetFromCache(true)
+				return true, cachedResp, nil
+			}
+		}
+	}
+
 	// Get or create batcher for this project+network
 	mgr := GetBatcherManager()
 	forwarder := &networkForwarder{network: network}
