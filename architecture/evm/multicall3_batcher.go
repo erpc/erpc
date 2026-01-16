@@ -274,10 +274,22 @@ func (b *Batcher) scheduleFlush(keyStr string, batch *Batch) {
 			return
 		case <-batch.notifyCh:
 			// FlushTime was shortened, stop current timer and recalculate
-			timer.Stop()
+			// Drain timer channel if Stop() returns false (timer already fired)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			continue
 		case <-b.shutdown:
-			timer.Stop()
+			// Drain timer channel if Stop() returns false (timer already fired)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			// On shutdown, flush the batch with error to avoid orphaned entries
 			b.flushWithShutdownError(keyStr, batch)
 			return

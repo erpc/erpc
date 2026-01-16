@@ -20,6 +20,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// cacheWriteSem limits concurrent multicall3 per-call cache write goroutines
+// to prevent unbounded goroutine growth under high load.
+var cacheWriteSem = make(chan struct{}, 100)
+
 type ethCallBatchInfo struct {
 	networkId  string
 	blockRef   string
@@ -493,34 +497,42 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			responses[cand.index] = nr
 			common.EndRequestSpan(cand.ctx, nr, nil)
 
-			// Cache individual response asynchronously
+			// Cache individual response asynchronously with backpressure
 			if shouldCache {
-				nr.RLockWithTrace(cand.ctx)
-				nr.AddRef()
-				go func(resp *common.NormalizedResponse, req *common.NormalizedRequest, reqCtx context.Context, lg zerolog.Logger) {
-					defer func() {
-						if rec := recover(); rec != nil {
-							telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-								"multicall3-cache-write",
-								fmt.Sprintf("network:%s", batchInfo.networkId),
-								common.ErrorFingerprint(rec),
-							).Inc()
-							lg.Error().
-								Interface("panic", rec).
-								Str("stack", string(debug.Stack())).
-								Msg("unexpected panic on multicall3 per-call cache write")
-						}
-					}()
-					defer resp.RUnlock()
-					defer resp.DoneRef()
+				// Try to acquire semaphore (non-blocking to avoid blocking response path)
+				select {
+				case cacheWriteSem <- struct{}{}:
+					nr.RLockWithTrace(cand.ctx)
+					nr.AddRef()
+					go func(resp *common.NormalizedResponse, req *common.NormalizedRequest, reqCtx context.Context, lg zerolog.Logger) {
+						defer func() { <-cacheWriteSem }() // Release semaphore
+						defer func() {
+							if rec := recover(); rec != nil {
+								telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+									"multicall3-cache-write",
+									fmt.Sprintf("network:%s", batchInfo.networkId),
+									common.ErrorFingerprint(rec),
+								).Inc()
+								lg.Error().
+									Interface("panic", rec).
+									Str("stack", string(debug.Stack())).
+									Msg("unexpected panic on multicall3 per-call cache write")
+							}
+						}()
+						defer resp.RUnlock()
+						defer resp.DoneRef()
 
-					timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(network.AppCtx(), 10*time.Second, errors.New("cache driver timeout during multicall3 per-call cache write"))
-					defer timeoutCtxCancel()
-					tracedCtx := trace.ContextWithSpanContext(timeoutCtx, trace.SpanContextFromContext(reqCtx))
-					if err := cacheDal.Set(tracedCtx, req, resp); err != nil {
-						lg.Warn().Err(err).Msg("could not store multicall3 per-call response in cache")
-					}
-				}(nr, cand.req, cand.ctx, cand.logger)
+						timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(network.AppCtx(), 10*time.Second, errors.New("cache driver timeout during multicall3 per-call cache write"))
+						defer timeoutCtxCancel()
+						tracedCtx := trace.ContextWithSpanContext(timeoutCtx, trace.SpanContextFromContext(reqCtx))
+						if err := cacheDal.Set(tracedCtx, req, resp); err != nil {
+							lg.Warn().Err(err).Msg("could not store multicall3 per-call response in cache")
+						}
+					}(nr, cand.req, cand.ctx, cand.logger)
+				default:
+					// Semaphore full - skip cache write to avoid unbounded goroutine growth
+					cand.logger.Debug().Msg("skipping multicall3 per-call cache write due to backpressure")
+				}
 			}
 			continue
 		}
