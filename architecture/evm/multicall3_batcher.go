@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -342,7 +343,13 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	}
 
 	// Build the multicall3 request
-	mcReq, _, err := BuildMulticall3Request(requests, batch.Key.BlockRef)
+	blockParam, err := blockParamForMulticall(batch.Key.BlockRef)
+	if err != nil {
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkId, "invalid_block_param").Inc()
+		b.deliverError(entries, err, projectId, networkId)
+		return
+	}
+	mcReq, _, err := BuildMulticall3Request(requests, blockParam)
 	if err != nil {
 		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkId, "build_failed").Inc()
 		b.deliverError(entries, err, projectId, networkId)
@@ -462,7 +469,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 			revertErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(common.JsonRpcErrorEvmReverted), // original code
-					common.JsonRpcErrorEvmReverted,     // normalized code
+					common.JsonRpcErrorEvmReverted,      // normalized code
 					"execution reverted",
 					nil,
 					map[string]interface{}{
@@ -705,14 +712,14 @@ func DeriveCallKey(req *common.NormalizedRequest) (string, error) {
 
 // BatchEntry represents a request waiting in a batch.
 type BatchEntry struct {
-	Ctx       context.Context             // Original request context (for individual fallback)
-	Request   *common.NormalizedRequest   // The original eth_call request
-	CallKey   string                      // Deduplication key (target + calldata + blockRef)
-	Target    []byte                      // Contract address (20 bytes)
-	CallData  []byte                      // Encoded function call data
-	ResultCh  chan BatchResult            // Channel to receive the result (buffered, size 1)
-	CreatedAt time.Time                   // When the entry was created (for wait time metrics)
-	Deadline  time.Time                   // Deadline from context (for deadline-aware flushing)
+	Ctx       context.Context           // Original request context (for individual fallback)
+	Request   *common.NormalizedRequest // The original eth_call request
+	CallKey   string                    // Deduplication key (target + calldata + blockRef)
+	Target    []byte                    // Contract address (20 bytes)
+	CallData  []byte                    // Encoded function call data
+	ResultCh  chan BatchResult          // Channel to receive the result (buffered, size 1)
+	CreatedAt time.Time                 // When the entry was created (for wait time metrics)
+	Deadline  time.Time                 // Deadline from context (for deadline-aware flushing)
 }
 
 // BatchResult is the outcome delivered to a waiting request.
@@ -724,13 +731,13 @@ type BatchResult struct {
 // Batch holds pending requests for a single batching key.
 // All entries in a batch share the same project, network, block reference, directives, and user ID.
 type Batch struct {
-	Key       BatchingKey                // Composite key identifying this batch
-	Entries   []*BatchEntry              // All entries (may include duplicates)
-	CallKeys  map[string][]*BatchEntry   // Map from call key to entries (for deduplication)
-	FlushTime time.Time                  // When this batch should be flushed (deadline-aware)
-	Flushing  bool                       // True once flush has started (prevents double-flush)
-	notifyCh  chan struct{}              // Signals flush time was shortened (buffered, size 1)
-	mu        sync.Mutex                 // Protects all fields
+	Key       BatchingKey              // Composite key identifying this batch
+	Entries   []*BatchEntry            // All entries (may include duplicates)
+	CallKeys  map[string][]*BatchEntry // Map from call key to entries (for deduplication)
+	FlushTime time.Time                // When this batch should be flushed (deadline-aware)
+	Flushing  bool                     // True once flush has started (prevents double-flush)
+	notifyCh  chan struct{}            // Signals flush time was shortened (buffered, size 1)
+	mu        sync.Mutex               // Protects all fields
 }
 
 func NewBatch(key BatchingKey, flushTime time.Time) *Batch {
@@ -747,6 +754,12 @@ func NewBatch(key BatchingKey, flushTime time.Time) *Batch {
 // Multicall3 aggregate3 only supports target + calldata, not gas/value/etc.
 var ineligibleCallFields = []string{
 	"from", "gas", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas", "value",
+}
+
+var allowedCallFields = map[string]bool{
+	"to":    true,
+	"data":  true,
+	"input": true,
 }
 
 // allowedBlockTags are block tags that can be batched by default.
@@ -815,6 +828,13 @@ func IsEligibleForBatching(req *common.NormalizedRequest, cfg *common.Multicall3
 		}
 	}
 
+	// Reject unsupported call object fields early to avoid batcher failures.
+	for field := range callObj {
+		if !allowedCallFields[field] {
+			return false, fmt.Sprintf("unsupported call field: %s", field)
+		}
+	}
+
 	// Recursion guard: don't batch calls to multicall3 contract
 	if strings.EqualFold(toStr, multicall3Address) {
 		return false, "already multicall"
@@ -866,6 +886,35 @@ func isBlockRefEligibleForBatching(blockRef string) bool {
 	}
 
 	return false
+}
+
+func blockParamForMulticall(blockRef string) (interface{}, error) {
+	if blockRef == "" {
+		return "latest", nil
+	}
+	if strings.HasPrefix(blockRef, "0x") {
+		return blockRef, nil
+	}
+	if isDecimalBlockRef(blockRef) {
+		blockNum, err := strconv.ParseInt(blockRef, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return fmt.Sprintf("0x%x", blockNum), nil
+	}
+	return blockRef, nil
+}
+
+func isDecimalBlockRef(blockRef string) bool {
+	if blockRef == "" {
+		return false
+	}
+	for i := 0; i < len(blockRef); i++ {
+		if blockRef[i] < '0' || blockRef[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ExtractCallInfo extracts target and calldata from an eligible eth_call request.

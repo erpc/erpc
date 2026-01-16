@@ -164,6 +164,20 @@ func TestIsEligibleForBatching(t *testing.T) {
 			reason:   "has value field",
 		},
 		{
+			name:   "ineligible - unsupported call field",
+			method: "eth_call",
+			params: []interface{}{
+				map[string]interface{}{
+					"to":         "0x1234567890123456789012345678901234567890",
+					"data":       "0xabcd",
+					"accessList": []interface{}{},
+				},
+				"latest",
+			},
+			eligible: false,
+			reason:   "unsupported call field",
+		},
+		{
 			name:   "ineligible - has state override (3rd param)",
 			method: "eth_call",
 			params: []interface{}{
@@ -635,6 +649,86 @@ func TestBatcherFlushAndResultMapping(t *testing.T) {
 	jrr2, err := result2.Response.JsonRpcResponse()
 	require.NoError(t, err)
 	require.Equal(t, "\"0xcafebabe\"", jrr2.GetResultString())
+
+	batcher.Shutdown()
+}
+
+func TestBatcherFlush_UsesHexBlockParam(t *testing.T) {
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0x01}},
+	}
+	encodedResult := encodeAggregate3Results(results)
+	resultHex := "0x" + hex.EncodeToString(encodedResult)
+
+	blockParamCh := make(chan interface{}, 1)
+	forwarder := &mockForwarderFunc{
+		forwardFunc: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			jrq, err := req.JsonRpcRequest()
+			if err == nil {
+				jrq.RLock()
+				params := jrq.Params
+				jrq.RUnlock()
+				if len(params) > 1 {
+					blockParamCh <- params[1]
+				}
+			}
+
+			jrr, err := common.NewJsonRpcResponse(nil, resultHex, nil)
+			if err != nil {
+				return nil, err
+			}
+			return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+		},
+	}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		WindowMs:               10,
+		MinWaitMs:              1,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+
+	ctx := context.Background()
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x1111111111111111111111111111111111111111",
+			"data": "0x01",
+		},
+		"0x10",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	_, _, blockRef, err := ExtractCallInfo(req)
+	require.NoError(t, err)
+
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      blockRef,
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	entry, _, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+
+	result := <-entry.ResultCh
+	require.NoError(t, result.Error)
+
+	select {
+	case blockParam := <-blockParamCh:
+		paramStr, ok := blockParam.(string)
+		require.True(t, ok)
+		require.Equal(t, "0x10", paramStr)
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "timed out waiting for block param")
+	}
 
 	batcher.Shutdown()
 }
@@ -1257,8 +1351,8 @@ func TestBatcher_MaxCalldataBytes_Bypass(t *testing.T) {
 		Enabled:                true,
 		WindowMs:               100,
 		MinWaitMs:              5,
-		MaxCalls:               100,           // High limit
-		MaxCalldataBytes:       100,           // Very low limit for testing
+		MaxCalls:               100, // High limit
+		MaxCalldataBytes:       100, // Very low limit for testing
 		MaxQueueSize:           100,
 		MaxPendingBatches:      20,
 		AllowCrossUserBatching: util.BoolPtr(true),
