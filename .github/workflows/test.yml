@@ -37,6 +37,6 @@ jobs:
       - name: Test with the Go CLI
         run: make test
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@8a5404eabf56aa8ca2fb9e4e8eb526da0a5a8c48 # master
+        uses: securego/gosec@9f202122a731425dfa2ee978fd0e4ba2d9d8e1dc # master
         with:
           args: -exclude-dir=test -tests=false ./...
