@@ -24,6 +24,42 @@ type shortCircuitRule struct {
 // consensusRules defines all consensus rules in priority order
 // Rules are evaluated from most specific/nuanced to most generic, and ideally those that error must come before those that return a result.
 var consensusRules = []consensusRule{
+	// eth_sendRawTransaction: return first valid tx hash immediately
+	// For transaction broadcasting, we don't need consensus - any single valid response is sufficient
+	// because the transaction will propagate through the network.
+	{
+		Description: "eth_sendRawTransaction: return first valid tx hash response",
+		Condition: func(a *consensusAnalysis) bool {
+			if a.method != "eth_sendRawTransaction" {
+				return false
+			}
+			// Check if we have any non-empty response (tx hash)
+			for _, g := range a.groups {
+				if g.ResponseType == ResponseTypeNonEmpty && g.Count >= 1 {
+					return true
+				}
+			}
+			return false
+		},
+		Action: func(a *consensusAnalysis) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			// Return the first valid non-empty response
+			for _, g := range a.groups {
+				if g.ResponseType == ResponseTypeNonEmpty && g.LargestResult != nil {
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Result: g.LargestResult,
+					}
+				}
+			}
+			// Shouldn't reach here since condition already verified, but fallback to dispute
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+				Error: common.NewErrConsensusDispute(
+					"no valid tx hash response found",
+					a.participants(),
+					nil,
+				),
+			}
+		},
+	},
 	// PreferHighestValueFor: when configured for this method, return the response with highest field values
 	// that meets the agreementThreshold. This rule takes precedence over all other consensus rules.
 	{
@@ -806,6 +842,25 @@ var consensusRules = []consensusRule{
 }
 
 var shortCircuitRules = []shortCircuitRule{
+	{
+		Description: "eth_sendRawTransaction: short-circuit on first valid tx hash response",
+		Reason:      "sendrawtx_first_success",
+		Condition: func(w *failsafeCommon.PolicyResult[*common.NormalizedResponse], a *consensusAnalysis) bool {
+			// Only applies to eth_sendRawTransaction
+			if a.method != "eth_sendRawTransaction" {
+				return false
+			}
+			// Short-circuit as soon as we have any valid non-empty response (tx hash)
+			// For eth_sendRawTransaction, once a tx is accepted by any node, it will
+			// propagate through the network, so we don't need to wait for consensus.
+			for _, g := range a.groups {
+				if g.ResponseType == ResponseTypeNonEmpty && g.Count >= 1 {
+					return true
+				}
+			}
+			return false
+		},
+	},
 	{
 		Description: "consensus-valid error meets agreement threshold -> short-circuit to error",
 		Reason:      "consensus_error_threshold",
