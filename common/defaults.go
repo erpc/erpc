@@ -1803,6 +1803,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
+			if n.Evm.Multicall3Aggregation == nil && defaults.Evm.Multicall3Aggregation != nil {
+				n.Evm.Multicall3Aggregation = &Multicall3AggregationConfig{}
+				*n.Evm.Multicall3Aggregation = *defaults.Evm.Multicall3Aggregation
+			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
