@@ -486,6 +486,18 @@ var (
 		Name:      "multicall3_abandoned_total",
 		Help:      "Total number of multicall3 batch results not delivered because caller context was cancelled.",
 	}, []string{"project", "network"})
+
+	MetricMulticall3PanicTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_panic_total",
+		Help:      "Total number of panics recovered in multicall3 batch processing.",
+	}, []string{"project", "network", "location"})
+
+	MetricMulticall3CacheWriteDroppedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_write_dropped_total",
+		Help:      "Total number of multicall3 per-call cache writes dropped due to backpressure.",
+	}, []string{"project", "network"})
 )
 
 var DefaultHistogramBuckets = []float64{

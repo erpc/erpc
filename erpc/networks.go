@@ -396,7 +396,29 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			Int("originalCount", len(upsList)).
 			Int("filteredCount", len(filteredUpstreams)).
 			Msgf("filtered upstreams by group for failsafe policy")
+		if len(filteredUpstreams) == 0 {
+			err := common.NewErrFailsafeConfiguration(
+				fmt.Errorf("no upstreams match the configured group '%s' for failsafe policy (had %d upstreams before filtering, method=%s)",
+					failsafeExecutor.upstreamGroup, len(upsList), method),
+				map[string]interface{}{
+					"upstreamGroup":  failsafeExecutor.upstreamGroup,
+					"originalCount":  len(upsList),
+					"method":         method,
+					"failsafeMethod": failsafeExecutor.method,
+				},
+			)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
 		upsList = filteredUpstreams
+
+		// Update tracing to reflect post-filter state
+		forwardSpan.SetAttributes(
+			attribute.Int("upstreams.filtered_count", len(upsList)),
+			attribute.String("upstreams.filter_group", failsafeExecutor.upstreamGroup),
+		)
 	}
 
 	// Set upstreams on the request

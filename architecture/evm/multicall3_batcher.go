@@ -262,7 +262,10 @@ func (b *Batcher) scheduleFlush(keyStr string, batch *Batch) {
 	defer b.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			// Log panic with stack trace and deliver errors to all waiting entries
+			// Record metric regardless of logger availability
+			telemetry.MetricMulticall3PanicTotal.WithLabelValues(batch.Key.ProjectId, batch.Key.NetworkId, "scheduleFlush").Inc()
+
+			// Log panic with stack trace if logger available
 			if b.logger != nil {
 				b.logger.Error().
 					Str("panic", fmt.Sprintf("%v", r)).
