@@ -630,6 +630,85 @@ export default createConfig({
   When enabled, `eth_sendRawTransaction` can safely use retry and hedge policies. The transaction hash is deterministically computed from the signed transaction, so duplicate detection works across any upstream.
 </Callout>
 
+### `eth_getTransactionCount`
+
+When querying nonce values across multiple upstreams (e.g., using consensus), you may want to return the **highest** nonce rather than the most common one. This prevents issues where stale nonces from lagging nodes cause transaction failures.
+
+Use `preferHighestValueFor` in the consensus policy to return the highest numeric value:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          - matchMethod: eth_getTransactionCount
+            consensus:
+              maxParticipants: 3   # Query 3 upstreams in parallel
+              agreementThreshold: 1 # Return highest nonce (typically the most recent)
+              preferHighestValueFor:
+                eth_getTransactionCount:
+                  - result  # Compare the direct result value (hex nonce)
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: { chainId: 1 },
+          failsafe: [
+            {
+              matchMethod: "eth_getTransactionCount",
+              consensus: {
+                maxParticipants: 3,   // Query 3 upstreams in parallel
+                agreementThreshold: 1, // Return highest nonce (typically the most recent)
+                preferHighestValueFor: {
+                  eth_getTransactionCount: ["result"],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+The `preferHighestValueFor` map supports:
+- **Direct result**: Use `"result"` for methods returning a simple value (like `eth_getTransactionCount` returning `"0x5"`)
+- **Nested fields**: Use field names for object results (e.g., `["nonce", "blockNumber"]` for `eth_getTransactionByHash`)
+- **Tie-breakers**: Multiple fields are compared in order—first field is primary, subsequent fields break ties
+
+<Callout type='warning'>
+  **How `maxParticipants` and `agreementThreshold` behave:**
+  
+  When `preferHighestValueFor` is configured for a method:
+  - **`maxParticipants`**: All configured upstreams are queried in parallel. Set this to the number of upstreams you want to compare (recommended: 2-3).
+  - **`agreementThreshold`**: Minimum number of upstreams that must agree on a value for it to qualify. Among qualifying values, the highest wins.
+  
+  **Recommendation:** Use `agreementThreshold: 1`. The highest nonce typically represents the most recently mined transaction, which is the correct value to use. Lagging nodes may return stale (lower) nonces, and requiring agreement would incorrectly prefer the stale value.
+  
+  Only use `agreementThreshold: 2` or higher if you have specific concerns about compromised upstreams returning artificially high nonces.
+</Callout>
+
+<Callout type='info'>
+  When `preferHighestValueFor` is configured for a method, it takes precedence over normal hash-based consensus. Error responses are ignored; only valid numeric responses are compared.
+</Callout>
+
 ## Name aliasing
 
 You can define friendly aliases for your networks instead of the /architecture/chainId format. For example, instead of using `/main/evm/1`, you can use `/main/ethereum`:

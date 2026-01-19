@@ -2163,6 +2163,355 @@ func TestConsensusPolicy(t *testing.T) {
 			},
 			expectedPendingMocks: 0,
 		},
+
+		// ======== PreferHighestValueFor tests ========
+
+		// ======== PreferHighestValueFor tests with agreementThreshold ========
+
+		// Basic highest value tests (threshold=1: any single response qualifies)
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_returns_highest_nonce",
+			description:   "eth_getTransactionCount with preferHighestValueFor returns the highest nonce value when threshold=1",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // Any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")}, // nonce = 5
+				{status: 200, body: jsonRpcSuccess("0xa")}, // nonce = 10 (highest)
+				{status: 200, body: jsonRpcSuccess("0x3")}, // nonce = 3
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0xa"`},
+		},
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_all_same_nonce",
+			description:   "eth_getTransactionCount with all upstreams returning same nonce",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x7")},
+				{status: 200, body: jsonRpcSuccess("0x7")},
+				{status: 200, body: jsonRpcSuccess("0x7")},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x7"`},
+		},
+
+		// Threshold tests - agreed value beats single higher value
+		{
+			name:          "prefer_highest_value_threshold_agreed_value_beats_single_higher",
+			description:   "With threshold=2, two upstreams agreeing on lower nonce beats single upstream with higher nonce",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2, // Need at least 2 to agree
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},  // nonce = 5 (agreed)
+				{status: 200, body: jsonRpcSuccess("0x5")},  // nonce = 5 (agreed) - 2 upstreams agree
+				{status: 200, body: jsonRpcSuccess("0x10")}, // nonce = 16 (higher but only 1 agrees)
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x5"`}, // Lower value wins because it meets threshold
+		},
+		{
+			name:          "prefer_highest_value_threshold_no_value_meets_threshold_returns_error",
+			description:   "When no value meets the threshold, return dispute error",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2, // Need at least 2 to agree
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")}, // unique
+				{status: 200, body: jsonRpcSuccess("0xa")}, // unique
+				{status: 200, body: jsonRpcSuccess("0x3")}, // unique - no 2 upstreams agree
+			},
+			expectedCalls: []int{1, 1, 1},
+			expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "no value met agreement threshold"},
+		},
+		{
+			name:          "prefer_highest_value_threshold_highest_among_qualifying",
+			description:   "Among values that meet threshold, return the highest",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(5),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    5,
+				AgreementThreshold: 2, // Need at least 2 to agree
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")}, // nonce = 5 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0x5")}, // nonce = 5 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0x8")}, // nonce = 8 (agreed x2) - highest qualifying
+				{status: 200, body: jsonRpcSuccess("0x8")}, // nonce = 8 (agreed x2)
+				{status: 200, body: jsonRpcSuccess("0xf")}, // nonce = 15 (only 1 agrees - doesn't qualify)
+			},
+			expectedCalls:  []int{1, 1, 1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x8"`}, // Highest among qualifying values
+		},
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_with_errors_ignores_errors",
+			description:   "eth_getTransactionCount with preferHighestValueFor ignores error responses and returns highest from valid ones",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},                     // nonce = 5
+				{status: 200, body: jsonRpcError(-32000, "server overloaded")}, // error (ignored)
+				{status: 200, body: jsonRpcSuccess("0x8")},                     // nonce = 8 (highest valid)
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x8"`},
+		},
+		{
+			name:          "prefer_highest_value_eth_getTransactionCount_large_hex_values",
+			description:   "eth_getTransactionCount correctly compares large hex values",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0xffffff")}, // 16777215
+				{status: 200, body: jsonRpcSuccess("0x100000")}, // 1048576
+				{status: 200, body: jsonRpcSuccess("0xfffffe")}, // 16777214
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0xffffff"`},
+		},
+		{
+			name:          "prefer_highest_value_not_configured_for_method_uses_normal_consensus",
+			description:   "Method not in preferHighestValueFor falls back to normal hash-based consensus",
+			requestMethod: "eth_blockNumber",
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				DisputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"}, // Only configured for eth_getTransactionCount
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x100")}, // block 256
+				{status: 200, body: jsonRpcSuccess("0x100")}, // block 256 (same - meets consensus)
+				{status: 200, body: jsonRpcSuccess("0x200")}, // block 512 (different)
+			},
+			expectedCalls:  []int{1, 1, 0},                            // Short-circuits after 2 agree
+			expectedResult: &expectedResult{jsonRpcResult: `"0x100"`}, // Returns consensus value, not highest
+		},
+		{
+			name:          "prefer_highest_value_all_errors_falls_through_to_upstream_error",
+			description:   "When all responses are server errors (infra errors), falls through to normal consensus which returns the error",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 2,
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+			},
+			expectedCalls: []int{1, 1, 1},
+			// When all are infra errors, preferHighestValueFor can't extract values, falls through to normal consensus
+			// Normal consensus sees all infra errors with same hash and returns the error
+			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "internal server error"},
+		},
+
+		// eth_getTransactionByHash with nested field tests
+		{
+			name:          "prefer_highest_value_nested_field_nonce",
+			description:   "eth_getTransactionByHash with nested nonce field returns tx with highest nonce",
+			requestMethod: "eth_getTransactionByHash",
+			requestParams: []interface{}{"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionByHash": {"nonce"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "hash": "0xaaa"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0xf", "hash": "0xbbb"})}, // highest
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x3", "hash": "0xccc"})},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{contains: `"nonce":"0xf"`},
+		},
+		{
+			name:          "prefer_highest_value_multiple_fields_tiebreaker",
+			description:   "Multiple fields act as tie-breakers: same nonce, different blockNumber",
+			requestMethod: "eth_getTransactionByHash",
+			requestParams: []interface{}{"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionByHash": {"nonce", "blockNumber"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x100", "hash": "0xaaa"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x200", "hash": "0xbbb"})}, // same nonce, higher block
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x50", "hash": "0xccc"})},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{contains: `"blockNumber":"0x200"`}, // Tie-broken by blockNumber
+		},
+		{
+			name:          "prefer_highest_value_first_field_wins_over_second",
+			description:   "First field has priority: higher nonce wins even if blockNumber is lower",
+			requestMethod: "eth_getTransactionByHash",
+			requestParams: []interface{}{"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionByHash": {"nonce", "blockNumber"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x5", "blockNumber": "0x1000", "hash": "0xaaa"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0xa", "blockNumber": "0x10", "hash": "0xbbb"})}, // higher nonce, lower block
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"nonce": "0x3", "blockNumber": "0x2000", "hash": "0xccc"})},
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{contains: `"nonce":"0xa"`}, // Higher nonce wins despite lower blockNumber
+		},
+		{
+			name:          "prefer_highest_value_empty_response_ignored",
+			description:   "Empty/null responses are ignored when comparing highest values",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},
+				{status: 200, body: jsonRpcSuccess(nil)},   // null result
+				{status: 200, body: jsonRpcSuccess("0x8")}, // highest valid
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x8"`},
+		},
+		{
+			name:          "prefer_highest_value_decimal_string_handling",
+			description:   "Decimal strings are also handled correctly",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x10")}, // 16 in hex
+				{status: 200, body: jsonRpcSuccess("0x14")}, // 20 in hex (highest)
+				{status: 200, body: jsonRpcSuccess("0xc")},  // 12 in hex
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x14"`},
+		},
+		{
+			name:          "prefer_highest_value_two_upstreams_returns_highest",
+			description:   "With only 2 upstreams, returns the highest value",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(2),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    2,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x5")},
+				{status: 200, body: jsonRpcSuccess("0x9")}, // highest
+			},
+			expectedCalls:  []int{1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x9"`},
+		},
+		{
+			name:          "prefer_highest_value_mixed_valid_and_infra_errors",
+			description:   "Infrastructure errors (like timeouts) are ignored, only valid responses compared",
+			requestMethod: "eth_getTransactionCount",
+			requestParams: []interface{}{"0x1234567890123456789012345678901234567890", "latest"},
+			upstreams:     createTestUpstreams(3),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:    3,
+				AgreementThreshold: 1, // threshold=1 so any single response qualifies
+				PreferHighestValueFor: map[string][]string{
+					"eth_getTransactionCount": {"result"},
+				},
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x3")},                         // valid
+				{status: 200, body: jsonRpcError(-32603, "internal server error")}, // infra error
+				{status: 200, body: jsonRpcSuccess("0x7")},                         // valid, highest
+			},
+			expectedCalls:  []int{1, 1, 1},
+			expectedResult: &expectedResult{jsonRpcResult: `"0x7"`},
+		},
 	}
 
 	for _, tc := range tests {
