@@ -384,7 +384,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Filter upstreams by group if the failsafe executor specifies a group
 	// This is primarily used for consensus policies that should only compare
 	// responses from a specific group of upstreams (e.g., public RPC endpoints)
-	if failsafeExecutor.upstreamGroup != "" {
+	// Skip group filtering if UseUpstream directive is set - allows targeting any upstream for debugging
+	useUpstreamDirective := ""
+	if req.Directives() != nil {
+		useUpstreamDirective = req.Directives().UseUpstream
+	}
+	if failsafeExecutor.upstreamGroup != "" && useUpstreamDirective == "" {
 		filteredUpstreams := make([]common.Upstream, 0, len(upsList))
 		for _, u := range upsList {
 			if cfg := u.Config(); cfg != nil && cfg.Group == failsafeExecutor.upstreamGroup {

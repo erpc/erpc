@@ -472,6 +472,7 @@ export interface EvmAvailabilityBoundConfig {
 export interface FailsafeConfig {
     matchMethod?: string;
     matchFinality?: DataFinalityState[];
+    matchUpstreamGroup?: string;
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
