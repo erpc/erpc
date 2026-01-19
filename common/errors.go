@@ -2217,6 +2217,17 @@ func (e *ErrJsonRpcExceptionExternal) GetCause() error {
 	return nil
 }
 
+func (e *ErrJsonRpcExceptionExternal) MarshalZerologObject(ev *zerolog.Event) {
+	if e == nil {
+		return
+	}
+	ev.Int("code", e.Code)
+	ev.Str("message", e.Message)
+	if e.Data != nil {
+		ev.Interface("data", e.Data)
+	}
+}
+
 //
 // Store
 //
@@ -2643,4 +2654,38 @@ var NewErrEndpointContentValidation = func(cause error, upstream Upstream) error
 
 func (e *ErrEndpointContentValidation) ErrorStatusCode() int {
 	return http.StatusBadGateway
+}
+
+// NonceExceptionReason indicates the specific reason for a duplicate nonce error
+type NonceExceptionReason string
+
+const (
+	// NonceExceptionReasonAlreadyKnown means the transaction is already in mempool or has been processed
+	NonceExceptionReasonAlreadyKnown NonceExceptionReason = "already_known"
+	// NonceExceptionReasonNonceTooLow means the nonce has already been used by another transaction
+	NonceExceptionReasonNonceTooLow NonceExceptionReason = "nonce_too_low"
+)
+
+// ErrEndpointNonceException indicates that a transaction with this nonce already exists
+// either in the mempool or on-chain. This error is used for idempotency handling in eth_sendRawTransaction.
+type ErrEndpointNonceException struct{ BaseError }
+
+const ErrCodeEndpointNonceException ErrorCode = "ErrEndpointNonceException"
+
+var NewErrEndpointNonceException = func(cause error, reason NonceExceptionReason) error {
+	return &ErrEndpointNonceException{
+		BaseError{
+			Code:    ErrCodeEndpointNonceException,
+			Message: "transaction with this nonce already exists",
+			Cause:   cause,
+			Details: map[string]interface{}{
+				"nonceExceptionReason":   string(reason),
+				"retryableTowardNetwork": false,
+			},
+		},
+	}
+}
+
+func (e *ErrEndpointNonceException) ErrorStatusCode() int {
+	return http.StatusOK
 }

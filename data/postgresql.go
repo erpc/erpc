@@ -186,9 +186,9 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		return fmt.Errorf("failed to add expires_at column: %w", err)
 	}
 
-	// Create index for reverse lookups
+	// Create index for reverse lookups (range_key first to support queries that filter by range_key)
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (partition_key, range_key)
+		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (range_key, partition_key)
 	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create reverse index: %w", err)
