@@ -125,6 +125,7 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 	// Check if deadline is too tight (only if there's a deadline)
 	minWait := time.Duration(b.cfg.MinWaitMs) * time.Millisecond
 	if hasDeadline && deadline.Before(now.Add(minWait)) {
+		telemetry.MetricMulticall3QueueOverflowTotal.WithLabelValues(key.ProjectId, key.NetworkId, "deadline_too_tight").Inc()
 		b.logBypass(key, "deadline_too_tight")
 		return nil, true, nil
 	}

@@ -927,13 +927,14 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
-	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
-	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
-	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
-	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
-	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+	MatchMethod        string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality      []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	MatchUpstreamGroup string                      `yaml:"matchUpstreamGroup,omitempty" json:"matchUpstreamGroup"`
+	Retry              *RetryPolicyConfig          `yaml:"retry" json:"retry"`
+	CircuitBreaker     *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
+	Timeout            *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
+	Hedge              *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
+	Consensus          *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 }
 
 func (c *FailsafeConfig) Copy() *FailsafeConfig {

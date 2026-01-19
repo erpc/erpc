@@ -293,7 +293,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		}
 
 		nq.SetNetwork(network)
-		nq.SetCacheDal(network.CacheDal())
+		nq.SetCacheDal(network.Cache())
 		nq.ApplyDirectiveDefaults(network.Config().DirectiveDefaults)
 		nq.EnrichFromHttp(headers, queryArgs, uaMode)
 		rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
@@ -331,7 +331,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 
 	// Check cache for individual requests before aggregating
 	// Respects skip-cache-read directive - requests with this directive skip cache probe
-	cacheDal := network.CacheDal()
+	cacheDal := network.Cache()
 	var uncachedCandidates []ethCallBatchCandidate
 	if cacheDal != nil && !cacheDal.IsObjectNull() {
 		uncachedCandidates = make([]ethCallBatchCandidate, 0, len(candidates))

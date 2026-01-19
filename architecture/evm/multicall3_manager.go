@@ -28,7 +28,8 @@ func NewBatcherManager() *BatcherManager {
 // Returns nil if batching is disabled (cfg is nil or cfg.Enabled is false).
 // The logger parameter is optional (can be nil) - if nil, debug logging is disabled.
 func (m *BatcherManager) GetOrCreate(projectId, networkId string, cfg *common.Multicall3AggregationConfig, forwarder Forwarder, logger *zerolog.Logger) *Batcher {
-	key := projectId + "|" + networkId
+	// Use null byte separator to prevent key collisions from field values containing common separators
+	key := projectId + "\x00" + networkId
 
 	m.mu.RLock()
 	if b, ok := m.batchers[key]; ok {
@@ -56,7 +57,7 @@ func (m *BatcherManager) GetOrCreate(projectId, networkId string, cfg *common.Mu
 
 // Get returns the batcher for a project+network, or nil if not exists.
 func (m *BatcherManager) Get(projectId, networkId string) *Batcher {
-	key := projectId + "|" + networkId
+	key := projectId + "\x00" + networkId
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.batchers[key]

@@ -22,12 +22,14 @@ type mockNetworkForEthCall struct {
 	callCount int
 }
 
-func (m *mockNetworkForEthCall) Id() string                       { return m.networkId }
-func (m *mockNetworkForEthCall) Label() string                    { return m.networkId }
-func (m *mockNetworkForEthCall) ProjectId() string                { return m.projectId }
-func (m *mockNetworkForEthCall) Architecture() common.NetworkArchitecture { return common.ArchitectureEvm }
-func (m *mockNetworkForEthCall) Config() *common.NetworkConfig    { return m.cfg }
-func (m *mockNetworkForEthCall) Logger() *zerolog.Logger          { return nil }
+func (m *mockNetworkForEthCall) Id() string        { return m.networkId }
+func (m *mockNetworkForEthCall) Label() string     { return m.networkId }
+func (m *mockNetworkForEthCall) ProjectId() string { return m.projectId }
+func (m *mockNetworkForEthCall) Architecture() common.NetworkArchitecture {
+	return common.ArchitectureEvm
+}
+func (m *mockNetworkForEthCall) Config() *common.NetworkConfig                        { return m.cfg }
+func (m *mockNetworkForEthCall) Logger() *zerolog.Logger                              { return nil }
 func (m *mockNetworkForEthCall) GetMethodMetrics(method string) common.TrackedMetrics { return nil }
 func (m *mockNetworkForEthCall) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	m.mu.Lock()
