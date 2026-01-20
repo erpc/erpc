@@ -78,6 +78,24 @@ func (e *ERPC) findDatabaseConnectorById(projectId, connectorId string) (data.Co
 	return preparedProject.consumerAuthRegistry.FindDatabaseConnector(connectorId)
 }
 
+// findDatabaseStrategyById finds a DatabaseStrategy by ID to access cache invalidation
+func (e *ERPC) findDatabaseStrategyById(projectId, connectorId string) (*auth.DatabaseStrategy, error) {
+	if e.projectsRegistry == nil {
+		return nil, fmt.Errorf("projects registry not configured")
+	}
+
+	preparedProject := e.projectsRegistry.preparedProjects[projectId]
+	if preparedProject == nil {
+		return nil, fmt.Errorf("project '%s' not found", projectId)
+	}
+
+	if preparedProject.consumerAuthRegistry == nil {
+		return nil, fmt.Errorf("project '%s' has no auth registry", projectId)
+	}
+
+	return preparedProject.consumerAuthRegistry.FindDatabaseStrategy(connectorId)
+}
+
 // handleAddApiKey adds a new API key
 func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrr, err := nq.JsonRpcRequest()
@@ -345,6 +363,12 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to update API key: %w", err)
 	}
 
+	// Invalidate the cache so the update takes effect immediately
+	// This is critical for enabling/disabling keys and rate limit changes
+	if dbStrategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
+		dbStrategy.InvalidateCache(apiKey)
+	}
+
 	result := map[string]interface{}{
 		"success": true,
 		"apiKey":  apiKey,
@@ -415,6 +439,11 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 	err = connector.Delete(ctx, apiKey, userId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete API key: %w", err)
+	}
+
+	// Invalidate the cache so the deletion takes effect immediately
+	if dbStrategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
+		dbStrategy.InvalidateCache(apiKey)
 	}
 
 	result := map[string]interface{}{

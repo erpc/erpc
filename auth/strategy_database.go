@@ -270,11 +270,15 @@ func (s *DatabaseStrategy) GetConnector() data.Connector {
 	return s.connector
 }
 
-// InvalidateCache removes an API key from the cache
+// InvalidateCache removes an API key from both positive and negative caches
 func (s *DatabaseStrategy) InvalidateCache(apiKey string) {
 	if s.cache != nil {
 		s.cache.Del(apiKey)
-		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key cache entry")
+		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key positive cache entry")
+	}
+	if s.negCache != nil {
+		s.negCache.Del(apiKey)
+		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key negative cache entry")
 	}
 }
 
