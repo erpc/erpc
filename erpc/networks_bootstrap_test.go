@@ -52,7 +52,7 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 	})
 	require.NoError(t, err)
 
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
 	upr := upstream.NewUpstreamsRegistry(
@@ -100,7 +100,7 @@ func TestNetworksBootstrap_UnsupportedNetwork_FatalFast(t *testing.T) {
 	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
 
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)
@@ -141,7 +141,7 @@ func TestNetworksBootstrap_ProviderInitializing_503Retry(t *testing.T) {
 	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}}})
 	require.NoError(t, err)
 
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
 	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil)

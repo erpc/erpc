@@ -99,7 +99,7 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 
 	for _, cfg := range upstreamConfigs {
 		mt := health.NewTracker(&logger, "prjA", 100*time.Second)
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &logger)
 		if err != nil {
 			panic(err)
 		}
@@ -2622,7 +2622,7 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 	require.NoError(t, err)
 
 	mt := health.NewTracker(&logger, "prjA", 100*time.Second)
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &logger)
 	require.NoError(t, err)
 
 	mockUpstream, err := upstream.NewUpstream(ctx, "test", &common.UpstreamConfig{
@@ -3244,7 +3244,7 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 
 	for _, cfg := range upstreamConfigs {
 		mt := health.NewTracker(&logger, "prjA", 100*time.Second)
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &logger)
 		if err != nil {
 			panic(err)
 		}

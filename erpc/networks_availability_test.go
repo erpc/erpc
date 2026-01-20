@@ -49,7 +49,7 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -114,7 +114,7 @@ func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -187,7 +187,7 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -297,7 +297,7 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -374,7 +374,7 @@ func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x64"}}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -475,7 +475,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x3\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x3"}}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -564,7 +564,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x1\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -637,7 +637,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && strings.Contains(b, "\"0x0\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x0"}}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -718,7 +718,7 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 		return strings.Contains(b, "\"eth_getBlockByNumber\"") && !strings.Contains(b, "\"0x0\"") && !strings.Contains(b, "\"0x1\"")
 	}).Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x1"}}`))
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -803,7 +803,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideMethod(t *
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -882,7 +882,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t 
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -953,7 +953,7 @@ func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -1019,7 +1019,7 @@ func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -1073,7 +1073,7 @@ func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -1140,7 +1140,7 @@ func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) 
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -1231,7 +1231,7 @@ func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -1312,7 +1312,7 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)

@@ -39,7 +39,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 		},
 	}
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -1936,7 +1936,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 			"result":  "0x1234",
 		})
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
@@ -2054,7 +2054,7 @@ func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
 			"result":  "0x99",
 		})
 
-	rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 	vr := thirdparty.NewVendorsRegistry()
 	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
