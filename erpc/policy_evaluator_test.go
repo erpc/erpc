@@ -1724,7 +1724,7 @@ func TestPolicyEvaluator(t *testing.T) {
 }
 
 func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.Upstream, *upstream.Upstream, *upstream.Upstream) {
-	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+	rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)
 	if err != nil {

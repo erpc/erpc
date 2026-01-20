@@ -45,7 +45,7 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{
 				Store: &common.RateLimitStoreConfig{
 					Driver: "memory",
@@ -212,7 +212,7 @@ func TestNetwork_Forward(t *testing.T) {
 				EmptyResultMaxAttempts: 2, // cap empties at 2 total attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -331,7 +331,7 @@ func TestNetwork_Forward(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{MaxAttempts: 3}, // no EmptyResultMaxAttempts set
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -447,7 +447,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultMaxAttempts: 2}}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -541,7 +541,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 2}}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -627,7 +627,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultIgnore: []string{"eth_getBalance"}}}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -693,7 +693,7 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{
 				Budgets: []*common.RateLimitBudgetConfig{
 					{
@@ -829,7 +829,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 3,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -954,7 +954,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 3,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -1095,7 +1095,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -1261,7 +1261,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -1418,7 +1418,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize various components for the test environment
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -1615,7 +1615,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -1825,7 +1825,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -2017,7 +2017,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -2242,7 +2242,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the test environment
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		vr := thirdparty.NewVendorsRegistry()
 		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -2380,7 +2380,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -2588,7 +2588,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -2778,7 +2778,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -2961,7 +2961,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -3163,7 +3163,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -3392,7 +3392,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -3583,7 +3583,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 3, // Allow up to 3 retry attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -3771,7 +3771,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -3952,7 +3952,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -4081,7 +4081,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -4219,7 +4219,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 3,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -4391,7 +4391,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 3,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -4521,7 +4521,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 3,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -4623,7 +4623,7 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{
 				Budgets: []*common.RateLimitBudgetConfig{
 					{
@@ -4769,7 +4769,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 3,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -4899,7 +4899,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 4,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -5027,7 +5027,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -5160,7 +5160,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Duration: common.Duration(1 * time.Second),
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -5293,7 +5293,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxCount: 1,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -5446,7 +5446,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxCount: 5,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -5597,7 +5597,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxCount: 5,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -5755,7 +5755,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -5889,7 +5889,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -6022,7 +6022,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -6175,7 +6175,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
 		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -6313,7 +6313,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -6458,7 +6458,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -6586,7 +6586,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -6738,7 +6738,7 @@ func TestNetwork_Forward(t *testing.T) {
 				MaxAttempts: 2,
 			},
 		}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -6883,7 +6883,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -7019,7 +7019,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -7142,7 +7142,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -7264,7 +7264,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -7380,7 +7380,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		metricsTracker.Bootstrap(ctx)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &logger)
 		assert.NoError(t, err)
@@ -7566,7 +7566,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		fsCfg := &common.FailsafeConfig{}
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
@@ -9236,7 +9236,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			defer cancel()
 
 			// Build network with tight best-effort budgets to force fallback
-			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+			rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 			metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 			vr := thirdparty.NewVendorsRegistry()
 			pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -10170,7 +10170,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 5*time.Second)
 
 		pollerInterval := 2000 * time.Millisecond
@@ -10372,7 +10372,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		upCfg := &common.UpstreamConfig{
@@ -10557,7 +10557,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		upCfg := &common.UpstreamConfig{
@@ -10655,7 +10655,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
 	t.Helper()
 
-	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 	if upstreamConfig == nil {
@@ -10764,7 +10764,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 ) *Network {
 	t.Helper()
 
-	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 	up1 := &common.UpstreamConfig{
@@ -10929,7 +10929,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -11082,7 +11082,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -11240,7 +11240,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -11367,7 +11367,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -11501,7 +11501,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -11632,7 +11632,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 		vr := thirdparty.NewVendorsRegistry()
@@ -11761,7 +11761,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x7b"}`))
 
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 		vr := thirdparty.NewVendorsRegistry()
