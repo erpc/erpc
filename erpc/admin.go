@@ -365,8 +365,9 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 
 	// Invalidate the cache so the update takes effect immediately
 	// This is critical for enabling/disabling keys and rate limit changes
+	// Also broadcast to all instances via pg_notify if PostgreSQL is used
 	if dbStrategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
-		dbStrategy.InvalidateCache(apiKey)
+		dbStrategy.InvalidateCacheAndBroadcast(ctx, apiKey)
 	}
 
 	result := map[string]interface{}{
@@ -442,8 +443,9 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 	}
 
 	// Invalidate the cache so the deletion takes effect immediately
+	// Also broadcast to all instances via pg_notify if PostgreSQL is used
 	if dbStrategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
-		dbStrategy.InvalidateCache(apiKey)
+		dbStrategy.InvalidateCacheAndBroadcast(ctx, apiKey)
 	}
 
 	result := map[string]interface{}{

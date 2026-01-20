@@ -17,13 +17,15 @@ import (
 )
 
 type DatabaseStrategy struct {
-	logger    *zerolog.Logger
-	cfg       *common.DatabaseStrategyConfig
-	connector data.Connector
-	cache     *ristretto.Cache[string, *common.User]
-	negCache  *ristretto.Cache[string, struct{}]
-	negTTL    time.Duration
-	sf        singleflight.Group
+	logger       *zerolog.Logger
+	cfg          *common.DatabaseStrategyConfig
+	connector    data.Connector
+	cache        *ristretto.Cache[string, *common.User]
+	negCache     *ristretto.Cache[string, struct{}]
+	negTTL       time.Duration
+	sf           singleflight.Group
+	notifier     data.KeyInvalidationNotifier // optional, for pg_notify support
+	cleanupWatch func()
 }
 
 var _ AuthStrategy = &DatabaseStrategy{}
@@ -78,14 +80,23 @@ func NewDatabaseStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *co
 			Msg("initialized API key cache for database authentication strategy")
 	}
 
-	return &DatabaseStrategy{
+	s := &DatabaseStrategy{
 		logger:    logger,
 		cfg:       cfg,
 		connector: connector,
 		cache:     cache,
 		negCache:  negCache,
 		negTTL:    negTTL,
-	}, nil
+	}
+
+	// Check if connector supports key invalidation notifications (e.g., PostgreSQL)
+	if notifier, ok := connector.(data.KeyInvalidationNotifier); ok {
+		s.notifier = notifier
+		// Start listening for invalidation notifications
+		go s.startInvalidationListener(appCtx)
+	}
+
+	return s, nil
 }
 
 func (s *DatabaseStrategy) Supports(ap *AuthPayload) bool {
@@ -272,6 +283,24 @@ func (s *DatabaseStrategy) GetConnector() data.Connector {
 
 // InvalidateCache removes an API key from both positive and negative caches
 func (s *DatabaseStrategy) InvalidateCache(apiKey string) {
+	s.invalidateCacheLocal(apiKey)
+}
+
+// InvalidateCacheAndBroadcast removes an API key from local cache and broadcasts to all instances
+func (s *DatabaseStrategy) InvalidateCacheAndBroadcast(ctx context.Context, apiKey string) {
+	s.invalidateCacheLocal(apiKey)
+
+	// Broadcast to other instances via pg_notify if supported
+	if s.notifier != nil {
+		if err := s.notifier.PublishKeyInvalidation(ctx, apiKey); err != nil {
+			s.logger.Warn().Err(err).Str("apiKey", apiKey).Msg("failed to broadcast API key invalidation")
+		} else {
+			s.logger.Debug().Str("apiKey", apiKey).Msg("broadcasted API key invalidation")
+		}
+	}
+}
+
+func (s *DatabaseStrategy) invalidateCacheLocal(apiKey string) {
 	if s.cache != nil {
 		s.cache.Del(apiKey)
 		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key positive cache entry")
@@ -279,6 +308,27 @@ func (s *DatabaseStrategy) InvalidateCache(apiKey string) {
 	if s.negCache != nil {
 		s.negCache.Del(apiKey)
 		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key negative cache entry")
+	}
+}
+
+// startInvalidationListener listens for API key invalidation notifications from other instances
+func (s *DatabaseStrategy) startInvalidationListener(ctx context.Context) {
+	if s.notifier == nil {
+		return
+	}
+
+	invalidations, cleanup, err := s.notifier.WatchKeyInvalidations(ctx)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("failed to start API key invalidation listener")
+		return
+	}
+	s.cleanupWatch = cleanup
+
+	s.logger.Info().Msg("started listening for API key invalidation notifications")
+
+	for apiKey := range invalidations {
+		s.invalidateCacheLocal(apiKey)
+		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key cache from broadcast notification")
 	}
 }
 
@@ -292,6 +342,9 @@ func (s *DatabaseStrategy) ClearCache() {
 
 // Close closes the cache and performs cleanup
 func (s *DatabaseStrategy) Close() {
+	if s.cleanupWatch != nil {
+		s.cleanupWatch()
+	}
 	if s.cache != nil {
 		s.cache.Close()
 		s.logger.Debug().Msg("closed API key cache")
