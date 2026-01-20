@@ -49,6 +49,7 @@ type consensusAnalysis struct {
 	validParticipants int
 	originalRequest   *common.NormalizedRequest
 	leaderUpstream    common.Upstream
+	method            string // The RPC method being called (e.g., "eth_getTransactionCount")
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -69,6 +70,9 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 	// Try to extract original request and compute leader upstream once
 	if req, ok := exec.Context().Value(common.RequestContextKey).(*common.NormalizedRequest); ok && req != nil {
 		analysis.originalRequest = req
+		if method, err := req.Method(); err == nil {
+			analysis.method = method
+		}
 		if net := req.Network(); net != nil && net.Architecture() == common.ArchitectureEvm {
 			// Use the executor context; leader selection is read-only and fast
 			analysis.leaderUpstream = net.EvmLeaderUpstream(exec.Context())

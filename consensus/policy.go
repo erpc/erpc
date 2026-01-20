@@ -34,6 +34,7 @@ type ConsensusPolicyBuilder interface {
 	WithIgnoreFields(ignoreFields map[string][]string) ConsensusPolicyBuilder
 	WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder
 	WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder
+	WithPreferHighestValueFor(preferHighestValueFor map[string][]string) ConsensusPolicyBuilder
 
 	// Build returns a new ConsensusPolicy using the builder's configuration.
 	Build() ConsensusPolicy
@@ -54,6 +55,7 @@ type config struct {
 	ignoreFields            map[string][]string
 	preferNonEmpty          bool
 	preferLargerResponses   bool
+	preferHighestValueFor   map[string][]string
 
 	onAgreement       func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
 	onDispute         func(event failsafe.ExecutionEvent[*common.NormalizedResponse])
@@ -146,6 +148,11 @@ func (c *config) WithPreferNonEmpty(preferNonEmpty bool) ConsensusPolicyBuilder 
 
 func (c *config) WithPreferLargerResponses(preferLargerResponses bool) ConsensusPolicyBuilder {
 	c.preferLargerResponses = preferLargerResponses
+	return c
+}
+
+func (c *config) WithPreferHighestValueFor(preferHighestValueFor map[string][]string) ConsensusPolicyBuilder {
+	c.preferHighestValueFor = preferHighestValueFor
 	return c
 }
 
