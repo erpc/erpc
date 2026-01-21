@@ -47,6 +47,15 @@ type Batcher struct {
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
+
+	// runtimeBypass holds contracts detected at runtime that revert when called via Multicall3
+	// but succeed when called individually. This in-memory cache resets on process restart.
+	// For persistent bypass configuration, use the BypassContracts config field.
+	// Note: This map can grow without bound; in practice this is limited by the number of
+	// unique contracts that fail via multicall3 but succeed individually (typically few).
+	// Protected by runtimeBypassMu.
+	runtimeBypass   map[string]bool
+	runtimeBypassMu sync.RWMutex
 }
 
 // NewBatcher creates a new Multicall3 batcher.
@@ -61,11 +70,12 @@ func NewBatcher(cfg *common.Multicall3AggregationConfig, forwarder Forwarder, lo
 		panic("NewBatcher: forwarder cannot be nil")
 	}
 	b := &Batcher{
-		cfg:       cfg,
-		forwarder: forwarder,
-		logger:    logger,
-		batches:   make(map[string]*Batch),
-		shutdown:  make(chan struct{}),
+		cfg:           cfg,
+		forwarder:     forwarder,
+		logger:        logger,
+		batches:       make(map[string]*Batch),
+		shutdown:      make(chan struct{}),
+		runtimeBypass: make(map[string]bool),
 	}
 	return b
 }
@@ -82,6 +92,46 @@ func (b *Batcher) logBypass(key BatchingKey, reason string) {
 		Str("networkId", key.NetworkId).
 		Str("blockRef", key.BlockRef).
 		Msg("request bypassing multicall3 batching")
+}
+
+// isRuntimeBypassed checks if a contract address is in the runtime bypass cache.
+// The address should be lowercase hex without 0x prefix.
+func (b *Batcher) isRuntimeBypassed(addrHex string) bool {
+	b.runtimeBypassMu.RLock()
+	defer b.runtimeBypassMu.RUnlock()
+	return b.runtimeBypass[addrHex]
+}
+
+// addRuntimeBypass adds a contract address to the runtime bypass cache.
+// The address should be lowercase hex without 0x prefix.
+func (b *Batcher) addRuntimeBypass(addrHex string, projectId, networkId string) {
+	b.runtimeBypassMu.Lock()
+	defer b.runtimeBypassMu.Unlock()
+	if !b.runtimeBypass[addrHex] {
+		b.runtimeBypass[addrHex] = true
+		telemetry.MetricMulticall3RuntimeBypassTotal.WithLabelValues(projectId, networkId).Inc()
+		if b.logger != nil {
+			b.logger.Info().
+				Str("contract", "0x"+addrHex).
+				Str("projectId", projectId).
+				Str("networkId", networkId).
+				Msg("auto-detected contract that reverts via multicall3, added to runtime bypass")
+		}
+	}
+}
+
+// IsRuntimeBypassed checks if a contract address should bypass batching due to runtime detection.
+// This is a public method for external callers (e.g., tests, diagnostics) to query the runtime
+// bypass cache. The internal Enqueue method uses isRuntimeBypassed for actual bypass checks.
+// The address can be provided with or without 0x prefix, and is case-insensitive.
+func (b *Batcher) IsRuntimeBypassed(targetHex string) bool {
+	if targetHex == "" {
+		return false
+	}
+	// Normalize: lowercase and remove 0x/0X prefix
+	normalized := strings.ToLower(targetHex)
+	normalized = strings.TrimPrefix(normalized, "0x")
+	return b.isRuntimeBypassed(normalized)
 }
 
 // Enqueue adds a request to a batch. Returns:
@@ -107,6 +157,13 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 		err := fmt.Errorf("invalid target address length: got %d, expected 20", len(target))
 		b.logBypass(key, fmt.Sprintf("invalid_target: %v", err))
 		return nil, true, err
+	}
+
+	// Check runtime bypass cache (contracts detected as reverting via multicall3)
+	targetHex := strings.ToLower(hex.EncodeToString(target))
+	if b.isRuntimeBypassed(targetHex) {
+		b.logBypass(key, "runtime_bypass_detected")
+		return nil, true, nil
 	}
 
 	// Derive call key for deduplication
@@ -495,6 +552,14 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 			for _, entry := range entriesForCall {
 				jrr, err := common.NewJsonRpcResponse(entry.Request.ID(), resultHex, nil)
 				if err != nil {
+					if b.logger != nil {
+						b.logger.Warn().
+							Err(err).
+							Str("projectId", projectId).
+							Str("networkId", networkId).
+							Str("callKey", uc.callKey).
+							Msg("multicall3 response construction failed for entry")
+					}
 					b.sendResult(entry, BatchResult{Error: err}, projectId, networkId)
 					continue
 				}
@@ -524,6 +589,106 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 				b.sendResult(entry, BatchResult{Response: resp}, projectId, networkId)
 			}
 		} else {
+			// Call reverted in multicall3 - check if we should try auto-detection
+			if b.cfg.AutoDetectBypass && len(entriesForCall) > 0 {
+				// Try forwarding the first entry individually to see if it succeeds
+				firstEntry := entriesForCall[0]
+				targetHex := strings.ToLower(hex.EncodeToString(firstEntry.Target))
+
+				// Skip retry if already in runtime bypass (shouldn't happen, but defensive)
+				if !b.isRuntimeBypassed(targetHex) {
+					telemetry.MetricMulticall3AutoDetectRetryTotal.WithLabelValues(projectId, networkId, "attempt").Inc()
+
+					// Use the entry's context for the retry, but with a bounded fallback if it's already cancelled
+					retryCtx := firstEntry.Ctx
+					var retryCancel context.CancelFunc
+					select {
+					case <-retryCtx.Done():
+						// Original context cancelled - use bounded timeout for auto-detection
+						retryCtx, retryCancel = context.WithTimeout(context.Background(), 30*time.Second)
+						if b.logger != nil {
+							b.logger.Debug().
+								Str("projectId", projectId).
+								Str("networkId", networkId).
+								Str("contract", "0x"+targetHex).
+								Err(firstEntry.Ctx.Err()).
+								Msg("multicall3 auto-detect retry using fallback context (original cancelled)")
+						}
+					default:
+					}
+
+					retryResp, retryErr := b.forwarder.Forward(retryCtx, firstEntry.Request)
+					if retryCancel != nil {
+						retryCancel()
+					}
+					if retryErr == nil && retryResp != nil {
+						// Individual call succeeded! This contract needs bypass
+						b.addRuntimeBypass(targetHex, projectId, networkId)
+						telemetry.MetricMulticall3AutoDetectRetryTotal.WithLabelValues(projectId, networkId, "detected").Inc()
+
+						// Extract the result from the retry response to create per-entry responses
+						retryJrr, err := retryResp.JsonRpcResponse()
+						if err != nil {
+							if b.logger != nil {
+								b.logger.Warn().
+									Err(err).
+									Str("projectId", projectId).
+									Str("networkId", networkId).
+									Str("contract", "0x"+targetHex).
+									Msg("multicall3 auto-detect failed to extract retry response")
+							}
+							// Fallback: propagate error to all entries
+							for _, entry := range entriesForCall {
+								b.sendResult(entry, BatchResult{Error: err}, projectId, networkId)
+							}
+							retryResp.Release()
+							continue
+						}
+
+						// Get the result value to clone for each entry
+						resultValue := retryJrr.GetResultString()
+
+						// Deliver fresh response to each entry with correct request ID
+						for _, entry := range entriesForCall {
+							jrr, err := common.NewJsonRpcResponse(entry.Request.ID(), resultValue, nil)
+							if err != nil {
+								if b.logger != nil {
+									b.logger.Warn().
+										Err(err).
+										Str("projectId", projectId).
+										Str("networkId", networkId).
+										Str("contract", "0x"+targetHex).
+										Msg("multicall3 auto-detect response construction failed")
+								}
+								b.sendResult(entry, BatchResult{Error: err}, projectId, networkId)
+								continue
+							}
+							resp := common.NewNormalizedResponse().WithRequest(entry.Request).WithJsonRpcResponse(jrr)
+							resp.SetUpstream(retryResp.Upstream())
+							resp.SetFromCache(retryResp.FromCache())
+							b.sendResult(entry, BatchResult{Response: resp}, projectId, networkId)
+						}
+
+						// Release the original retry response after all entries are processed
+						retryResp.Release()
+						continue // Move to next unique call
+					}
+					// Individual call also failed - not a bypass candidate
+					telemetry.MetricMulticall3AutoDetectRetryTotal.WithLabelValues(projectId, networkId, "same_error").Inc()
+					if b.logger != nil {
+						b.logger.Debug().
+							Err(retryErr).
+							Str("projectId", projectId).
+							Str("networkId", networkId).
+							Str("contract", "0x"+targetHex).
+							Msg("multicall3 auto-detect retry also failed, not adding to bypass")
+					}
+					if retryResp != nil {
+						retryResp.Release()
+					}
+				}
+			}
+
 			// Build error for reverted call with proper JSON-RPC format
 			dataHex := "0x" + hex.EncodeToString(result.ReturnData)
 			revertErr := common.NewErrEndpointExecutionException(
@@ -907,6 +1072,12 @@ func IsEligibleForBatching(req *common.NormalizedRequest, cfg *common.Multicall3
 	toStr, ok := toVal.(string)
 	if !ok || toStr == "" {
 		return false, "invalid to address"
+	}
+
+	// Check if contract should bypass multicall3 batching
+	// (e.g., contracts that check msg.sender code size like Chronicle Oracle)
+	if cfg.ShouldBypassContractHex(toStr) {
+		return false, "contract in bypass list"
 	}
 
 	// Check for ineligible fields

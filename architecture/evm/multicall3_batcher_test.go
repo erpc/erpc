@@ -405,6 +405,140 @@ func TestIsEligibleForBatching_AllowPendingTag(t *testing.T) {
 	require.True(t, eligible, "pending should be allowed when AllowPendingTagBatching is true: %s", reason)
 }
 
+func TestIsEligibleForBatching_BypassContracts(t *testing.T) {
+	// Chronicle Oracle feed address (example contract that checks msg.sender code size)
+	chronicleOracleAddr := "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"
+	otherContract := "0x1234567890123456789012345678901234567890"
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:         true,
+		BypassContracts: []string{chronicleOracleAddr},
+	}
+	cfg.SetDefaults()
+
+	tests := []struct {
+		name     string
+		to       string
+		eligible bool
+		reason   string
+	}{
+		{
+			name:     "bypass contract - exact match",
+			to:       chronicleOracleAddr,
+			eligible: false,
+			reason:   "contract in bypass list",
+		},
+		{
+			name:     "bypass contract - lowercase",
+			to:       "0x057f30e63a69175c69a4af5656b8c9ee647de3d0",
+			eligible: false,
+			reason:   "contract in bypass list",
+		},
+		{
+			name:     "bypass contract - uppercase",
+			to:       "0x057F30E63A69175C69A4AF5656B8C9EE647DE3D0",
+			eligible: false,
+			reason:   "contract in bypass list",
+		},
+		{
+			name:     "non-bypass contract allowed",
+			to:       otherContract,
+			eligible: true,
+			reason:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+				map[string]interface{}{
+					"to":   tt.to,
+					"data": "0xfeaf968c", // latestRoundData() selector
+				},
+				"latest",
+			})
+			req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+			eligible, reason := IsEligibleForBatching(req, cfg)
+			require.Equal(t, tt.eligible, eligible, "eligibility mismatch for %s", tt.name)
+			if tt.reason != "" {
+				require.Contains(t, reason, tt.reason)
+			}
+		})
+	}
+}
+
+func TestIsEligibleForBatching_BypassContractsEmpty(t *testing.T) {
+	// When BypassContracts is empty, all contracts should be eligible
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:         true,
+		BypassContracts: []string{},
+	}
+	cfg.SetDefaults()
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+			"data": "0xfeaf968c",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	eligible, reason := IsEligibleForBatching(req, cfg)
+	require.True(t, eligible, "should be eligible when bypass list is empty: %s", reason)
+}
+
+func TestIsEligibleForBatching_MultipleBypassContracts(t *testing.T) {
+	// Test with multiple bypass contracts
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled: true,
+		BypassContracts: []string{
+			"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0", // Chronicle Oracle
+			"0xABCDEF0123456789ABCDEF0123456789ABCDEF01", // Another contract
+		},
+	}
+	cfg.SetDefaults()
+
+	tests := []struct {
+		name     string
+		to       string
+		eligible bool
+	}{
+		{
+			name:     "first bypass contract",
+			to:       "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+			eligible: false,
+		},
+		{
+			name:     "second bypass contract",
+			to:       "0xABCDEF0123456789ABCDEF0123456789ABCDEF01",
+			eligible: false,
+		},
+		{
+			name:     "non-bypass contract",
+			to:       "0x1111111111111111111111111111111111111111",
+			eligible: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+				map[string]interface{}{
+					"to":   tt.to,
+					"data": "0xabcd",
+				},
+				"latest",
+			})
+			req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+			eligible, _ := IsEligibleForBatching(req, cfg)
+			require.Equal(t, tt.eligible, eligible)
+		})
+	}
+}
+
 func TestBatcherEnqueueAndFlush(t *testing.T) {
 	cfg := &common.Multicall3AggregationConfig{
 		Enabled:                true,
@@ -2591,5 +2725,420 @@ func TestBatcher_MultipleDeadlinesPickEarliest(t *testing.T) {
 		require.NoError(t, result2.Error)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for entry2 result")
+	}
+}
+
+// dynamicMockForwarder allows returning different responses based on call count
+type dynamicMockForwarder struct {
+	mu        sync.Mutex
+	calls     []*common.NormalizedRequest
+	responses []*common.NormalizedResponse
+	errors    []error
+}
+
+func (m *dynamicMockForwarder) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	callIndex := len(m.calls)
+	m.calls = append(m.calls, req)
+
+	if callIndex < len(m.responses) {
+		return m.responses[callIndex], m.errors[callIndex]
+	}
+
+	// Default: return last response/error
+	if len(m.responses) > 0 {
+		return m.responses[len(m.responses)-1], m.errors[len(m.errors)-1]
+	}
+	return nil, fmt.Errorf("no response configured")
+}
+
+func (m *dynamicMockForwarder) SetCache(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	return nil
+}
+
+func (m *dynamicMockForwarder) CallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
+
+func TestBatcher_RuntimeBypass_Methods(t *testing.T) {
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		AutoDetectBypass:  true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		SafetyMarginMs:    5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	forwarder := &mockForwarder{}
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Test address normalization
+	addr1 := "0x1111111111111111111111111111111111111111"
+	addr1Normalized := "1111111111111111111111111111111111111111"
+
+	// Initially not bypassed
+	require.False(t, batcher.isRuntimeBypassed(addr1Normalized))
+	require.False(t, batcher.IsRuntimeBypassed(addr1))
+
+	// Add to runtime bypass
+	batcher.addRuntimeBypass(addr1Normalized, "test-project", "evm:1")
+
+	// Now should be bypassed
+	require.True(t, batcher.isRuntimeBypassed(addr1Normalized))
+	require.True(t, batcher.IsRuntimeBypassed(addr1))
+
+	// Test case insensitivity
+	require.True(t, batcher.IsRuntimeBypassed("0x1111111111111111111111111111111111111111"))
+	require.True(t, batcher.IsRuntimeBypassed("0X1111111111111111111111111111111111111111"))
+
+	// Different address should not be bypassed
+	require.False(t, batcher.IsRuntimeBypassed("0x2222222222222222222222222222222222222222"))
+}
+
+func TestBatcher_AutoDetectBypass_DetectsRevertingContract(t *testing.T) {
+	// Create a multicall response where one call reverts
+	revertedResults := []Multicall3Result{
+		{Success: false, ReturnData: []byte{0x08, 0xc3, 0x79, 0xa0}}, // execution reverted
+	}
+	encodedRevert := encodeAggregate3Results(revertedResults)
+	revertResultHex := "0x" + hex.EncodeToString(encodedRevert)
+
+	multicallResp, err := common.NewJsonRpcResponse(nil, revertResultHex, nil)
+	require.NoError(t, err)
+	mockMulticallResp := common.NewNormalizedResponse().WithJsonRpcResponse(multicallResp)
+
+	// Create success response for individual call
+	individualResp, err := common.NewJsonRpcResponse(nil, "0xdeadbeef", nil)
+	require.NoError(t, err)
+	mockIndividualResp := common.NewNormalizedResponse().WithJsonRpcResponse(individualResp)
+
+	forwarder := &dynamicMockForwarder{
+		responses: []*common.NormalizedResponse{mockMulticallResp, mockIndividualResp},
+		errors:    []error{nil, nil},
+	}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		AutoDetectBypass:       true, // Enable auto-detect
+		WindowMs:               50,
+		MinWaitMs:              5,
+		SafetyMarginMs:         5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	targetAddr := "0x1111111111111111111111111111111111111111"
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": targetAddr, "data": "0x01"},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	// Verify not runtime bypassed initially
+	require.False(t, batcher.IsRuntimeBypassed(targetAddr))
+
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.False(t, bypass)
+
+	// Wait for result
+	select {
+	case result := <-entry.ResultCh:
+		// Should succeed because the individual retry succeeded
+		require.NoError(t, result.Error)
+		require.NotNil(t, result.Response)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	// Verify contract was added to runtime bypass
+	require.True(t, batcher.IsRuntimeBypassed(targetAddr))
+
+	// Verify two calls were made (multicall + individual retry)
+	require.Equal(t, 2, forwarder.CallCount())
+}
+
+func TestBatcher_AutoDetectBypass_Disabled(t *testing.T) {
+	// Create a multicall response where one call reverts
+	revertedResults := []Multicall3Result{
+		{Success: false, ReturnData: []byte{0x08, 0xc3, 0x79, 0xa0}}, // execution reverted
+	}
+	encodedRevert := encodeAggregate3Results(revertedResults)
+	revertResultHex := "0x" + hex.EncodeToString(encodedRevert)
+
+	multicallResp, err := common.NewJsonRpcResponse(nil, revertResultHex, nil)
+	require.NoError(t, err)
+	mockMulticallResp := common.NewNormalizedResponse().WithJsonRpcResponse(multicallResp)
+
+	forwarder := &dynamicMockForwarder{
+		responses: []*common.NormalizedResponse{mockMulticallResp},
+		errors:    []error{nil},
+	}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		AutoDetectBypass:       false, // Disabled
+		WindowMs:               50,
+		MinWaitMs:              5,
+		SafetyMarginMs:         5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	targetAddr := "0x1111111111111111111111111111111111111111"
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": targetAddr, "data": "0x01"},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.False(t, bypass)
+
+	// Wait for result
+	select {
+	case result := <-entry.ResultCh:
+		// Should fail with execution reverted error (no retry since AutoDetectBypass is false)
+		require.Error(t, result.Error)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	// Verify contract was NOT added to runtime bypass
+	require.False(t, batcher.IsRuntimeBypassed(targetAddr))
+
+	// Verify only one call was made (no retry)
+	require.Equal(t, 1, forwarder.CallCount())
+}
+
+func TestBatcher_AutoDetectBypass_SameErrorNoBypass(t *testing.T) {
+	// Create a multicall response where one call reverts
+	revertedResults := []Multicall3Result{
+		{Success: false, ReturnData: []byte{0x08, 0xc3, 0x79, 0xa0}}, // execution reverted
+	}
+	encodedRevert := encodeAggregate3Results(revertedResults)
+	revertResultHex := "0x" + hex.EncodeToString(encodedRevert)
+
+	multicallResp, err := common.NewJsonRpcResponse(nil, revertResultHex, nil)
+	require.NoError(t, err)
+	mockMulticallResp := common.NewNormalizedResponse().WithJsonRpcResponse(multicallResp)
+
+	// Individual retry also fails with an error
+	individualErr := fmt.Errorf("execution reverted")
+
+	forwarder := &dynamicMockForwarder{
+		responses: []*common.NormalizedResponse{mockMulticallResp, nil},
+		errors:    []error{nil, individualErr},
+	}
+
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		AutoDetectBypass:       true, // Enabled
+		WindowMs:               50,
+		MinWaitMs:              5,
+		SafetyMarginMs:         5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	targetAddr := "0x1111111111111111111111111111111111111111"
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": targetAddr, "data": "0x01"},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.False(t, bypass)
+
+	// Wait for result
+	select {
+	case result := <-entry.ResultCh:
+		// Should fail (both multicall and individual call failed)
+		require.Error(t, result.Error)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	// Verify contract was NOT added to runtime bypass (it fails both ways)
+	require.False(t, batcher.IsRuntimeBypassed(targetAddr))
+
+	// Verify two calls were made (multicall + individual retry)
+	require.Equal(t, 2, forwarder.CallCount())
+}
+
+func TestBatcher_RuntimeBypass_SkipsEnqueue(t *testing.T) {
+	// Test that once a contract is in runtime bypass, Enqueue returns bypass=true
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:                true,
+		AutoDetectBypass:       true,
+		WindowMs:               50,
+		MinWaitMs:              5,
+		SafetyMarginMs:         5,
+		MaxCalls:               10,
+		MaxCalldataBytes:       64000,
+		MaxQueueSize:           100,
+		MaxPendingBatches:      20,
+		AllowCrossUserBatching: util.BoolPtr(true),
+		CachePerCall:           util.BoolPtr(false),
+	}
+	cfg.SetDefaults()
+
+	forwarder := &mockForwarder{}
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Pre-populate runtime bypass
+	targetAddr := "0x1111111111111111111111111111111111111111"
+	targetAddrNormalized := "1111111111111111111111111111111111111111"
+	batcher.addRuntimeBypass(targetAddrNormalized, "test-project", "evm:1")
+
+	ctx := context.Background()
+	key := BatchingKey{
+		ProjectId:     "test-project",
+		NetworkId:     "evm:1",
+		BlockRef:      "latest",
+		DirectivesKey: DeriveDirectivesKey(nil),
+	}
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{"to": targetAddr, "data": "0x01"},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	// Enqueue should return bypass=true
+	entry, bypass, err := batcher.Enqueue(ctx, key, req)
+	require.NoError(t, err)
+	require.True(t, bypass, "should bypass for runtime-bypassed contract")
+	require.Nil(t, entry, "entry should be nil when bypassing")
+}
+
+func TestBatcher_RuntimeBypass_ConcurrentAccess(t *testing.T) {
+	// Test that concurrent reads and writes to the runtime bypass cache are safe
+	cfg := &common.Multicall3AggregationConfig{
+		Enabled:           true,
+		AutoDetectBypass:  true,
+		WindowMs:          50,
+		MinWaitMs:         5,
+		SafetyMarginMs:    5,
+		MaxCalls:          10,
+		MaxCalldataBytes:  64000,
+		MaxQueueSize:      100,
+		MaxPendingBatches: 20,
+	}
+	cfg.SetDefaults()
+
+	forwarder := &mockForwarder{}
+	batcher := NewBatcher(cfg, forwarder, nil)
+	require.NotNil(t, batcher)
+	defer batcher.Shutdown()
+
+	// Concurrent writes to the same address
+	var wg sync.WaitGroup
+	addr := "1111111111111111111111111111111111111111"
+
+	// Start 50 goroutines that add the same address
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			batcher.addRuntimeBypass(addr, "test-project", "evm:1")
+		}()
+	}
+
+	// Start 50 goroutines that read the address
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = batcher.isRuntimeBypassed(addr)
+		}()
+	}
+
+	// Start 50 goroutines that add different addresses
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			uniqueAddr := fmt.Sprintf("%040d", idx)
+			batcher.addRuntimeBypass(uniqueAddr, "test-project", "evm:1")
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify the shared address is bypassed
+	require.True(t, batcher.isRuntimeBypassed(addr))
+
+	// Verify all unique addresses are bypassed
+	for i := 0; i < 50; i++ {
+		uniqueAddr := fmt.Sprintf("%040d", i)
+		require.True(t, batcher.isRuntimeBypassed(uniqueAddr), "unique address %d should be bypassed", i)
 	}
 }

@@ -34,9 +34,65 @@ A request is eligible if:
 - Method is `eth_call`.
 - Call object contains only `to` and `data|input`.
 - Request is not already a multicall (recursion guard).
+- Target contract is not in the `bypassContracts` list.
 - Calls with any of `from`, `gas`, `gasPrice`, `maxFeePerGas`,
   `maxPriorityFeePerGas`, `value`, or a state override (third param) are
   ineligible.
+
+## Bypass Contracts
+
+Some contracts check `msg.sender` using `extcodesize()` and revert if the caller
+has code (i.e., is a contract). When using Multicall3, `msg.sender` becomes the
+Multicall3 contract address, causing these calls to fail.
+
+Use `bypassContracts` to exclude specific contracts from batching:
+
+```yaml
+evm:
+  multicall3Aggregation:
+    enabled: true
+    bypassContracts:
+      # Chronicle Oracle feeds check msg.sender code size
+      - "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"
+      # Other contracts that revert on contract callers
+      - "0xABCDEF0123456789ABCDEF0123456789ABCDEF01"
+```
+
+Addresses are case-insensitive and can be specified with or without the `0x`
+prefix. Calls to bypassed contracts are forwarded individually.
+
+## Auto-Detect Bypass
+
+Enable `autoDetectBypass` to automatically detect contracts that revert when
+called via Multicall3 but succeed when called individually:
+
+```yaml
+evm:
+  multicall3Aggregation:
+    enabled: true
+    autoDetectBypass: true
+```
+
+When a call reverts within a Multicall3 batch and `autoDetectBypass` is enabled:
+1. The call is retried individually (bypassing Multicall3).
+2. If the individual call succeeds, the contract is added to a runtime bypass
+   cache and future calls skip batching.
+3. If the individual call also fails, the original error is returned (no bypass
+   is added).
+
+This allows automatic discovery of contracts that check `msg.sender` code size
+(e.g., Chronicle Oracle) without requiring manual configuration.
+
+Metrics:
+- `erpc_multicall3_runtime_bypass_total{project, network}`: Contracts added to
+  runtime bypass.
+- `erpc_multicall3_auto_detect_retry_total{project, network, outcome}`: Retry
+  tracking. Outcome values: `attempt` (retry initiated), `detected` (bypass
+  discovered - individual call succeeded), `same_error` (individual call also
+  failed, not a bypass candidate).
+
+Note: The runtime bypass cache is in-memory and resets on restart. For known
+contracts, use `bypassContracts` for persistent configuration.
 
 Block reference normalization:
 - Use `NormalizeBlockParam` on the `eth_call` block parameter.
@@ -208,6 +264,10 @@ evm:
     cachePerCall: true
     allowCrossUserBatching: true
     allowPendingTagBatching: false
+    autoDetectBypass: false
+    bypassContracts:
+      # Contracts that check msg.sender code size (e.g., Chronicle Oracle)
+      - "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"
 ```
 
 Validation and defaults:

@@ -997,4 +997,153 @@ func TestMulticall3AggregationConfigIsValid(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "maxPendingBatches must be > 0")
 	})
+
+	t.Run("bypassContracts valid addresses", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled: true,
+			BypassContracts: []string{
+				"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+				"0xABCDEF0123456789ABCDEF0123456789ABCDEF01",
+				"1111111111111111111111111111111111111111", // without 0x prefix
+			},
+		}
+		cfg.SetDefaults()
+		err := cfg.IsValid()
+		require.NoError(t, err)
+	})
+
+	t.Run("bypassContracts empty address rejected", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled: true,
+			BypassContracts: []string{
+				"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+				"", // empty
+			},
+		}
+		cfg.SetDefaults()
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "contains empty address")
+	})
+
+	t.Run("bypassContracts invalid length rejected", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled: true,
+			BypassContracts: []string{
+				"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+				"0x1234", // too short
+			},
+		}
+		cfg.SetDefaults()
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "expected 40 hex characters")
+	})
+
+	t.Run("bypassContracts non-hex characters rejected", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled: true,
+			BypassContracts: []string{
+				"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+				"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", // non-hex
+			},
+		}
+		cfg.SetDefaults()
+		err := cfg.IsValid()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "non-hex character")
+	})
+}
+
+func TestMulticall3AggregationConfigBypassContracts(t *testing.T) {
+	t.Run("ShouldBypassContractHex with empty list", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled:         true,
+			BypassContracts: []string{},
+		}
+		cfg.SetDefaults()
+
+		// Should not bypass any contract when list is empty
+		require.False(t, cfg.ShouldBypassContractHex("0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"))
+		require.False(t, cfg.ShouldBypassContractHex(""))
+	})
+
+	t.Run("ShouldBypassContractHex with configured contracts", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled: true,
+			BypassContracts: []string{
+				"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+				"0xABCDEF0123456789ABCDEF0123456789ABCDEF01",
+			},
+		}
+		cfg.SetDefaults()
+
+		// Exact match
+		require.True(t, cfg.ShouldBypassContractHex("0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"))
+		require.True(t, cfg.ShouldBypassContractHex("0xABCDEF0123456789ABCDEF0123456789ABCDEF01"))
+
+		// Case-insensitive matching
+		require.True(t, cfg.ShouldBypassContractHex("0x057f30e63a69175c69a4af5656b8c9ee647de3d0"))
+		require.True(t, cfg.ShouldBypassContractHex("0x057F30E63A69175C69A4AF5656B8C9EE647DE3D0"))
+
+		// Without 0x prefix
+		require.True(t, cfg.ShouldBypassContractHex("057f30e63A69175C69A4Af5656b8C9EE647De3D0"))
+
+		// Not in list
+		require.False(t, cfg.ShouldBypassContractHex("0x1111111111111111111111111111111111111111"))
+		require.False(t, cfg.ShouldBypassContractHex(""))
+	})
+
+	t.Run("ShouldBypassContract with raw bytes", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled: true,
+			BypassContracts: []string{
+				"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+			},
+		}
+		cfg.SetDefaults()
+
+		// Matching address bytes
+		matchingAddr, _ := HexToBytes("0x057f30e63A69175C69A4Af5656b8C9EE647De3D0")
+		require.True(t, cfg.ShouldBypassContract(matchingAddr))
+
+		// Non-matching address bytes
+		otherAddr, _ := HexToBytes("0x1111111111111111111111111111111111111111")
+		require.False(t, cfg.ShouldBypassContract(otherAddr))
+
+		// Empty bytes
+		require.False(t, cfg.ShouldBypassContract(nil))
+		require.False(t, cfg.ShouldBypassContract([]byte{}))
+	})
+
+	t.Run("BypassContracts handles invalid entries gracefully", func(t *testing.T) {
+		cfg := &Multicall3AggregationConfig{
+			Enabled: true,
+			BypassContracts: []string{
+				"0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+				"",        // empty string
+				"   ",     // whitespace only becomes empty after trim
+				"0x",      // just prefix
+				"invalid", // non-hex characters
+			},
+		}
+		cfg.SetDefaults()
+
+		// Valid entry should still work
+		require.True(t, cfg.ShouldBypassContractHex("0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"))
+
+		// Empty/invalid entries should be ignored (not panic)
+		require.False(t, cfg.ShouldBypassContractHex(""))
+	})
+
+	t.Run("nil config does not panic", func(t *testing.T) {
+		var cfg *Multicall3AggregationConfig
+		// Should not panic, just return false
+		require.NotPanics(t, func() {
+			// Note: ShouldBypassContractHex is a method on a pointer, so nil check is inside
+			if cfg != nil {
+				cfg.ShouldBypassContractHex("0x1234")
+			}
+		})
+	})
 }

@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -1605,6 +1606,21 @@ type Multicall3AggregationConfig struct {
 	// AllowPendingTagBatching: if true, allow batching calls with "pending" block tag.
 	// Default: false
 	AllowPendingTagBatching bool `yaml:"allowPendingTagBatching,omitempty" json:"allowPendingTagBatching"`
+
+	// AutoDetectBypass: if true, automatically detect contracts that revert when called
+	// via Multicall3 (e.g., contracts checking msg.sender code size). When a call reverts
+	// in a batch but succeeds individually, the contract is added to a runtime bypass cache.
+	// Default: false
+	AutoDetectBypass bool `yaml:"autoDetectBypass,omitempty" json:"autoDetectBypass"`
+
+	// BypassContracts is a list of contract addresses that should NOT be batched via Multicall3.
+	// Use this for contracts that check if msg.sender has code (e.g., Chronicle Oracle feeds)
+	// and revert when called from a contract. Addresses are case-insensitive.
+	// Example: ["0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"]
+	BypassContracts []string `yaml:"bypassContracts,omitempty" json:"bypassContracts,omitempty"`
+
+	// bypassContractsMap is a pre-computed map for O(1) lookups (lowercase addresses without 0x prefix)
+	bypassContractsMap map[string]bool `yaml:"-" json:"-"`
 }
 
 // SetDefaults applies default values to unset fields
@@ -1636,6 +1652,49 @@ func (c *Multicall3AggregationConfig) SetDefaults() {
 	if c.AllowCrossUserBatching == nil {
 		c.AllowCrossUserBatching = &TRUE
 	}
+	// Initialize bypass contracts map for O(1) lookups
+	c.initBypassContractsMap()
+}
+
+// initBypassContractsMap builds the internal map for fast bypass lookups.
+// Addresses are normalized to lowercase without the 0x/0X prefix.
+func (c *Multicall3AggregationConfig) initBypassContractsMap() {
+	if len(c.BypassContracts) == 0 {
+		c.bypassContractsMap = nil
+		return
+	}
+	c.bypassContractsMap = make(map[string]bool, len(c.BypassContracts))
+	for _, addr := range c.BypassContracts {
+		// Normalize: lowercase and remove 0x/0X prefix
+		normalized := strings.ToLower(addr)
+		normalized = strings.TrimPrefix(normalized, "0x")
+		if normalized != "" {
+			c.bypassContractsMap[normalized] = true
+		}
+	}
+}
+
+// ShouldBypassContract checks if the given contract address should bypass multicall3 batching.
+// The address should be the raw 20-byte address (not hex-encoded).
+func (c *Multicall3AggregationConfig) ShouldBypassContract(target []byte) bool {
+	if c.bypassContractsMap == nil || len(target) == 0 {
+		return false
+	}
+	// Convert target bytes to lowercase hex string (without 0x prefix)
+	targetHex := strings.ToLower(hex.EncodeToString(target))
+	return c.bypassContractsMap[targetHex]
+}
+
+// ShouldBypassContractHex checks if the given hex-encoded contract address should bypass multicall3 batching.
+// The address can be with or without the 0x/0X prefix, and is case-insensitive.
+func (c *Multicall3AggregationConfig) ShouldBypassContractHex(targetHex string) bool {
+	if c.bypassContractsMap == nil || targetHex == "" {
+		return false
+	}
+	// Normalize: lowercase and remove 0x/0X prefix
+	normalized := strings.ToLower(targetHex)
+	normalized = strings.TrimPrefix(normalized, "0x")
+	return c.bypassContractsMap[normalized]
 }
 
 // IsValid checks if the config values are valid
@@ -1660,6 +1719,23 @@ func (c *Multicall3AggregationConfig) IsValid() error {
 	}
 	if c.MaxPendingBatches <= 0 {
 		return fmt.Errorf("multicall3Aggregation.maxPendingBatches must be > 0")
+	}
+	// Validate bypass contract addresses
+	for _, addr := range c.BypassContracts {
+		normalized := strings.ToLower(strings.TrimPrefix(strings.TrimPrefix(addr, "0x"), "0X"))
+		if normalized == "" {
+			return fmt.Errorf("multicall3Aggregation.bypassContracts contains empty address")
+		}
+		// Ethereum addresses are 20 bytes = 40 hex characters
+		if len(normalized) != 40 {
+			return fmt.Errorf("multicall3Aggregation.bypassContracts contains invalid address %q (expected 40 hex characters, got %d)", addr, len(normalized))
+		}
+		// Validate hex characters
+		for _, c := range normalized {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				return fmt.Errorf("multicall3Aggregation.bypassContracts contains invalid address %q (non-hex character)", addr)
+			}
+		}
 	}
 	return nil
 }

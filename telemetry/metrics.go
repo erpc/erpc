@@ -498,6 +498,18 @@ var (
 		Name:      "multicall3_cache_write_dropped_total",
 		Help:      "Total number of multicall3 per-call cache writes dropped due to backpressure.",
 	}, []string{"project", "network"})
+
+	MetricMulticall3RuntimeBypassTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_runtime_bypass_total",
+		Help:      "Total number of contracts auto-detected as requiring bypass (revert via multicall3 but succeed individually).",
+	}, []string{"project", "network"})
+
+	MetricMulticall3AutoDetectRetryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_auto_detect_retry_total",
+		Help:      "Total number of auto-detect retry attempts for reverted calls.",
+	}, []string{"project", "network", "outcome"})
 )
 
 var DefaultHistogramBuckets = []float64{
