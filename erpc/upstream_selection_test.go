@@ -809,7 +809,7 @@ func setupTestNetworkWithFourUpstreams(t *testing.T, ctx context.Context, failsa
 func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfigs []*common.UpstreamConfig, failsafeConfig *common.FailsafeConfig) *Network {
 	t.Helper()
 
-	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)

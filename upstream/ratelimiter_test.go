@@ -16,7 +16,7 @@ func TestRateLimitersRegistry_New(t *testing.T) {
 	logger := zerolog.Nop()
 
 	t.Run("nil config", func(t *testing.T) {
-		registry, err := NewRateLimitersRegistry(nil, &logger)
+		registry, err := NewRateLimitersRegistry(context.Background(), nil, &logger)
 		require.NoError(t, err)
 		assert.NotNil(t, registry)
 	})
@@ -37,7 +37,7 @@ func TestRateLimitersRegistry_New(t *testing.T) {
 				},
 			},
 		}
-		registry, err := NewRateLimitersRegistry(cfg, &logger)
+		registry, err := NewRateLimitersRegistry(context.Background(), cfg, &logger)
 		require.NoError(t, err)
 		assert.NotNil(t, registry)
 	})
@@ -60,7 +60,7 @@ func TestRateLimitersRegistry_GetBudget(t *testing.T) {
 			},
 		},
 	}
-	registry, err := NewRateLimitersRegistry(cfg, &logger)
+	registry, err := NewRateLimitersRegistry(context.Background(), cfg, &logger)
 	require.NoError(t, err)
 
 	t.Run("existing budget", func(t *testing.T) {
@@ -106,7 +106,7 @@ func TestRateLimiterBudget_GetRulesByMethod(t *testing.T) {
 			},
 		},
 	}
-	registry, err := NewRateLimitersRegistry(cfg, &logger)
+	registry, err := NewRateLimitersRegistry(context.Background(), cfg, &logger)
 	require.NoError(t, err)
 
 	budget, err := registry.GetBudget("test-budget")
@@ -152,7 +152,7 @@ func TestRateLimiter_ConcurrentPermits(t *testing.T) {
 			},
 		},
 	}
-	registry, err := NewRateLimitersRegistry(cfg, &logger)
+	registry, err := NewRateLimitersRegistry(context.Background(), cfg, &logger)
 	require.NoError(t, err)
 
 	budget, err := registry.GetBudget("test-budget")
@@ -203,7 +203,7 @@ func TestRateLimiter_ExceedCapacity(t *testing.T) {
 		},
 	}
 
-	registry, err := NewRateLimitersRegistry(cfg, &logger)
+	registry, err := NewRateLimitersRegistry(context.Background(), cfg, &logger)
 	require.NoError(t, err)
 
 	budget, err := registry.GetBudget("test-budget")

@@ -25,7 +25,7 @@ func TestProject_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{
 				Store: &common.RateLimitStoreConfig{
 					Driver: "memory",
@@ -136,7 +136,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 
 		// Create a rate limiters registry (not specifically needed for this test,
 		// but it's part of the usual setup.)
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{},
 			&log.Logger,
 		)
@@ -248,7 +248,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{},
 			&log.Logger,
 		)
@@ -416,7 +416,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 		}
 
 		// Build ProjectsRegistry with no existing EvmJsonRpcCache or RateLimiter
-		rateLimiters, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimiters, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
@@ -512,7 +512,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 			panic(err)
 		}
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(),
 			&common.RateLimiterConfig{},
 			&log.Logger,
 		)

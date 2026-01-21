@@ -67,12 +67,15 @@ func buildBenchBudget(numRules int, perUser, perIP, perNetwork bool) *RateLimite
 	}
 
 	logger := zerolog.Nop()
+	registry := &RateLimitersRegistry{
+		statsManager: mgr,
+		envoyCache:   cache,
+	}
 	return &RateLimiterBudget{
 		logger:   &logger,
 		Id:       "bench-budget",
 		Rules:    rules,
-		registry: &RateLimitersRegistry{statsManager: mgr},
-		cache:    cache,
+		registry: registry,
 	}
 }
 
@@ -172,7 +175,7 @@ func BenchmarkTryAcquirePermit_NoRulesMatch(b *testing.B) {
 // BenchmarkTryAcquirePermit_NilCache tests the nil cache fast path
 func BenchmarkTryAcquirePermit_NilCache(b *testing.B) {
 	budget := buildBenchBudget(1, false, false, false)
-	budget.cache = nil
+	budget.registry.envoyCache = nil // Simulate Redis not connected yet
 	ctx := context.Background()
 
 	b.ReportAllocs()
@@ -208,12 +211,15 @@ func buildBenchBudgetWithDelay(numRules int, delay time.Duration) *RateLimiterBu
 	}
 
 	logger := zerolog.Nop()
+	registry := &RateLimitersRegistry{
+		statsManager: mgr,
+		envoyCache:   &delayedCache{inner: innerCache, delay: delay},
+	}
 	return &RateLimiterBudget{
 		logger:   &logger,
 		Id:       "bench-budget",
 		Rules:    rules,
-		registry: &RateLimitersRegistry{statsManager: mgr},
-		cache:    &delayedCache{inner: innerCache, delay: delay},
+		registry: registry,
 	}
 }
 

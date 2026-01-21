@@ -325,7 +325,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 		}
 		clReg := clients.NewClientRegistry(&silent, project.Id, prxPool, evm.NewJsonRpcErrorExtractor())
 		vndReg := thirdparty.NewVendorsRegistry()
-		rlr, err := upstream.NewRateLimitersRegistry(cfg.RateLimiters, &silent)
+		rlr, err := upstream.NewRateLimitersRegistry(ctx, cfg.RateLimiters, &silent)
 		if err != nil {
 			appendErr(fmt.Sprintf("project=%s failed to create rate limiters registry: %v", project.Id, err))
 			continue
@@ -806,6 +806,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 		)
 		vndReg := thirdparty.NewVendorsRegistry()
 		rlr, err := upstream.NewRateLimitersRegistry(
+			ctx,
 			cfg.RateLimiters,
 			&logger,
 		)

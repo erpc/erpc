@@ -24,7 +24,6 @@ type RateLimiterBudget struct {
 	Rules      []*RateLimitRule
 	registry   *RateLimitersRegistry
 	rulesMu    sync.RWMutex
-	cache      limiter.RateLimitCache
 	maxTimeout time.Duration
 }
 
@@ -73,11 +72,17 @@ type ruleResult struct {
 	allowed bool
 }
 
+// getCache returns the current cache from the registry (thread-safe)
+func (b *RateLimiterBudget) getCache() limiter.RateLimitCache {
+	return b.registry.GetCache()
+}
+
 // TryAcquirePermit evaluates all matching rules for the given method using Envoy's DoLimit.
 // Rules are evaluated in parallel for lower latency. Returns true if allowed, false if rate limited.
 func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId string, req *common.NormalizedRequest, method string, vendor string, upstreamId string, authLabel string, origin string) (bool, error) {
-	if b.cache == nil {
-		return true, nil
+	cache := b.getCache()
+	if cache == nil {
+		return true, nil // Fail-open when no cache is available
 	}
 
 	ctx, span := common.StartDetailSpan(ctx, "RateLimiter.TryAcquirePermit",
@@ -168,6 +173,11 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 // evaluateRule checks a single rate limit rule against the cache.
 // Returns true if allowed, false if over limit.
 func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string) bool {
+	cache := b.getCache()
+	if cache == nil {
+		return true // Fail-open when no cache is available
+	}
+
 	// Build descriptor entries
 	entries := []*pb_struct.RateLimitDescriptor_Entry{{Key: "method", Value: method}}
 	if rule.Config.PerIP && clientIP != "" && clientIP != "n/a" {
@@ -205,9 +215,9 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 	var statuses []*pb.RateLimitResponse_DescriptorStatus
 	var timedOut bool
 	if b.maxTimeout > 0 {
-		statuses, timedOut = b.doLimitWithTimeout(ctx, rlReq, limits, method, userLabel, networkLabel)
+		statuses, timedOut = b.doLimitWithTimeout(ctx, cache, rlReq, limits, method, userLabel, networkLabel)
 	} else {
-		statuses = b.cache.DoLimit(ctx, rlReq, limits)
+		statuses = cache.DoLimit(ctx, rlReq, limits)
 	}
 
 	if timedOut {
@@ -246,13 +256,14 @@ func (r *RateLimitRule) statsKeySuffix() string {
 // Returns (statuses, timedOut). On timeout, returns (nil, true) and records fail-open metric.
 func (b *RateLimiterBudget) doLimitWithTimeout(
 	ctx context.Context,
+	cache limiter.RateLimitCache,
 	rlReq *pb.RateLimitRequest,
 	limits []*config.RateLimit,
 	method, userLabel, networkLabel string,
 ) ([]*pb.RateLimitResponse_DescriptorStatus, bool) {
 	resultCh := make(chan []*pb.RateLimitResponse_DescriptorStatus, 1)
 	go func() {
-		resultCh <- b.cache.DoLimit(ctx, rlReq, limits)
+		resultCh <- cache.DoLimit(ctx, rlReq, limits)
 	}()
 
 	timer := time.NewTimer(b.maxTimeout)
