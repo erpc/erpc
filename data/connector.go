@@ -50,6 +50,13 @@ type Connector interface {
 	PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error
 }
 
+// KeyInvalidationNotifier is an optional interface for connectors that support
+// broadcasting key invalidation events (e.g., PostgreSQL via pg_notify)
+type KeyInvalidationNotifier interface {
+	WatchKeyInvalidations(ctx context.Context) (<-chan string, func(), error)
+	PublishKeyInvalidation(ctx context.Context, key string) error
+}
+
 func NewConnector(
 	ctx context.Context,
 	logger *zerolog.Logger,
