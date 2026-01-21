@@ -135,11 +135,14 @@ func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 		}
 
 		drpcURL := fmt.Sprintf("https://lb.drpc.org/ogrpc?network=%s&dkey=%s", netName, apiKey)
+		// DRPC uses /ogws for WebSocket instead of /ogrpc
+		drpcWsURL := fmt.Sprintf("wss://lb.drpc.org/ogws?network=%s&dkey=%s", netName, apiKey)
 		parsedURL, err := url.Parse(drpcURL)
 		if err != nil {
 			return nil, err
 		}
 		upstream.Endpoint = parsedURL.String()
+		upstream.WebsocketEndpoint = drpcWsURL
 		upstream.Type = common.UpstreamTypeEvm
 	}
 

@@ -185,6 +185,8 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 					upsCopy.Id = fmt.Sprintf("quicknode-%d-%s", chainID, endpoint.ID)
 				}
 				upsCopy.Endpoint = endpoint.HttpUrl
+				// QuickNode uses the same URL pattern for WebSocket, just with wss:// scheme
+				upsCopy.WebsocketEndpoint = common.DeriveWebsocketEndpoint("quicknode", endpoint.HttpUrl)
 				upsCopy.Type = common.UpstreamTypeEvm
 
 				upstreams = append(upstreams, upsCopy)
