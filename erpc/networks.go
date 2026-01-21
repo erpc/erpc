@@ -26,6 +26,7 @@ import (
 type FailsafeExecutor struct {
 	method                 string
 	finalities             []common.DataFinalityState
+	upstreamGroup          string
 	executor               failsafe.Executor[*common.NormalizedResponse]
 	timeout                *time.Duration
 	consensusPolicyEnabled bool
@@ -47,6 +48,24 @@ type Network struct {
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
 	initializer              *util.Initializer
+}
+
+type skipNetworkRateLimitKey struct{}
+
+func withSkipNetworkRateLimit(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipNetworkRateLimitKey{}, true)
+}
+
+func shouldSkipNetworkRateLimit(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if v := ctx.Value(skipNetworkRateLimitKey{}); v != nil {
+		if skip, ok := v.(bool); ok && skip {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -330,6 +349,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
+	// Get failsafe executor first to know if we need to filter upstreams by group
+	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
+	if failsafeExecutor == nil {
+		err := errors.New("no failsafe executor found for this request")
+		if mlx != nil {
+			mlx.Close(ctx, nil, err)
+		}
+		return nil, err
+	}
+
 	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
@@ -350,6 +379,51 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			mlx.Close(ctx, nil, err)
 		}
 		return nil, err
+	}
+
+	// Filter upstreams by group if the failsafe executor specifies a group
+	// This is primarily used for consensus policies that should only compare
+	// responses from a specific group of upstreams (e.g., public RPC endpoints)
+	// Skip group filtering if UseUpstream directive is set - allows targeting any upstream for debugging
+	useUpstreamDirective := ""
+	if req.Directives() != nil {
+		useUpstreamDirective = req.Directives().UseUpstream
+	}
+	if failsafeExecutor.upstreamGroup != "" && useUpstreamDirective == "" {
+		filteredUpstreams := make([]common.Upstream, 0, len(upsList))
+		for _, u := range upsList {
+			if cfg := u.Config(); cfg != nil && cfg.Group == failsafeExecutor.upstreamGroup {
+				filteredUpstreams = append(filteredUpstreams, u)
+			}
+		}
+		lg.Debug().
+			Str("upstreamGroup", failsafeExecutor.upstreamGroup).
+			Int("originalCount", len(upsList)).
+			Int("filteredCount", len(filteredUpstreams)).
+			Msgf("filtered upstreams by group for failsafe policy")
+		if len(filteredUpstreams) == 0 {
+			err := common.NewErrFailsafeConfiguration(
+				fmt.Errorf("no upstreams match the configured group '%s' for failsafe policy (had %d upstreams before filtering, method=%s)",
+					failsafeExecutor.upstreamGroup, len(upsList), method),
+				map[string]interface{}{
+					"upstreamGroup":  failsafeExecutor.upstreamGroup,
+					"originalCount":  len(upsList),
+					"method":         method,
+					"failsafeMethod": failsafeExecutor.method,
+				},
+			)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
+		upsList = filteredUpstreams
+
+		// Update tracing to reflect post-filter state
+		forwardSpan.SetAttributes(
+			attribute.Int("upstreams.filtered_count", len(upsList)),
+			attribute.String("upstreams.filter_group", failsafeExecutor.upstreamGroup),
+		)
 	}
 
 	// Set upstreams on the request
@@ -378,11 +452,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// 3) Apply rate limits
-	if err := n.acquireRateLimitPermit(ctx, req); err != nil {
-		if mlx != nil {
-			mlx.Close(ctx, nil, err)
+	if !shouldSkipNetworkRateLimit(ctx) {
+		if err := n.acquireRateLimitPermit(ctx, req); err != nil {
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 
 	// 4) Prepare the request
@@ -431,15 +507,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// This is the only way to pass additional values to failsafe policy executors context
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
-	if failsafeExecutor == nil {
-		return nil, errors.New("no failsafe executor found for this request")
-	}
-
 	// Add tracing for which failsafe policy was selected
 	forwardSpan.SetAttributes(
 		attribute.String("failsafe.matched_method", failsafeExecutor.method),
 		attribute.String("failsafe.matched_finalities", fmt.Sprintf("%v", failsafeExecutor.finalities)),
+		attribute.String("failsafe.matched_upstream_group", failsafeExecutor.upstreamGroup),
 	)
 
 	// Track time from failsafe executor start to first callback invocation
@@ -869,6 +941,14 @@ func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
 
 func (n *Network) Config() *common.NetworkConfig {
 	return n.cfg
+}
+
+func (n *Network) Cache() common.CacheDAL {
+	return n.cacheDal
+}
+
+func (n *Network) AppCtx() context.Context {
+	return n.appCtx
 }
 
 func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) common.DataFinalityState {

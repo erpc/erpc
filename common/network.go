@@ -25,6 +25,7 @@ type Network interface {
 	GetMethodMetrics(method string) TrackedMetrics
 	Forward(ctx context.Context, nq *NormalizedRequest) (*NormalizedResponse, error)
 	GetFinality(ctx context.Context, req *NormalizedRequest, resp *NormalizedResponse) DataFinalityState
+	Cache() CacheDAL
 
 	// TODO Move to EvmNetwork interface?
 	EvmHighestLatestBlockNumber(ctx context.Context) int64

@@ -2,6 +2,8 @@ package common
 
 import (
 	"bytes"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -926,13 +928,14 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 }
 
 type FailsafeConfig struct {
-	MatchMethod    string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
-	MatchFinality  []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
-	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
-	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
-	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
-	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
-	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+	MatchMethod        string                      `yaml:"matchMethod,omitempty" json:"matchMethod"`
+	MatchFinality      []DataFinalityState         `yaml:"matchFinality,omitempty" json:"matchFinality"`
+	MatchUpstreamGroup string                      `yaml:"matchUpstreamGroup,omitempty" json:"matchUpstreamGroup"`
+	Retry              *RetryPolicyConfig          `yaml:"retry" json:"retry"`
+	CircuitBreaker     *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
+	Timeout            *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
+	Hedge              *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
+	Consensus          *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 }
 
 func (c *FailsafeConfig) Copy() *FailsafeConfig {
@@ -1548,6 +1551,243 @@ type EvmNetworkConfig struct {
 	// to work safely with transaction broadcasting.
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
+
+	// Multicall3Aggregation configures aggregating eth_call requests into Multicall3.
+	// Accepts either a boolean (backward compat) or a full config object.
+	// Default: enabled with default settings
+	Multicall3Aggregation *Multicall3AggregationConfig `yaml:"multicall3Aggregation,omitempty" json:"multicall3Aggregation,omitempty"`
+}
+
+// Multicall3AggregationConfig configures network-level batching of eth_call requests
+// into Multicall3 aggregate calls. This batches requests across all entrypoints
+// (HTTP single, HTTP batch, gRPC) rather than just JSON-RPC batch requests.
+type Multicall3AggregationConfig struct {
+	// Enabled enables/disables Multicall3 aggregation. Default: true
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// WindowMs is the maximum time (milliseconds) to wait for a batch to fill.
+	// Default: 25ms
+	WindowMs int `yaml:"windowMs,omitempty" json:"windowMs"`
+
+	// MinWaitMs is the minimum time (milliseconds) to wait for additional requests
+	// to join a batch. Default: 2ms
+	MinWaitMs int `yaml:"minWaitMs,omitempty" json:"minWaitMs"`
+
+	// SafetyMarginMs is subtracted from request deadlines when computing flush time.
+	// Default: min(2, MinWaitMs)
+	SafetyMarginMs int `yaml:"safetyMarginMs,omitempty" json:"safetyMarginMs"`
+
+	// OnlyIfPending: if true, don't add latency unless a batch is already open.
+	// Default: false
+	OnlyIfPending bool `yaml:"onlyIfPending,omitempty" json:"onlyIfPending"`
+
+	// MaxCalls is the maximum number of calls per batch. Default: 20
+	MaxCalls int `yaml:"maxCalls,omitempty" json:"maxCalls"`
+
+	// MaxCalldataBytes is the maximum total calldata size per batch. Default: 64000
+	MaxCalldataBytes int `yaml:"maxCalldataBytes,omitempty" json:"maxCalldataBytes"`
+
+	// MaxQueueSize is the maximum total enqueued requests across all batches.
+	// Default: 1000
+	MaxQueueSize int `yaml:"maxQueueSize,omitempty" json:"maxQueueSize"`
+
+	// MaxPendingBatches is the maximum number of distinct batch keys.
+	// Default: 200
+	MaxPendingBatches int `yaml:"maxPendingBatches,omitempty" json:"maxPendingBatches"`
+
+	// CachePerCall enables per-call cache writes after successful Multicall3.
+	// Default: true
+	CachePerCall *bool `yaml:"cachePerCall,omitempty" json:"cachePerCall"`
+
+	// AllowCrossUserBatching: if true, requests from different users can share a batch.
+	// Default: true
+	AllowCrossUserBatching *bool `yaml:"allowCrossUserBatching,omitempty" json:"allowCrossUserBatching"`
+
+	// AllowPendingTagBatching: if true, allow batching calls with "pending" block tag.
+	// Default: false
+	AllowPendingTagBatching bool `yaml:"allowPendingTagBatching,omitempty" json:"allowPendingTagBatching"`
+
+	// AutoDetectBypass: if true, automatically detect contracts that revert when called
+	// via Multicall3 (e.g., contracts checking msg.sender code size). When a call reverts
+	// in a batch but succeeds individually, the contract is added to a runtime bypass cache.
+	// Default: false
+	AutoDetectBypass bool `yaml:"autoDetectBypass,omitempty" json:"autoDetectBypass"`
+
+	// BypassContracts is a list of contract addresses that should NOT be batched via Multicall3.
+	// Use this for contracts that check if msg.sender has code (e.g., Chronicle Oracle feeds)
+	// and revert when called from a contract. Addresses are case-insensitive.
+	// Example: ["0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"]
+	BypassContracts []string `yaml:"bypassContracts,omitempty" json:"bypassContracts,omitempty"`
+
+	// bypassContractsMap is a pre-computed map for O(1) lookups (lowercase addresses without 0x prefix)
+	bypassContractsMap map[string]bool `yaml:"-" json:"-"`
+}
+
+// SetDefaults applies default values to unset fields
+func (c *Multicall3AggregationConfig) SetDefaults() {
+	if c.WindowMs == 0 {
+		c.WindowMs = 25
+	}
+	if c.MinWaitMs == 0 {
+		c.MinWaitMs = 2
+	}
+	if c.SafetyMarginMs == 0 {
+		c.SafetyMarginMs = min(2, c.MinWaitMs)
+	}
+	if c.MaxCalls == 0 {
+		c.MaxCalls = 20
+	}
+	if c.MaxCalldataBytes == 0 {
+		c.MaxCalldataBytes = 64000
+	}
+	if c.MaxQueueSize == 0 {
+		c.MaxQueueSize = 1000
+	}
+	if c.MaxPendingBatches == 0 {
+		c.MaxPendingBatches = 200
+	}
+	if c.CachePerCall == nil {
+		c.CachePerCall = &TRUE
+	}
+	if c.AllowCrossUserBatching == nil {
+		c.AllowCrossUserBatching = &TRUE
+	}
+	// Initialize bypass contracts map for O(1) lookups
+	c.initBypassContractsMap()
+}
+
+// initBypassContractsMap builds the internal map for fast bypass lookups.
+// Addresses are normalized to lowercase without the 0x/0X prefix.
+func (c *Multicall3AggregationConfig) initBypassContractsMap() {
+	if len(c.BypassContracts) == 0 {
+		c.bypassContractsMap = nil
+		return
+	}
+	c.bypassContractsMap = make(map[string]bool, len(c.BypassContracts))
+	for _, addr := range c.BypassContracts {
+		// Normalize: lowercase and remove 0x/0X prefix
+		normalized := strings.ToLower(addr)
+		normalized = strings.TrimPrefix(normalized, "0x")
+		if normalized != "" {
+			c.bypassContractsMap[normalized] = true
+		}
+	}
+}
+
+// ShouldBypassContract checks if the given contract address should bypass multicall3 batching.
+// The address should be the raw 20-byte address (not hex-encoded).
+func (c *Multicall3AggregationConfig) ShouldBypassContract(target []byte) bool {
+	if c.bypassContractsMap == nil || len(target) == 0 {
+		return false
+	}
+	// Convert target bytes to lowercase hex string (without 0x prefix)
+	targetHex := strings.ToLower(hex.EncodeToString(target))
+	return c.bypassContractsMap[targetHex]
+}
+
+// ShouldBypassContractHex checks if the given hex-encoded contract address should bypass multicall3 batching.
+// The address can be with or without the 0x/0X prefix, and is case-insensitive.
+func (c *Multicall3AggregationConfig) ShouldBypassContractHex(targetHex string) bool {
+	if c.bypassContractsMap == nil || targetHex == "" {
+		return false
+	}
+	// Normalize: lowercase and remove 0x/0X prefix
+	normalized := strings.ToLower(targetHex)
+	normalized = strings.TrimPrefix(normalized, "0x")
+	return c.bypassContractsMap[normalized]
+}
+
+// IsValid checks if the config values are valid
+func (c *Multicall3AggregationConfig) IsValid() error {
+	if c.WindowMs <= 0 {
+		return fmt.Errorf("multicall3Aggregation.windowMs must be > 0")
+	}
+	if c.MinWaitMs < 0 {
+		return fmt.Errorf("multicall3Aggregation.minWaitMs must be >= 0")
+	}
+	if c.MinWaitMs > c.WindowMs {
+		return fmt.Errorf("multicall3Aggregation.minWaitMs must be <= windowMs")
+	}
+	if c.MaxCalls <= 1 {
+		return fmt.Errorf("multicall3Aggregation.maxCalls must be > 1")
+	}
+	if c.MaxCalldataBytes <= 0 {
+		return fmt.Errorf("multicall3Aggregation.maxCalldataBytes must be > 0")
+	}
+	if c.MaxQueueSize <= 0 {
+		return fmt.Errorf("multicall3Aggregation.maxQueueSize must be > 0")
+	}
+	if c.MaxPendingBatches <= 0 {
+		return fmt.Errorf("multicall3Aggregation.maxPendingBatches must be > 0")
+	}
+	// Validate bypass contract addresses
+	for _, addr := range c.BypassContracts {
+		normalized := strings.ToLower(strings.TrimPrefix(strings.TrimPrefix(addr, "0x"), "0X"))
+		if normalized == "" {
+			return fmt.Errorf("multicall3Aggregation.bypassContracts contains empty address")
+		}
+		// Ethereum addresses are 20 bytes = 40 hex characters
+		if len(normalized) != 40 {
+			return fmt.Errorf("multicall3Aggregation.bypassContracts contains invalid address %q (expected 40 hex characters, got %d)", addr, len(normalized))
+		}
+		// Validate hex characters
+		for _, c := range normalized {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				return fmt.Errorf("multicall3Aggregation.bypassContracts contains invalid address %q (non-hex character)", addr)
+			}
+		}
+	}
+	return nil
+}
+
+// UnmarshalYAML implements backward compatibility for boolean config values
+func (c *Multicall3AggregationConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try bool first (backward compat)
+	var boolVal bool
+	if err := unmarshal(&boolVal); err == nil {
+		c.Enabled = boolVal
+		if boolVal {
+			c.SetDefaults()
+		}
+		return nil
+	}
+
+	// Try full config
+	type rawConfig Multicall3AggregationConfig
+	var raw rawConfig
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	*c = Multicall3AggregationConfig(raw)
+	if c.Enabled {
+		c.SetDefaults()
+	}
+	return nil
+}
+
+// UnmarshalJSON implements backward compatibility for boolean config values (for TypeScript configs)
+func (c *Multicall3AggregationConfig) UnmarshalJSON(data []byte) error {
+	// Try bool first (backward compat)
+	var boolVal bool
+	if err := json.Unmarshal(data, &boolVal); err == nil {
+		c.Enabled = boolVal
+		if boolVal {
+			c.SetDefaults()
+		}
+		return nil
+	}
+
+	// Try full config
+	type rawConfig Multicall3AggregationConfig
+	var raw rawConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*c = Multicall3AggregationConfig(raw)
+	if c.Enabled {
+		c.SetDefaults()
+	}
+	return nil
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

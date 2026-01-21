@@ -1335,3 +1335,239 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 		assert.Contains(t, executor4.finalities, common.DataFinalityStateUnknown)
 	})
 }
+
+func TestNetworkFailsafe_UpstreamGroupFilter(t *testing.T) {
+	t.Run("UseUpstreamDirective_OverridesGroupFilter", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		// Setup mock for upstream outside the group (rpc2 is NOT in "primary" group)
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_blockNumber")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x100",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create network with group filter in failsafe config
+		upstreamConfigs := []*common.UpstreamConfig{
+			{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Group: "primary", // In the group
+			},
+			{
+				Id:       "rpc2",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc2.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Group: "fallback", // NOT in the group
+			},
+		}
+
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+			Failsafe: []*common.FailsafeConfig{
+				{
+					MatchMethod:        "*",
+					MatchUpstreamGroup: "primary", // Only allow "primary" group upstreams
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts: 1,
+					},
+				},
+			},
+		}
+
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		require.NoError(t, err)
+
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems:     100_000,
+					MaxTotalSize: "1GB",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"test",
+			upstreamConfigs,
+			ssr,
+			rateLimitersRegistry,
+			vr,
+			pr,
+			nil,
+			metricsTracker,
+			time.Second,
+			nil,
+		)
+
+		upstreamsRegistry.Bootstrap(ctx)
+
+		time.Sleep(100 * time.Millisecond)
+
+		network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+		require.NoError(t, err)
+
+		err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
+		require.NoError(t, err)
+
+		err = network.Bootstrap(ctx)
+		require.NoError(t, err)
+
+		upstream.ReorderUpstreams(upstreamsRegistry)
+
+		// Request WITH UseUpstream directive targeting rpc2 (outside group)
+		// Should succeed because UseUpstream overrides group filter
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network)
+		if req.Directives() == nil {
+			req.SetDirectives(&common.RequestDirectives{})
+		}
+		req.Directives().UseUpstream = "rpc2" // Target upstream outside the group
+
+		resp, err := network.Forward(ctx, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Nil(t, jrr.Error)
+
+		result, err := jrr.PeekStringByPath(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "0x100", result)
+	})
+
+	t.Run("EmptyGroupFilter_ReturnsConfigurationError", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create network with group filter that matches NO upstreams
+		upstreamConfigs := []*common.UpstreamConfig{
+			{
+				Id:       "rpc1",
+				Type:     common.UpstreamTypeEvm,
+				Endpoint: "http://rpc1.localhost",
+				Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+				},
+				Group: "primary",
+			},
+		}
+
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+			Failsafe: []*common.FailsafeConfig{
+				{
+					MatchMethod:        "*",
+					MatchUpstreamGroup: "nonexistent-group", // No upstreams in this group
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts: 1,
+					},
+				},
+			},
+		}
+
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		require.NoError(t, err)
+
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems:     100_000,
+					MaxTotalSize: "1GB",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"test",
+			upstreamConfigs,
+			ssr,
+			rateLimitersRegistry,
+			vr,
+			pr,
+			nil,
+			metricsTracker,
+			time.Second,
+			nil,
+		)
+
+		upstreamsRegistry.Bootstrap(ctx)
+
+		time.Sleep(100 * time.Millisecond)
+
+		network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+		require.NoError(t, err)
+
+		err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
+		require.NoError(t, err)
+
+		err = network.Bootstrap(ctx)
+		require.NoError(t, err)
+
+		upstream.ReorderUpstreams(upstreamsRegistry)
+
+		// Request WITHOUT UseUpstream directive - should fail with configuration error
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network)
+
+		_, err = network.Forward(ctx, req)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no upstreams match the configured group")
+		assert.Contains(t, err.Error(), "nonexistent-group")
+	})
+}
