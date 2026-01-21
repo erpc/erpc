@@ -141,6 +141,11 @@ type EvmStatePollerDiagnostics struct {
 
 	// Earliest block bounds per probe type
 	EarliestByProbe map[EvmAvailabilityProbeType]*EvmProbeEarliestInfo `json:"earliestByProbe,omitempty"`
+
+	// WebSocket subscription status
+	WebsocketEnabled   bool   `json:"websocketEnabled,omitempty"`
+	WebsocketConnected bool   `json:"websocketConnected,omitempty"`
+	WebsocketEndpoint  string `json:"websocketEndpoint,omitempty"`
 }
 
 // EvmProbeEarliestInfo contains information about earliest block detection for a specific probe type
