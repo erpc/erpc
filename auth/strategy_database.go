@@ -93,7 +93,15 @@ func NewDatabaseStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *co
 	if notifier, ok := connector.(data.KeyInvalidationNotifier); ok {
 		s.cacheInvalidator = notifier
 		// Start listening for invalidation notifications from other instances
-		go s.startCacheInvalidationListener(appCtx)
+		// We call WatchKeyInvalidations synchronously to ensure cleanup is assigned
+		// before returning, avoiding a race condition if Close() is called early
+		invalidations, cleanup, err := notifier.WatchKeyInvalidations(appCtx)
+		if err != nil {
+			logger.Warn().Err(err).Msg("failed to start cache invalidation listener, continuing without broadcast support")
+		} else {
+			s.cacheInvalidatorCleanup = cleanup
+			go s.consumeCacheInvalidations(invalidations)
+		}
 	}
 
 	return s, nil
@@ -311,25 +319,16 @@ func (s *DatabaseStrategy) invalidateCacheLocal(apiKey string) {
 	}
 }
 
-// startCacheInvalidationListener listens for API key cache invalidation notifications from other instances
-func (s *DatabaseStrategy) startCacheInvalidationListener(ctx context.Context) {
-	if s.cacheInvalidator == nil {
-		return
-	}
-
-	invalidations, cleanup, err := s.cacheInvalidator.WatchKeyInvalidations(ctx)
-	if err != nil {
-		s.logger.Warn().Err(err).Msg("failed to start API key cache invalidation listener")
-		return
-	}
-	s.cacheInvalidatorCleanup = cleanup
-
+// consumeCacheInvalidations processes cache invalidation notifications from other instances
+func (s *DatabaseStrategy) consumeCacheInvalidations(invalidations <-chan string) {
 	s.logger.Info().Msg("started listening for API key cache invalidation notifications")
 
 	for apiKey := range invalidations {
 		s.invalidateCacheLocal(apiKey)
 		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key cache from broadcast notification")
 	}
+
+	s.logger.Debug().Msg("cache invalidation listener stopped")
 }
 
 // ClearCache clears all cached API keys
