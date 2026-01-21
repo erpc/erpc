@@ -838,3 +838,143 @@ projects:
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
 	})
 }
+
+func TestHTTPClientTimeouts_Validate(t *testing.T) {
+	t.Run("nil timeouts should pass validation", func(t *testing.T) {
+		var timeouts *HTTPClientTimeouts
+		err := timeouts.Validate("")
+		assert.NoError(t, err)
+	})
+
+	t.Run("zero values should pass validation (use defaults)", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{}
+		err := timeouts.Validate("")
+		assert.NoError(t, err)
+	})
+
+	t.Run("positive values should pass validation", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout:               Duration(60 * time.Second),
+			ResponseHeaderTimeout: Duration(30 * time.Second),
+			TLSHandshakeTimeout:   Duration(10 * time.Second),
+			IdleConnTimeout:       Duration(90 * time.Second),
+			ExpectContinueTimeout: Duration(1 * time.Second),
+		}
+		err := timeouts.Validate("")
+		assert.NoError(t, err)
+	})
+
+	t.Run("negative timeout should fail validation", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout: Duration(-30 * time.Second),
+		}
+		err := timeouts.Validate("test: ")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "test: timeout must be a positive duration")
+	})
+
+	t.Run("negative responseHeaderTimeout should fail validation", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			ResponseHeaderTimeout: Duration(-10 * time.Second),
+		}
+		err := timeouts.Validate("")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "responseHeaderTimeout must be a positive duration")
+	})
+
+	t.Run("responseHeaderTimeout exceeding timeout should fail validation", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout:               Duration(30 * time.Second),
+			ResponseHeaderTimeout: Duration(60 * time.Second),
+		}
+		err := timeouts.Validate("")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "responseHeaderTimeout")
+		assert.Contains(t, err.Error(), "cannot exceed timeout")
+	})
+
+	t.Run("tlsHandshakeTimeout exceeding timeout should fail validation", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout:             Duration(5 * time.Second),
+			TLSHandshakeTimeout: Duration(10 * time.Second),
+		}
+		err := timeouts.Validate("")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "tlsHandshakeTimeout")
+		assert.Contains(t, err.Error(), "cannot exceed timeout")
+	})
+
+	t.Run("valid relationship (responseHeaderTimeout < timeout) should pass", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout:               Duration(60 * time.Second),
+			ResponseHeaderTimeout: Duration(30 * time.Second),
+		}
+		err := timeouts.Validate("")
+		assert.NoError(t, err)
+	})
+}
+
+func TestHTTPClientTimeouts_Resolve(t *testing.T) {
+	t.Run("nil timeouts should return defaults", func(t *testing.T) {
+		var timeouts *HTTPClientTimeouts
+		resolved := timeouts.Resolve()
+		assert.Equal(t, DefaultHTTPClientTimeout, resolved.Timeout)
+		assert.Equal(t, DefaultResponseHeaderTimeout, resolved.ResponseHeaderTimeout)
+		assert.Equal(t, DefaultTLSHandshakeTimeout, resolved.TLSHandshakeTimeout)
+		assert.Equal(t, DefaultIdleConnTimeout, resolved.IdleConnTimeout)
+		assert.Equal(t, DefaultExpectContinueTimeout, resolved.ExpectContinueTimeout)
+	})
+
+	t.Run("zero values should return defaults", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{}
+		resolved := timeouts.Resolve()
+		assert.Equal(t, DefaultHTTPClientTimeout, resolved.Timeout)
+		assert.Equal(t, DefaultResponseHeaderTimeout, resolved.ResponseHeaderTimeout)
+	})
+
+	t.Run("configured values should override defaults", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout:               Duration(120 * time.Second),
+			ResponseHeaderTimeout: Duration(60 * time.Second),
+		}
+		resolved := timeouts.Resolve()
+		assert.Equal(t, 120*time.Second, resolved.Timeout)
+		assert.Equal(t, 60*time.Second, resolved.ResponseHeaderTimeout)
+		// Unset values should still use defaults
+		assert.Equal(t, DefaultTLSHandshakeTimeout, resolved.TLSHandshakeTimeout)
+	})
+}
+
+func TestHTTPClientTimeouts_MergeFrom(t *testing.T) {
+	t.Run("merge from nil defaults should not change values", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout: Duration(60 * time.Second),
+		}
+		timeouts.MergeFrom(nil)
+		assert.Equal(t, Duration(60*time.Second), timeouts.Timeout)
+	})
+
+	t.Run("zero values should be filled from defaults", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{}
+		defaults := &HTTPClientTimeouts{
+			Timeout:               Duration(120 * time.Second),
+			ResponseHeaderTimeout: Duration(60 * time.Second),
+		}
+		timeouts.MergeFrom(defaults)
+		assert.Equal(t, Duration(120*time.Second), timeouts.Timeout)
+		assert.Equal(t, Duration(60*time.Second), timeouts.ResponseHeaderTimeout)
+	})
+
+	t.Run("existing values should not be overwritten", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout: Duration(30 * time.Second),
+		}
+		defaults := &HTTPClientTimeouts{
+			Timeout:               Duration(120 * time.Second),
+			ResponseHeaderTimeout: Duration(60 * time.Second),
+		}
+		timeouts.MergeFrom(defaults)
+		assert.Equal(t, Duration(30*time.Second), timeouts.Timeout) // Not overwritten
+		assert.Equal(t, Duration(60*time.Second), timeouts.ResponseHeaderTimeout) // Merged
+	})
+}

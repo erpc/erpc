@@ -1491,17 +1491,13 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
-			SupportsBatch:         defaults.JsonRpc.SupportsBatch,
-			BatchMaxSize:          defaults.JsonRpc.BatchMaxSize,
-			BatchMaxWait:          defaults.JsonRpc.BatchMaxWait,
-			EnableGzip:            defaults.JsonRpc.EnableGzip,
-			ProxyPool:             defaults.JsonRpc.ProxyPool,
-			Headers:               defaults.JsonRpc.Headers,
-			Timeout:               defaults.JsonRpc.Timeout,
-			ResponseHeaderTimeout: defaults.JsonRpc.ResponseHeaderTimeout,
-			TLSHandshakeTimeout:   defaults.JsonRpc.TLSHandshakeTimeout,
-			IdleConnTimeout:       defaults.JsonRpc.IdleConnTimeout,
-			ExpectContinueTimeout: defaults.JsonRpc.ExpectContinueTimeout,
+			SupportsBatch:      defaults.JsonRpc.SupportsBatch,
+			BatchMaxSize:       defaults.JsonRpc.BatchMaxSize,
+			BatchMaxWait:       defaults.JsonRpc.BatchMaxWait,
+			EnableGzip:         defaults.JsonRpc.EnableGzip,
+			ProxyPool:          defaults.JsonRpc.ProxyPool,
+			Headers:            defaults.JsonRpc.Headers,
+			HTTPClientTimeouts: defaults.JsonRpc.HTTPClientTimeouts,
 		}
 	} else if u.JsonRpc != nil && defaults.JsonRpc != nil {
 		// Merge individual fields from defaults if not set on upstream
@@ -1523,21 +1519,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.JsonRpc.Headers == nil && defaults.JsonRpc.Headers != nil {
 			u.JsonRpc.Headers = defaults.JsonRpc.Headers
 		}
-		if u.JsonRpc.Timeout == 0 && defaults.JsonRpc.Timeout != 0 {
-			u.JsonRpc.Timeout = defaults.JsonRpc.Timeout
-		}
-		if u.JsonRpc.ResponseHeaderTimeout == 0 && defaults.JsonRpc.ResponseHeaderTimeout != 0 {
-			u.JsonRpc.ResponseHeaderTimeout = defaults.JsonRpc.ResponseHeaderTimeout
-		}
-		if u.JsonRpc.TLSHandshakeTimeout == 0 && defaults.JsonRpc.TLSHandshakeTimeout != 0 {
-			u.JsonRpc.TLSHandshakeTimeout = defaults.JsonRpc.TLSHandshakeTimeout
-		}
-		if u.JsonRpc.IdleConnTimeout == 0 && defaults.JsonRpc.IdleConnTimeout != 0 {
-			u.JsonRpc.IdleConnTimeout = defaults.JsonRpc.IdleConnTimeout
-		}
-		if u.JsonRpc.ExpectContinueTimeout == 0 && defaults.JsonRpc.ExpectContinueTimeout != 0 {
-			u.JsonRpc.ExpectContinueTimeout = defaults.JsonRpc.ExpectContinueTimeout
-		}
+		u.JsonRpc.HTTPClientTimeouts.MergeFrom(&defaults.JsonRpc.HTTPClientTimeouts)
 	}
 	// Integrity moved under Evm.Integrity
 	if u.Evm != nil && defaults.Evm != nil {

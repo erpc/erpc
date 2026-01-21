@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"sync/atomic"
-	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -55,10 +54,17 @@ func NewProxyPoolRegistry(
 			return nil, err
 		}
 		r.pools[poolCfg.ID] = pool
+
+		resolved := poolCfg.HTTPClientTimeouts.Resolve()
 		logger.Debug().
 			Str("poolId", poolCfg.ID).
 			Int("clientCount", len(pool.clients)).
-			Msg("proxy pool created")
+			Dur("timeout", resolved.Timeout).
+			Dur("responseHeaderTimeout", resolved.ResponseHeaderTimeout).
+			Dur("tlsHandshakeTimeout", resolved.TLSHandshakeTimeout).
+			Dur("idleConnTimeout", resolved.IdleConnTimeout).
+			Dur("expectContinueTimeout", resolved.ExpectContinueTimeout).
+			Msg("proxy pool created with timeout configuration")
 	}
 
 	return r, nil
@@ -70,29 +76,7 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 		return &ProxyPool{ID: poolCfg.ID}, fmt.Errorf("no proxy URLs defined for pool '%s'. at least one proxy URL is required", poolCfg.ID)
 	}
 
-	// Use configured timeouts or defaults
-	idleConnTimeout := 90 * time.Second
-	responseHeaderTimeout := 30 * time.Second
-	tlsHandshakeTimeout := 10 * time.Second
-	expectContinueTimeout := 1 * time.Second
-	clientTimeout := 60 * time.Second
-
-	if poolCfg.IdleConnTimeout.Duration() > 0 {
-		idleConnTimeout = poolCfg.IdleConnTimeout.Duration()
-	}
-	if poolCfg.ResponseHeaderTimeout.Duration() > 0 {
-		responseHeaderTimeout = poolCfg.ResponseHeaderTimeout.Duration()
-	}
-	if poolCfg.TLSHandshakeTimeout.Duration() > 0 {
-		tlsHandshakeTimeout = poolCfg.TLSHandshakeTimeout.Duration()
-	}
-	if poolCfg.ExpectContinueTimeout.Duration() > 0 {
-		expectContinueTimeout = poolCfg.ExpectContinueTimeout.Duration()
-	}
-	if poolCfg.Timeout.Duration() > 0 {
-		clientTimeout = poolCfg.Timeout.Duration()
-	}
-
+	resolved := poolCfg.HTTPClientTimeouts.Resolve()
 	clients := make([]*http.Client, 0, len(poolCfg.Urls))
 
 	for _, proxyStr := range poolCfg.Urls {
@@ -105,14 +89,14 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 			MaxIdleConns:          1024,
 			MaxIdleConnsPerHost:   256,
 			MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)
-			IdleConnTimeout:       idleConnTimeout,
-			ResponseHeaderTimeout: responseHeaderTimeout,
-			TLSHandshakeTimeout:   tlsHandshakeTimeout,
-			ExpectContinueTimeout: expectContinueTimeout,
+			IdleConnTimeout:       resolved.IdleConnTimeout,
+			ResponseHeaderTimeout: resolved.ResponseHeaderTimeout,
+			TLSHandshakeTimeout:   resolved.TLSHandshakeTimeout,
+			ExpectContinueTimeout: resolved.ExpectContinueTimeout,
 			Proxy:                 http.ProxyURL(proxyURL),
 		}
 		client := &http.Client{
-			Timeout:   clientTimeout,
+			Timeout:   resolved.Timeout,
 			Transport: transport,
 		}
 		clients = append(clients, client)
