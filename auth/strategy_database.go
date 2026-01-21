@@ -24,7 +24,7 @@ type DatabaseStrategy struct {
 	negCache     *ristretto.Cache[string, struct{}]
 	negTTL       time.Duration
 	sf           singleflight.Group
-	notifier     data.KeyInvalidationNotifier // optional, for pg_notify support
+	notifier     data.KeyInvalidationNotifier
 	cleanupWatch func()
 }
 
