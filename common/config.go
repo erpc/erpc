@@ -793,6 +793,29 @@ type JsonRpcUpstreamConfig struct {
 	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
 	ProxyPool     string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
+
+	// HTTP client timeout settings (optional, with sensible defaults)
+	// Timeout is the total time limit for a request including connection, headers, and body.
+	// Default: 60s
+	Timeout Duration `yaml:"timeout,omitempty" json:"timeout" tstype:"Duration"`
+
+	// ResponseHeaderTimeout specifies the time to wait for a server's response headers
+	// after fully writing the request. This does not include the time to read the response body.
+	// Default: 30s
+	ResponseHeaderTimeout Duration `yaml:"responseHeaderTimeout,omitempty" json:"responseHeaderTimeout" tstype:"Duration"`
+
+	// TLSHandshakeTimeout specifies the maximum time waiting for a TLS handshake.
+	// Default: 10s
+	TLSHandshakeTimeout Duration `yaml:"tlsHandshakeTimeout,omitempty" json:"tlsHandshakeTimeout" tstype:"Duration"`
+
+	// IdleConnTimeout is the maximum time an idle connection will remain idle before closing.
+	// Default: 90s
+	IdleConnTimeout Duration `yaml:"idleConnTimeout,omitempty" json:"idleConnTimeout" tstype:"Duration"`
+
+	// ExpectContinueTimeout specifies the time to wait for a server's first response headers
+	// after fully writing the request headers if the request has an "Expect: 100-continue" header.
+	// Default: 1s
+	ExpectContinueTimeout Duration `yaml:"expectContinueTimeout,omitempty" json:"expectContinueTimeout" tstype:"Duration"`
 }
 
 func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
@@ -1385,6 +1408,29 @@ func (c *Config) HasRateLimiterBudget(id string) bool {
 type ProxyPoolConfig struct {
 	ID   string   `yaml:"id" json:"id"`
 	Urls []string `yaml:"urls" json:"urls"`
+
+	// HTTP client timeout settings (optional, with sensible defaults)
+	// Timeout is the total time limit for a request including connection, headers, and body.
+	// Default: 60s
+	Timeout Duration `yaml:"timeout,omitempty" json:"timeout" tstype:"Duration"`
+
+	// ResponseHeaderTimeout specifies the time to wait for a server's response headers
+	// after fully writing the request. This does not include the time to read the response body.
+	// Default: 30s
+	ResponseHeaderTimeout Duration `yaml:"responseHeaderTimeout,omitempty" json:"responseHeaderTimeout" tstype:"Duration"`
+
+	// TLSHandshakeTimeout specifies the maximum time waiting for a TLS handshake.
+	// Default: 10s
+	TLSHandshakeTimeout Duration `yaml:"tlsHandshakeTimeout,omitempty" json:"tlsHandshakeTimeout" tstype:"Duration"`
+
+	// IdleConnTimeout is the maximum time an idle connection will remain idle before closing.
+	// Default: 90s
+	IdleConnTimeout Duration `yaml:"idleConnTimeout,omitempty" json:"idleConnTimeout" tstype:"Duration"`
+
+	// ExpectContinueTimeout specifies the time to wait for a server's first response headers
+	// after fully writing the request headers if the request has an "Expect: 100-continue" header.
+	// Default: 1s
+	ExpectContinueTimeout Duration `yaml:"expectContinueTimeout,omitempty" json:"expectContinueTimeout" tstype:"Duration"`
 }
 
 type DeprecatedProjectHealthCheckConfig struct {

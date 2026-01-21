@@ -91,14 +91,39 @@ func NewGenericHttpJsonRpcClient(
 
 	// Default fallback transport (no proxy)
 	// Optimized for high-latency, high-RPS scenarios to prevent connection churn
+	// Timeout values can be configured via jsonRpcCfg, with sensible defaults
+	idleConnTimeout := 90 * time.Second
+	responseHeaderTimeout := 30 * time.Second
+	tlsHandshakeTimeout := 10 * time.Second
+	expectContinueTimeout := 1 * time.Second
+	clientTimeout := 60 * time.Second
+
+	if jsonRpcCfg != nil {
+		if jsonRpcCfg.IdleConnTimeout.Duration() > 0 {
+			idleConnTimeout = jsonRpcCfg.IdleConnTimeout.Duration()
+		}
+		if jsonRpcCfg.ResponseHeaderTimeout.Duration() > 0 {
+			responseHeaderTimeout = jsonRpcCfg.ResponseHeaderTimeout.Duration()
+		}
+		if jsonRpcCfg.TLSHandshakeTimeout.Duration() > 0 {
+			tlsHandshakeTimeout = jsonRpcCfg.TLSHandshakeTimeout.Duration()
+		}
+		if jsonRpcCfg.ExpectContinueTimeout.Duration() > 0 {
+			expectContinueTimeout = jsonRpcCfg.ExpectContinueTimeout.Duration()
+		}
+		if jsonRpcCfg.Timeout.Duration() > 0 {
+			clientTimeout = jsonRpcCfg.Timeout.Duration()
+		}
+	}
+
 	transport := &http.Transport{
 		MaxIdleConns:          1024,
 		MaxIdleConnsPerHost:   256,
 		MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       idleConnTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ExpectContinueTimeout: expectContinueTimeout,
 	}
 
 	if util.IsTest() {
@@ -107,7 +132,7 @@ func NewGenericHttpJsonRpcClient(
 		}
 	} else {
 		client.httpClient = &http.Client{
-			Timeout:   60 * time.Second,
+			Timeout:   clientTimeout,
 			Transport: transport,
 		}
 	}

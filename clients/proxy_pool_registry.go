@@ -70,6 +70,29 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 		return &ProxyPool{ID: poolCfg.ID}, fmt.Errorf("no proxy URLs defined for pool '%s'. at least one proxy URL is required", poolCfg.ID)
 	}
 
+	// Use configured timeouts or defaults
+	idleConnTimeout := 90 * time.Second
+	responseHeaderTimeout := 30 * time.Second
+	tlsHandshakeTimeout := 10 * time.Second
+	expectContinueTimeout := 1 * time.Second
+	clientTimeout := 60 * time.Second
+
+	if poolCfg.IdleConnTimeout.Duration() > 0 {
+		idleConnTimeout = poolCfg.IdleConnTimeout.Duration()
+	}
+	if poolCfg.ResponseHeaderTimeout.Duration() > 0 {
+		responseHeaderTimeout = poolCfg.ResponseHeaderTimeout.Duration()
+	}
+	if poolCfg.TLSHandshakeTimeout.Duration() > 0 {
+		tlsHandshakeTimeout = poolCfg.TLSHandshakeTimeout.Duration()
+	}
+	if poolCfg.ExpectContinueTimeout.Duration() > 0 {
+		expectContinueTimeout = poolCfg.ExpectContinueTimeout.Duration()
+	}
+	if poolCfg.Timeout.Duration() > 0 {
+		clientTimeout = poolCfg.Timeout.Duration()
+	}
+
 	clients := make([]*http.Client, 0, len(poolCfg.Urls))
 
 	for _, proxyStr := range poolCfg.Urls {
@@ -82,14 +105,14 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 			MaxIdleConns:          1024,
 			MaxIdleConnsPerHost:   256,
 			MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
+			IdleConnTimeout:       idleConnTimeout,
+			ResponseHeaderTimeout: responseHeaderTimeout,
+			TLSHandshakeTimeout:   tlsHandshakeTimeout,
+			ExpectContinueTimeout: expectContinueTimeout,
 			Proxy:                 http.ProxyURL(proxyURL),
 		}
 		client := &http.Client{
-			Timeout:   60 * time.Second,
+			Timeout:   clientTimeout,
 			Transport: transport,
 		}
 		clients = append(clients, client)
