@@ -531,6 +531,7 @@ type UpstreamConfig struct {
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
 	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty" json:"autoIgnoreUnsupportedMethods"`
+	IgnoreNetworks               []string                 `yaml:"ignoreNetworks,omitempty" json:"ignoreNetworks"`
 	Failsafe                     []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
@@ -649,6 +650,11 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	if c.AllowMethods != nil {
 		copied.AllowMethods = make([]string, len(c.AllowMethods))
 		copy(copied.AllowMethods, c.AllowMethods)
+	}
+
+	if c.IgnoreNetworks != nil {
+		copied.IgnoreNetworks = make([]string, len(c.IgnoreNetworks))
+		copy(copied.IgnoreNetworks, c.IgnoreNetworks)
 	}
 
 	return copied

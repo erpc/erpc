@@ -1741,3 +1741,109 @@ func TestUpstreamsRegistry_EMAInfInjection(t *testing.T) {
 		}
 	}
 }
+
+func TestUpstreamsRegistry_IgnoreNetworks(t *testing.T) {
+	logger := log.Logger
+	projectID := "test-project"
+	networkID := "evm:123"
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	t.Run("UpstreamNotRegisteredForIgnoredNetwork", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		registry, _ := createTestRegistryWithIgnoreNetworks(ctx, projectID, &logger, 10*time.Second, []string{networkID})
+		upstreams := registry.GetNetworkUpstreams(ctx, networkID)
+
+		// rpc2 should NOT be in the list because it has ignoreNetworks: ["evm:123"]
+		upstreamIds := make([]string, len(upstreams))
+		for i, ups := range upstreams {
+			upstreamIds[i] = ups.Id()
+		}
+
+		assert.Contains(t, upstreamIds, "rpc1")
+		assert.NotContains(t, upstreamIds, "rpc2")
+		assert.Contains(t, upstreamIds, "rpc3")
+		assert.Len(t, upstreams, 2)
+	})
+
+	t.Run("UpstreamRegisteredForNonIgnoredNetwork", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// rpc2 ignores "evm:42161" but not "evm:123", so should still be registered for evm:123
+		registry, _ := createTestRegistryWithIgnoreNetworks(ctx, projectID, &logger, 10*time.Second, []string{"evm:42161"})
+		upstreams := registry.GetNetworkUpstreams(ctx, networkID)
+
+		// Both rpc1 and rpc2 should be available for evm:123
+		upstreamIds := make([]string, len(upstreams))
+		for i, ups := range upstreams {
+			upstreamIds[i] = ups.Id()
+		}
+
+		assert.Contains(t, upstreamIds, "rpc1")
+		assert.Contains(t, upstreamIds, "rpc2")
+		assert.Contains(t, upstreamIds, "rpc3")
+		assert.Len(t, upstreams, 3)
+	})
+}
+
+func createTestRegistryWithIgnoreNetworks(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration, ignoreNetworks []string) (*UpstreamsRegistry, *health.Tracker) {
+	metricsTracker := health.NewTracker(logger, projectID, windowSize)
+	metricsTracker.Bootstrap(ctx)
+
+	upstreamConfigs := []*common.UpstreamConfig{
+		{Id: "rpc1", Endpoint: "http://rpc1.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "rpc2", Endpoint: "http://rpc2.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}, IgnoreNetworks: ignoreNetworks},
+		{Id: "rpc3", Endpoint: "http://rpc3.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+	}
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(
+		logger,
+		vr,
+		nil,
+		nil,
+	)
+	if err != nil {
+		panic(err)
+	}
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000, MaxTotalSize: "1GB",
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	registry := NewUpstreamsRegistry(
+		ctx,
+		logger,
+		projectID,
+		upstreamConfigs,
+		ssr,
+		nil, // RateLimitersRegistry not needed for these tests
+		vr,
+		pr,
+		nil, // ProxyPoolRegistry
+		metricsTracker,
+		1*time.Second,
+		nil,
+	)
+
+	registry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	err = registry.PrepareUpstreamsForNetwork(ctx, "evm:123")
+	if err != nil {
+		panic(err)
+	}
+
+	return registry, metricsTracker
+}
