@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -92,6 +94,12 @@ type EvmStatePoller struct {
 	earliestSchedulerStarted     map[common.EvmAvailabilityProbeType]bool
 	earliestInitialDetectionDone map[common.EvmAvailabilityProbeType]bool // tracks if THIS instance did initial detection
 	earliestMu                   sync.RWMutex
+
+	// WebSocket subscription support for real-time block updates
+	wsClient          *clients.WebsocketSubscriptionClient
+	wsEndpoint        string
+	wsEnabled         atomic.Bool
+	wsSubscribeCancel context.CancelFunc
 }
 
 func NewEvmStatePoller(
@@ -162,6 +170,21 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
 	e.Enabled = true
 
+	// Initialize WebSocket subscription if enabled
+	if cfg.Evm != nil && cfg.Evm.StatePollerSubscribe != nil && *cfg.Evm.StatePollerSubscribe {
+		wsEndpoint := cfg.WebsocketEndpoint
+		if wsEndpoint == "" {
+			// Try to derive from HTTP endpoint using vendor name
+			wsEndpoint = common.DeriveWebsocketEndpoint(cfg.VendorName, cfg.Endpoint)
+		}
+		if wsEndpoint != "" {
+			e.wsEndpoint = wsEndpoint
+			e.initWebsocketSubscription()
+		} else {
+			e.logger.Warn().Msg("statePollerSubscribe enabled but no websocket endpoint available, falling back to polling only")
+		}
+	}
+
 	go (func() {
 		ticker := time.NewTicker(interval.Duration())
 		defer ticker.Stop()
@@ -169,6 +192,13 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 			select {
 			case <-e.appCtx.Done():
 				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
+				// Clean up WebSocket subscription
+				if e.wsSubscribeCancel != nil {
+					e.wsSubscribeCancel()
+				}
+				if e.wsClient != nil {
+					e.wsClient.Close()
+				}
 				return
 			case <-ticker.C:
 				// Calculate timeout based on shared state config:
@@ -186,6 +216,7 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 				e.logger.Debug().
 					Dur("lockTtl", lockTtl).
 					Dur("timeout", timeout).
+					Bool("wsEnabled", e.wsEnabled.Load()).
 					Msg("calculated poll timeout based on shared state config")
 
 				nctx, cancel := context.WithTimeout(e.appCtx, timeout)
@@ -210,6 +241,144 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	}
 
 	return err
+}
+
+// initWebsocketSubscription initializes WebSocket subscription for real-time block updates.
+// Uses distributed locking to ensure only one pod per upstream maintains the WebSocket connection
+// in multi-replica deployments.
+func (e *EvmStatePoller) initWebsocketSubscription() {
+	e.logger.Info().Str("wsEndpoint", e.wsEndpoint).Msg("initializing websocket subscription for block updates")
+
+	cfg := e.upstream.Config()
+	wsCtx, cancel := context.WithCancel(e.appCtx)
+	e.wsSubscribeCancel = cancel
+
+	// Lock key for leader election - unique per upstream
+	lockKey := fmt.Sprintf("wsSubscription/%s", common.UniqueUpstreamKey(e.upstream))
+	lockRetryInterval := 10 * time.Second
+
+	go func() {
+		for {
+			select {
+			case <-wsCtx.Done():
+				e.logger.Debug().Msg("websocket subscription loop shutting down")
+				telemetry.MetricUpstreamWebsocketConnected.WithLabelValues(
+					e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+				).Set(0)
+				return
+			default:
+			}
+
+			// Try to acquire leader lock for this upstream's WebSocket subscription
+			lockCtx, lockCancel := context.WithTimeout(wsCtx, 5*time.Second)
+			lock, err := e.sharedStateRegistry.TryLock(lockCtx, lockKey)
+			lockCancel()
+
+			if err != nil || lock == nil || lock.IsNil() {
+				// Another pod is the leader for this subscription, wait and retry
+				e.logger.Debug().
+					Str("lockKey", lockKey).
+					Msg("another instance holds websocket subscription lock, waiting")
+				select {
+				case <-wsCtx.Done():
+					return
+				case <-time.After(lockRetryInterval):
+					continue
+				}
+			}
+
+			e.logger.Info().Str("lockKey", lockKey).Msg("acquired websocket subscription leader lock")
+
+			// We are the leader - establish WebSocket connection
+			e.runWebsocketSubscription(wsCtx, cfg, lock)
+
+			// Connection lost or lock released, release the lock and retry
+			if lock != nil && !lock.IsNil() {
+				lock.Unlock(wsCtx)
+			}
+			e.logger.Info().Str("lockKey", lockKey).Msg("released websocket subscription leader lock")
+		}
+	}()
+}
+
+// runWebsocketSubscription maintains the WebSocket connection while we hold the leader lock
+func (e *EvmStatePoller) runWebsocketSubscription(ctx context.Context, cfg *common.UpstreamConfig, lock data.DistributedLock) {
+	// Create new client
+	e.wsClient = clients.NewWebsocketSubscriptionClient(e.wsEndpoint, e.logger)
+
+	// Connect
+	if err := e.wsClient.Connect(ctx); err != nil {
+		e.logger.Warn().Err(err).Msg("websocket connection failed")
+		e.wsEnabled.Store(false)
+		telemetry.MetricUpstreamWebsocketConnected.WithLabelValues(
+			e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+		).Set(0)
+		telemetry.MetricUpstreamWebsocketReconnectsTotal.WithLabelValues(
+			e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+		).Inc()
+		e.wsClient = nil
+		return
+	}
+
+	// Subscribe to newHeads
+	blockChan, err := e.wsClient.SubscribeNewHeads(ctx)
+	if err != nil {
+		e.logger.Warn().Err(err).Msg("newHeads subscription failed")
+		e.wsEnabled.Store(false)
+		telemetry.MetricUpstreamWebsocketConnected.WithLabelValues(
+			e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+		).Set(0)
+		e.wsClient.Close()
+		e.wsClient = nil
+		return
+	}
+
+	e.wsEnabled.Store(true)
+	e.wsClient.ResetBackoff()
+	telemetry.MetricUpstreamWebsocketConnected.WithLabelValues(
+		e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+	).Set(1)
+	e.logger.Info().Msg("websocket subscription active, receiving block headers")
+
+	// Process block headers until connection is lost
+	for header := range blockChan {
+		e.handleWebsocketBlockUpdate(header)
+	}
+
+	// Channel closed, connection lost
+	e.wsEnabled.Store(false)
+	telemetry.MetricUpstreamWebsocketConnected.WithLabelValues(
+		e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+	).Set(0)
+	telemetry.MetricUpstreamWebsocketReconnectsTotal.WithLabelValues(
+		e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+	).Inc()
+	e.logger.Warn().Msg("websocket connection lost")
+	e.wsClient = nil
+}
+
+// handleWebsocketBlockUpdate processes a block header received via WebSocket subscription
+func (e *EvmStatePoller) handleWebsocketBlockUpdate(header *clients.BlockHeader) {
+	blockNum := header.Number.Int64()
+	timestamp := header.Timestamp.Int64()
+
+	cfg := e.upstream.Config()
+	e.logger.Debug().
+		Int64("blockNumber", blockNum).
+		Int64("timestamp", timestamp).
+		Str("hash", header.Hash).
+		Msg("received block header via websocket")
+
+	// Record metric for blocks received via websocket
+	telemetry.MetricUpstreamWebsocketBlocksReceivedTotal.WithLabelValues(
+		e.projectId, cfg.VendorName, e.upstream.NetworkId(), cfg.Id,
+	).Inc()
+
+	// Update via SuggestLatestBlock which handles the shared state
+	e.SuggestLatestBlock(blockNum)
+
+	// Also update the tracker directly with timestamp for metrics
+	e.tracker.SetLatestBlockNumber(e.upstream, blockNum, timestamp)
 }
 
 func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
@@ -950,6 +1119,13 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 		}
 	}
 	e.earliestMu.RUnlock()
+
+	// Add WebSocket subscription status
+	diag.WebsocketEndpoint = e.wsEndpoint
+	if e.wsEndpoint != "" {
+		diag.WebsocketEnabled = true
+		diag.WebsocketConnected = e.wsEnabled.Load()
+	}
 
 	return diag
 }
