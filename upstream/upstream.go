@@ -206,7 +206,7 @@ func (u *Upstream) NetworkLabel() string {
 		return "n/a"
 	}
 	lbl, ok := u.networkLabel.Load().(string)
-	if !ok {
+	if !ok || lbl == "" || lbl == "n/a" {
 		return u.NetworkId()
 	}
 	return lbl
@@ -276,10 +276,12 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	// Prefer alias as label when provided; otherwise default to networkId if label is empty or "n/a"
 	if cfg.Alias != "" {
 		u.networkLabel.Store(cfg.Alias)
+		u.logger.Debug().Str("alias", cfg.Alias).Str("networkId", nid).Msg("set network label from alias")
 	} else {
 		if lbl, ok := u.networkLabel.Load().(string); !ok || lbl == "" || lbl == "n/a" {
 			u.networkLabel.Store(nid)
 		}
+		u.logger.Debug().Str("networkId", nid).Msg("set network label from networkId (no alias)")
 	}
 }
 
