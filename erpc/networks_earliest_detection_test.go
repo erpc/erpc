@@ -31,7 +31,7 @@ func TestEarliestDetection_FailOpenWhenNoEarliestConfigured(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Configure upstream WITHOUT earliestBlockPlus - only exactBlock lower bound
 	upCfg := &common.UpstreamConfig{
@@ -104,7 +104,7 @@ func TestEarliestDetection_BlocksRequestAfterSuccessfulDetection(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -219,7 +219,7 @@ func TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Track detection calls
 	var detectionCalls int32
@@ -308,7 +308,7 @@ func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Track detection calls
 	var detectionCalls int32
@@ -396,7 +396,7 @@ func TestEarliestDetection_InvalidRangeTriggersFailOpen(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Configure with BOTH bounds - this creates an invalid range when earliest=0
 	// Lower: latestMinus=10 → ~286M (from SetupMocksForEvmStatePoller)
@@ -501,7 +501,7 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	upCfg := &common.UpstreamConfig{
 		Id:       "rpc1",
@@ -667,7 +667,7 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 // This ensures our fix only affects earliestBlock (ignoreRollbackOf=0).
 func TestEarliestDetection_DecreaseNotAllowedWithHighRollbackThreshold(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	sharedStateCfg := &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{
@@ -693,7 +693,7 @@ func TestEarliestDetection_DecreaseNotAllowedWithHighRollbackThreshold(t *testin
 // counters with ignoreRollbackOf = 0 accept decreases (the fix).
 func TestEarliestDetection_DecreaseAllowedWithZeroRollbackThreshold(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	sharedStateCfg := &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{

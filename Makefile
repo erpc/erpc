@@ -49,14 +49,19 @@ build:
 .PHONY: test
 test:
 	@go clean -testcache
-	@go test ./cmd/... -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -v -race -count 1 -parallel 1 -timeout 15m -failfast=false
+	@go test $$(go list ./... | grep -v '/test$$' | grep -v '/test/') -count 1 -covermode=atomic -race -timeout 15m -failfast=false -p 4
 
 .PHONY: test-fast
 test-fast:
 	@go clean -testcache
-	@go test ./cmd/... -count 1 -parallel 1 -v
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 1 -parallel 1 -v -timeout 10m -failfast=false
+	@go test $$(go list ./... | grep -v '/test$$' | grep -v '/test/') -count 1 -v -timeout 10m -failfast=false -p 4
+
+.PHONY: test-quick
+test-quick:
+	@echo "Running quick tests (excluding slow erpc tests)..."
+	@go clean -testcache
+	@go test ./common/... ./util/... ./architecture/... ./auth/... ./thirdparty/... ./cmd/... -count 1 -timeout 5m -p 4
+	@go test ./health/... ./clients/... ./upstream/... ./data/... -count 1 -timeout 5m -p 4
 
 .PHONY: test-race
 test-race:

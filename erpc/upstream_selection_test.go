@@ -30,7 +30,7 @@ func init() {
 // when both hedge and retry policies are configured at the network level
 func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Test scenarios with different failsafe configurations
 	testCases := []struct {
@@ -259,7 +259,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 // and maintains order across hedge and retry attempts
 func TestCentralizedUpstreamRotation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Mock 4 upstreams to test rotation
 	util.ResetGock()
@@ -376,7 +376,7 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 // TestMixedResponseTypes tests upstream selection with various response types
 func TestMixedResponseTypes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	testCases := []struct {
 		name             string
@@ -556,7 +556,7 @@ func TestMixedResponseTypes(t *testing.T) {
 // - attempt 4 (hedge #2) -> upstream4 responds super fast and ends up being the winning response
 func TestFourAttemptScenario(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Track request timing
 	var upstream2ResponseTime time.Duration = 300 * time.Millisecond // Slow enough to ensure hedge and retries complete

@@ -20,7 +20,7 @@ func init() {
 
 func TestHealthCheckLastEvaluation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	defer util.CancelAndWait(cancel)
 
 	// Create a network with a selection policy evaluator
 	network := createTestNetworkWithSelectionPolicy(t, ctx)
