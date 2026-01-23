@@ -103,7 +103,7 @@ func NewGenericHttpJsonRpcClient(
 		Dur("tlsHandshakeTimeout", resolved.TLSHandshakeTimeout).
 		Dur("idleConnTimeout", resolved.IdleConnTimeout).
 		Dur("expectContinueTimeout", resolved.ExpectContinueTimeout).
-		Str("upstreamId", upstream.Config().Id).
+		Str("upstreamId", upstream.Id()).
 		Msg("creating HTTP client with timeout configuration")
 
 	transport := &http.Transport{
@@ -218,13 +218,26 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
 	if c.proxyPool != nil {
 		client, err := c.proxyPool.GetClient()
-		if c.isLogLevelTrace {
-			proxy, _ := client.Transport.(*http.Transport).Proxy(nil)
-			c.logger.Trace().Str("proxyPool", c.proxyPool.ID).Str("ptr", fmt.Sprintf("%p", client.Transport)).Str("proxy", proxy.String()).Msgf("using client from proxy pool")
-		}
 		if err != nil {
-			c.logger.Error().Err(err).Msgf("failed to get client from proxy pool")
+			c.logger.Error().
+				Err(err).
+				Str("proxyPool", c.proxyPool.ID).
+				Str("upstreamId", c.upstream.Id()).
+				Bool("fallbackToDirectConnection", true).
+				Msg("failed to get client from proxy pool, falling back to direct connection")
 			return c.httpClient
+		}
+		if c.isLogLevelTrace {
+			if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+				proxy, proxyErr := transport.Proxy(nil)
+				if proxyErr == nil && proxy != nil {
+					c.logger.Trace().
+						Str("proxyPool", c.proxyPool.ID).
+						Str("ptr", fmt.Sprintf("%p", client.Transport)).
+						Str("proxy", proxy.String()).
+						Msg("using client from proxy pool")
+				}
+			}
 		}
 		return client
 	}

@@ -850,7 +850,8 @@ func (t *HTTPClientTimeouts) Resolve() ResolvedHTTPClientTimeouts {
 	}
 }
 
-// MergeFrom copies timeout values from defaults for any fields that are not set (zero value).
+// MergeFrom fills unset (zero value) timeout fields with values from defaults.
+// This mutates the receiver in-place.
 func (t *HTTPClientTimeouts) MergeFrom(defaults *HTTPClientTimeouts) {
 	if defaults == nil {
 		return
@@ -874,6 +875,8 @@ func (t *HTTPClientTimeouts) MergeFrom(defaults *HTTPClientTimeouts) {
 
 // Validate checks that all configured timeout values are valid (positive durations).
 // Zero values are allowed as they indicate "use default".
+// Also validates that sub-timeouts (responseHeaderTimeout, tlsHandshakeTimeout,
+// expectContinueTimeout) do not exceed the total request timeout.
 func (t *HTTPClientTimeouts) Validate(prefix string) error {
 	if t == nil {
 		return nil
@@ -906,6 +909,11 @@ func (t *HTTPClientTimeouts) Validate(prefix string) error {
 		t.TLSHandshakeTimeout.Duration() > t.Timeout.Duration() {
 		return fmt.Errorf("%stlsHandshakeTimeout (%v) cannot exceed timeout (%v)",
 			prefix, t.TLSHandshakeTimeout, t.Timeout)
+	}
+	if t.Timeout != 0 && t.ExpectContinueTimeout != 0 &&
+		t.ExpectContinueTimeout.Duration() > t.Timeout.Duration() {
+		return fmt.Errorf("%sexpectContinueTimeout (%v) cannot exceed timeout (%v)",
+			prefix, t.ExpectContinueTimeout, t.Timeout)
 	}
 
 	return nil

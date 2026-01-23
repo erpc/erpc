@@ -974,7 +974,240 @@ func TestHTTPClientTimeouts_MergeFrom(t *testing.T) {
 			ResponseHeaderTimeout: Duration(60 * time.Second),
 		}
 		timeouts.MergeFrom(defaults)
-		assert.Equal(t, Duration(30*time.Second), timeouts.Timeout) // Not overwritten
+		assert.Equal(t, Duration(30*time.Second), timeouts.Timeout)               // Not overwritten
 		assert.Equal(t, Duration(60*time.Second), timeouts.ResponseHeaderTimeout) // Merged
+	})
+}
+
+func TestHTTPClientTimeouts_Validate_ExpectContinueTimeout(t *testing.T) {
+	t.Run("expectContinueTimeout exceeding timeout should fail validation", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout:               Duration(5 * time.Second),
+			ExpectContinueTimeout: Duration(10 * time.Second),
+		}
+		err := timeouts.Validate("")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "expectContinueTimeout")
+		assert.Contains(t, err.Error(), "cannot exceed timeout")
+	})
+
+	t.Run("valid expectContinueTimeout should pass", func(t *testing.T) {
+		timeouts := &HTTPClientTimeouts{
+			Timeout:               Duration(60 * time.Second),
+			ExpectContinueTimeout: Duration(1 * time.Second),
+		}
+		err := timeouts.Validate("")
+		assert.NoError(t, err)
+	})
+}
+
+func TestDuration_WithDefault(t *testing.T) {
+	t.Run("zero duration should return default", func(t *testing.T) {
+		d := Duration(0)
+		result := d.WithDefault(30 * time.Second)
+		assert.Equal(t, 30*time.Second, result)
+	})
+
+	t.Run("positive duration should return itself", func(t *testing.T) {
+		d := Duration(60 * time.Second)
+		result := d.WithDefault(30 * time.Second)
+		assert.Equal(t, 60*time.Second, result)
+	})
+
+	t.Run("negative duration should return default", func(t *testing.T) {
+		d := Duration(-10 * time.Second)
+		result := d.WithDefault(30 * time.Second)
+		assert.Equal(t, 30*time.Second, result)
+	})
+
+	t.Run("small positive duration should return itself", func(t *testing.T) {
+		d := Duration(1 * time.Millisecond)
+		result := d.WithDefault(30 * time.Second)
+		assert.Equal(t, 1*time.Millisecond, result)
+	})
+}
+
+func TestUpstreamConfig_ApplyDefaults_HTTPClientTimeouts(t *testing.T) {
+	t.Run("upstream with nil JsonRpc inherits from defaults", func(t *testing.T) {
+		defaults := &UpstreamConfig{
+			JsonRpc: &JsonRpcUpstreamConfig{
+				HTTPClientTimeouts: HTTPClientTimeouts{
+					Timeout:               Duration(120 * time.Second),
+					ResponseHeaderTimeout: Duration(60 * time.Second),
+				},
+			},
+		}
+
+		upstream := &UpstreamConfig{
+			Endpoint: "http://rpc1.localhost",
+		}
+
+		err := upstream.ApplyDefaults(defaults)
+		assert.NoError(t, err)
+		assert.NotNil(t, upstream.JsonRpc)
+		assert.Equal(t, Duration(120*time.Second), upstream.JsonRpc.Timeout)
+		assert.Equal(t, Duration(60*time.Second), upstream.JsonRpc.ResponseHeaderTimeout)
+	})
+
+	t.Run("upstream with empty JsonRpc HTTPClientTimeouts inherits from defaults", func(t *testing.T) {
+		defaults := &UpstreamConfig{
+			JsonRpc: &JsonRpcUpstreamConfig{
+				HTTPClientTimeouts: HTTPClientTimeouts{
+					Timeout:               Duration(120 * time.Second),
+					ResponseHeaderTimeout: Duration(60 * time.Second),
+					TLSHandshakeTimeout:   Duration(15 * time.Second),
+				},
+			},
+		}
+
+		upstream := &UpstreamConfig{
+			Endpoint: "http://rpc1.localhost",
+			JsonRpc:  &JsonRpcUpstreamConfig{},
+		}
+
+		err := upstream.ApplyDefaults(defaults)
+		assert.NoError(t, err)
+		assert.Equal(t, Duration(120*time.Second), upstream.JsonRpc.Timeout)
+		assert.Equal(t, Duration(60*time.Second), upstream.JsonRpc.ResponseHeaderTimeout)
+		assert.Equal(t, Duration(15*time.Second), upstream.JsonRpc.TLSHandshakeTimeout)
+	})
+
+	t.Run("upstream HTTPClientTimeouts override defaults", func(t *testing.T) {
+		defaults := &UpstreamConfig{
+			JsonRpc: &JsonRpcUpstreamConfig{
+				HTTPClientTimeouts: HTTPClientTimeouts{
+					Timeout:               Duration(120 * time.Second),
+					ResponseHeaderTimeout: Duration(60 * time.Second),
+				},
+			},
+		}
+
+		upstream := &UpstreamConfig{
+			Endpoint: "http://rpc1.localhost",
+			JsonRpc: &JsonRpcUpstreamConfig{
+				HTTPClientTimeouts: HTTPClientTimeouts{
+					Timeout: Duration(30 * time.Second), // Override
+				},
+			},
+		}
+
+		err := upstream.ApplyDefaults(defaults)
+		assert.NoError(t, err)
+		assert.Equal(t, Duration(30*time.Second), upstream.JsonRpc.Timeout)               // Not overwritten
+		assert.Equal(t, Duration(60*time.Second), upstream.JsonRpc.ResponseHeaderTimeout) // Inherited
+	})
+
+	t.Run("partial timeout inheritance", func(t *testing.T) {
+		defaults := &UpstreamConfig{
+			JsonRpc: &JsonRpcUpstreamConfig{
+				HTTPClientTimeouts: HTTPClientTimeouts{
+					Timeout:               Duration(120 * time.Second),
+					ResponseHeaderTimeout: Duration(60 * time.Second),
+					TLSHandshakeTimeout:   Duration(15 * time.Second),
+					IdleConnTimeout:       Duration(180 * time.Second),
+					ExpectContinueTimeout: Duration(2 * time.Second),
+				},
+			},
+		}
+
+		upstream := &UpstreamConfig{
+			Endpoint: "http://rpc1.localhost",
+			JsonRpc: &JsonRpcUpstreamConfig{
+				HTTPClientTimeouts: HTTPClientTimeouts{
+					Timeout:             Duration(30 * time.Second),
+					TLSHandshakeTimeout: Duration(5 * time.Second),
+				},
+			},
+		}
+
+		err := upstream.ApplyDefaults(defaults)
+		assert.NoError(t, err)
+		assert.Equal(t, Duration(30*time.Second), upstream.JsonRpc.Timeout)               // Not overwritten
+		assert.Equal(t, Duration(60*time.Second), upstream.JsonRpc.ResponseHeaderTimeout) // Inherited
+		assert.Equal(t, Duration(5*time.Second), upstream.JsonRpc.TLSHandshakeTimeout)    // Not overwritten
+		assert.Equal(t, Duration(180*time.Second), upstream.JsonRpc.IdleConnTimeout)      // Inherited
+		assert.Equal(t, Duration(2*time.Second), upstream.JsonRpc.ExpectContinueTimeout)  // Inherited
+	})
+}
+
+func TestJsonRpcUpstreamConfig_Validate_HTTPClientTimeouts(t *testing.T) {
+	t.Run("valid HTTPClientTimeouts should pass validation", func(t *testing.T) {
+		cfg := &JsonRpcUpstreamConfig{
+			HTTPClientTimeouts: HTTPClientTimeouts{
+				Timeout:               Duration(60 * time.Second),
+				ResponseHeaderTimeout: Duration(30 * time.Second),
+			},
+		}
+		err := cfg.Validate(&Config{})
+		assert.NoError(t, err)
+	})
+
+	t.Run("invalid HTTPClientTimeouts should fail validation", func(t *testing.T) {
+		cfg := &JsonRpcUpstreamConfig{
+			HTTPClientTimeouts: HTTPClientTimeouts{
+				Timeout: Duration(-30 * time.Second),
+			},
+		}
+		err := cfg.Validate(&Config{})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "jsonRpc:")
+		assert.Contains(t, err.Error(), "timeout must be a positive duration")
+	})
+
+	t.Run("HTTPClientTimeouts relationship validation", func(t *testing.T) {
+		cfg := &JsonRpcUpstreamConfig{
+			HTTPClientTimeouts: HTTPClientTimeouts{
+				Timeout:               Duration(30 * time.Second),
+				ResponseHeaderTimeout: Duration(60 * time.Second),
+			},
+		}
+		err := cfg.Validate(&Config{})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "responseHeaderTimeout")
+		assert.Contains(t, err.Error(), "cannot exceed timeout")
+	})
+}
+
+func TestProxyPoolConfig_Validate_HTTPClientTimeouts(t *testing.T) {
+	t.Run("valid HTTPClientTimeouts should pass validation", func(t *testing.T) {
+		cfg := &ProxyPoolConfig{
+			ID:   "test-pool",
+			Urls: []string{"http://proxy1.example.com:8080"},
+			HTTPClientTimeouts: HTTPClientTimeouts{
+				Timeout:               Duration(60 * time.Second),
+				ResponseHeaderTimeout: Duration(30 * time.Second),
+			},
+		}
+		err := cfg.Validate()
+		assert.NoError(t, err)
+	})
+
+	t.Run("invalid HTTPClientTimeouts should fail validation with pool ID", func(t *testing.T) {
+		cfg := &ProxyPoolConfig{
+			ID:   "my-proxy-pool",
+			Urls: []string{"http://proxy1.example.com:8080"},
+			HTTPClientTimeouts: HTTPClientTimeouts{
+				Timeout: Duration(-30 * time.Second),
+			},
+		}
+		err := cfg.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "proxyPool 'my-proxy-pool':")
+		assert.Contains(t, err.Error(), "timeout must be a positive duration")
+	})
+
+	t.Run("HTTPClientTimeouts relationship validation", func(t *testing.T) {
+		cfg := &ProxyPoolConfig{
+			ID:   "test-pool",
+			Urls: []string{"http://proxy1.example.com:8080"},
+			HTTPClientTimeouts: HTTPClientTimeouts{
+				Timeout:             Duration(5 * time.Second),
+				TLSHandshakeTimeout: Duration(10 * time.Second),
+			},
+		}
+		err := cfg.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "tlsHandshakeTimeout")
+		assert.Contains(t, err.Error(), "cannot exceed timeout")
 	})
 }
