@@ -1491,13 +1491,35 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
-			SupportsBatch: defaults.JsonRpc.SupportsBatch,
-			BatchMaxSize:  defaults.JsonRpc.BatchMaxSize,
-			BatchMaxWait:  defaults.JsonRpc.BatchMaxWait,
-			EnableGzip:    defaults.JsonRpc.EnableGzip,
-			ProxyPool:     defaults.JsonRpc.ProxyPool,
-			Headers:       defaults.JsonRpc.Headers,
+			SupportsBatch:      defaults.JsonRpc.SupportsBatch,
+			BatchMaxSize:       defaults.JsonRpc.BatchMaxSize,
+			BatchMaxWait:       defaults.JsonRpc.BatchMaxWait,
+			EnableGzip:         defaults.JsonRpc.EnableGzip,
+			ProxyPool:          defaults.JsonRpc.ProxyPool,
+			Headers:            defaults.JsonRpc.Headers,
+			HTTPClientTimeouts: defaults.JsonRpc.HTTPClientTimeouts,
 		}
+	} else if u.JsonRpc != nil && defaults.JsonRpc != nil {
+		// Merge individual fields from defaults if not set on upstream
+		if u.JsonRpc.SupportsBatch == nil && defaults.JsonRpc.SupportsBatch != nil {
+			u.JsonRpc.SupportsBatch = defaults.JsonRpc.SupportsBatch
+		}
+		if u.JsonRpc.BatchMaxSize == 0 && defaults.JsonRpc.BatchMaxSize != 0 {
+			u.JsonRpc.BatchMaxSize = defaults.JsonRpc.BatchMaxSize
+		}
+		if u.JsonRpc.BatchMaxWait == 0 && defaults.JsonRpc.BatchMaxWait != 0 {
+			u.JsonRpc.BatchMaxWait = defaults.JsonRpc.BatchMaxWait
+		}
+		if u.JsonRpc.EnableGzip == nil && defaults.JsonRpc.EnableGzip != nil {
+			u.JsonRpc.EnableGzip = defaults.JsonRpc.EnableGzip
+		}
+		if u.JsonRpc.ProxyPool == "" && defaults.JsonRpc.ProxyPool != "" {
+			u.JsonRpc.ProxyPool = defaults.JsonRpc.ProxyPool
+		}
+		if u.JsonRpc.Headers == nil && defaults.JsonRpc.Headers != nil {
+			u.JsonRpc.Headers = defaults.JsonRpc.Headers
+		}
+		u.JsonRpc.HTTPClientTimeouts.MergeFrom(&defaults.JsonRpc.HTTPClientTimeouts)
 	}
 	// Integrity moved under Evm.Integrity
 	if u.Evm != nil && defaults.Evm != nil {

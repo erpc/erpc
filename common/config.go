@@ -786,6 +786,139 @@ func (c *RateLimitAutoTuneConfig) Copy() *RateLimitAutoTuneConfig {
 	return copied
 }
 
+// HTTPClientTimeouts contains HTTP client timeout configuration fields.
+// These are shared between JsonRpcUpstreamConfig and ProxyPoolConfig.
+type HTTPClientTimeouts struct {
+	// Timeout is the total time limit for a request including connection, headers, and body.
+	// Default: 60s
+	Timeout Duration `yaml:"timeout,omitempty" json:"timeout" tstype:"Duration"`
+
+	// ResponseHeaderTimeout specifies the time to wait for a server's response headers
+	// after fully writing the request. This does not include the time to read the response body.
+	// Default: 30s
+	ResponseHeaderTimeout Duration `yaml:"responseHeaderTimeout,omitempty" json:"responseHeaderTimeout" tstype:"Duration"`
+
+	// TLSHandshakeTimeout specifies the maximum time waiting for a TLS handshake.
+	// Default: 10s
+	TLSHandshakeTimeout Duration `yaml:"tlsHandshakeTimeout,omitempty" json:"tlsHandshakeTimeout" tstype:"Duration"`
+
+	// IdleConnTimeout is the maximum time an idle connection will remain idle before closing.
+	// Default: 90s
+	IdleConnTimeout Duration `yaml:"idleConnTimeout,omitempty" json:"idleConnTimeout" tstype:"Duration"`
+
+	// ExpectContinueTimeout specifies the time to wait for a server's first response headers
+	// after fully writing the request headers if the request has an "Expect: 100-continue" header.
+	// Default: 1s
+	ExpectContinueTimeout Duration `yaml:"expectContinueTimeout,omitempty" json:"expectContinueTimeout" tstype:"Duration"`
+}
+
+// Default timeout values for HTTP clients
+const (
+	DefaultHTTPClientTimeout     = 60 * time.Second
+	DefaultResponseHeaderTimeout = 30 * time.Second
+	DefaultTLSHandshakeTimeout   = 10 * time.Second
+	DefaultIdleConnTimeout       = 90 * time.Second
+	DefaultExpectContinueTimeout = 1 * time.Second
+)
+
+// ResolvedHTTPClientTimeouts contains the resolved timeout values with defaults applied.
+type ResolvedHTTPClientTimeouts struct {
+	Timeout               time.Duration
+	ResponseHeaderTimeout time.Duration
+	TLSHandshakeTimeout   time.Duration
+	IdleConnTimeout       time.Duration
+	ExpectContinueTimeout time.Duration
+}
+
+// Resolve applies default values to any unset timeout fields and returns resolved timeouts.
+func (t *HTTPClientTimeouts) Resolve() ResolvedHTTPClientTimeouts {
+	if t == nil {
+		return ResolvedHTTPClientTimeouts{
+			Timeout:               DefaultHTTPClientTimeout,
+			ResponseHeaderTimeout: DefaultResponseHeaderTimeout,
+			TLSHandshakeTimeout:   DefaultTLSHandshakeTimeout,
+			IdleConnTimeout:       DefaultIdleConnTimeout,
+			ExpectContinueTimeout: DefaultExpectContinueTimeout,
+		}
+	}
+	return ResolvedHTTPClientTimeouts{
+		Timeout:               t.Timeout.WithDefault(DefaultHTTPClientTimeout),
+		ResponseHeaderTimeout: t.ResponseHeaderTimeout.WithDefault(DefaultResponseHeaderTimeout),
+		TLSHandshakeTimeout:   t.TLSHandshakeTimeout.WithDefault(DefaultTLSHandshakeTimeout),
+		IdleConnTimeout:       t.IdleConnTimeout.WithDefault(DefaultIdleConnTimeout),
+		ExpectContinueTimeout: t.ExpectContinueTimeout.WithDefault(DefaultExpectContinueTimeout),
+	}
+}
+
+// MergeFrom fills unset (zero value) timeout fields with values from defaults.
+// This mutates the receiver in-place.
+func (t *HTTPClientTimeouts) MergeFrom(defaults *HTTPClientTimeouts) {
+	if defaults == nil {
+		return
+	}
+	if t.Timeout == 0 && defaults.Timeout != 0 {
+		t.Timeout = defaults.Timeout
+	}
+	if t.ResponseHeaderTimeout == 0 && defaults.ResponseHeaderTimeout != 0 {
+		t.ResponseHeaderTimeout = defaults.ResponseHeaderTimeout
+	}
+	if t.TLSHandshakeTimeout == 0 && defaults.TLSHandshakeTimeout != 0 {
+		t.TLSHandshakeTimeout = defaults.TLSHandshakeTimeout
+	}
+	if t.IdleConnTimeout == 0 && defaults.IdleConnTimeout != 0 {
+		t.IdleConnTimeout = defaults.IdleConnTimeout
+	}
+	if t.ExpectContinueTimeout == 0 && defaults.ExpectContinueTimeout != 0 {
+		t.ExpectContinueTimeout = defaults.ExpectContinueTimeout
+	}
+}
+
+// Validate checks that all configured timeout values are valid (positive durations).
+// Zero values are allowed as they indicate "use default".
+// Also validates that sub-timeouts (responseHeaderTimeout, tlsHandshakeTimeout,
+// expectContinueTimeout) do not exceed the total request timeout.
+func (t *HTTPClientTimeouts) Validate(prefix string) error {
+	if t == nil {
+		return nil
+	}
+
+	// Validate individual timeout values - they must be positive if set
+	if t.Timeout != 0 && t.Timeout.Duration() <= 0 {
+		return fmt.Errorf("%stimeout must be a positive duration, got: %v", prefix, t.Timeout)
+	}
+	if t.ResponseHeaderTimeout != 0 && t.ResponseHeaderTimeout.Duration() <= 0 {
+		return fmt.Errorf("%sresponseHeaderTimeout must be a positive duration, got: %v", prefix, t.ResponseHeaderTimeout)
+	}
+	if t.TLSHandshakeTimeout != 0 && t.TLSHandshakeTimeout.Duration() <= 0 {
+		return fmt.Errorf("%stlsHandshakeTimeout must be a positive duration, got: %v", prefix, t.TLSHandshakeTimeout)
+	}
+	if t.IdleConnTimeout != 0 && t.IdleConnTimeout.Duration() <= 0 {
+		return fmt.Errorf("%sidleConnTimeout must be a positive duration, got: %v", prefix, t.IdleConnTimeout)
+	}
+	if t.ExpectContinueTimeout != 0 && t.ExpectContinueTimeout.Duration() <= 0 {
+		return fmt.Errorf("%sexpectContinueTimeout must be a positive duration, got: %v", prefix, t.ExpectContinueTimeout)
+	}
+
+	// Validate timeout relationships
+	if t.Timeout != 0 && t.ResponseHeaderTimeout != 0 &&
+		t.ResponseHeaderTimeout.Duration() > t.Timeout.Duration() {
+		return fmt.Errorf("%sresponseHeaderTimeout (%v) cannot exceed timeout (%v)",
+			prefix, t.ResponseHeaderTimeout, t.Timeout)
+	}
+	if t.Timeout != 0 && t.TLSHandshakeTimeout != 0 &&
+		t.TLSHandshakeTimeout.Duration() > t.Timeout.Duration() {
+		return fmt.Errorf("%stlsHandshakeTimeout (%v) cannot exceed timeout (%v)",
+			prefix, t.TLSHandshakeTimeout, t.Timeout)
+	}
+	if t.Timeout != 0 && t.ExpectContinueTimeout != 0 &&
+		t.ExpectContinueTimeout.Duration() > t.Timeout.Duration() {
+		return fmt.Errorf("%sexpectContinueTimeout (%v) cannot exceed timeout (%v)",
+			prefix, t.ExpectContinueTimeout, t.Timeout)
+	}
+
+	return nil
+}
+
 type JsonRpcUpstreamConfig struct {
 	SupportsBatch *bool             `yaml:"supportsBatch,omitempty" json:"supportsBatch"`
 	BatchMaxSize  int               `yaml:"batchMaxSize,omitempty" json:"batchMaxSize"`
@@ -793,6 +926,9 @@ type JsonRpcUpstreamConfig struct {
 	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
 	ProxyPool     string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
+
+	// HTTP client timeout settings (optional, with sensible defaults)
+	HTTPClientTimeouts `yaml:",inline" json:",inline"`
 }
 
 func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
@@ -1385,6 +1521,9 @@ func (c *Config) HasRateLimiterBudget(id string) bool {
 type ProxyPoolConfig struct {
 	ID   string   `yaml:"id" json:"id"`
 	Urls []string `yaml:"urls" json:"urls"`
+
+	// HTTP client timeout settings (optional, with sensible defaults)
+	HTTPClientTimeouts `yaml:",inline" json:",inline"`
 }
 
 type DeprecatedProjectHealthCheckConfig struct {
