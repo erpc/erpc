@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 type NormalizedResponse struct {
@@ -490,10 +489,13 @@ func (r *NormalizedResponse) closeBodyOnce() {
 		r.Unlock()
 		if body != nil {
 			if err := body.Close(); err != nil {
-				if IsClientDisconnect(err) {
-					log.Debug().Err(err).Msg("response body close on canceled request")
-				} else {
-					log.Error().Err(err).Msg("failed to close response body")
+				if r.request != nil && r.request.network != nil {
+					lg := r.request.network.Logger()
+					if IsClientDisconnect(err) {
+						lg.Debug().Err(err).Msg("response body close on canceled request")
+					} else {
+						lg.Warn().Err(err).Msg("failed to close response body")
+					}
 				}
 			}
 		}

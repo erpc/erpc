@@ -13,7 +13,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 var defaultAlchemyNetworkSubdomains = map[int64]string{
@@ -185,7 +184,7 @@ func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		recheckInterval = DefaultAlchemyRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, recheckInterval)
+	err = v.ensureRemoteData(ctx, logger, recheckInterval)
 	if err != nil {
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
@@ -224,7 +223,7 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 			recheckInterval = DefaultAlchemyRecheckInterval
 		}
 
-		if err := v.ensureRemoteData(ctx, recheckInterval); err != nil {
+		if err := v.ensureRemoteData(ctx, logger, recheckInterval); err != nil {
 			return nil, fmt.Errorf("unable to load remote data: %w", err)
 		}
 
@@ -322,7 +321,7 @@ func (v *AlchemyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.Contains(ups.Endpoint, ".alchemy.com") || strings.Contains(ups.Endpoint, ".alchemyapi.io")
 }
 
-func (v *AlchemyVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration) error {
+func (v *AlchemyVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -333,7 +332,7 @@ func (v *AlchemyVendor) ensureRemoteData(ctx context.Context, recheckInterval ti
 	newData, err := v.fetchAlchemyNetworks(ctx)
 	if err != nil {
 		if _, ok := v.remoteData[alchemyApiUrl]; ok {
-			log.Warn().Err(err).Msg("could not refresh Alchemy API data; will use stale data")
+			logger.Warn().Err(err).Msg("could not refresh Alchemy API data, will use stale data")
 			return nil
 		}
 		return err
