@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -25,7 +26,7 @@ func TestTimeoutHandler_TimeoutReturnsJsonRpcError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
 	})
 
-	handler := TimeoutHandler(slowHandler, 10*time.Millisecond)
+	handler := TimeoutHandler(&log.Logger, slowHandler, 10*time.Millisecond)
 
 	t.Run("POST request timeout returns 200 with JSON-RPC error body", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
@@ -64,7 +65,7 @@ func TestTimeoutHandler_NonTimeoutContextCancellation(t *testing.T) {
 	})
 
 	// Use a long timeout so we can cancel the context before timeout
-	wrappedHandler := TimeoutHandler(handler, 10*time.Second)
+	wrappedHandler := TimeoutHandler(&log.Logger, handler, 10*time.Second)
 
 	t.Run("POST request with context.Canceled returns 200 with JSON-RPC error body", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -97,7 +98,7 @@ func TestTimeoutHandler_NonTimeoutContextCancellation(t *testing.T) {
 			close(handlerStarted2)
 			<-r.Context().Done()
 		})
-		wrappedHandler2 := TimeoutHandler(handler2, 10*time.Second)
+		wrappedHandler2 := TimeoutHandler(&log.Logger, handler2, 10*time.Second)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -126,7 +127,7 @@ func TestTimeoutHandler_SuccessfulResponse(t *testing.T) {
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
 	})
 
-	handler := TimeoutHandler(fastHandler, 1*time.Second)
+	handler := TimeoutHandler(&log.Logger, fastHandler, 1*time.Second)
 
 	t.Run("successful POST request returns response body", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
@@ -146,7 +147,7 @@ func TestTimeoutHandler_PanicRecovery(t *testing.T) {
 		panic("test panic")
 	})
 
-	handler := TimeoutHandler(panicHandler, 1*time.Second)
+	handler := TimeoutHandler(&log.Logger, panicHandler, 1*time.Second)
 
 	req := httptest.NewRequest(http.MethodPost, "/test", nil)
 	rec := httptest.NewRecorder()
@@ -163,7 +164,7 @@ func TestTimeoutWriter_Header(t *testing.T) {
 		_, _ = w.Write([]byte("response"))
 	})
 
-	handler := TimeoutHandler(fastHandler, 1*time.Second)
+	handler := TimeoutHandler(&log.Logger, fastHandler, 1*time.Second)
 
 	req := httptest.NewRequest(http.MethodPost, "/test", nil)
 	rec := httptest.NewRecorder()
@@ -185,7 +186,7 @@ func TestTimeoutWriter_Push(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := TimeoutHandler(fastHandler, 1*time.Second)
+	handler := TimeoutHandler(&log.Logger, fastHandler, 1*time.Second)
 
 	req := httptest.NewRequest(http.MethodPost, "/test", nil)
 	rec := httptest.NewRecorder()
@@ -202,7 +203,7 @@ func BenchmarkTimeoutHandler(b *testing.B) {
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
 	})
 
-	handler := TimeoutHandler(fastHandler, 1*time.Second)
+	handler := TimeoutHandler(&log.Logger, fastHandler, 1*time.Second)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
