@@ -81,6 +81,12 @@ func TestSqdVendor_SupportsNetwork(t *testing.T) {
 			expected:  true,
 		},
 		{
+			name:      "default datasets disabled rejects known chain",
+			networkId: "evm:1",
+			settings:  common.VendorSettings{"useDefaultDatasets": false},
+			expected:  false,
+		},
+		{
 			name:      "unsupported chainId",
 			networkId: "evm:999999",
 			settings:  nil,
@@ -109,6 +115,15 @@ func TestSqdVendor_SupportsNetwork(t *testing.T) {
 			networkId: "evm:999999",
 			settings:  common.VendorSettings{"datasetByChainId": map[string]interface{}{"999999": "custom-dataset"}},
 			expected:  true,
+		},
+		{
+			name:      "default datasets disabled with datasetByChainId override",
+			networkId: "evm:1",
+			settings: common.VendorSettings{
+				"useDefaultDatasets": false,
+				"datasetByChainId":   map[string]interface{}{"1": "ethereum-mainnet"},
+			},
+			expected: true,
 		},
 	}
 
@@ -172,6 +187,39 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Contains(t, configs[0].AllowMethods, "eth_getBlockByNumber")
 		assert.Contains(t, configs[0].AllowMethods, "eth_getLogs")
 		assert.Contains(t, configs[0].AllowMethods, "trace_block")
+	})
+
+	t.Run("sets wrapper api key header", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://portal-wrapper.internal/v1/evm/1",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, common.VendorSettings{
+			"wrapperApiKey": "secret",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "secret", configs[0].JsonRpc.Headers["X-API-Key"])
+	})
+
+	t.Run("preserves existing wrapper header", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://portal-wrapper.internal/v1/evm/1",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				Headers: map[string]string{"X-API-Key": "existing"},
+			},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, common.VendorSettings{
+			"wrapperApiKey": "secret",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "existing", configs[0].JsonRpc.Headers["X-API-Key"])
 	})
 
 	t.Run("preserves user-defined ignoreMethods", func(t *testing.T) {

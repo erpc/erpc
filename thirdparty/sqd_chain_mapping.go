@@ -70,3 +70,32 @@ func sqdDatasetFromSettings(settings common.VendorSettings, chainId int64) (stri
 
 	return "", false
 }
+
+func sqdUseDefaultDatasets(settings common.VendorSettings) bool {
+	if settings == nil {
+		return true
+	}
+
+	raw, ok := settings["useDefaultDatasets"]
+	if !ok {
+		return true
+	}
+
+	switch val := raw.(type) {
+	case bool:
+		return val
+	case string:
+		parsed, err := strconv.ParseBool(val)
+		if err == nil {
+			return parsed
+		}
+	case int:
+		return val != 0
+	case int64:
+		return val != 0
+	case float64:
+		return val != 0
+	}
+
+	return true
+}

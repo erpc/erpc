@@ -41,6 +41,10 @@ func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger,
 		return true, nil
 	}
 
+	if !sqdUseDefaultDatasets(settings) {
+		return false, nil
+	}
+
 	_, exists := sqdChainToDataset[chainID]
 	return exists, nil
 }
@@ -76,6 +80,24 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 			"eth_getTransactionByBlockNumberAndIndex",
 			"eth_getLogs",
 			"trace_block",
+		}
+	}
+
+	if settings != nil {
+		if apiKey, ok := settings["wrapperApiKey"].(string); ok && apiKey != "" {
+			header := "X-API-Key"
+			if headerOverride, ok := settings["wrapperApiKeyHeader"].(string); ok && headerOverride != "" {
+				header = headerOverride
+			}
+			if upstream.JsonRpc == nil {
+				upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+			}
+			if upstream.JsonRpc.Headers == nil {
+				upstream.JsonRpc.Headers = make(map[string]string)
+			}
+			if _, exists := upstream.JsonRpc.Headers[header]; !exists {
+				upstream.JsonRpc.Headers[header] = apiKey
+			}
 		}
 	}
 
