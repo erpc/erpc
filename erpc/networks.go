@@ -286,6 +286,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if common.IsTracingDetailed {
 		forwardSpan.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+			attribute.String("user.id", req.UserId()),
+			attribute.String("agent.name", req.AgentName()),
 		)
 	}
 	defer forwardSpan.End()
