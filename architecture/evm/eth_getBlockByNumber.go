@@ -53,24 +53,51 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		return nr, err
 	}
 
-	// Track timestamp distance for "latest" blocks
+	// Track timestamp distance for "latest" blocks and add lag metrics to detailed spans
 	if nr != nil && re == nil {
 		rqj, rqErr := nq.JsonRpcRequest(ctx)
 		if rqErr == nil && rqj != nil {
 			rqj.RLock()
 			if len(rqj.Params) >= 1 {
 				if bnp, ok := rqj.Params[0].(string); ok && bnp == "latest" {
-					// Extract timestamp from the response
+					// Extract block number and timestamp from the response
+					_, respBlockNumber, bnErr := ExtractBlockReferenceFromResponse(ctx, nr)
 					blockTimestamp, tsErr := ExtractBlockTimestampFromResponse(ctx, nr)
+
+					// Calculate block number lag
+					if common.IsTracingDetailed && bnErr == nil && respBlockNumber > 0 {
+						highestBlock := network.EvmHighestLatestBlockNumber(ctx)
+						blockNumberLag := highestBlock - respBlockNumber
+						if blockNumberLag < 0 {
+							blockNumberLag = 0
+						}
+						span.SetAttributes(
+							attribute.Int64("block.number", respBlockNumber),
+							attribute.Int64("highest_block", highestBlock),
+							attribute.Int64("block.number_lag", blockNumberLag),
+						)
+					}
+
+					// Calculate timestamp lag and record metric
 					if tsErr == nil && blockTimestamp > 0 {
-						// Calculate and record distance metric
 						currentTime := time.Now().Unix()
-						distance := currentTime - blockTimestamp
+						timestampLag := currentTime - blockTimestamp
+
+						// Add to detailed span
+						if common.IsTracingDetailed {
+							span.SetAttributes(
+								attribute.Int64("block.timestamp", blockTimestamp),
+								attribute.Int64("current.timestamp", currentTime),
+								attribute.Int64("block.timestamp_lag", timestampLag),
+							)
+						}
+
+						// Record prometheus metric
 						telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
 							network.ProjectId(),
 							network.Label(),
 							"network_response",
-						).Set(float64(distance))
+						).Set(float64(timestampLag))
 					}
 				}
 			}
