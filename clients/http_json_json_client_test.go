@@ -22,6 +22,7 @@ func init() {
 }
 
 func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	logger := log.Logger
 
 	t.Run("TimeoutError", func(t *testing.T) {
@@ -102,6 +103,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 }
 
 func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	logger := log.Logger
 
 	t.Run("ConcurrentRequestsRaceCondition", func(t *testing.T) {

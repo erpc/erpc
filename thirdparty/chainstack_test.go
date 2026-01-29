@@ -12,6 +12,7 @@ import (
 )
 
 func TestChainstackVendor_GenerateConfigs(t *testing.T) {
+	t.Parallel()
 	vendor := CreateChainstackVendor()
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -112,6 +113,7 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 // TestChainstackNode_ResilientDecoding demonstrates that the vendor can handle
 // API responses with unexpected field types
 func TestChainstackNode_ResilientDecoding(t *testing.T) {
+	t.Parallel()
 	// Example of a response with mixed types that would cause issues
 	// Note: version is a number instead of string in the original API response
 	rawJSON := `{
@@ -145,6 +147,7 @@ func TestChainstackNode_ResilientDecoding(t *testing.T) {
 }
 
 func TestChainstackFilterParams(t *testing.T) {
+	t.Parallel()
 	vendor := CreateChainstackVendor().(*ChainstackVendor)
 
 	tests := []struct {
@@ -200,6 +203,7 @@ func TestChainstackFilterParams(t *testing.T) {
 }
 
 func TestChainstackCacheKey(t *testing.T) {
+	t.Parallel()
 	vendor := CreateChainstackVendor().(*ChainstackVendor)
 
 	tests := []struct {

@@ -25,6 +25,7 @@ var mainMutex sync.Mutex
 
 // Test default command with real config file, using config flag arg
 func TestMain_Default_FlagConfigFile(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -53,6 +54,7 @@ func TestMain_Default_FlagConfigFile(t *testing.T) {
 
 // Test default command with real config file, using positional config arg
 func TestMain_Default_PositionalConfigFile(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -79,6 +81,7 @@ func TestMain_Default_PositionalConfigFile(t *testing.T) {
 
 // Test start command with real config file, using config flag arg
 func TestMain_Start_FlagConfigFile(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -105,6 +108,7 @@ func TestMain_Start_FlagConfigFile(t *testing.T) {
 
 // Test start command with real config file, using positional config arg
 func TestMain_Start_PositionalConfigFile(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -130,6 +134,7 @@ func TestMain_Start_PositionalConfigFile(t *testing.T) {
 }
 
 func TestMain_Start_MissingConfigFile(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// t.Skip("skipping test that exits the process")
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
@@ -166,6 +171,7 @@ func TestMain_Start_MissingConfigFile(t *testing.T) {
 }
 
 func TestMain_Start_InvalidConfig(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -207,6 +213,7 @@ func TestMain_Start_InvalidConfig(t *testing.T) {
 }
 
 func TestMain_Validate_RealConfigFile(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	fs := afero.NewMemMapFs()
 
 	f, err := afero.TempFile(fs, "", "erpc.yaml")
@@ -302,6 +309,7 @@ func TestMain_Validate_RealConfigFile(t *testing.T) {
 // }
 
 func TestMain_Start_WithInvalidEndpoint(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 

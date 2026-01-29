@@ -16,6 +16,7 @@ import (
 )
 
 func TestPostgreConnectorInitialization(t *testing.T) {
+	t.Parallel()
 	t.Run("SucceedsValidConfigRealContainer", func(t *testing.T) {
 		logger := zerolog.New(io.Discard)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -110,6 +111,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 }
 
 func TestPostgreSQLDistributedLocking(t *testing.T) {
+	t.Parallel()
 	// Common setup for PostgreSQL connector for locking tests
 	setupConnector := func(t *testing.T) (context.Context, *PostgreSQLConnector, func()) {
 		logger := zerolog.New(io.Discard)

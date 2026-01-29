@@ -23,6 +23,7 @@ import (
 // This test validates that split-on-error happens end-to-end at project-level (post-forward)
 // and returns a merged response when the upstream responds with a 413-like large-range error.
 func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	gock.EnableNetworking()
@@ -166,6 +167,7 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 // This test validates proactive range splitting (pre-forward) at network-level, ensuring
 // eth_getLogs is broken into contiguous block sub-requests and the merged response is returned.
 func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	gock.EnableNetworking()
@@ -308,6 +310,7 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 
 // On-error split by addresses for single-block range; ensure merged output contains both halves
 func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	gock.EnableNetworking()
@@ -416,6 +419,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByAddresses_MergedResponse(t *testing.T) {
 
 // On-error split by topics[0] OR-list for single-block range
 func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	gock.EnableNetworking()
@@ -513,6 +517,7 @@ func TestHttp_EvmGetLogs_SplitOnError_ByTopic0ORList_MergedResponse(t *testing.T
 // On-error split where one sub-request returns an empty array and the other returns logs.
 // Merged response should include only non-empty results.
 func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	gock.EnableNetworking()
@@ -599,6 +604,7 @@ func TestHttp_EvmGetLogs_SplitOnError_EmptyAndNonEmptyMergedSkipsEmpty(t *testin
 // Reproduces concurrent identical requests over HTTP to exercise multiplexer and response lifecycle.
 // Ensures no client ever receives a parse error like "no body available to parse JsonRpcResponse".
 func TestHttp_ConcurrentIdenticalRequests_NoEmptyBodyParse(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	gock.EnableNetworking()

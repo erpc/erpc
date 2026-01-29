@@ -32,6 +32,7 @@ func init() {
 // where cleanupMultiplexer would acquire the lock before followers could copy the response,
 // causing followers to see nil response and make their own upstream requests.
 func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ConcurrentFollowers_AllReceiveLeaderResponse", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

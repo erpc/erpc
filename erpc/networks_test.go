@@ -38,6 +38,7 @@ func init() {
 }
 
 func TestNetwork_Forward(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
 		util.ResetGock()
@@ -8105,6 +8106,7 @@ func TestNetwork_Forward(t *testing.T) {
 }
 
 func TestNetwork_SelectionScenarios(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("StatePollerContributesToErrorRateWhenNotResamplingExcludedUpstreams", func(t *testing.T) {
 		util.ResetGock()
 		evalFn, _ := common.CompileFunction(`
@@ -8229,6 +8231,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 var testMu sync.Mutex
 
 func TestNetwork_InFlightRequests(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("MultipleSuccessfulConcurrentRequests", func(t *testing.T) {
 		testMu.Lock()
 		defer testMu.Unlock()
@@ -8619,6 +8622,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 }
 func TestNetwork_SkippingUpstreams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 
 	t.Run("NotSkippedRecentBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
@@ -8806,6 +8810,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 	})
 }
 func TestNetwork_EvmGetLogs(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("EnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -10068,6 +10073,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 	})
 }
 func TestNetwork_ThunderingHerdProtection(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -10886,6 +10892,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 	return network
 }
 func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("EvmHighestLatestBlockNumber_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -11447,6 +11454,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 }
 
 func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("EvmHighestFinalizedBlockNumber_UsesEffectiveBlockWhenUpperBoundConfigured", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -11862,6 +11870,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 }
 
 func TestNetwork_CacheEmptyBehavior(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ServeCachedEmptyWhenAllowed", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

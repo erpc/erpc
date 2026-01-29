@@ -75,6 +75,7 @@ func (m *mockEvmStatePollerEnhanced) GetDiagnostics() *common.EvmStatePollerDiag
 }
 
 func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
+	t.Parallel()
 	t.Run("NegativeBlockNumber", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
@@ -173,6 +174,7 @@ func TestEvmAssertBlockAvailability_EdgeCases(t *testing.T) {
 }
 
 func TestEvmAssertBlockAvailability_RealWorldScenarios(t *testing.T) {
+	t.Parallel()
 	t.Run("BlockReorgScenario", func(t *testing.T) {
 		// Simulate a scenario where latest block regresses due to reorg
 		poller := &mockEvmStatePollerEnhanced{
@@ -313,6 +315,7 @@ func TestEvmAssertBlockAvailability_RealWorldScenarios(t *testing.T) {
 }
 
 func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
+	t.Parallel()
 	t.Run("BothBlocksWithinRange", func(t *testing.T) {
 		upstream := &Upstream{
 			ProjectId: "test-project",
@@ -400,6 +403,7 @@ func TestEvmAssertBlockAvailability_eth_getLogs_Integration(t *testing.T) {
 }
 
 func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
+	t.Parallel()
 	t.Run("EmptyResultWithBlockAvailable", func(t *testing.T) {
 		upstream := &Upstream{
 			ProjectId: "test-project",
@@ -467,6 +471,7 @@ func TestEvmAssertBlockAvailability_RetryPolicy_Integration(t *testing.T) {
 }
 
 func TestEvmAssertBlockAvailability_PollerBehavior(t *testing.T) {
+	t.Parallel()
 	t.Run("LatestBlockStale_ForceFresh", func(t *testing.T) {
 		callCount := 0
 		poller := &mockEvmStatePollerWithCustomBehavior{
@@ -637,6 +642,7 @@ func (m *mockEvmStatePollerWithCustomBehavior) GetDiagnostics() *common.EvmState
 }
 
 func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
+	t.Parallel()
 	t.Run("ProjectIdHandling", func(t *testing.T) {
 		// Test with empty ProjectId - should not panic
 		upstream := &Upstream{
@@ -687,6 +693,7 @@ func TestEvmAssertBlockAvailability_Metrics(t *testing.T) {
 }
 
 func TestEvmAssertBlockAvailability_SpecialBlocks(t *testing.T) {
+	t.Parallel()
 	t.Run("LatestBlockRequested", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
@@ -721,6 +728,7 @@ func TestEvmAssertBlockAvailability_SpecialBlocks(t *testing.T) {
 }
 
 func TestEvmAssertBlockAvailability_RaceCondition(t *testing.T) {
+	t.Parallel()
 	t.Run("assertUpstreamLowerBound_RaceCondition", func(t *testing.T) {
 		// This test demonstrates the race condition in assertUpstreamLowerBound
 		// where a block that's initially within range becomes unavailable after polling
@@ -806,6 +814,7 @@ func TestEvmAssertBlockAvailability_RaceCondition(t *testing.T) {
 }
 
 func TestEvmAssertBlockAvailability_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	t.Run("ConcurrentRequests", func(t *testing.T) {
 		// Test concurrent access to EvmAssertBlockAvailability
 		pollCount := 0
@@ -886,6 +895,7 @@ func TestEvmAssertBlockAvailability_ConcurrentAccess(t *testing.T) {
 // TestEvmEffectiveLatestBlock tests the EvmEffectiveLatestBlock method
 // which returns latest block adjusted for the upper availability bound.
 func TestEvmEffectiveLatestBlock(t *testing.T) {
+	t.Parallel()
 	t.Run("returns 0 when upstream is nil", func(t *testing.T) {
 		var upstream *Upstream = nil
 		result := upstream.EvmEffectiveLatestBlock()
@@ -1029,6 +1039,7 @@ func TestEvmEffectiveLatestBlock(t *testing.T) {
 // TestEvmEffectiveFinalizedBlock tests the EvmEffectiveFinalizedBlock method
 // which returns finalized block adjusted for the upper availability bound.
 func TestEvmEffectiveFinalizedBlock(t *testing.T) {
+	t.Parallel()
 	t.Run("returns 0 when upstream is nil", func(t *testing.T) {
 		var upstream *Upstream = nil
 		result := upstream.EvmEffectiveFinalizedBlock()

@@ -18,6 +18,7 @@ import (
 )
 
 func TestRedisConnectorInitialization(t *testing.T) {
+	t.Parallel()
 	t.Run("succeeds immediately with valid config", func(t *testing.T) {
 		m, err := miniredis.Run()
 		require.NoError(t, err)
@@ -197,6 +198,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 }
 
 func TestRedisConnectorConfigurationMethods(t *testing.T) {
+	t.Parallel()
 	// spin up a disposable Redis server
 	s, err := miniredis.Run()
 	require.NoError(t, err)
@@ -393,6 +395,7 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 }
 
 func TestRedisDistributedLocking(t *testing.T) {
+	t.Parallel()
 	// Common setup for Redis connector for locking tests
 	setupConnector := func(t *testing.T) (context.Context, *RedisConnector, *miniredis.Miniredis) {
 		// Use NewMiniRedis to have more control over its lifecycle and time for testing TTLs
@@ -673,6 +676,7 @@ func TestRedisDistributedLocking(t *testing.T) {
 }
 
 func TestRedisReverseIndexLookup(t *testing.T) {
+	t.Parallel()
 	m, err := miniredis.Run()
 	require.NoError(t, err)
 	defer m.Close()
@@ -718,6 +722,7 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 }
 
 func TestRedisConnector_ChainIsolation(t *testing.T) {
+	t.Parallel()
 	// Setup Redis connector
 	m, err := miniredis.Run()
 	require.NoError(t, err)

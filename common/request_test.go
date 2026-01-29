@@ -36,6 +36,7 @@ func newMockUpstream(id string) *mockUpstreamForSelection {
 // TestUpstreamSelection_NonRetryableError_Skipped tests that non-retryable errors
 // cause the upstream to be skipped on subsequent selections.
 func TestUpstreamSelection_NonRetryableError_Skipped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
 
@@ -63,6 +64,7 @@ func TestUpstreamSelection_NonRetryableError_Skipped(t *testing.T) {
 // are cleared and upstream is returned in the SAME call (no wasted attempts).
 // This implements "try others first, then come back to retry" within a single NextUpstream call.
 func TestUpstreamSelection_RetryableError_ClearedInSameCall(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
 
@@ -96,6 +98,7 @@ func TestUpstreamSelection_RetryableError_ClearedInSameCall(t *testing.T) {
 // TestUpstreamSelection_ErrorsAccumulate tests that errors from multiple upstreams
 // are accumulated in ErrorsByUpstream.
 func TestUpstreamSelection_ErrorsAccumulate(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
 
@@ -130,6 +133,7 @@ func TestUpstreamSelection_ErrorsAccumulate(t *testing.T) {
 // Current behavior (FLAWED): exhaustion returns error, next call gets the upstream
 // Desired behavior: exhaustion clears and returns upstream in same call
 func TestUpstreamSelection_ExhaustionShouldReturnUpstreamNotError(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
 
@@ -167,6 +171,7 @@ func TestUpstreamSelection_ExhaustionShouldReturnUpstreamNotError(t *testing.T) 
 // upstreams and multiple rounds of exhaustion, no attempts are wasted.
 // Each call to NextUpstream should either return an upstream or a final error.
 func TestUpstreamSelection_MultipleExhaustionsNoWastedAttempts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
 
@@ -196,6 +201,7 @@ func TestUpstreamSelection_MultipleExhaustionsNoWastedAttempts(t *testing.T) {
 }
 
 func TestEnrichFromHttpHandlesBloomValidationHeaders(t *testing.T) {
+	t.Parallel()
 	req := NewNormalizedRequest(nil)
 	headers := http.Header{}
 	headers.Set(headerDirectiveValidateLogsBloomEmpty, "true")
@@ -212,6 +218,7 @@ func TestEnrichFromHttpHandlesBloomValidationHeaders(t *testing.T) {
 }
 
 func TestEnrichFromHttpHandlesBloomValidationQueryParams(t *testing.T) {
+	t.Parallel()
 	req := NewNormalizedRequest(nil)
 	query := url.Values{}
 	query.Set(queryDirectiveValidateLogsBloomMatch, "true")

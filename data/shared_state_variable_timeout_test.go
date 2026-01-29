@@ -36,6 +36,7 @@ func setupMockRegistry(t *testing.T, cfg *common.SharedStateConfig) (*sharedStat
 }
 
 func TestTryUpdate_LocalThenBackgroundPush(t *testing.T) {
+	t.Parallel()
 	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(300 * time.Millisecond),
@@ -64,6 +65,7 @@ func TestTryUpdate_LocalThenBackgroundPush(t *testing.T) {
 }
 
 func TestTryUpdateIfStale_UpdateFnBudgetExceeded(t *testing.T) {
+	t.Parallel()
 	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(300 * time.Millisecond),
@@ -106,6 +108,7 @@ func TestTryUpdateIfStale_UpdateFnBudgetExceeded(t *testing.T) {
 }
 
 func TestBackgroundReconcileUsesMax(t *testing.T) {
+	t.Parallel()
 	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(300 * time.Millisecond),
@@ -134,6 +137,7 @@ func TestBackgroundReconcileUsesMax(t *testing.T) {
 }
 
 func TestTryUpdate_RemoteAhead_IsAdoptedInBackground(t *testing.T) {
+	t.Parallel()
 	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(300 * time.Millisecond),
@@ -161,6 +165,7 @@ func TestTryUpdate_RemoteAhead_IsAdoptedInBackground(t *testing.T) {
 }
 
 func TestTryUpdateIfStale_SlowFn_BackgroundPush(t *testing.T) {
+	t.Parallel()
 	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(300 * time.Millisecond),
@@ -200,6 +205,7 @@ func TestTryUpdateIfStale_SlowFn_BackgroundPush(t *testing.T) {
 }
 
 func TestBackgroundPushIsDeduped(t *testing.T) {
+	t.Parallel()
 	cfg := &common.SharedStateConfig{
 		ClusterKey:      "test",
 		FallbackTimeout: common.Duration(300 * time.Millisecond),

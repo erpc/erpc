@@ -23,6 +23,7 @@ func init() {
 }
 
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 

@@ -21,6 +21,7 @@ var testError = errors.New("test error")
 // TestSendRawTransaction_ConsensusRule tests that eth_sendRawTransaction
 // returns the first valid tx hash response immediately without waiting for consensus.
 func TestSendRawTransaction_ConsensusRule(t *testing.T) {
+	t.Parallel()
 	t.Run("returns first valid tx hash without requiring consensus threshold", func(t *testing.T) {
 		// Create a response with a valid tx hash
 		txHash := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
@@ -178,6 +179,7 @@ func TestSendRawTransaction_ConsensusRule(t *testing.T) {
 // TestSendRawTransaction_ShortCircuitRule tests that eth_sendRawTransaction
 // short-circuits as soon as one valid response is received.
 func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
+	t.Parallel()
 	t.Run("short-circuits on first valid tx hash", func(t *testing.T) {
 		txHash := "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
 		jrpc, err := common.NewJsonRpcResponse(1, txHash, nil)
@@ -325,6 +327,7 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 // TestSendRawTransaction_RulePriority tests that the eth_sendRawTransaction
 // rule takes precedence over other consensus rules.
 func TestSendRawTransaction_RulePriority(t *testing.T) {
+	t.Parallel()
 	t.Run("eth_sendRawTransaction rule is evaluated first", func(t *testing.T) {
 		// Verify the eth_sendRawTransaction consensus rule is first
 		assert.Contains(t, consensusRules[0].Description, "eth_sendRawTransaction",
@@ -392,6 +395,7 @@ func TestSendRawTransaction_RulePriority(t *testing.T) {
 
 // TestSendRawTransaction_EmptyResponse tests edge cases with empty responses.
 func TestSendRawTransaction_EmptyResponse(t *testing.T) {
+	t.Parallel()
 	t.Run("does not match for empty responses", func(t *testing.T) {
 		// Empty response (e.g., null result)
 		jrpc, err := common.NewJsonRpcResponse(1, nil, nil)
@@ -425,6 +429,7 @@ func TestSendRawTransaction_EmptyResponse(t *testing.T) {
 
 // TestSendRawTransaction_Integration tests the complete flow from analysis to result.
 func TestSendRawTransaction_Integration(t *testing.T) {
+	t.Parallel()
 	t.Run("complete flow: single success among multiple participants", func(t *testing.T) {
 		// Setup: 3 participants, only 1 returns success
 		txHash := "0xdeadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678"

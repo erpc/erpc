@@ -116,6 +116,7 @@ func createMockResponse(isEmpty bool, request *common.NormalizedRequest, upstrea
 }
 
 func TestRetryPolicy_EmptyResultWithConfidence(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		confidence      common.AvailbilityConfidence
@@ -187,6 +188,7 @@ func TestRetryPolicy_EmptyResultWithConfidence(t *testing.T) {
 }
 
 func TestRetryPolicy_EmptyResultWithIgnore(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		method          string
@@ -270,6 +272,7 @@ func TestRetryPolicy_EmptyResultWithIgnore(t *testing.T) {
 }
 
 func TestRetryPolicy_EdgeCases(t *testing.T) {
+	t.Parallel()
 	t.Run("NonEmptyResponse_NoRetry", func(t *testing.T) {
 		cfg := &common.RetryPolicyConfig{
 			MaxAttempts:           3,
@@ -398,6 +401,7 @@ func TestRetryPolicy_EdgeCases(t *testing.T) {
 }
 
 func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {
+	t.Parallel()
 	t.Run("MethodInIgnoreList_IgnoresConfidence", func(t *testing.T) {
 		cfg := &common.RetryPolicyConfig{
 			MaxAttempts:           3,
@@ -452,6 +456,7 @@ func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {
 }
 
 func TestRetryPolicy_UpstreamScope(t *testing.T) {
+	t.Parallel()
 	t.Run("UpstreamScope_NoEmptyRetryLogic", func(t *testing.T) {
 		cfg := &common.RetryPolicyConfig{
 			MaxAttempts:           3,
@@ -475,6 +480,7 @@ func TestRetryPolicy_UpstreamScope(t *testing.T) {
 }
 
 func TestRetryPolicy_MaxAttemptsRespected(t *testing.T) {
+	t.Parallel()
 	cfg := &common.RetryPolicyConfig{
 		MaxAttempts:           2, // Only allow 2 attempts total
 		EmptyResultConfidence: common.AvailbilityConfidenceBlockHead,
@@ -510,6 +516,7 @@ func TestRetryPolicy_MaxAttemptsRespected(t *testing.T) {
 }
 
 func TestRetryPolicy_Debug(t *testing.T) {
+	t.Parallel()
 	// Create retry config with confidence
 	cfg := &common.RetryPolicyConfig{
 		MaxAttempts:           3,
@@ -543,6 +550,7 @@ func TestRetryPolicy_Debug(t *testing.T) {
 }
 
 func TestRetryPolicy_SimpleEmpty(t *testing.T) {
+	t.Parallel()
 	// Very simple test to verify the basic retry logic
 	cfg := &common.RetryPolicyConfig{
 		MaxAttempts:           2,
@@ -593,6 +601,7 @@ func TestRetryPolicy_SimpleEmpty(t *testing.T) {
 }
 
 func TestRetryPolicy_EmptyWithUpstream(t *testing.T) {
+	t.Parallel()
 	cfg := &common.RetryPolicyConfig{
 		MaxAttempts:           3,
 		EmptyResultConfidence: common.AvailbilityConfidenceFinalized,
@@ -636,6 +645,7 @@ func TestRetryPolicy_EmptyWithUpstream(t *testing.T) {
 }
 
 func TestRetryPolicy_EmptyWithEvmUpstream(t *testing.T) {
+	t.Parallel()
 	cfg := &common.RetryPolicyConfig{
 		MaxAttempts:           3,
 		EmptyResultConfidence: common.AvailbilityConfidenceFinalized,
@@ -696,6 +706,7 @@ func TestRetryPolicy_EmptyWithEvmUpstream(t *testing.T) {
 }
 
 func TestRetryPolicy_TypeAssertion(t *testing.T) {
+	t.Parallel()
 	// Test type assertion directly
 	mockUpstream := new(mockUpstreamForRetry)
 	mockUpstream.On("Config").Return(&common.UpstreamConfig{

@@ -38,6 +38,7 @@ func (m *MockVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 }
 
 func TestProvider_SupportsNetwork_WithIgnoreNetworks(t *testing.T) {
+	t.Parallel()
 	logger := zerolog.New(nil)
 	mockVendor := new(MockVendor)
 

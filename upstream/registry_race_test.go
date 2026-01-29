@@ -23,6 +23,7 @@ func init() {
 // - a new upstream is registered (and appended to sortedUpstreams)
 // - the refresh commits using the stale snapshot and overwrites sortedUpstreams, dropping the new upstream
 func TestRefreshScoresRace_ErasesNewlyRegisteredUpstreams(t *testing.T) {
+	t.Parallel()
 	t.Helper()
 
 	ctx := context.Background()

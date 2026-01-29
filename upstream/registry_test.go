@@ -37,6 +37,7 @@ func getUpsByID(upsList []common.Upstream, ids ...string) []common.Upstream {
 }
 
 func TestUpstreamsRegistry_Ordering(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	logger := log.Logger
 	projectID := "test-project"
 	networkID := "evm:123"
@@ -297,6 +298,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_Scoring(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
@@ -363,6 +365,7 @@ func TestUpstreamsRegistry_Scoring(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,
@@ -516,6 +519,7 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_Multiplier(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,
@@ -781,6 +785,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_FinalitySpecificScoreMultipliers(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,
@@ -888,6 +893,7 @@ func TestUpstreamsRegistry_FinalitySpecificScoreMultipliers(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -965,6 +971,7 @@ func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_EMASmoothingPreventsImmediateFlip(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// This test verifies that EMA smoothing (prev weight 0.7) prevents a small
 	// performance change from flipping the leader immediately; it should flip on
 	// the second refresh when new metrics are sustained.
@@ -1022,6 +1029,7 @@ func TestUpstreamsRegistry_EMASmoothingPreventsImmediateFlip(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_ColdStartConfidenceWeighting(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1071,6 +1079,7 @@ func TestUpstreamsRegistry_ColdStartConfidenceWeighting(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_PerMethodIsolation(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1112,6 +1121,7 @@ func TestUpstreamsRegistry_PerMethodIsolation(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_ThrottlingPenalty(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1155,6 +1165,7 @@ func TestUpstreamsRegistry_ThrottlingPenalty(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_AllPeersNoSamplesNeutral(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1181,6 +1192,7 @@ func TestUpstreamsRegistry_AllPeersNoSamplesNeutral(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_EMAFromZero_IncreasesOnSecondRefresh(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1351,6 +1363,7 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 }
 
 func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// This test verifies that NaN values in scores don't propagate through
 	// EMA smoothing and don't get emitted to Prometheus metrics.
 	// NaN can occur from edge cases in metrics collection and once present
@@ -1425,6 +1438,7 @@ func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_CalculateScoreEdgeCases(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// Test that calculateScore handles edge cases without producing NaN
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
@@ -1503,6 +1517,7 @@ func TestUpstreamsRegistry_CalculateScoreEdgeCases(t *testing.T) {
 }
 
 func TestNormalizeValues_HandlesNaNAndInf(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// Test that normalizeValues handles NaN and Inf inputs correctly
 	testCases := []struct {
 		name     string
@@ -1550,6 +1565,7 @@ func TestNormalizeValues_HandlesNaNAndInf(t *testing.T) {
 }
 
 func TestNormalizeValuesLog_HandlesNaNAndInf(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// Test that normalizeValuesLog handles NaN and Inf inputs correctly
 	testCases := []struct {
 		name  string
@@ -1596,6 +1612,7 @@ func TestNormalizeValuesLog_HandlesNaNAndInf(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_EMANaNInjection(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// This test directly injects NaN values into the previous scores map
 	// to verify that the EMA smoothing guards correctly handle them.
 	util.ResetGock()
@@ -1671,6 +1688,7 @@ func TestUpstreamsRegistry_EMANaNInjection(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_EMAInfInjection(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// This test directly injects Inf values into the previous scores map
 	// to verify that the EMA smoothing guards correctly handle them.
 	util.ResetGock()

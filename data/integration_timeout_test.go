@@ -20,6 +20,7 @@ func init() {
 
 // TestIntegrationTimeoutFlow tests the complete timeout flow from state poller to Redis operations
 func TestIntegrationTimeoutFlow(t *testing.T) {
+	t.Parallel()
 	t.Run("complete flow with working Redis", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -180,6 +181,7 @@ func TestIntegrationTimeoutFlow(t *testing.T) {
 
 // TestConcurrentPollers simulates multiple state pollers running simultaneously
 func TestConcurrentPollers(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

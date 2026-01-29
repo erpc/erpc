@@ -20,6 +20,7 @@ import (
 )
 
 func TestPolicyEvaluator(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	logger := log.Logger
 
 	t.Run("BasicEvaluation", func(t *testing.T) {
@@ -1839,6 +1840,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 }
 
 func TestPolicyEvaluatorBlockHeadLagFlow(t *testing.T) {
+	// Cannot use t.Parallel() because subtests use t.Setenv
 	logger := log.Logger
 
 	t.Run("BlockHeadLagCordoningAndUncordoning", func(t *testing.T) {

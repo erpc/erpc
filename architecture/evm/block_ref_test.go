@@ -9,6 +9,7 @@ import (
 )
 
 func TestExtractBlockReference(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		request     *common.JsonRpcRequest

@@ -29,6 +29,7 @@ func init() {
 // TestUpstreamSelectionWithHedgeAndRetry tests that upstream selection works correctly
 // when both hedge and retry policies are configured at the network level
 func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -258,6 +259,7 @@ func TestUpstreamSelectionWithHedgeAndRetry(t *testing.T) {
 // TestCentralizedUpstreamRotation verifies that upstream selection is truly centralized
 // and maintains order across hedge and retry attempts
 func TestCentralizedUpstreamRotation(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -375,6 +377,7 @@ func TestCentralizedUpstreamRotation(t *testing.T) {
 
 // TestMixedResponseTypes tests upstream selection with various response types
 func TestMixedResponseTypes(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -555,6 +558,7 @@ func TestMixedResponseTypes(t *testing.T) {
 // - attempt 3 (hedge #1) -> upstream3 fails with error fast, continues hedging since upstream2 still running
 // - attempt 4 (hedge #2) -> upstream4 responds super fast and ends up being the winning response
 func TestFourAttemptScenario(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

@@ -13,6 +13,7 @@ import (
 )
 
 func TestRateLimitersRegistry_New(t *testing.T) {
+	t.Parallel()
 	logger := zerolog.Nop()
 
 	t.Run("nil config", func(t *testing.T) {
@@ -44,6 +45,7 @@ func TestRateLimitersRegistry_New(t *testing.T) {
 }
 
 func TestRateLimitersRegistry_GetBudget(t *testing.T) {
+	t.Parallel()
 	logger := zerolog.Nop()
 	cfg := &common.RateLimiterConfig{
 		Store: &common.RateLimitStoreConfig{Driver: "memory"},
@@ -85,6 +87,7 @@ func TestRateLimitersRegistry_GetBudget(t *testing.T) {
 }
 
 func TestRateLimiterBudget_GetRulesByMethod(t *testing.T) {
+	t.Parallel()
 	logger := zerolog.Nop()
 	cfg := &common.RateLimiterConfig{
 		Store: &common.RateLimitStoreConfig{Driver: "memory"},
@@ -135,6 +138,7 @@ func TestRateLimiterBudget_GetRulesByMethod(t *testing.T) {
 }
 
 func TestRateLimiter_ConcurrentPermits(t *testing.T) {
+	t.Parallel()
 	t.Skip("Concurrent permits test skipped pending stabilization of Envoy-based memory limiter semantics")
 	logger := zerolog.Nop()
 	cfg := &common.RateLimiterConfig{
@@ -187,6 +191,7 @@ func TestRateLimiter_ConcurrentPermits(t *testing.T) {
 }
 
 func TestRateLimiter_ExceedCapacity(t *testing.T) {
+	t.Parallel()
 	logger := zerolog.Nop()
 	cfg := &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{

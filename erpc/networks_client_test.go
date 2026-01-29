@@ -20,6 +20,7 @@ import (
 )
 
 func TestNetwork_TraceExecutionTimeout(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -56,6 +57,7 @@ func TestNetwork_TraceExecutionTimeout(t *testing.T) {
 }
 
 func TestNetwork_CapacityExceededErrors(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("Direct429Response", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -128,6 +130,7 @@ func TestNetwork_CapacityExceededErrors(t *testing.T) {
 }
 
 func TestNetwork_BatchRequests(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("SimpleBatchRequest", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -323,6 +326,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 }
 
 func TestNetwork_SingleRequestErrors(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("SingleRequestUnauthorized", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

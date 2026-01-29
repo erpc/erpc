@@ -8,6 +8,7 @@ import (
 
 // Test that reading after close returns EOF and does not panic.
 func TestPooledBufferReadCloserReadAfterClose(t *testing.T) {
+	t.Parallel()
 	prc := NewPooledBufferReadCloser(nil)
 	buf := make([]byte, 10)
 	if n, err := prc.Read(buf); err != io.EOF || n != 0 {
@@ -24,6 +25,7 @@ func TestPooledBufferReadCloserReadAfterClose(t *testing.T) {
 
 // Test concurrent Close and Read do not panic and eventually yield EOF.
 func TestPooledBufferReadCloserConcurrent(t *testing.T) {
+	t.Parallel()
 	b := BorrowBuf()
 	b.WriteString("hello world")
 	prc := NewPooledBufferReadCloser(b)

@@ -26,6 +26,7 @@ import (
 // TestEarliestDetection_FailOpenWhenNoEarliestConfigured tests that requests are allowed
 // when no earliestBlockPlus config is set (baseline fail-open behavior).
 func TestEarliestDetection_FailOpenWhenNoEarliestConfigured(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -99,6 +100,7 @@ func TestEarliestDetection_FailOpenWhenNoEarliestConfigured(t *testing.T) {
 // TestEarliestDetection_BlocksRequestAfterSuccessfulDetection tests that after detection
 // succeeds, requests below the earliest bound are properly blocked.
 func TestEarliestDetection_BlocksRequestAfterSuccessfulDetection(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -214,6 +216,7 @@ func TestEarliestDetection_BlocksRequestAfterSuccessfulDetection(t *testing.T) {
 // TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap tests that initial
 // detection always runs on instance bootstrap, regardless of existing shared state value.
 func TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -303,6 +306,7 @@ func TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap(t *testing.T) {
 // TestEarliestDetection_SchedulerHandlesPeriodicUpdates tests that the scheduler
 // handles periodic updates after initial detection.
 func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -391,6 +395,7 @@ func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 // with an upper bound (earliestBlockPlus) and a lower bound (latestBlockMinus), an invalid
 // range (min > max) is created which triggers fail-open behavior, allowing any request.
 func TestEarliestDetection_InvalidRangeTriggersFailOpen(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -496,6 +501,7 @@ func TestEarliestDetection_InvalidRangeTriggersFailOpen(t *testing.T) {
 // 3. Old code: 13M < 46M, so update rejected → requests to block 30M fail with "below lower bound: 30M < 46M"
 // 4. New code: 13M < 46M, but with ignoreRollbackOf=0 decreases are allowed → block 30M succeeds
 func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -666,6 +672,7 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 // counters with ignoreRollbackOf > 0 still reject decreases (existing behavior).
 // This ensures our fix only affects earliestBlock (ignoreRollbackOf=0).
 func TestEarliestDetection_DecreaseNotAllowedWithHighRollbackThreshold(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -692,6 +699,7 @@ func TestEarliestDetection_DecreaseNotAllowedWithHighRollbackThreshold(t *testin
 // TestEarliestDetection_DecreaseAllowedWithZeroRollbackThreshold tests that
 // counters with ignoreRollbackOf = 0 accept decreases (the fix).
 func TestEarliestDetection_DecreaseAllowedWithZeroRollbackThreshold(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

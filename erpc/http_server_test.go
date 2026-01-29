@@ -36,6 +36,7 @@ import (
 )
 
 func TestHttpServer_RaceTimeouts(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ConcurrentRequestsWithTimeouts", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -477,6 +478,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 }
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1241,6 +1243,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 }
 func TestHttpServer_SingleUpstream(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -2599,6 +2602,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// })
 }
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -3078,6 +3082,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	})
 }
 func TestHttpServer_IntegrationTests(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("SuccessRequestWithNoParams", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -3341,6 +3346,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	})
 }
 func TestHttpServer_ParseUrlPath(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	tests := []struct {
 		name               string
 		path               string
@@ -3675,6 +3681,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 }
 
 func TestHttpServer_HandleHealthCheck(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	testCtx, testCtxCancel := context.WithCancel(context.Background())
 	defer testCtxCancel()
 
@@ -4489,6 +4496,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 }
 
 func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("SimpleCallExistingNetwork", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -5055,6 +5063,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 }
 
 func TestHttpServer_EvmGetLogs(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -5493,6 +5502,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 }
 
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -7768,6 +7778,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 }
 
 func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Skip("Skipping memory profile test in CI - run locally for profiling")
 	util.ResetGock()
 	defer util.ResetGock()

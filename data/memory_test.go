@@ -14,6 +14,7 @@ import (
 )
 
 func TestMemoryConnector_TTL(t *testing.T) {
+	t.Parallel()
 	// Setup
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()
@@ -61,6 +62,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 }
 
 func TestMemoryConnector_Metrics(t *testing.T) {
+	t.Parallel()
 	// Setup logger
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()
@@ -147,6 +149,7 @@ func TestMemoryConnector_Metrics(t *testing.T) {
 }
 
 func TestMemoryConnector_ChainIsolation(t *testing.T) {
+	t.Parallel()
 	// Setup Memory connector
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()

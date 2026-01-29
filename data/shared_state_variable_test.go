@@ -21,6 +21,7 @@ func init() {
 }
 
 func TestSharedVariable(t *testing.T) {
+	t.Parallel()
 	t.Run("basic remote sync updates local value", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -261,6 +262,7 @@ func TestSharedVariable(t *testing.T) {
 }
 
 func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		setupMocks     func(*MockConnector, *MockLock)
@@ -373,6 +375,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 }
 
 func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		setupMocks    func(*MockConnector, *MockLock)
@@ -514,6 +517,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 }
 
 func TestCounterInt64_Concurrency(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -553,6 +557,7 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 }
 
 func TestCounterInt64_GetValue(t *testing.T) {
+	t.Parallel()
 	counter := &counterInt64{
 		ignoreRollbackOf: 1024,
 	}
@@ -562,6 +567,7 @@ func TestCounterInt64_GetValue(t *testing.T) {
 }
 
 func TestCounterInt64_IsStale(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		lastProcessed time.Time
@@ -600,6 +606,7 @@ func TestCounterInt64_IsStale(t *testing.T) {
 // Test that calling setValue directly (as done by remote update watchers or initial value fetch) refreshes the
 // internal lastUpdated timestamp so that subsequent IsStale checks reflect the recent update.
 func TestCounterInt64_SetValueUpdatesLastUpdated(t *testing.T) {
+	t.Parallel()
 	counter := &counterInt64{
 		ignoreRollbackOf: 1024,
 		registry: &sharedStateRegistry{
@@ -619,6 +626,7 @@ func TestCounterInt64_SetValueUpdatesLastUpdated(t *testing.T) {
 }
 
 func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		setupMocks       func(conn *MockConnector, lock *MockLock)
@@ -770,6 +778,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 }
 
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
 
@@ -805,6 +814,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 }
 
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
 
@@ -842,6 +852,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 }
 
 func TestCounterInt64_ReaderStarvation(t *testing.T) {
+	t.Parallel()
 	t.Run("GetValue NOT blocked by long-running TryUpdateIfStale", func(t *testing.T) {
 		counter := &counterInt64{
 			ignoreRollbackOf: 1024,
@@ -987,6 +998,7 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 // TestSharedVariableTimeoutHandling verifies that when the remote backend is down,
 // the shared variable operations fail fast and leave enough time for the actual operation.
 func TestSharedVariableTimeoutHandling(t *testing.T) {
+	t.Parallel()
 	t.Run("operations respect timeout when remote is down", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1199,6 +1211,7 @@ func TestSharedVariableTimeoutHandling(t *testing.T) {
 // TestCounterInt64_EarliestBlockSemantics tests that earliest block counters (ignoreRollbackOf=0)
 // correctly accept decreases, which is needed when detection finds an earlier available block.
 func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
+	t.Parallel()
 	t.Run("earliest block accepts decrease via local update (processNewValue)", func(t *testing.T) {
 		counter := &counterInt64{
 			ignoreRollbackOf: 0, // earliest block mode: accept all rollbacks
@@ -1267,6 +1280,7 @@ func TestCounterInt64_EarliestBlockSemantics(t *testing.T) {
 // TestCounterInt64_RemoteRollbackCallback tests that large rollback callbacks are triggered
 // via remote updates (processNewState) when the rollback is APPLIED.
 func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
+	t.Parallel()
 	t.Run("large rollback applied and callback fires on remote update", func(t *testing.T) {
 		counter := &counterInt64{
 			ignoreRollbackOf: 100, // Ignore rollbacks <= 100
@@ -1471,6 +1485,7 @@ func TestCounterInt64_RemoteRollbackCallback(t *testing.T) {
 // TestCounterInt64_TimestampCollision tests that allocateUpdatedAtMs produces unique timestamps
 // even when called rapidly within the same millisecond.
 func TestCounterInt64_TimestampCollision(t *testing.T) {
+	t.Parallel()
 	t.Run("allocateUpdatedAtMs produces monotonically increasing timestamps", func(t *testing.T) {
 		base := &baseSharedVariable{}
 
@@ -1519,6 +1534,7 @@ func TestCounterInt64_TimestampCollision(t *testing.T) {
 // TestCounterInt64_BackgroundPushCoalescing tests that multiple rapid TryUpdate calls
 // are coalesced into fewer remote pushes.
 func TestCounterInt64_BackgroundPushCoalescing(t *testing.T) {
+	t.Parallel()
 	t.Run("rapid updates are coalesced to fewer pushes", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1582,6 +1598,7 @@ func TestCounterInt64_BackgroundPushCoalescing(t *testing.T) {
 // the higher local value is still pushed to remote during background reconciliation.
 // This is the integration test for the timestamp advancement fix.
 func TestCounterInt64_SmallRollbackReconciliation(t *testing.T) {
+	t.Parallel()
 	t.Run("rejected small rollback triggers push of higher local value to remote", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1678,6 +1695,7 @@ func TestCounterInt64_SmallRollbackReconciliation(t *testing.T) {
 // TestCounterInt64_FresherLocalPushesToStaleRemote tests that when local state is fresher
 // than remote, it gets pushed to remote during background reconciliation.
 func TestCounterInt64_FresherLocalPushesToStaleRemote(t *testing.T) {
+	t.Parallel()
 	t.Run("fresher local state is pushed to remote", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

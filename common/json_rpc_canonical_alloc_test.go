@@ -6,6 +6,7 @@ import (
 
 // Test that CanonicalHash caches the result and repeated calls allocate ~0.
 func TestJsonRpcResponse_CanonicalHash_AllocsCached(t *testing.T) {
+	// Cannot use t.Parallel() with testing.AllocsPerRun
 	r := &JsonRpcResponse{result: []byte(ethGetBlockByNumberResponse)}
 
 	// First compute warms the cache
@@ -25,6 +26,7 @@ func TestJsonRpcResponse_CanonicalHash_AllocsCached(t *testing.T) {
 // Test that CanonicalHashWithIgnoredFields caches by the slice pointer and
 // repeated calls with the same backing slice allocate ~0.
 func TestJsonRpcResponse_CanonicalHashWithIgnoredFields_AllocsCached(t *testing.T) {
+	// Cannot use t.Parallel() with testing.AllocsPerRun
 	r := &JsonRpcResponse{result: []byte(ethGetLogsResponse)}
 	ignore := []string{"logs.*.blockNumber", "logs.*.transactionIndex"}
 

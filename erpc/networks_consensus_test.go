@@ -62,6 +62,7 @@ func init() {
 }
 
 func TestConsensusPolicy(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	tests := []consensusTestCase{
 		{
 			name:        "only_block_head_leader_dispute_leader_error_returns_leader_error",
@@ -2523,6 +2524,7 @@ func TestConsensusPolicy(t *testing.T) {
 
 // TestConsensusGoroutineCancellationIntegration tests the consensus goroutine cancellation behavior with real network
 func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()

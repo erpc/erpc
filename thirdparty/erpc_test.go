@@ -7,6 +7,7 @@ import (
 )
 
 func TestErpcVendor_parseEndpointURL(t *testing.T) {
+	t.Parallel()
 	v := &ErpcVendor{}
 	chainId := int64(1)
 

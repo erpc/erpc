@@ -12,6 +12,7 @@ func approxEqual(got, want, tol float64) bool {
 }
 
 func TestNewQuantileTracker(t *testing.T) {
+	t.Parallel()
 	qt := NewQuantileTracker()
 	if qt == nil {
 		t.Fatal("Expected non-nil QuantileTracker")
@@ -24,6 +25,7 @@ func TestNewQuantileTracker(t *testing.T) {
 }
 
 func TestAddAndQuantiles(t *testing.T) {
+	t.Parallel()
 	qt := NewQuantileTracker()
 
 	// Add a single value, check P90, P95, P99 — all should be 10
@@ -76,6 +78,7 @@ func TestAddAndQuantiles(t *testing.T) {
 }
 
 func TestReset(t *testing.T) {
+	t.Parallel()
 	qt := NewQuantileTracker()
 	qt.Add(10.0)
 	qt.Add(20.0)
@@ -93,6 +96,7 @@ func TestReset(t *testing.T) {
 }
 
 func TestAllValuesEqual(t *testing.T) {
+	t.Parallel()
 	qt := NewQuantileTracker()
 
 	// Add 10 identical values
@@ -118,6 +122,7 @@ func TestAllValuesEqual(t *testing.T) {
 }
 
 func TestWideRange(t *testing.T) {
+	t.Parallel()
 	qt := NewQuantileTracker()
 
 	qt.Add(1.0)
@@ -150,6 +155,7 @@ func TestWideRange(t *testing.T) {
 }
 
 func TestGetQuantile_NaNGuard(t *testing.T) {
+	t.Parallel()
 	// Test that GetQuantile never returns NaN or Inf, even in edge cases
 	qt := NewQuantileTracker()
 

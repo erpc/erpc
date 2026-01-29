@@ -22,6 +22,7 @@ func newTestNetworkWithMarkEmptyMethods(methods []string) *testNetwork {
 }
 
 func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
+	t.Parallel()
 	methods := []string{
 		// Blocks (eth_getBlockByHash excluded - subgraphs return empty for it)
 		"eth_getBlockByNumber",
@@ -74,6 +75,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 }
 
 func TestUpstreamPostForward_UnexpectedEmpty_RetryEmptyFalse(t *testing.T) {
+	t.Parallel()
 	methods := []string{
 		"eth_getBlockByNumber",
 		"eth_getBlockReceipts",
@@ -115,6 +117,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_RetryEmptyFalse(t *testing.T) {
 }
 
 func TestUpstreamPostForward_UnexpectedEmpty_NonListedMethods(t *testing.T) {
+	t.Parallel()
 	// Methods that should NOT trigger error conversion even with empty results
 	methods := []string{
 		"eth_call",
@@ -156,6 +159,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_NonListedMethods(t *testing.T) {
 }
 
 func TestUpstreamPostForward_UnexpectedEmpty_CustomConfiguredMethods(t *testing.T) {
+	t.Parallel()
 	// Test that users can configure custom methods to trigger the mark-empty behavior
 	customMethods := []string{"custom_method", "another_custom"}
 	network := newTestNetworkWithMarkEmptyMethods(customMethods)
@@ -183,6 +187,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_CustomConfiguredMethods(t *testing.
 }
 
 func TestUpstreamPostForward_UnexpectedEmpty_EmptyConfig(t *testing.T) {
+	t.Parallel()
 	// Test that an empty config disables the feature entirely
 	network := newTestNetworkWithMarkEmptyMethods([]string{})
 

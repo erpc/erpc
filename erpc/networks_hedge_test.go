@@ -27,6 +27,7 @@ func init() {
 }
 
 func TestNetwork_HedgePolicy(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("FixedDelayHedge_FirstRequestSlowHedgeWins", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

@@ -16,6 +16,7 @@ import (
 )
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

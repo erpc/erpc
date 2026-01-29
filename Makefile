@@ -48,15 +48,27 @@ build:
 
 .PHONY: test
 test:
+	@echo "Running tests in parallel packages..."
 	@go clean -testcache
-	@go test ./cmd/... -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -v -race -count 1 -parallel 1 -timeout 15m -failfast=false
+	@go test ./cmd/... -count 1 -parallel 16 && \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./architecture/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./clients/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./common/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./consensus/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./data/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./erpc/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./health/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./thirdparty/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./upstream/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./util/... & \
+	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./telemetry/... & \
+	wait
 
 .PHONY: test-fast
 test-fast:
 	@go clean -testcache
-	@go test ./cmd/... -count 1 -parallel 1 -v
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 1 -parallel 1 -v -timeout 10m -failfast=false
+	@go test ./cmd/... -count 1 -parallel 8 -v
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 1 -parallel 8 -v -timeout 10m -failfast=false
 
 .PHONY: test-race
 test-race:
