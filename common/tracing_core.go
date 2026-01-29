@@ -105,9 +105,25 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 			return
 		}
 
+		// Create batch span processor with configured limits to prevent memory leaks.
+		// When the queue is full, new spans are dropped (not blocked).
+		batchOpts := []sdktrace.BatchSpanProcessorOption{
+			sdktrace.WithMaxQueueSize(cfg.MaxQueueSize),
+			sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize),
+			sdktrace.WithBatchTimeout(cfg.BatchTimeout.Duration()),
+			sdktrace.WithExportTimeout(cfg.ExportTimeout.Duration()),
+		}
+
+		logger.Info().
+			Int("maxQueueSize", cfg.MaxQueueSize).
+			Int("maxExportBatchSize", cfg.MaxExportBatchSize).
+			Dur("batchTimeout", cfg.BatchTimeout.Duration()).
+			Dur("exportTimeout", cfg.ExportTimeout.Duration()).
+			Msg("configuring tracing batch processor")
+
 		tracerProvider = sdktrace.NewTracerProvider(
 			sdktrace.WithSampler(createTracingSampler(cfg)),
-			sdktrace.WithBatcher(exporter),
+			sdktrace.WithBatcher(exporter, batchOpts...),
 			sdktrace.WithResource(res),
 		)
 		otel.SetTracerProvider(tracerProvider)

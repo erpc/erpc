@@ -630,6 +630,20 @@ func (c *TracingConfig) SetDefaults() error {
 		c.ServiceName = "erpc"
 	}
 
+	// Batch processor defaults - tuned to prevent memory leaks
+	if c.MaxQueueSize == 0 {
+		c.MaxQueueSize = 1024 // Lower than OTel default (2048) to limit memory
+	}
+	if c.MaxExportBatchSize == 0 {
+		c.MaxExportBatchSize = 512 // OTel default
+	}
+	if c.BatchTimeout.Duration() == 0 {
+		c.BatchTimeout = Duration(1 * time.Second) // Lower than OTel default (5s) to flush more often
+	}
+	if c.ExportTimeout.Duration() == 0 {
+		c.ExportTimeout = Duration(10 * time.Second) // Lower than OTel default (30s) to fail faster
+	}
+
 	return nil
 }
 

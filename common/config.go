@@ -152,6 +152,20 @@ type TracingConfig struct {
 	TLS                *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
 	ResourceAttributes map[string]string `yaml:"resourceAttributes,omitempty" json:"resourceAttributes"`
 
+	// Batch processor settings to control memory usage and export behavior.
+	// MaxQueueSize is the maximum number of spans kept in memory before dropping.
+	// Default is 1024 (lower than OTel default of 2048 to limit memory).
+	MaxQueueSize int `yaml:"maxQueueSize,omitempty" json:"maxQueueSize"`
+	// MaxExportBatchSize is the maximum batch size for each export.
+	// Default is 512.
+	MaxExportBatchSize int `yaml:"maxExportBatchSize,omitempty" json:"maxExportBatchSize"`
+	// BatchTimeout is how long to wait before sending a batch (e.g., "1s", "5s").
+	// Default is "1s" (lower than OTel default of 5s to flush more frequently).
+	BatchTimeout Duration `yaml:"batchTimeout,omitempty" json:"batchTimeout"`
+	// ExportTimeout is the timeout for each export operation (e.g., "10s", "30s").
+	// Default is "10s".
+	ExportTimeout Duration `yaml:"exportTimeout,omitempty" json:"exportTimeout"`
+
 	// ForceTraceMatchers defines conditions for force-tracing requests.
 	// Each matcher can specify network and/or method patterns.
 	// Multiple patterns can be separated by "|" (OR within field).
