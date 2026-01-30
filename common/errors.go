@@ -2315,30 +2315,26 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 }
 
 func IsRetryableTowardNetwork(err error) bool {
-	// Check if this is an exhausted upstreams error with retryable underlying errors
+	// For ErrUpstreamsExhausted, check if any underlying error is retryable toward network
 	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
 		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
 			errs := exher.Errors()
-			if len(errs) > 0 {
-				for _, e := range errs {
-					if IsRetryableTowardsUpstream(e) {
-						return true
-					}
+			for _, e := range errs {
+				if IsRetryableTowardNetwork(e) {
+					return true
 				}
 			}
-			// If we get here, none of the underlying errors were retryable
 			return false
 		}
 	}
 
-	// If the error says it's explicitly retryable/not retryable towards network
+	// If the error explicitly sets retryableTowardNetwork: false, respect it
 	if se, ok := err.(StandardError); ok {
 		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && !rt {
 			return false
 		}
 	}
 
-	// Otherwise, consider it retryable
 	return true
 }
 
