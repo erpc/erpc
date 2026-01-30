@@ -9,7 +9,7 @@
 #     - final -> Final stage where we copy the Go binary and the TS files
 
 # Build stage for Go
-FROM golang:1.25-alpine@sha256:ac09a5f469f307e5da71e766b0bd59c9c49ea460a528cc3e6686513d64a6f1fb AS go-builder
+FROM golang:1.25-alpine@sha256:d9b2e14101f27ec8d09674cd01186798d227bb0daec90e032aeb1cd22ac0f029 AS go-builder
 
 WORKDIR /build
 
@@ -34,7 +34,7 @@ RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/e
     go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
 
 # Global typescript related image
-FROM node:20-alpine@sha256:658d0f63e501824d6c23e06d4bb95c71e7d704537c9d9272f488ac03a370d448 AS ts-core
+FROM node:20-alpine@sha256:3960ed74dfe320a67bf8da9555b6bade25ebda2b22b6081d2f60fd7d5d430e9c AS ts-core
 RUN npm install -g pnpm
 
 # Stage where we will install dev dependencies + compile sdk
@@ -67,7 +67,7 @@ FROM alpine:latest@sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662d
 RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
 
 # Final stage
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:2b7c93f6d6648c11f0e80a48558c8f77885eb0445213b8e69a6a0d7c89fc6ae4 AS final
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:cba10d7abd3e203428e86f5b2d7fd5eb7d8987c387864ae4996cf97191b33764 AS final
 
 # Copy Go binaries from go-builder
 COPY --from=go-builder /build/erpc-server /

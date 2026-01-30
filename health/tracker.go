@@ -398,7 +398,7 @@ func (t *Tracker) getUpsMetrics(k upstreamKey) *TrackedMetrics {
 	if v, ok := t.upsMetrics.Load(k); ok {
 		return v.(*TrackedMetrics)
 	}
-	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker()}
+	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker(t.logger)}
 	actual, _ := t.upsMetrics.LoadOrStore(k, tm)
 	// Track this upstreamKey under its network for efficient global updates
 	if k.ups != nil {
@@ -425,7 +425,7 @@ func (t *Tracker) getNtwMetrics(k networkKey) *TrackedMetrics {
 	if v, ok := t.ntwMetrics.Load(k); ok {
 		return v.(*TrackedMetrics)
 	}
-	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker()}
+	tm := &TrackedMetrics{ResponseQuantiles: NewQuantileTracker(t.logger)}
 	actual, _ := t.ntwMetrics.LoadOrStore(k, tm)
 	return actual.(*TrackedMetrics)
 }

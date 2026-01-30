@@ -14,7 +14,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -164,9 +163,9 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 		// Extract tag filtering settings
 		filterParams := v.extractFilterParams(settings)
 
-		err := v.ensureRefreshEndpoints(ctx, &log.Logger, apiKey, recheckInterval, filterParams)
+		err := v.ensureRefreshEndpoints(ctx, logger, apiKey, recheckInterval, filterParams)
 		if err != nil {
-			log.Warn().Err(err).Msg("failed to refresh QuickNode endpoints, falling back to static endpoint generation")
+			logger.Warn().Err(err).Msg("failed to refresh QuickNode endpoints, falling back to static endpoint generation")
 			return nil, err
 		}
 
@@ -217,9 +216,9 @@ func (v *QuicknodeVendor) ensureRefreshEndpoints(ctx context.Context, logger *ze
 	}
 
 	// Fetch chain IDs in parallel
-	err = v.fetchChainIDs(ctx, endpoints)
+	err = v.fetchChainIDs(ctx, logger, endpoints)
 	if err != nil {
-		log.Warn().Err(err).Msg("some chain ID fetches failed, but continuing with available data")
+		logger.Warn().Err(err).Msg("some chain ID fetches failed, but continuing with available data")
 	}
 
 	// Update cache
@@ -308,7 +307,7 @@ func (v *QuicknodeVendor) fetchEndpoints(ctx context.Context, apiKey string, fil
 	return allEndpoints, nil
 }
 
-func (v *QuicknodeVendor) fetchChainIDs(ctx context.Context, endpoints []*QuicknodeEndpoint) error {
+func (v *QuicknodeVendor) fetchChainIDs(ctx context.Context, logger *zerolog.Logger, endpoints []*QuicknodeEndpoint) error {
 	// Use semaphore to limit concurrent requests
 	sem := semaphore.NewWeighted(10)
 	var wg sync.WaitGroup
@@ -396,7 +395,7 @@ func (v *QuicknodeVendor) fetchChainIDs(ctx context.Context, endpoints []*Quickn
 	wg.Wait()
 
 	if len(errors) > 0 {
-		log.Warn().Errs("errors", errors).Msg("failed to fetch chain IDs for some QuickNode endpoints")
+		logger.Warn().Errs("errors", errors).Msg("failed to fetch chain IDs for some QuickNode endpoints")
 	}
 
 	return nil

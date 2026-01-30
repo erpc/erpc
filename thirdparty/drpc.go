@@ -13,7 +13,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	// "github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
 

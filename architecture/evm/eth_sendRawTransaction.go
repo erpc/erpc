@@ -11,7 +11,6 @@ import (
 	"github.com/erpc/erpc/util"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -29,7 +28,7 @@ func upstreamPostForward_eth_sendRawTransaction(
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_sendRawTransaction")
 	defer span.End()
 
-	lg := log.With().Str("component", "eth_sendRawTransaction").Str("network", n.Id()).Logger()
+	lg := n.Logger().With().Str("hook", "eth_sendRawTransaction").Logger()
 
 	// Check if idempotent transaction broadcast is disabled
 	if cfg := n.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.IdempotentTransactionBroadcast != nil && !*cfg.Evm.IdempotentTransactionBroadcast {
