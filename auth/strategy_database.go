@@ -354,7 +354,12 @@ func (s *DatabaseStrategy) startCacheInvalidationListener(ctx context.Context) {
 }
 
 // PublishCacheInvalidation publishes a cache invalidation event to notify other instances.
+// Only publishes when caching is enabled; otherwise it's a no-op.
 func (s *DatabaseStrategy) PublishCacheInvalidation(ctx context.Context, apiKey string) error {
+	// Only publish if caching is enabled
+	if s.cache == nil {
+		return nil
+	}
 	channel := s.connectorId
 	event := data.CacheInvalidationEvent{
 		Key:       apiKey,

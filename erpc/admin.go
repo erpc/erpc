@@ -78,8 +78,8 @@ func (e *ERPC) findDatabaseConnectorById(projectId, connectorId string) (data.Co
 	return preparedProject.consumerAuthRegistry.FindDatabaseConnector(connectorId)
 }
 
-// findDatabaseStrategyById finds a database strategy by connector ID from admin auth strategies
-func (e *ERPC) findDatabaseStrategyById(projectId, connectorId string) (*auth.DatabaseStrategy, error) {
+// findDatabaseStrategyByConnectorId finds a database strategy by its connector ID from admin auth strategies
+func (e *ERPC) findDatabaseStrategyByConnectorId(projectId, connectorId string) (*auth.DatabaseStrategy, error) {
 	if e.projectsRegistry == nil {
 		return nil, fmt.Errorf("projects registry not configured")
 	}
@@ -367,7 +367,7 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 	}
 
 	// Publish cache invalidation event to notify all instances
-	if strategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
+	if strategy, err := e.findDatabaseStrategyByConnectorId(projectId, connectorId); err == nil {
 		if pubErr := strategy.PublishCacheInvalidation(ctx, apiKey); pubErr != nil {
 			// Log but don't fail the request - cache will eventually expire via TTL
 			e.logger.Warn().Err(pubErr).Str("apiKey", apiKey).Msg("failed to publish cache invalidation event after update")
@@ -447,7 +447,7 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 	}
 
 	// Publish cache invalidation event to notify all instances
-	if strategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
+	if strategy, err := e.findDatabaseStrategyByConnectorId(projectId, connectorId); err == nil {
 		if pubErr := strategy.PublishCacheInvalidation(ctx, apiKey); pubErr != nil {
 			// Log but don't fail the request - cache will eventually expire via TTL
 			e.logger.Warn().Err(pubErr).Str("apiKey", apiKey).Msg("failed to publish cache invalidation event after delete")

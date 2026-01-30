@@ -984,7 +984,10 @@ func (d *DynamoDBConnector) List(ctx context.Context, index string, limit int, p
 // For DynamoDB-backed auth, use a polling-based approach with short TTLs instead.
 func (d *DynamoDBConnector) WatchCacheInvalidation(ctx context.Context, channel string) (<-chan CacheInvalidationEvent, func(), error) {
 	ch := make(chan CacheInvalidationEvent)
-	return ch, func() {}, nil
+	cleanup := func() {
+		close(ch)
+	}
+	return ch, cleanup, nil
 }
 
 // PublishCacheInvalidation is not supported for DynamoDB since it doesn't have native pub/sub.
