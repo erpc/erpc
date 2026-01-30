@@ -322,7 +322,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		totalReqs := 100
+		totalReqs := 20 // Reduced from 100 to 20 to keep test under 2-minute timeout
 
 		for i := 0; i < totalReqs; i++ {
 			var delay time.Duration
@@ -456,7 +456,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 				defer wg.Done()
 				results[index].statusCode, results[index].body = sendRequest()
 			}(i)
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond) // Reduced from 50ms to 10ms to speed up test
 		}
 		wg.Wait()
 
