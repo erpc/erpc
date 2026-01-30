@@ -58,7 +58,12 @@ test:
 		go test -covermode=atomic -count 1 -parallel 64 -timeout 2m ./common/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -count 1 -parallel 64 -timeout 2m ./consensus/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -count 1 -parallel 64 -timeout 2m ./data/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -count 1 -parallel 128 -timeout 15m ./erpc/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -count 1 -parallel 128 -timeout 10m ./erpc/... -run="TestHttpServer_|TestHttp_|TestTimeoutHandler|TestTimeoutWriter" & pids="$$pids $$!"; \
+		go test -covermode=atomic -count 1 -parallel 128 -timeout 10m ./erpc/... -run="TestNetwork_" & pids="$$pids $$!"; \
+		go test -covermode=atomic -count 1 -parallel 64 -timeout 8m ./erpc/... -run="TestNetworkIntegrity" & pids="$$pids $$!"; \
+		go test -covermode=atomic -count 1 -parallel 64 -timeout 8m ./erpc/... -run="TestNetworkAvailability|TestNetworksInterpolation|TestInterpolation|TestEnrichment" & pids="$$pids $$!"; \
+		go test -covermode=atomic -count 1 -parallel 64 -timeout 8m ./erpc/... -run="TestEvmJsonRpcCache" & pids="$$pids $$!"; \
+		go test -covermode=atomic -count 1 -parallel 64 -timeout 8m ./erpc/... -run="TestPolicyEvaluator|TestUpstream|TestComputeBucket|TestConsensusPolicy|TestConsensusSelects|TestErpc|TestHealthCheck|TestNetworksBootstrap|TestNetworkFailsafe|TestNetworkGetFinality|TestGetFailsafe|TestEarliestDetection|TestCheckUpstream|TestErrUpstream|TestRetryable" & pids="$$pids $$!"; \
 		go test -covermode=atomic -count 1 -parallel 64 -timeout 2m ./health/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -count 1 -parallel 64 -timeout 2m ./thirdparty/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -count 1 -parallel 64 -timeout 2m ./upstream/... & pids="$$pids $$!"; \
