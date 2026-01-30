@@ -51,18 +51,25 @@ test:
 	@echo "Running tests in parallel packages..."
 	@go clean -testcache
 	@go test ./cmd/... -count 1 -parallel 16 && \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./architecture/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./clients/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./common/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./consensus/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./data/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./erpc/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./health/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./thirdparty/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./upstream/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./util/... & \
-	go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./telemetry/... & \
-	wait
+	{ \
+		pids=""; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./architecture/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./clients/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./common/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./consensus/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./data/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./erpc/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./health/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./thirdparty/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./upstream/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./util/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./telemetry/... & pids="$$pids $$!"; \
+		failed=0; \
+		for pid in $$pids; do \
+			wait $$pid || failed=1; \
+		done; \
+		exit $$failed; \
+	}
 
 .PHONY: test-fast
 test-fast:
