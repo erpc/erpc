@@ -53,17 +53,17 @@ test:
 	@go test ./cmd/... -count 1 -parallel 16 && \
 	{ \
 		pids=""; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./architecture/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./clients/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./common/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./consensus/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./data/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./erpc/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./health/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./thirdparty/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./upstream/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./util/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m ./telemetry/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./architecture/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./clients/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./common/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./consensus/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./data/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./erpc/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./health/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./thirdparty/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./upstream/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./util/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 32 -timeout 5m -race ./telemetry/... & pids="$$pids $$!"; \
 		failed=0; \
 		for pid in $$pids; do \
 			wait $$pid || failed=1; \
