@@ -27,6 +27,7 @@ func i64(v int64) *int64 { return &v }
 
 // Lower bound: exactBlock, request below lower should skip (UpstreamsExhausted)
 func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -92,6 +93,7 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 
 // Lower bound: latestBlockMinus, skip when below (latest - N)
 func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -165,6 +167,7 @@ func TestNetworkAvailability_LowerLatestMinus_Skip(t *testing.T) {
 
 // Lower bound: earliestBlockPlus, initialize earliest via binary search fast-path (block 0 present) then skip for below-bound request
 func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -252,6 +255,7 @@ func TestNetworkAvailability_LowerEarliestPlus_InitAndSkip(t *testing.T) {
 
 // Mixed invalid range (lower latest-10, upper earliest+0) should fail-open (unbounded) and allow request
 func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -341,6 +345,7 @@ func TestNetworkAvailability_InvalidRange_FailOpen_AllowsRequest(t *testing.T) {
 
 // Exact window with both bounds: below and above should skip, inside should pass
 func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -437,6 +442,7 @@ func TestNetworkAvailability_Window_ExactLowerUpper(t *testing.T) {
 
 // earliestBlockPlus with updateRate=0 (freeze): discover earliest=1 (0 missing, 1 present) and do not advance later
 func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -528,6 +534,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 
 // earliestBlockPlus with updateRate>0: start with earliest=0 then prune to 1 and verify request at 0 is skipped after scheduler
 func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -609,6 +616,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 
 // Unsupported probe (eventLogs) should fail-open (earliest unknown => unbounded) and allow requests
 func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -677,6 +685,7 @@ func TestNetworkAvailability_UnsupportedProbe_FailOpen(t *testing.T) {
 
 // Upper earliest+0: above upper skipped, at earliest OK
 func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -774,6 +783,7 @@ func b(v bool) *bool { return &v }
 
 // Default should NOT override method-level true (method > defaults)
 func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideMethod(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -853,6 +863,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideMethod(t *
 
 // Default should NOT override network-level true (network > defaults)
 func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -924,6 +935,7 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t 
 
 // When nothing is set, default (false for eth_getBalance via override) should disable enforcement and allow forward
 func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -989,6 +1001,7 @@ func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(
 
 // Network-level false should disable enforcement regardless of defaults
 func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1055,6 +1068,7 @@ func TestNetworkAvailability_Enforce_NetworkFalse_Disables(t *testing.T) {
 
 // Test that ErrUpstreamBlockUnavailable is returned when block is beyond upstream's latest
 func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1122,6 +1136,7 @@ func TestCheckUpstreamBlockAvailability_BlockBeyondLatest_ReturnsRetryableError(
 
 // Test that small block distance is retryable
 func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1186,6 +1201,7 @@ func TestCheckUpstreamBlockAvailability_SmallDistance_IsRetryable(t *testing.T) 
 
 // Test that ErrUpstreamRequestSkipped is NOT retryable (for comparison)
 func TestErrUpstreamRequestSkipped_IsNotRetryable(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	err := common.NewErrUpstreamRequestSkipped(nil, "test-upstream")
 	require.False(t, common.IsRetryableTowardsUpstream(err),
 		"ErrUpstreamRequestSkipped should NOT be retryable")
@@ -1193,6 +1209,7 @@ func TestErrUpstreamRequestSkipped_IsNotRetryable(t *testing.T) {
 
 // Test that ErrUpstreamBlockUnavailable IS retryable
 func TestErrUpstreamBlockUnavailable_IsRetryable(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	err := common.NewErrUpstreamBlockUnavailable("test-upstream", 1000, 500, 400)
 	require.True(t, common.IsRetryableTowardsUpstream(err),
 		"ErrUpstreamBlockUnavailable should be retryable")
@@ -1200,6 +1217,7 @@ func TestErrUpstreamBlockUnavailable_IsRetryable(t *testing.T) {
 
 // Test that ErrUpstreamBlockUnavailable contains proper details
 func TestErrUpstreamBlockUnavailable_ContainsDetails(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	err := common.NewErrUpstreamBlockUnavailable("test-upstream", 1000, 500, 400)
 
 	var baseErr *common.ErrUpstreamBlockUnavailable
@@ -1213,6 +1231,7 @@ func TestErrUpstreamBlockUnavailable_ContainsDetails(t *testing.T) {
 
 // Test that ErrUpstreamBlockUnavailable error contains correct details
 func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1293,6 +1312,7 @@ func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
 // the error should be recorded. The loop should then exhaust upstreams and return
 // ErrUpstreamsExhausted, NOT spin until context timeout.
 func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()

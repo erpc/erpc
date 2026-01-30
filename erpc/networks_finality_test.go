@@ -9,6 +9,7 @@ import (
 )
 
 func TestNetworkGetFinality(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("MethodConfigFinalized", func(t *testing.T) {

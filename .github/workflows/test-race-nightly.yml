@@ -1,22 +1,22 @@
-name: test
+name: test-race-nightly
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allow manual triggering
 
 permissions:
   contents: read
 
 jobs:
-  units:
+  race-detection:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
@@ -33,11 +33,5 @@ jobs:
           cache: true
       - name: Install dependencies
         run: make setup
-      - name: Build
-        run: make build
-      - name: Test with the Go CLI
-        run: make test
-      - name: Run Gosec Security Scanner
-        uses: securego/gosec@8a5404eabf56aa8ca2fb9e4e8eb526da0a5a8c48 # master
-        with:
-          args: -exclude-dir=test -tests=false ./...
+      - name: Test with race detector
+        run: make test-race

@@ -19,6 +19,7 @@ import (
 )
 
 func TestProject_Forward(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ForwardCorrectlyRateLimitedOnProjectLevel", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -128,6 +129,7 @@ func TestProject_Forward(t *testing.T) {
 	})
 }
 func TestProject_TimeoutScenarios(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("UpstreamTimeout", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -354,6 +356,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 }
 
 func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("LazyLoadEvmNetwork_WithDefaultConfigs", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -491,6 +494,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 }
 
 func TestProject_NetworkAlias(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("NetworkAliasResolution", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

@@ -19,6 +19,7 @@ func init() {
 }
 
 func TestTimeoutHandler_TimeoutReturnsJsonRpcError(t *testing.T) {
+	t.Parallel()
 	// Handler that takes longer than the timeout
 	slowHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
@@ -54,6 +55,7 @@ func TestTimeoutHandler_TimeoutReturnsJsonRpcError(t *testing.T) {
 }
 
 func TestTimeoutHandler_NonTimeoutContextCancellation(t *testing.T) {
+	t.Parallel()
 	// This test verifies the bug fix: non-timeout context cancellation should
 	// still return a proper JSON-RPC error body for POST requests, not an empty body.
 
@@ -120,6 +122,7 @@ func TestTimeoutHandler_NonTimeoutContextCancellation(t *testing.T) {
 }
 
 func TestTimeoutHandler_SuccessfulResponse(t *testing.T) {
+	t.Parallel()
 	// Handler that responds quickly
 	fastHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -143,6 +146,7 @@ func TestTimeoutHandler_SuccessfulResponse(t *testing.T) {
 }
 
 func TestTimeoutHandler_PanicRecovery(t *testing.T) {
+	t.Parallel()
 	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("test panic")
 	})
@@ -158,6 +162,7 @@ func TestTimeoutHandler_PanicRecovery(t *testing.T) {
 }
 
 func TestTimeoutWriter_Header(t *testing.T) {
+	t.Parallel()
 	fastHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Custom-Header", "test-value")
 		w.WriteHeader(http.StatusCreated)
@@ -177,6 +182,7 @@ func TestTimeoutWriter_Header(t *testing.T) {
 }
 
 func TestTimeoutWriter_Push(t *testing.T) {
+	t.Parallel()
 	// Test that Push returns ErrNotSupported for non-pusher response writers
 	fastHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if pusher, ok := w.(http.Pusher); ok {

@@ -16,6 +16,7 @@ import (
 )
 
 func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("MisbehavingUpstreamGetsDeprioritized", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

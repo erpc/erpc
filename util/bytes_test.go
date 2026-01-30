@@ -5,6 +5,7 @@ import (
 )
 
 func TestIsBytesEmptyish(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    []byte
@@ -274,6 +275,7 @@ func TestIsBytesEmptyish(t *testing.T) {
 
 // TestIsBytesEmptyishHexLeadingZeros specifically tests the hex leading zero handling
 func TestIsBytesEmptyishHexLeadingZeros(t *testing.T) {
+	t.Parallel()
 	// Test that leading zeros are properly trimmed and evaluated
 	tests := []struct {
 		name     string

@@ -24,6 +24,7 @@ func init() {
 }
 
 func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("RetryEmptyFalse_TransactionReceipt_NoRetries", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -853,6 +854,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 }
 
 func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("FirstMatchingPolicy_ByFinality_BeforeMethodOnlyMatch", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

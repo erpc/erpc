@@ -21,6 +21,7 @@ import (
 // attempts short-circuit according to state.
 
 func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -82,6 +83,7 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 }
 
 func TestNetworksBootstrap_UnsupportedNetwork_FatalFast(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -112,6 +114,7 @@ func TestNetworksBootstrap_UnsupportedNetwork_FatalFast(t *testing.T) {
 }
 
 func TestNetworksBootstrap_ProviderInitializing_503Retry(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()

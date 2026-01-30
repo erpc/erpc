@@ -23,6 +23,7 @@ func init() {
 //  2. sortedUpstreams["*"] has not been created yet
 //  3. First call to GetSortedUpstreams must not panic and should return the network upstreams
 func TestGetSortedUpstreams_WildcardMapInitialization_NoPanic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	lg := log.Logger
 

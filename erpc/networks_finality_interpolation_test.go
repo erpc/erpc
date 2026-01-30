@@ -20,6 +20,7 @@ func init() {
 
 // Test that finality is preserved as "realtime" when translating tags
 func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -86,6 +87,7 @@ func TestInterpolation_PreservesRealtimeFinality(t *testing.T) {
 
 // Test that finality is preserved for finalized tag
 func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -145,6 +147,7 @@ func TestInterpolation_PreservesFinalizedTagFinality(t *testing.T) {
 
 // Test that numeric block parameters are correctly identified as unfinalized
 func TestInterpolation_NumericBlockFinality(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()

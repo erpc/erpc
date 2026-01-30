@@ -9,6 +9,7 @@ import (
 )
 
 func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
+	t.Parallel()
 	config := StressTestConfig{
 		ServicePort: 4201,
 		MetricsPort: 5201,

@@ -84,6 +84,7 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 
 // Test "latest" tag translation to hex number
 func TestInterpolation_LatestTag_ToHex(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -140,6 +141,7 @@ func TestInterpolation_LatestTag_ToHex(t *testing.T) {
 // and expects the poller's LatestBlock to be updated to that higher number via enrichment.
 // With the current bug (checking mutated params instead of original tag), enrichment won't run and the value won't update.
 func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -201,6 +203,7 @@ func TestEnrichment_AfterInterpolation_UsesOriginalLatestTagIntent(t *testing.T)
 // and only update the nested blockNumber. Current implementation replaces the whole object
 // due to conflicting refs ({0} and {0,"blockNumber"}).
 func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesObject(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -244,6 +247,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Latest_PreservesO
 
 // Same as above but with "finalized" tag; should still preserve object shape and translate nested field.
 func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_PreservesObject(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -283,6 +287,7 @@ func TestInterpolation_EIP1898_BlockReceipts_ObjectBlockNumber_Finalized_Preserv
 
 // Mixed tags should collapse EvmBlockRef to "*"
 func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -331,6 +336,7 @@ func TestInterpolation_EthGetLogs_MixedTags_EvmBlockRefCollapsed(t *testing.T) {
 
 // Same tags should preserve that tag in EvmBlockRef
 func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -378,6 +384,7 @@ func TestInterpolation_EthGetLogs_SameTags_EvmBlockRefPreserved(t *testing.T) {
 
 // SkipInterpolation should keep params unchanged but still warm/collapse EvmBlockRef
 func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -441,6 +448,7 @@ func TestInterpolation_EthGetLogs_MixedTags_SkipInterpolation_WarmsRef(t *testin
 
 // Mixing with semantic tags (safe/pending) should not collapse; preserve known tag
 func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -489,6 +497,7 @@ func TestInterpolation_EthGetLogs_MixedWithSemanticTags_NoCollapse(t *testing.T)
 
 // Ensure EvmBlockRef is cleared per-request (no leak across requests)
 func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -541,6 +550,7 @@ func TestInterpolation_EvmBlockRef_IsPerRequest(t *testing.T) {
 
 // Test "finalized" tag translation to hex number
 func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -590,6 +600,7 @@ func TestInterpolation_FinalizedTag_ToHex(t *testing.T) {
 
 // Test "safe" tag NOT translated (passed through)
 func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -638,6 +649,7 @@ func TestInterpolation_SafeTag_PassThrough(t *testing.T) {
 
 // Test that deep copy prevents race conditions
 func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -717,6 +729,7 @@ func TestInterpolation_DeepCopyPreventsRace(t *testing.T) {
 
 // Test that safe and pending tags preserve their semantic meaning
 func TestInterpolation_PreservesSemanticTags(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -766,6 +779,7 @@ func TestInterpolation_PreservesSemanticTags(t *testing.T) {
 
 // Test "pending" tag NOT translated (passed through)
 func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -814,6 +828,7 @@ func TestInterpolation_PendingTag_PassThrough(t *testing.T) {
 
 // Test numeric block parameter normalization (float64 from JSON)
 func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -863,6 +878,7 @@ func TestInterpolation_NumericBlock_ToHex(t *testing.T) {
 
 // Test eth_getLogs with fromBlock and toBlock
 func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -921,6 +937,7 @@ func TestInterpolation_EthGetLogs_MultipleParams(t *testing.T) {
 
 // Test eth_getLogs with numeric fromBlock/toBlock
 func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -973,6 +990,7 @@ func TestInterpolation_EthGetLogs_NumericBlocks(t *testing.T) {
 
 // Test hex normalization (e.g., "0x0a" -> "0xa")
 func TestInterpolation_HexNormalization(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1022,6 +1040,7 @@ func TestInterpolation_HexNormalization(t *testing.T) {
 
 // Test with translation disabled for latest tag
 func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1087,6 +1106,7 @@ func TestInterpolation_DisabledLatestTranslation(t *testing.T) {
 
 // Test with translation disabled for finalized tag
 func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1154,6 +1174,7 @@ func TestInterpolation_DisabledFinalizedTranslation(t *testing.T) {
 // This method should fetch actual latest from upstream, not use the state poller's
 // potentially stale value. This is critical for indexers that poll for latest blocks.
 func TestInterpolation_EthGetBlockByNumber_Latest_NotInterpolated(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1181,6 +1202,7 @@ func TestInterpolation_EthGetBlockByNumber_Latest_NotInterpolated(t *testing.T) 
 
 // Test that eth_getBlockByNumber does NOT interpolate "finalized" by default.
 func TestInterpolation_EthGetBlockByNumber_Finalized_NotInterpolated(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1208,6 +1230,7 @@ func TestInterpolation_EthGetBlockByNumber_Finalized_NotInterpolated(t *testing.
 // Test that other methods like eth_getBalance STILL interpolate "latest".
 // This ensures our change to eth_getBlockByNumber doesn't affect other methods.
 func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1262,6 +1285,7 @@ func TestInterpolation_OtherMethods_StillInterpolateLatest(t *testing.T) {
 
 // Test methods without block parameters (should not be affected)
 func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1303,6 +1327,7 @@ func TestInterpolation_MethodsWithoutBlockParams(t *testing.T) {
 
 // Test eth_getStorageAt with third parameter
 func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1353,6 +1378,7 @@ func TestInterpolation_EthGetStorageAt_ThirdParam(t *testing.T) {
 
 // Test trace_call with second parameter
 func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1402,6 +1428,7 @@ func TestInterpolation_TraceCall_SecondParam(t *testing.T) {
 
 // Test debug_traceCall with second parameter
 func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1451,6 +1478,7 @@ func TestInterpolation_DebugTraceCall_SecondParam(t *testing.T) {
 
 // Test eth_estimateGas with second parameter
 func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1500,6 +1528,7 @@ func TestInterpolation_EthEstimateGas_SecondParam(t *testing.T) {
 
 // Test edge case: nil network
 func TestInterpolation_NilNetwork(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx := context.Background()
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
@@ -1519,6 +1548,7 @@ func TestInterpolation_NilNetwork(t *testing.T) {
 
 // Test edge case: network without state poller data (no latest/finalized blocks)
 func TestInterpolation_NoStatePollerData(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx := context.Background()
 
 	// Create a request without setting a network (simulates no state poller data)
@@ -1543,6 +1573,7 @@ func TestInterpolation_NoStatePollerData(t *testing.T) {
 
 // Test mixed parameters in eth_getLogs
 func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1586,6 +1617,7 @@ func TestInterpolation_EthGetLogs_MixedParams(t *testing.T) {
 
 // Test large numeric values
 func TestInterpolation_LargeNumericValues(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1635,6 +1667,7 @@ func TestInterpolation_LargeNumericValues(t *testing.T) {
 
 // Test eth_getBlockReceipts with object parameter
 func TestInterpolation_EthGetBlockReceipts_ObjectParam(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -1760,6 +1793,7 @@ func BenchmarkInterpolation_NumericNormalization(b *testing.B) {
 
 // Test all methods with various parameters
 func TestInterpolation_AllMethodsCoverage(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	testCases := []struct {
 		name           string
 		method         string
@@ -1879,6 +1913,7 @@ func TestInterpolation_AllMethodsCoverage(t *testing.T) {
 
 // When interpolating "latest", only upstreams whose latest >= interpolated block should be used.
 func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -2006,6 +2041,7 @@ func TestInterpolation_UpstreamSkipping_OnInterpolatedLatest(t *testing.T) {
 
 // When method-level enforcement is disabled, upstreams are not skipped even if their head is behind interpolated block.
 func TestInterpolation_UpstreamSkipping_DisabledByMethodConfig(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()

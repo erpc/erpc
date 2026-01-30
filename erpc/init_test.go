@@ -26,6 +26,7 @@ func init() {
 }
 
 func TestInit_AllGood(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -142,6 +143,7 @@ func TestInit_AllGood(t *testing.T) {
 }
 
 func TestInit_InvalidHttpPort(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 

@@ -5,6 +5,7 @@ import (
 )
 
 func TestWildcardMatch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		pattern string
@@ -166,6 +167,7 @@ func TestWildcardMatch(t *testing.T) {
 }
 
 func TestValidatePattern(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		pattern string

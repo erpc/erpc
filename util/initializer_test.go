@@ -17,6 +17,7 @@ func setupInitializer(t *testing.T, ctx context.Context, conf *InitializerConfig
 }
 
 func TestInitializer_SingleTaskSuccess(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, nil)
@@ -32,6 +33,7 @@ func TestInitializer_SingleTaskSuccess(t *testing.T) {
 }
 
 func TestInitializer_SingleTaskImmediateFailureNoRetry(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -53,6 +55,7 @@ func TestInitializer_SingleTaskImmediateFailureNoRetry(t *testing.T) {
 }
 
 func TestInitializer_SingleTaskFailureWithRetryNeverSucceeds(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -83,6 +86,7 @@ func TestInitializer_SingleTaskFailureWithRetryNeverSucceeds(t *testing.T) {
 }
 
 func TestInitializer_SingleTaskFailsThenSucceeds(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -113,6 +117,7 @@ func TestInitializer_SingleTaskFailsThenSucceeds(t *testing.T) {
 }
 
 func TestInitializer_MultipleTasksAllSucceed(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, nil)
@@ -134,6 +139,7 @@ func TestInitializer_MultipleTasksAllSucceed(t *testing.T) {
 }
 
 func TestInitializer_MultipleTasksMixedResultsNoRetry(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -159,6 +165,7 @@ func TestInitializer_MultipleTasksMixedResultsNoRetry(t *testing.T) {
 }
 
 func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -197,14 +204,14 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 		_ = init.ExecuteTasks(appCtx, longRunningTask, failingTaskFirst, immediateSuccess)
 	}()
 
-	// Give an instant for tasks to start so we can observe StateInitializing.
-	time.Sleep(5 * time.Millisecond)
+	// Give time for tasks to start so we can observe StateInitializing (increased for busy CI runners)
+	time.Sleep(20 * time.Millisecond)
 	assert.Equal(t, StateInitializing, init.State(), "one or more tasks should still be running")
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, StatePartial, init.State(), "one task must be failed")
 
-	// Wait again for the retry attempt to finish
-	time.Sleep(250 * time.Millisecond)
+	// Wait again for the retry attempt to finish (increased for busy CI runners)
+	time.Sleep(350 * time.Millisecond)
 	err := init.WaitForTasks(appCtx)
 	require.NoError(t, err, "the second attempt should succeed, no further errors expected")
 
@@ -214,6 +221,7 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 }
 
 func TestInitializer_LongRunningTask(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -239,6 +247,7 @@ func TestInitializer_LongRunningTask(t *testing.T) {
 }
 
 func TestInitializer_TaskTimeout(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -260,6 +269,7 @@ func TestInitializer_TaskTimeout(t *testing.T) {
 }
 
 func TestInitializer_MarkTaskAsFailed(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -295,6 +305,7 @@ func TestInitializer_MarkTaskAsFailed(t *testing.T) {
 }
 
 func TestInitializer_StopWithDestroyFn(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	init := setupInitializer(t, appCtx, &InitializerConfig{
@@ -326,6 +337,7 @@ func TestInitializer_StopWithDestroyFn(t *testing.T) {
 }
 
 func TestInitializer_MultipleRapidFailures(t *testing.T) {
+	t.Parallel()
 	conf := &InitializerConfig{
 		TaskTimeout:   time.Millisecond * 50,
 		AutoRetry:     true,
@@ -370,6 +382,7 @@ func TestInitializer_MultipleRapidFailures(t *testing.T) {
 }
 
 func TestInitializer_ForcedCancellationMidTask(t *testing.T) {
+	t.Parallel()
 	conf := &InitializerConfig{
 		TaskTimeout:   time.Second * 2, // Somewhat long
 		AutoRetry:     false,
@@ -406,6 +419,7 @@ func TestInitializer_ForcedCancellationMidTask(t *testing.T) {
 }
 
 func TestInitializer_MarkTaskAsFailedMidRun(t *testing.T) {
+	t.Parallel()
 	conf := &InitializerConfig{
 		TaskTimeout:   time.Millisecond * 500,
 		AutoRetry:     true, // let it possibly re-attempt
@@ -466,6 +480,7 @@ func TestInitializer_MarkTaskAsFailedMidRun(t *testing.T) {
 }
 
 func TestInitializer_ManualMarkAsFailedAfterSuccess(t *testing.T) {
+	t.Parallel()
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	conf := &InitializerConfig{
@@ -542,6 +557,7 @@ func TestInitializer_ManualMarkAsFailedAfterSuccess(t *testing.T) {
 }
 
 func TestInitializer_MarkAsFailedUnblocksWaitThenRetries(t *testing.T) {
+	t.Parallel()
 	conf := &InitializerConfig{
 		TaskTimeout:   500 * time.Millisecond,
 		AutoRetry:     true, // We'll rely on auto-retry to eventually succeed

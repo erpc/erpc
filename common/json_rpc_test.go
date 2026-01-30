@@ -28,6 +28,7 @@ func init() {
 }
 
 func TestEnsureCachedNode_HeapAllocation(t *testing.T) {
+	t.Parallel()
 	// Create a JsonRpcResponse
 	r := &JsonRpcResponse{
 		result: []byte(`{"id":1,"error":null,"result":"value"}`),
@@ -210,6 +211,7 @@ func sortJSONReverse(v interface{}) ([]byte, error) {
 }
 
 func TestJsonRpcRequest_MarshalParams(t *testing.T) {
+	t.Parallel()
 	t.Run("Empty", func(t *testing.T) {
 		rawReq, err := SonicCfg.Marshal(JsonRpcRequest{
 			JSONRPC: "2.0",
@@ -238,6 +240,7 @@ func TestJsonRpcRequest_MarshalParams(t *testing.T) {
 }
 
 func TestJsonRpcResponse_CanonicalHash_EmptyishNormalization(t *testing.T) {
+	t.Parallel()
 	// Test cases that should produce the same hash due to emptyish normalization
 	testGroups := []struct {
 		name     string
@@ -661,6 +664,7 @@ func TestJsonRpcResponse_CanonicalHash_EmptyishNormalization(t *testing.T) {
 
 // Append this test at the end of the file
 func TestJsonRpcRequest_CloneDeepCopy(t *testing.T) {
+	t.Parallel()
 	// Test that Clone creates a deep copy of Params to avoid concurrent access issues
 	original := &JsonRpcRequest{
 		JSONRPC: "2.0",

@@ -144,6 +144,7 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 }
 
 func TestEvmJsonRpcCache_Set(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1177,6 +1178,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ShouldSetTTLWhenPolicyDefinesIt", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1272,6 +1274,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_Get(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ReturnCachedResponseForFinalizedBlock", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1369,6 +1372,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("ShouldNotCacheEmptyResponseWhenUpstreamIsNotSynced", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1469,6 +1473,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	mockConnector := data.NewMockConnector("test")
 
 	testCases := []struct {
@@ -1682,6 +1687,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("EmptyStateBehaviors", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1826,6 +1832,7 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
@@ -1926,6 +1933,7 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2303,6 +2311,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_Redis(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2652,6 +2661,7 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 }
 
 func TestEvmJsonRpcCache_Compression(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("CompressionDisabled", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

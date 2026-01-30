@@ -16,6 +16,7 @@ import (
 )
 
 func TestMemoryConnector_ZstdCompression(t *testing.T) {
+	t.Parallel()
 	// Setup
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()
@@ -103,6 +104,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 }
 
 func TestMemoryConnector_CompressionBenefits(t *testing.T) {
+	t.Parallel()
 	// Test to demonstrate actual compression benefits
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()
@@ -138,6 +140,7 @@ func TestMemoryConnector_CompressionBenefits(t *testing.T) {
 }
 
 func TestMemoryConnector_ConcurrentCompression(t *testing.T) {
+	t.Parallel()
 	// Test concurrent access to verify thread safety
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()

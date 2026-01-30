@@ -23,6 +23,7 @@ func init() {
 }
 
 func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	logger := log.Logger
 

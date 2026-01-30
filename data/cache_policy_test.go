@@ -8,6 +8,7 @@ import (
 )
 
 func TestCachePolicy_ParamToString(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name     string
 		input    interface{}
@@ -54,6 +55,7 @@ func TestCachePolicy_ParamToString(t *testing.T) {
 }
 
 func TestCachePolicy_MatchParam(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name     string
 		pattern  interface{}
@@ -229,6 +231,7 @@ func TestCachePolicy_MatchParam(t *testing.T) {
 }
 
 func TestCachePolicy_MatchParams(t *testing.T) {
+	t.Parallel()
 	mockConnector := NewMockConnector("test")
 
 	testCases := []struct {

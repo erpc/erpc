@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseBlockParameter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		input         interface{}
@@ -117,6 +118,7 @@ func TestParseBlockParameter(t *testing.T) {
 }
 
 func TestNormalizeBlockHashHexString_LeadingZeroVariants(t *testing.T) {
+	t.Parallel()
 	canonical := "0x095e8f52e77f0add52fc6cf2f3f04ceb72462dbf54bab11544e7227415aeabd5"
 	variants := []struct {
 		name   string
@@ -139,6 +141,7 @@ func TestNormalizeBlockHashHexString_LeadingZeroVariants(t *testing.T) {
 }
 
 func TestParseBlockHashHexToBytes_LeadingZeroEquivalence(t *testing.T) {
+	t.Parallel()
 	withLeading := "0x095e8f52e77f0add52fc6cf2f3f04ceb72462dbf54bab11544e7227415aeabd5"
 	withoutLeading := "0x95e8f52e77f0add52fc6cf2f3f04ceb72462dbf54bab11544e7227415aeabd5"
 

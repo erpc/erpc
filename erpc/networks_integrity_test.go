@@ -68,6 +68,7 @@ func setupIntegrityTestNetwork(t *testing.T, ctx context.Context, upstreams []*c
 
 // Network-level integrity test for eth_getBlockReceipts: strict logIndex increments
 func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -114,6 +115,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexStrictIncrements(t *testin
 
 // Gap in global indices should error (contiguity enforcement)
 func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexGap_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -157,6 +159,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexGap_Error(t *testing.T) {
 
 // Contiguous indices 0x0,0x1,0x2 should pass when enabled
 func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexContiguous_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -195,6 +198,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexContiguous_NoError(t *test
 
 // Inconsistent blockHash across receipts should error when ValidationExpectedBlockHash is set
 func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -231,6 +235,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InconsistentBlockHash_Error(t *tes
 
 // Result not an array should error (malformed upstream response)
 func TestNetworkIntegrity_EthGetBlockReceipts_ResultNotArray_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -267,6 +272,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ResultNotArray_Error(t *testing.T)
 
 // Decreasing logIndex should error
 func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexDecreasing_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -301,6 +307,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexDecreasing_Error(t *testin
 }
 
 func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -336,6 +343,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_MissingLogIndexEntries_Error(t *te
 
 // logsBloom non-zero with zero logs should error when ValidateLogsBloomNotEmpty is enabled
 func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -375,6 +383,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomNonZeroZeroLogs_Error(t *
 
 // logsBloom check disabled should allow non-zero bloom with zero logs
 func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -413,6 +422,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomDisabled_NoError(t *testi
 
 // Empty receipts should not trigger integrity errors
 func TestNetworkIntegrity_EthGetBlockReceipts_EmptyReceipts_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -452,6 +462,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_EmptyReceipts_NoError(t *testing.T
 
 // Non-sequential logIndex should pass when strict increments check is disabled
 func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexCheckDisabled_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -490,6 +501,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogIndexCheckDisabled_NoError(t *t
 
 // Retry fallback on logsBloom error: bad upstream then good upstream
 func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream_Bloom(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -532,6 +544,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream_Bloom(t 
 
 // Invalid hex in logIndex should error when the check is enabled
 func TestNetworkIntegrity_EthGetBlockReceipts_InvalidLogIndexHex_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -567,6 +580,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_InvalidLogIndexHex_Error(t *testin
 
 // Retry fallback test for non-sequential logIndex bad->good
 func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -637,6 +651,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_RetryFallbackGoodUpstream(t *testi
 
 // logsBloom zero with logs present should error when ValidateLogsBloomEmptiness is enabled
 func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithLogs_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -676,6 +691,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithLogs_Error(t *tes
 
 // Zero bloom with zero logs should pass (consistent empty state)
 func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithZeroLogs_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -714,6 +730,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_LogsBloomZeroWithZeroLogs_NoError(
 
 // ReceiptsCountExact mismatch should error
 func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Mismatch_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -755,6 +772,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Mismatch_Error(
 
 // ReceiptsCountExact match should pass
 func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Match_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -795,6 +813,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountExact_Match_NoError(t
 
 // ReceiptsCountAtLeast should error when count is below threshold
 func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_BelowThreshold_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -836,6 +855,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_BelowThreshol
 
 // ReceiptsCountAtLeast should pass when count meets threshold
 func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_MeetsThreshold_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -876,6 +896,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ReceiptsCountAtLeast_MeetsThreshol
 
 // GroundTruthTransactions cross-validation: receipt tx hash mismatch should error
 func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMismatch_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -919,6 +940,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMismatch_Error(t 
 
 // GroundTruthTransactions cross-validation: matching tx hash should pass
 func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMatch_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -961,6 +983,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_GroundTruthTxHashMatch_NoError(t *
 
 // Contract creation validation: tx.to is nil but receipt has no contractAddress should error
 func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationMissingAddress_Error(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1005,6 +1028,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationMissingAddress_Err
 
 // Contract creation validation: tx.to is nil and receipt has contractAddress should pass
 func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationWithAddress_NoError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1054,6 +1078,7 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationWithAddress_NoErro
 
 // Test: Retry policy retries to next upstream when first returns invalid bloom data
 func TestNetworkIntegrity_Retry_ValidationError_FallbackToGoodUpstream(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1115,6 +1140,7 @@ func TestNetworkIntegrity_Retry_ValidationError_FallbackToGoodUpstream(t *testin
 
 // Test: All upstreams return invalid data - should fail with exhausted error
 func TestNetworkIntegrity_Retry_AllUpstreamsInvalid_ExhaustedError(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1169,6 +1195,7 @@ func TestNetworkIntegrity_Retry_AllUpstreamsInvalid_ExhaustedError(t *testing.T)
 
 // Test: ReceiptsCountExact mismatch triggers retry to upstream with correct count
 func TestNetworkIntegrity_Retry_ReceiptsCountMismatch_FallbackToCorrectUpstream(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1221,6 +1248,7 @@ func TestNetworkIntegrity_Retry_ReceiptsCountMismatch_FallbackToCorrectUpstream(
 
 // Test: LogIndex strict increment violation triggers retry
 func TestNetworkIntegrity_Retry_LogIndexViolation_FallbackToValidUpstream(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1270,6 +1298,7 @@ func TestNetworkIntegrity_Retry_LogIndexViolation_FallbackToValidUpstream(t *tes
 
 // Test: Logs exist but bloom is zero - triggers retry to upstream with consistent data
 func TestNetworkIntegrity_Retry_LogsWithZeroBloom_FallbackToConsistentUpstream(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1319,6 +1348,7 @@ func TestNetworkIntegrity_Retry_LogsWithZeroBloom_FallbackToConsistentUpstream(t
 
 // Test: Multiple validation errors across upstreams - eventually finds valid one
 func TestNetworkIntegrity_Retry_MultipleValidationTypes_EventuallySucceeds(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1384,6 +1414,7 @@ func TestNetworkIntegrity_Retry_MultipleValidationTypes_EventuallySucceeds(t *te
 
 // Test: Validation disabled - accepts invalid data without retry
 func TestNetworkIntegrity_ValidationDisabled_AcceptsInvalidData(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1444,6 +1475,7 @@ func TestNetworkIntegrity_ValidationDisabled_AcceptsInvalidData(t *testing.T) {
 
 // Test: Hedge spawns multiple requests, validation fails on some, consensus picks valid one
 func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1526,6 +1558,7 @@ func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *te
 
 // Test: All hedged requests return invalid data, retry kicks in and eventually finds valid
 func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1593,6 +1626,7 @@ func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing
 
 // Test: Consensus with different validation errors - should pick the valid one
 func TestNetworkIntegrity_Consensus_DifferentValidationErrors_PicksValid(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1670,6 +1704,7 @@ func TestNetworkIntegrity_Consensus_DifferentValidationErrors_PicksValid(t *test
 
 // Test: ReceiptsCountExact with consensus - only valid counts should participate
 func TestNetworkIntegrity_Consensus_ReceiptsCountExact_OnlyValidParticipate(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1739,6 +1774,7 @@ func TestNetworkIntegrity_Consensus_ReceiptsCountExact_OnlyValidParticipate(t *t
 
 // Test: Production-like config with all policies combined
 func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegrity(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1841,6 +1877,7 @@ func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegri
 
 // Test: PreferLargerResponses should NOT pick a larger but invalid response
 func TestNetworkIntegrity_Consensus_PreferLargerResponses_ValidationFiltersLargerInvalid(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1923,6 +1960,7 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_ValidationFiltersLarge
 
 // Test: PreferLargerResponses picks largest VALID response when multiple valid exist
 func TestNetworkIntegrity_Consensus_PreferLargerResponses_PicksLargestValid(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -2005,6 +2043,7 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_PicksLargestValid(t *t
 
 // Test: PreferLargerResponses with validation - all larger responses invalid, falls back to smaller valid
 func TestNetworkIntegrity_Consensus_PreferLargerResponses_AllLargerInvalid_FallsBackToSmaller(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -2094,6 +2133,7 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_AllLargerInvalid_Falls
 
 // Test: Hedge + PreferLargerResponses + Validation combo
 func TestNetworkIntegrity_HedgeConsensus_PreferLargerResponses_ValidationIntegrity(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	util.ResetGock()
 	defer util.ResetGock()
 

@@ -12,6 +12,7 @@ import (
 )
 
 func TestUpstream_SkipLogic(t *testing.T) {
+	t.Parallel()
 	t.Run("SingleSimpleMethod", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
@@ -318,6 +319,7 @@ func (m *mockEvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics 
 }
 
 func TestUpstream_EvmCanHandleBlock(t *testing.T) {
+	t.Parallel()
 	t.Run("NilUpstream", func(t *testing.T) {
 		var upstream *Upstream
 		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 100)
@@ -636,6 +638,7 @@ func (m *mockEvmStatePollerWithUpdate) PollEarliestBlockNumber(ctx context.Conte
 }
 
 func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
+	t.Parallel()
 	t.Run("MetricsIncrementedForUpperBound", func(t *testing.T) {
 		upstream := &Upstream{
 			ProjectId: "test-project",
@@ -712,6 +715,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 }
 
 func TestUpstream_EvmAssertBlockAvailability_Finalized(t *testing.T) {
+	t.Parallel()
 	t.Run("FinalizedBlockArchiveNode", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{

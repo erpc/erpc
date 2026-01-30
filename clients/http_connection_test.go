@@ -121,6 +121,7 @@ func (e *noopErrorExtractor) Extract(resp *http.Response, nr *common.NormalizedR
 
 // TestHTTPConnectionReuseUnderLoad tests connection behavior under high load with latency
 func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
+	t.Parallel()
 	// Test parameters simulating the user's scenario
 	const (
 		requestCount     = 200                    // Total requests to send
@@ -416,6 +417,7 @@ func TestHTTPConnectionReuseUnderLoad(t *testing.T) {
 
 // TestConnectionLimitsWithRealWorldScenario tests the specific issue reported by the user
 func TestConnectionLimitsWithRealWorldScenario(t *testing.T) {
+	t.Parallel()
 	logger := zerolog.New(nil).Level(zerolog.ErrorLevel)
 
 	// Simulate the exact user scenario: 100 RPS with 400ms latency

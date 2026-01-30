@@ -9,6 +9,7 @@ import (
 )
 
 func TestParseNumericValue(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    interface{}
@@ -140,6 +141,7 @@ func TestParseNumericValue(t *testing.T) {
 }
 
 func TestValuesToKey(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		values   []*big.Int
@@ -181,6 +183,7 @@ func TestValuesToKey(t *testing.T) {
 }
 
 func TestCompareValueChains(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		a        []*big.Int

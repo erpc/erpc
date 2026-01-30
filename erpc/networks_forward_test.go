@@ -22,6 +22,7 @@ func init() {
 }
 
 func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("DebugSkipBehavior", func(t *testing.T) {
 		// This test logs the actual behavior to understand what's happening
 		util.ResetGock()

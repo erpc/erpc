@@ -41,6 +41,7 @@ const sampleEIP1559SignedTx = "0x02f873010a8459682f008506fc23ac0082520894d8da6bf
 const expectedEIP1559TxHash = "0xb9f61197f9c6c63a6981ba69fb22308469d03a4e013b10bcd69315745110acf7"
 
 func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	t.Run("AlreadyKnownReturnsSuccess", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

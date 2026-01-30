@@ -23,6 +23,7 @@ func init() {
 }
 
 func TestDynamoDBConnectorInitialization(t *testing.T) {
+	t.Parallel()
 	t.Run("succeeds immediately with valid config (real container)", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -125,6 +126,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 }
 
 func TestDynamoDBConnectorReverseIndex(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -248,6 +250,7 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 }
 
 func TestDynamoDBDistributedLocking(t *testing.T) {
+	t.Parallel()
 	// Set up DynamoDB local container for testing
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

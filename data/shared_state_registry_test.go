@@ -44,6 +44,7 @@ func setupTest(clusterKey string) (*sharedStateRegistry, *MockConnector, context
 }
 
 func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
+	t.Parallel()
 	registry, connector, ctx := setupTest("my-dev")
 
 	lock := &MockLock{}
@@ -74,6 +75,7 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
+	t.Parallel()
 	registry, connector, ctx := setupTest("my-dev")
 
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).
@@ -98,6 +100,7 @@ func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
+	t.Parallel()
 	registry, connector, ctx := setupTest("my-dev")
 
 	lock := &MockLock{}
@@ -127,6 +130,7 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
+	t.Parallel()
 	registry, connector, ctx := setupTest("my-dev")
 
 	lock := &MockLock{}
@@ -150,13 +154,15 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for background push goroutine to complete (increased for busy CI runners)
+	time.Sleep(100 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
 }
 
 func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
+	t.Parallel()
 	registry, connector, ctx := setupTest("my-dev")
 
 	lock := &MockLock{}
@@ -179,13 +185,15 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for background push goroutine to complete (increased for busy CI runners)
+	time.Sleep(100 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
 }
 
 func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
+	t.Parallel()
 	registry, connector, ctx := setupTest("my-dev")
 
 	lock := &MockLock{}
@@ -219,6 +227,7 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 }
 
 func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
+	t.Parallel()
 	registry, connector, ctx := setupTest("my-dev")
 
 	// Remote push is best-effort and deduped; for this test we only care about local correctness.
@@ -251,6 +260,7 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 }
 
 func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {
+	t.Parallel()
 	registry, connector, _ := setupTest("my-dev")
 
 	updates := make(chan CounterInt64State, 1)
@@ -271,6 +281,7 @@ func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {
 }
 
 func TestSharedStateRegistry_GetCounterInt64_WatchFailure(t *testing.T) {
+	t.Parallel()
 	registry, connector, _ := setupTest("my-dev")
 
 	lock := &MockLock{}

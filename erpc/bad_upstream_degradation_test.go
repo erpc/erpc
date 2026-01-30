@@ -172,6 +172,7 @@ func (m *MockUpstreamServer) Stats() (requests int64, errors int64) {
 
 // TestUpstreamDegradationScenarios tests various upstream behavior scenarios
 func TestUpstreamDegradationScenarios(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	scenarios := []TestScenario{
 		{
 			Name:                    "TwoBadOneGood",

@@ -6,6 +6,7 @@ import (
 )
 
 func TestComputeBucket_ComprehensiveWithRealBlockNumbers(t *testing.T) {
+	t.Parallel()
 	tip := int64(125_237_247)
 
 	cases := []struct {
@@ -293,6 +294,7 @@ func TestComputeBucket_ComprehensiveWithRealBlockNumbers(t *testing.T) {
 }
 
 func TestComputeBucket_TipTolerance(t *testing.T) {
+	t.Parallel()
 	tip := int64(100000)
 
 	// Test the ±4 blocks tolerance for TIP label
@@ -353,6 +355,7 @@ func TestComputeBucket_TipTolerance(t *testing.T) {
 }
 
 func TestComputeBucket_NoL0Labels(t *testing.T) {
+	t.Parallel()
 	tip := int64(10000)
 
 	// Test various distances that might produce L<x>-L0 labels
@@ -400,6 +403,7 @@ func TestComputeBucket_NoL0Labels(t *testing.T) {
 }
 
 func TestComputeBucket_WithBlockReferences(t *testing.T) {
+	t.Parallel()
 	tip := int64(125_237_247)
 
 	cases := []struct {

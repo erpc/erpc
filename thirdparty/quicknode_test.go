@@ -8,6 +8,7 @@ import (
 )
 
 func TestQuicknodeFilterParams(t *testing.T) {
+	t.Parallel()
 	vendor := CreateQuicknodeVendor().(*QuicknodeVendor)
 
 	t.Run("extracts both tag IDs and labels from interface arrays", func(t *testing.T) {

@@ -21,6 +21,7 @@ func init() {
 // TestConnectorTTLExpiry tests that expired entries are not returned
 // for all connector types, especially through the reverse index path
 func TestConnectorTTLExpiry(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

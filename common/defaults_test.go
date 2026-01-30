@@ -9,6 +9,7 @@ import (
 )
 
 func TestSetDefaults_NetworkConfig(t *testing.T) {
+	t.Parallel()
 	sysDefCfg := NewDefaultNetworkConfig(nil)
 
 	t.Run("NoNetworkDefaultsAndNoUserDefinedFailsafe", func(t *testing.T) {
@@ -144,6 +145,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 }
 
 func TestSetDefaults_UpstreamConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("SchemeBasedUpstreamConfigConversionToProvider", func(t *testing.T) {
 		cfg := &Config{
 			Projects: []*ProjectConfig{
@@ -375,6 +377,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 }
 
 func TestMethodsConfigStatefulMethodsWithPreserveDefaultsFalse(t *testing.T) {
+	t.Parallel()
 	// Test case 1: Custom definitions with PreserveDefaultMethods=false
 	// This should still mark default stateful methods as stateful
 	m := &MethodsConfig{
@@ -404,6 +407,7 @@ func TestMethodsConfigStatefulMethodsWithPreserveDefaultsFalse(t *testing.T) {
 }
 
 func TestMethodsConfigStatefulMethodsWithPreserveDefaultsTrue(t *testing.T) {
+	t.Parallel()
 	// Test case 2: Custom definitions with PreserveDefaultMethods=true
 	// This should preserve all defaults and mark stateful methods
 	m := &MethodsConfig{
@@ -437,6 +441,7 @@ func TestMethodsConfigStatefulMethodsWithPreserveDefaultsTrue(t *testing.T) {
 }
 
 func TestMethodsConfigStatefulMethodsNoCustomDefinitions(t *testing.T) {
+	t.Parallel()
 	// Test case 3: No custom definitions provided
 	// Should use all defaults including stateful methods
 	m := &MethodsConfig{}
@@ -459,6 +464,7 @@ func TestMethodsConfigStatefulMethodsNoCustomDefinitions(t *testing.T) {
 }
 
 func TestMethodsConfigStatefulMethodOverride(t *testing.T) {
+	t.Parallel()
 	// Test case 4: User tries to override a default stateful method
 	// The stateful flag should still be enforced
 	m := &MethodsConfig{
@@ -483,6 +489,7 @@ func TestMethodsConfigStatefulMethodOverride(t *testing.T) {
 }
 
 func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
+	t.Parallel()
 	// This test suite covers the fix for the bug where user-defined matchMethod
 	// patterns were being incorrectly overwritten when no matching default was found.
 	// The fix ensures that when no matching default exists, a base default with
@@ -1082,6 +1089,7 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 }
 
 func TestBuildProviderSettings(t *testing.T) {
+	t.Parallel()
 	// Test case for Chainstack with query parameters
 	t.Run("chainstack with filters", func(t *testing.T) {
 		endpoint, _ := url.Parse("chainstack://test-api-key?project=proj-123&organization=org-456&region=us-east-1&provider=aws&type=dedicated")

@@ -15,6 +15,7 @@ func init() {
 }
 
 func TestUpstreamPreForward_trace_filter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	makeNetwork := func() *mock.Mock {
@@ -193,6 +194,7 @@ func TestUpstreamPreForward_trace_filter(t *testing.T) {
 }
 
 func TestUpstreamPreForward_arbtrace_filter(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	createArbtraceFilterRequest := func(filter map[string]interface{}) *common.NormalizedRequest {

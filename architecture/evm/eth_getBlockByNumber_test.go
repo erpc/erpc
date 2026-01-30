@@ -71,6 +71,7 @@ func (t *testNetwork) GetFinality(ctx context.Context, req *common.NormalizedReq
 }
 
 func TestEnforceNonNullTaggedBlocks(t *testing.T) {
+	t.Parallel()
 	t.Run("TaggedBlockWithEnforcementDisabled_ReturnsNull", func(t *testing.T) {
 		// Create a request with a block tag ("pending") and directive disabled
 		request := common.NewNormalizedRequestFromJsonRpcRequest(

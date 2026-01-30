@@ -14,6 +14,7 @@ import (
 
 // TestConcurrentOperationsNoDeadlock verifies that concurrent TryUpdate operations
 func TestConcurrentOperationsNoDeadlock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cfg := &common.SharedStateConfig{
 		ClusterKey: "test",
@@ -93,6 +94,7 @@ func TestConcurrentOperationsNoDeadlock(t *testing.T) {
 // TestLockOrderSimulation_OldBuggyBehavior demonstrates what WOULD happen with the old buggy lock ordering
 // This test simulates the OLD behavior to show it causes issues
 func TestLockOrderSimulation_OldBuggyBehavior(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cfg := &common.SharedStateConfig{
 		ClusterKey: "test",

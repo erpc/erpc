@@ -20,6 +20,7 @@ func init() {
 }
 
 func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
+	// Cannot use t.Parallel() with gock (global HTTP mocking)
 	// Test that when multiple responses are in the same consensus group,
 	// the largest response is selected (not just the first one)
 
