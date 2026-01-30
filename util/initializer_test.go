@@ -204,14 +204,14 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 		_ = init.ExecuteTasks(appCtx, longRunningTask, failingTaskFirst, immediateSuccess)
 	}()
 
-	// Give an instant for tasks to start so we can observe StateInitializing.
-	time.Sleep(5 * time.Millisecond)
+	// Give time for tasks to start so we can observe StateInitializing (increased for busy CI runners)
+	time.Sleep(20 * time.Millisecond)
 	assert.Equal(t, StateInitializing, init.State(), "one or more tasks should still be running")
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, StatePartial, init.State(), "one task must be failed")
 
-	// Wait again for the retry attempt to finish
-	time.Sleep(250 * time.Millisecond)
+	// Wait again for the retry attempt to finish (increased for busy CI runners)
+	time.Sleep(350 * time.Millisecond)
 	err := init.WaitForTasks(appCtx)
 	require.NoError(t, err, "the second attempt should succeed, no further errors expected")
 
