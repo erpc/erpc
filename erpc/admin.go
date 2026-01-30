@@ -78,6 +78,27 @@ func (e *ERPC) findDatabaseConnectorById(projectId, connectorId string) (data.Co
 	return preparedProject.consumerAuthRegistry.FindDatabaseConnector(connectorId)
 }
 
+// findDatabaseStrategyById finds a database strategy by connector ID from admin auth strategies
+func (e *ERPC) findDatabaseStrategyById(projectId, connectorId string) (*auth.DatabaseStrategy, error) {
+	if e.projectsRegistry == nil {
+		return nil, fmt.Errorf("projects registry not configured")
+	}
+
+	// Get the prepared project
+	preparedProject := e.projectsRegistry.preparedProjects[projectId]
+	if preparedProject == nil {
+		return nil, fmt.Errorf("project '%s' not found", projectId)
+	}
+
+	// Get the project's auth registry
+	if preparedProject.consumerAuthRegistry == nil {
+		return nil, fmt.Errorf("project '%s' has no auth registry", projectId)
+	}
+
+	// Find the database strategy within the project
+	return preparedProject.consumerAuthRegistry.FindDatabaseStrategy(connectorId)
+}
+
 // handleAddApiKey adds a new API key
 func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrr, err := nq.JsonRpcRequest()
@@ -345,6 +366,14 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to update API key: %w", err)
 	}
 
+	// Publish cache invalidation event to notify all instances
+	if strategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
+		if pubErr := strategy.PublishCacheInvalidation(ctx, apiKey); pubErr != nil {
+			// Log but don't fail the request - cache will eventually expire via TTL
+			e.logger.Warn().Err(pubErr).Str("apiKey", apiKey).Msg("failed to publish cache invalidation event after update")
+		}
+	}
+
 	result := map[string]interface{}{
 		"success": true,
 		"apiKey":  apiKey,
@@ -415,6 +444,14 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 	err = connector.Delete(ctx, apiKey, userId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete API key: %w", err)
+	}
+
+	// Publish cache invalidation event to notify all instances
+	if strategy, err := e.findDatabaseStrategyById(projectId, connectorId); err == nil {
+		if pubErr := strategy.PublishCacheInvalidation(ctx, apiKey); pubErr != nil {
+			// Log but don't fail the request - cache will eventually expire via TTL
+			e.logger.Warn().Err(pubErr).Str("apiKey", apiKey).Msg("failed to publish cache invalidation event after delete")
+		}
 	}
 
 	result := map[string]interface{}{

@@ -43,9 +43,10 @@ type PostgreSQLConnector struct {
 }
 
 type pgxListener struct {
-	mu       sync.Mutex
-	conn     *pgx.Conn
-	watchers []chan CounterInt64State
+	mu            sync.Mutex
+	conn          *pgx.Conn
+	watchers      []chan CounterInt64State
+	cacheWatchers []chan CacheInvalidationEvent
 }
 
 var _ DistributedLock = &postgresLock{}
@@ -997,4 +998,135 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	}
 
 	return results, nextToken, nil
+}
+
+// WatchCacheInvalidation subscribes to cache invalidation events for a given channel.
+// Returns a channel that receives invalidation events, a cleanup function, and an error.
+func (p *PostgreSQLConnector) WatchCacheInvalidation(ctx context.Context, channel string) (<-chan CacheInvalidationEvent, func(), error) {
+	updates := make(chan CacheInvalidationEvent, 10)
+
+	// Create or get listener for this channel
+	listener, err := p.getOrCreateCacheInvalidationListener(ctx, channel)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cache invalidation listener: %w", err)
+	}
+
+	// Add watcher to listener
+	listener.mu.Lock()
+	listener.cacheWatchers = append(listener.cacheWatchers, updates)
+	listener.mu.Unlock()
+
+	p.logger.Debug().Str("channel", channel).Int("watchers", len(listener.cacheWatchers)).Msg("starting cache invalidation watcher")
+
+	cleanup := func() {
+		listener.mu.Lock()
+		defer listener.mu.Unlock()
+
+		// Remove this watcher
+		for i, ch := range listener.cacheWatchers {
+			if ch == updates {
+				listener.cacheWatchers = append(listener.cacheWatchers[:i], listener.cacheWatchers[i+1:]...)
+				break
+			}
+		}
+
+		close(updates)
+	}
+
+	return updates, cleanup, nil
+}
+
+// PublishCacheInvalidation publishes a cache invalidation event to a channel.
+func (p *PostgreSQLConnector) PublishCacheInvalidation(ctx context.Context, channel string, event CacheInvalidationEvent) error {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.PublishCacheInvalidation",
+		trace.WithAttributes(
+			attribute.String("channel", channel),
+			attribute.String("key", event.Key),
+		),
+	)
+	defer span.End()
+
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
+	if p.conn == nil {
+		err := fmt.Errorf("postgres not connected yet")
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	p.logger.Debug().Str("channel", channel).Str("key", event.Key).Msg("publishing cache invalidation event to postgres")
+
+	pgChannel := sanitizeChannelName(fmt.Sprintf("cache_inv_%s", channel))
+	payload, err := common.SonicCfg.Marshal(event)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+	_, err = p.conn.Exec(ctx, "SELECT pg_notify($1, $2)", pgChannel, string(payload))
+
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+	}
+
+	return err
+}
+
+func (p *PostgreSQLConnector) getOrCreateCacheInvalidationListener(ctx context.Context, channel string) (*pgxListener, error) {
+	pgChannel := sanitizeChannelName(fmt.Sprintf("cache_inv_%s", channel))
+
+	if l, ok := p.listeners.Load(pgChannel); ok {
+		return l.(*pgxListener), nil
+	}
+
+	listener := &pgxListener{
+		cacheWatchers: make([]chan CacheInvalidationEvent, 0),
+	}
+
+	conn, err := p.connectListener(ctx, pgChannel)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		for {
+			if err := ctx.Err(); err != nil {
+				p.logger.Debug().Err(err).Str("channel", channel).Msg("stopping cache invalidation listener due to context termination")
+				return
+			}
+
+			notification, err := conn.Conn().WaitForNotification(ctx)
+			if err != nil {
+				// Try to reconnect
+				p.logger.Warn().Err(err).Str("channel", channel).Msg("lost postgres connection for cache invalidation, attempting reconnect")
+				if newConn, err := p.connectListener(ctx, pgChannel); err == nil {
+					p.logger.Debug().Str("channel", channel).Msg("successfully reconnected to postgres cache invalidation channel")
+					conn = newConn
+					continue
+				}
+				return
+			}
+
+			p.logger.Trace().Str("channel", channel).Interface("payload", notification).Msg("received cache invalidation notification")
+
+			// Parse and broadcast event
+			var event CacheInvalidationEvent
+			if err := common.SonicCfg.Unmarshal([]byte(notification.Payload), &event); err == nil && event.Key != "" {
+				listener.mu.Lock()
+				for _, ch := range listener.cacheWatchers {
+					select {
+					case ch <- event:
+					default:
+						// Channel full, skip to avoid blocking
+					}
+				}
+				listener.mu.Unlock()
+			}
+		}
+	}()
+
+	p.logger.Debug().Str("channel", channel).Msg("successfully created postgres cache invalidation listener")
+	listener.conn = conn.Conn()
+	p.listeners.Store(pgChannel, listener)
+	return listener, nil
 }

@@ -331,3 +331,16 @@ func (m *MemoryConnector) Close() error {
 	}
 	return nil
 }
+
+// WatchCacheInvalidation is a no-op for memory connector since distributed pub/sub
+// is unnecessary when all operations are in-memory within the same process.
+func (m *MemoryConnector) WatchCacheInvalidation(ctx context.Context, channel string) (<-chan CacheInvalidationEvent, func(), error) {
+	ch := make(chan CacheInvalidationEvent)
+	return ch, func() {}, nil
+}
+
+// PublishCacheInvalidation is a no-op for memory connector since distributed pub/sub
+// is unnecessary when all operations are in-memory within the same process.
+func (m *MemoryConnector) PublishCacheInvalidation(ctx context.Context, channel string, event CacheInvalidationEvent) error {
+	return nil
+}
