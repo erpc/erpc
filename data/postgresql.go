@@ -998,3 +998,80 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 
 	return results, nextToken, nil
 }
+
+const apiKeyInvalidationChannel = "erpc_api_key_invalidation"
+
+// WatchKeyInvalidations subscribes to API key invalidation notifications via pg_notify
+func (p *PostgreSQLConnector) WatchKeyInvalidations(ctx context.Context) (<-chan string, func(), error) {
+	updates := make(chan string, 100)
+
+	conn, err := p.connectListener(ctx, apiKeyInvalidationChannel)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect listener: %w", err)
+	}
+
+	go func() {
+		for {
+			if err := ctx.Err(); err != nil {
+				p.logger.Debug().Err(err).Msg("stopping API key invalidation listener due to context termination")
+				return
+			}
+
+			notification, err := conn.Conn().WaitForNotification(ctx)
+			if err != nil {
+				p.logger.Warn().Err(err).Msg("lost postgres connection for API key invalidations, attempting reconnect")
+				if newConn, err := p.connectListener(ctx, apiKeyInvalidationChannel); err == nil {
+					p.logger.Debug().Msg("successfully reconnected to API key invalidation channel")
+					conn = newConn
+					continue
+				}
+				return
+			}
+
+			apiKey := notification.Payload
+			p.logger.Debug().Str("apiKey", apiKey).Msg("received API key invalidation notification")
+
+			select {
+			case updates <- apiKey:
+			default:
+				p.logger.Warn().Str("apiKey", apiKey).Msg("API key invalidation channel full, dropping notification")
+			}
+		}
+	}()
+
+	cleanup := func() {
+		conn.Release()
+		close(updates)
+	}
+
+	p.logger.Debug().Msg("started API key invalidation listener")
+	return updates, cleanup, nil
+}
+
+// PublishKeyInvalidation broadcasts an API key invalidation to all listeners via pg_notify
+func (p *PostgreSQLConnector) PublishKeyInvalidation(ctx context.Context, apiKey string) error {
+	ctx, span := common.StartDetailSpan(ctx, "PostgreSQLConnector.PublishKeyInvalidation",
+		trace.WithAttributes(
+			attribute.String("connector_id", p.id),
+		),
+	)
+	defer span.End()
+
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
+	if p.conn == nil {
+		err := fmt.Errorf("postgres not connected yet")
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	p.logger.Debug().Str("apiKey", apiKey).Msg("publishing API key invalidation to postgres")
+
+	_, err := p.conn.Exec(ctx, "SELECT pg_notify($1, $2)", apiKeyInvalidationChannel, apiKey)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+	}
+
+	return err
+}
