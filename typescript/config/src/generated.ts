@@ -31,6 +31,50 @@ export const EvmSyncingStateUnknown: EvmSyncingState = 0;
 export const EvmSyncingStateSyncing: EvmSyncingState = 1;
 export const EvmSyncingStateNotSyncing: EvmSyncingState = 2;
 export type EvmStatePoller = any;
+/**
+ * EvmStatePollerDiagnostics contains diagnostic information about the state poller
+ * including block bounds, probe status, and any detection issues.
+ */
+export interface EvmStatePollerDiagnostics {
+  enabled: boolean;
+  /**
+   * Block head information
+   */
+  latestBlock: number /* int64 */;
+  finalizedBlock: number /* int64 */;
+  /**
+   * Syncing state
+   */
+  syncingState: string;
+  skipSyncingCheck?: boolean;
+  syncingCheckError?: string;
+  /**
+   * Latest block detection status
+   */
+  skipLatestBlockCheck?: boolean;
+  latestBlockFailureCount?: number /* int */;
+  latestBlockSuccessfulOnce?: boolean;
+  latestBlockDetectionIssue?: string;
+  /**
+   * Finalized block detection status
+   */
+  skipFinalizedCheck?: boolean;
+  finalizedBlockFailureCount?: number /* int */;
+  finalizedBlockSuccessfulOnce?: boolean;
+  finalizedBlockDetectionIssue?: string;
+  /**
+   * Earliest block bounds per probe type
+   */
+  earliestByProbe?: { [key: EvmAvailabilityProbeType]: EvmProbeEarliestInfo | undefined};
+}
+/**
+ * EvmProbeEarliestInfo contains information about earliest block detection for a specific probe type
+ */
+export interface EvmProbeEarliestInfo {
+  probeType: EvmAvailabilityProbeType;
+  earliestBlock: number /* int64 */;
+  schedulerRunning?: boolean;
+}
 
 //////////
 // source: cache_dal.go
@@ -543,6 +587,14 @@ export interface ConsensusPolicyConfig {
   preferNonEmpty?: boolean;
   preferLargerResponses?: boolean;
   misbehaviorsDestination?: MisbehaviorsDestinationConfig;
+  /**
+   * PreferHighestValueFor specifies methods that should use highest-value comparison
+   * instead of hash-based consensus. Map key is method name, value is array of field paths.
+   * Field paths: "result" for direct result value (e.g., eth_getTransactionCount returns hex),
+   * or field name for nested result objects (e.g., "nonce" for result.nonce).
+   * When multiple fields are specified, they act as tie-breakers in order.
+   */
+  preferHighestValueFor?: { [key: string]: string[]};
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";
@@ -744,6 +796,14 @@ export interface EvmNetworkConfig {
    * Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
    */
   markEmptyAsErrorMethods?: string[];
+  /**
+   * IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
+   * When enabled (default), "already known" and verified "nonce too low" errors are converted
+   * to success responses with the transaction hash. This allows failsafe policies (retry/hedge)
+   * to work safely with transaction broadcasting.
+   * Set to false to disable this behavior and return raw upstream errors.
+   */
+  idempotentTransactionBroadcast?: boolean;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
