@@ -154,7 +154,8 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for background push goroutine to complete (increased for busy CI runners)
+	time.Sleep(100 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
@@ -184,7 +185,8 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for background push goroutine to complete (increased for busy CI runners)
+	time.Sleep(100 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)

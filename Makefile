@@ -58,7 +58,7 @@ test:
 		go test -covermode=atomic -v -count 1 -parallel 64 -timeout 2m ./common/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -v -count 1 -parallel 64 -timeout 2m ./consensus/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -v -count 1 -parallel 64 -timeout 2m ./data/... & pids="$$pids $$!"; \
-		go test -covermode=atomic -v -count 1 -parallel 64 -timeout 2m ./erpc/... & pids="$$pids $$!"; \
+		go test -covermode=atomic -v -count 1 -parallel 128 -timeout 2m ./erpc/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -v -count 1 -parallel 64 -timeout 2m ./health/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -v -count 1 -parallel 64 -timeout 2m ./thirdparty/... & pids="$$pids $$!"; \
 		go test -covermode=atomic -v -count 1 -parallel 64 -timeout 2m ./upstream/... & pids="$$pids $$!"; \
