@@ -631,13 +631,25 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 }
 
 // shouldAcceptCachedResult checks if a cached result should be accepted based on its age
-// It compares the block timestamp against the policy's TTL to ensure freshness
+// It compares the block timestamp against the policy's TTL to ensure freshness.
+// This validation only applies to realtime finality data (e.g., eth_gasPrice, latest block).
+// For finalized/unfinalized/unknown finality, block data is immutable and should always be accepted
+// regardless of how old the block timestamp is.
 func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	jrr *common.JsonRpcResponse,
 	policy *data.CachePolicy,
 ) bool {
+	// Only apply age guard for realtime finality.
+	// Finalized/unfinalized/unknown data is immutable - a block from 2022 is still valid today.
+	// The age guard is only meaningful for realtime queries (eth_gasPrice, latest block, etc.)
+	// where users expect fresh data that changes with each new block.
+	finality := req.Finality(ctx)
+	if finality != common.DataFinalityStateRealtime {
+		return true
+	}
+
 	// If no TTL is set, accept the result
 	ttl := policy.GetTTL()
 	if ttl == nil || *ttl <= 0 {
