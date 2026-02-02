@@ -2,7 +2,6 @@ package thirdparty
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
@@ -202,17 +201,11 @@ func sqdChainIdKeyMatches(key interface{}, chainId int64, chainIdStr string) boo
 	case int64:
 		return k == chainId
 	case uint:
-		if uint64(k) > math.MaxInt64 {
-			return false
-		}
-		return int64(k) == chainId
+		return strconv.FormatUint(uint64(k), 10) == chainIdStr
 	case uint32:
-		return int64(k) == chainId
+		return strconv.FormatUint(uint64(k), 10) == chainIdStr
 	case uint64:
-		if k > math.MaxInt64 {
-			return false
-		}
-		return int64(k) == chainId
+		return strconv.FormatUint(k, 10) == chainIdStr
 	case float64:
 		return k == float64(chainId)
 	case string:
