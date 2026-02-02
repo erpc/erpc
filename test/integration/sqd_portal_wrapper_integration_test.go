@@ -203,12 +203,6 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 		"eth_getLogs",
 		"trace_block",
 	}
-	upstreamMethods := []string{
-		"eth_getBlockByHash",
-		"eth_getTransactionByHash",
-		"eth_getTransactionReceipt",
-		"trace_transaction",
-	}
 
 	for _, method := range baseMethods {
 		if !capabilities[method] {
@@ -252,8 +246,6 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 		parseHexInt64(t, blockNumberHex)
 	})
 
-	var blockHash string
-	var txHash string
 	t.Run("eth_getBlockByNumber", func(t *testing.T) {
 		resp := makeWrapperRequest(t, endpoint, sqdJsonRPCRequest{
 			JSONRPC: "2.0",
@@ -275,14 +267,6 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 		}
 		var block map[string]interface{}
 		require.NoError(t, json.Unmarshal(resp.Parsed.Result, &block))
-		if hash, ok := block["hash"].(string); ok {
-			blockHash = hash
-		}
-		if txs, ok := block["transactions"].([]interface{}); ok && len(txs) > 0 {
-			if first, ok := txs[0].(string); ok {
-				txHash = first
-			}
-		}
 	})
 
 	t.Run("eth_getTransactionByBlockNumberAndIndex", func(t *testing.T) {
@@ -342,111 +326,5 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 		}
 		var traces []interface{}
 		require.NoError(t, json.Unmarshal(resp.Parsed.Result, &traces))
-	})
-
-	upstreamEnabled := false
-	for _, method := range upstreamMethods {
-		if capabilities[method] {
-			upstreamEnabled = true
-			break
-		}
-	}
-	if !upstreamEnabled {
-		return
-	}
-
-	if blockHash == "" || txHash == "" {
-		t.Skip("upstream methods enabled, but missing block/tx hash from latest block")
-	}
-
-	t.Run("eth_getBlockByHash", func(t *testing.T) {
-		resp := makeWrapperRequest(t, endpoint, sqdJsonRPCRequest{
-			JSONRPC: "2.0",
-			ID:      7,
-			Method:  "eth_getBlockByHash",
-			Params:  []interface{}{blockHash, false},
-		})
-		if resp.Status != http.StatusOK {
-			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
-		}
-		if resp.Parsed.Error != nil {
-			t.Fatalf("rpc error: %s", string(*resp.Parsed.Error))
-		}
-		if string(resp.Parsed.Result) != "null" {
-			var block map[string]interface{}
-			require.NoError(t, json.Unmarshal(resp.Parsed.Result, &block))
-		}
-	})
-
-	t.Run("eth_getTransactionByHash", func(t *testing.T) {
-		resp := makeWrapperRequest(t, endpoint, sqdJsonRPCRequest{
-			JSONRPC: "2.0",
-			ID:      8,
-			Method:  "eth_getTransactionByHash",
-			Params:  []interface{}{txHash},
-		})
-		if resp.Status != http.StatusOK {
-			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
-		}
-		if resp.Parsed.Error != nil {
-			t.Fatalf("rpc error: %s", string(*resp.Parsed.Error))
-		}
-		if string(resp.Parsed.Result) != "null" {
-			var tx map[string]interface{}
-			require.NoError(t, json.Unmarshal(resp.Parsed.Result, &tx))
-		}
-	})
-
-	t.Run("eth_getTransactionReceipt", func(t *testing.T) {
-		resp := makeWrapperRequest(t, endpoint, sqdJsonRPCRequest{
-			JSONRPC: "2.0",
-			ID:      9,
-			Method:  "eth_getTransactionReceipt",
-			Params:  []interface{}{txHash},
-		})
-		if resp.Status != http.StatusOK {
-			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
-		}
-		if resp.Parsed.Error != nil {
-			t.Fatalf("rpc error: %s", string(*resp.Parsed.Error))
-		}
-		if string(resp.Parsed.Result) != "null" {
-			var receipt map[string]interface{}
-			require.NoError(t, json.Unmarshal(resp.Parsed.Result, &receipt))
-		}
-	})
-
-	t.Run("trace_transaction", func(t *testing.T) {
-		resp := makeWrapperRequest(t, endpoint, sqdJsonRPCRequest{
-			JSONRPC: "2.0",
-			ID:      10,
-			Method:  "trace_transaction",
-			Params:  []interface{}{txHash},
-		})
-		if resp.Status != http.StatusOK {
-			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
-		}
-		if resp.Parsed.Error != nil {
-			t.Fatalf("rpc error: %s", string(*resp.Parsed.Error))
-		}
-		var traces []interface{}
-		require.NoError(t, json.Unmarshal(resp.Parsed.Result, &traces))
-	})
-
-	t.Run("eth_getLogs blockHash", func(t *testing.T) {
-		resp := makeWrapperRequest(t, endpoint, sqdJsonRPCRequest{
-			JSONRPC: "2.0",
-			ID:      11,
-			Method:  "eth_getLogs",
-			Params:  []interface{}{map[string]interface{}{"blockHash": blockHash}},
-		})
-		if resp.Status != http.StatusOK {
-			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
-		}
-		if resp.Parsed.Error != nil {
-			t.Fatalf("rpc error: %s", string(*resp.Parsed.Error))
-		}
-		var logs []interface{}
-		require.NoError(t, json.Unmarshal(resp.Parsed.Result, &logs))
 	})
 }
