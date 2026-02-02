@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/erpc/erpc/common"
-	"github.com/rs/zerolog/log"
 )
 
 type Multiplexer struct {
@@ -44,7 +43,7 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 		// Process the response if provided
 		if resp != nil {
 			if jrr, parseErr := resp.JsonRpcResponse(ctx); parseErr != nil {
-				log.Warn().Err(parseErr).Str("multiplexer_hash", m.hash).Object("response", resp).Msg("failed to parse response before storing in multiplexer")
+				resp.Request().Network().Logger().Warn().Err(parseErr).Str("multiplexerHash", m.hash).Object("response", resp).Msg("failed to parse response before storing in multiplexer")
 				// If parsing fails, propagate this error instead of storing a response that can't be copied
 				if err == nil {
 					err = parseErr

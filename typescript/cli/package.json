@@ -1,6 +1,6 @@
 {
   "name": "@erpc-cloud/cli",
-  "version": "0.0.61",
+  "version": "0.0.62",
   "description": "Library providing the erpc CLI",
   "bin": "./dist/bin.js",
   "repository": {
@@ -21,7 +21,7 @@
     "format": "biome format --write"
   },
   "devDependencies": {
-    "@types/node": "^22.19.3",
+    "@types/node": "^22.19.7",
     "typescript": "^5.9.3"
   },
   "files": [

@@ -14,11 +14,12 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
-func TimeoutHandler(h http.Handler, dt time.Duration) http.Handler {
+func TimeoutHandler(logger *zerolog.Logger, h http.Handler, dt time.Duration) http.Handler {
 	return &timeoutHandler{
+		logger:  logger,
 		handler: h,
 		dt:      dt,
 	}
@@ -27,6 +28,7 @@ func TimeoutHandler(h http.Handler, dt time.Duration) http.Handler {
 var ErrHandlerTimeout = errors.New("http request handling timeout")
 
 type timeoutHandler struct {
+	logger  *zerolog.Logger
 	handler http.Handler
 	dt      time.Duration
 }
@@ -39,10 +41,11 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 	done := make(chan struct{})
 	tw := &timeoutWriter{
-		w:    w,
-		h:    make(http.Header),
-		req:  r,
-		wbuf: util.BorrowBuf(),
+		logger: h.logger,
+		w:      w,
+		h:      make(http.Header),
+		req:    r,
+		wbuf:   util.BorrowBuf(),
 	}
 	panicChan := make(chan any, 1)
 	go func() {
@@ -53,7 +56,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"",
 					common.ErrorFingerprint(p),
 				).Inc()
-				log.Error().
+				h.logger.Error().
 					Interface("panic", p).
 					Str("stack", string(debug.Stack())).
 					Msgf("unexpected panic on timeout handler")
@@ -70,7 +73,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tw.mu.Lock()
 		defer tw.mu.Unlock()
 		if err := ctx.Err(); err != nil {
-			log.Debug().Err(err).Msg("context canceled before writing response")
+			h.logger.Debug().Err(err).Msg("context canceled before writing response")
 			util.ReturnBuf(tw.wbuf)
 			tw.wbuf = nil
 			return
@@ -88,9 +91,9 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tw.wbuf = nil
 		if err != nil {
 			if common.IsClientDisconnect(err) {
-				log.Debug().Err(err).Msg("client disconnected while writing response")
+				h.logger.Debug().Err(err).Msg("client disconnected while writing response")
 			} else {
-				log.Warn().Err(err).Msg("failed to write response")
+				h.logger.Warn().Err(err).Msg("failed to write response")
 			}
 		}
 	case <-ctx.Done():
@@ -111,7 +114,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// TODO When other architectures are implemented we should return appropriate structure (currently only evm json-rpc)
 			_, err := io.WriteString(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"http request handling timeout"}}`)
 			if err != nil {
-				log.Error().Err(err).Msg("failed to write error response")
+				h.logger.Error().Err(err).Msg("failed to write error response")
 			}
 			tw.err = ErrHandlerTimeout
 			// Drop any buffered response data to avoid retaining large allocations
@@ -128,7 +131,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodPost {
 				_, writeErr := io.WriteString(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"request cancelled by client"}}`)
 				if writeErr != nil {
-					log.Error().Err(writeErr).Msg("failed to write error response")
+					h.logger.Error().Err(writeErr).Msg("failed to write error response")
 				}
 			}
 			tw.err = err
@@ -140,10 +143,11 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type timeoutWriter struct {
-	w    http.ResponseWriter
-	h    http.Header
-	wbuf *bytes.Buffer
-	req  *http.Request
+	logger *zerolog.Logger
+	w      http.ResponseWriter
+	h      http.Header
+	wbuf   *bytes.Buffer
+	req    *http.Request
 
 	mu          sync.Mutex
 	err         error
@@ -181,7 +185,7 @@ func (tw *timeoutWriter) writeHeaderLocked(code int) {
 		return
 	case tw.wroteHeader:
 		if tw.req != nil {
-			log.Trace().Msgf("http: superfluous response.WriteHeader call from: %s", string(debug.Stack()))
+			tw.logger.Trace().Msgf("http: superfluous response.WriteHeader call from: %s", string(debug.Stack()))
 		}
 	default:
 		tw.wroteHeader = true

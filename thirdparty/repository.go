@@ -13,7 +13,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 const DefaultRepositoryURL = "https://evm-public-endpoints.erpc.cloud"
@@ -64,7 +63,7 @@ func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 	}
 
 	// ensure we fetch and parse remote repository data (cached for 1h)
-	err = v.ensureRemoteData(ctx, recheckInterval, urlStr)
+	err = v.ensureRemoteData(ctx, logger, recheckInterval, urlStr)
 	if err != nil {
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
@@ -104,7 +103,7 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 	if !ok {
 		recheckInterval = DefaultRecheckInterval
 	}
-	if err := v.ensureRemoteData(context.Background(), recheckInterval, urlStr); err != nil {
+	if err := v.ensureRemoteData(context.Background(), logger, recheckInterval, urlStr); err != nil {
 		return nil, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
@@ -162,7 +161,7 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		})
 	}
 
-	log.Debug().Int64("chainId", chainID).Interface("upstreams", upsList).Interface("settings", settings).Msg("generated upstreams from repository provider")
+	logger.Debug().Int64("chainId", chainID).Interface("upstreams", upsList).Interface("settings", settings).Msg("generated upstreams from repository provider")
 
 	return upsList, nil
 }
@@ -183,7 +182,7 @@ func (v *RepositoryVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return false
 }
 
-func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration, remoteURL string) error {
+func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, logger *zerolog.Logger, recheckInterval time.Duration, remoteURL string) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
@@ -195,7 +194,7 @@ func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, recheckInterval
 	newData, err := fetchRemoteData(ctx, remoteURL)
 	if err != nil {
 		// if fetch fails, keep stale data
-		log.Warn().Err(err).Msg("could not refresh remote repository data; will use stale data")
+		logger.Warn().Err(err).Msg("could not refresh remote repository data; will use stale data")
 		return nil
 	}
 
