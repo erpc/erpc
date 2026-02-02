@@ -13,6 +13,7 @@ on:
   push:
     branches:
       - main
+      - morpho-main
 
 permissions:
   attestations: write
@@ -121,14 +122,14 @@ jobs:
             - Generated release files
             - Generated checksums
           branch: "release/${{ github.event.inputs.version_tag }}"
-          base: main
+          base: morpho-main
           labels: release
 
   # Run on release PR merge
   release:
     if: |
       github.event_name == 'push' && 
-      github.ref == 'refs/heads/main' && 
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main') && 
       contains(github.event.head_commit.message, 'chore: release')
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     steps:
@@ -250,7 +251,7 @@ jobs:
   docker-build-amd64:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [prepare-release, release]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     timeout-minutes: 35
     outputs:
       digest_main: ${{ steps.build_main.outputs.digest }}
@@ -331,7 +332,7 @@ jobs:
   docker-build-arm64:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404-arm' || 'ubuntu-24.04-arm' }}"
     needs: [prepare-release, release]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     timeout-minutes: 35
     outputs:
       digest_main: ${{ steps.build_main.outputs.digest }}
@@ -412,7 +413,7 @@ jobs:
   docker-manifest:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [docker-build-amd64, docker-build-arm64]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
@@ -502,7 +503,7 @@ jobs:
   docker-cleanup-sha256-tags:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [docker-manifest]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
