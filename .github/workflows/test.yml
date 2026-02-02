@@ -6,9 +6,9 @@ concurrency:
 
 on:
   push:
-    branches: [main]
+    branches: [main, morpho-main]
   pull_request:
-    branches: [main]
+    branches: [main, morpho-main]
 
 permissions:
   contents: read
