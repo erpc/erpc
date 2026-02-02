@@ -24,7 +24,10 @@ func (v *SqdVendor) Name() string {
 }
 
 func (v *SqdVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
-	return ups.VendorName == v.Name()
+	if ups.VendorName == v.Name() {
+		return true
+	}
+	return strings.Contains(ups.Endpoint, "sqd.dev")
 }
 
 func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
@@ -72,7 +75,15 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 	if dataset, ok := sqdDatasetForChain(settings, upstream.Evm.ChainId); ok {
 		if endpoint, updated := sqdApplyDatasetToEndpoint(upstream.Endpoint, dataset); updated {
 			upstream.Endpoint = endpoint
+		} else if logger != nil {
+			logger.Warn().
+				Int64("chainId", upstream.Evm.ChainId).
+				Str("dataset", dataset).
+				Str("endpoint", upstream.Endpoint).
+				Msg("sqd dataset resolved but could not be applied to endpoint format")
 		}
+	} else if strings.Contains(upstream.Endpoint, "{dataset}") {
+		return nil, fmt.Errorf("sqd endpoint contains {dataset} placeholder but no dataset found for chainId %d", upstream.Evm.ChainId)
 	}
 
 	if upstream.IgnoreMethods == nil {
@@ -89,18 +100,16 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 		}
 	}
 
-	if settings != nil {
-		if apiKey, ok := settings["wrapperApiKey"].(string); ok && apiKey != "" {
-			header := "X-API-Key"
-			if headerOverride, ok := settings["wrapperApiKeyHeader"].(string); ok && headerOverride != "" {
-				header = headerOverride
-			}
-			if upstream.JsonRpc.Headers == nil {
-				upstream.JsonRpc.Headers = make(map[string]string)
-			}
-			if _, exists := upstream.JsonRpc.Headers[header]; !exists {
-				upstream.JsonRpc.Headers[header] = apiKey
-			}
+	if apiKey, ok := settings["wrapperApiKey"].(string); ok && apiKey != "" {
+		header := "X-API-Key"
+		if headerOverride, ok := settings["wrapperApiKeyHeader"].(string); ok && headerOverride != "" {
+			header = headerOverride
+		}
+		if upstream.JsonRpc.Headers == nil {
+			upstream.JsonRpc.Headers = make(map[string]string)
+		}
+		if _, exists := upstream.JsonRpc.Headers[header]; !exists {
+			upstream.JsonRpc.Headers[header] = apiKey
 		}
 	}
 

@@ -33,27 +33,19 @@ func TestSqdChainToDataset(t *testing.T) {
 }
 
 func TestSqdSupportedChainIds(t *testing.T) {
-	chainIds := SqdSupportedChainIds()
+	chainIds := sqdSupportedChainIds()
 
 	if len(chainIds) != len(sqdChainToDataset) {
-		t.Errorf("SqdSupportedChainIds() returned %d chains, want %d", len(chainIds), len(sqdChainToDataset))
+		t.Errorf("sqdSupportedChainIds() returned %d chains, want %d", len(chainIds), len(sqdChainToDataset))
 	}
 
-	// Verify all returned chain IDs exist in the map
-	for _, chainId := range chainIds {
-		if _, ok := sqdChainToDataset[chainId]; !ok {
-			t.Errorf("SqdSupportedChainIds() returned chainId %d which is not in sqdChainToDataset", chainId)
-		}
-	}
-
-	// Verify all map keys are in the returned slice
 	chainIdSet := make(map[int64]bool)
 	for _, id := range chainIds {
 		chainIdSet[id] = true
 	}
 	for chainId := range sqdChainToDataset {
 		if !chainIdSet[chainId] {
-			t.Errorf("chainId %d from sqdChainToDataset is missing from SqdSupportedChainIds()", chainId)
+			t.Errorf("chainId %d from sqdChainToDataset is missing from sqdSupportedChainIds()", chainId)
 		}
 	}
 }
@@ -112,6 +104,19 @@ func TestSqdDatasetFromSettings_MapInterfaceInterface(t *testing.T) {
 	}
 }
 
+func TestSqdDatasetFromSettings_NonStringValue(t *testing.T) {
+	settings := common.VendorSettings{
+		"datasetByChainId": map[string]interface{}{
+			"1": 42, // non-string value
+		},
+	}
+
+	_, ok := sqdDatasetFromSettings(settings, 1)
+	if ok {
+		t.Error("expected false for non-string dataset value")
+	}
+}
+
 func TestSqdUseDefaultDatasets_Coercion(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -134,7 +139,8 @@ func TestSqdUseDefaultDatasets_Coercion(t *testing.T) {
 		{"int64 zero", int64(0), false},
 		{"float one", float64(1), true},
 		{"float zero", float64(0), false},
-		{"unknown string defaults true", "maybe", true},
+		{"unknown string defaults false", "maybe", false},
+		{"unknown type defaults false", []string{"bad"}, false},
 	}
 
 	for _, tt := range tests {
@@ -144,5 +150,19 @@ func TestSqdUseDefaultDatasets_Coercion(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tt.expected, got)
 			}
 		})
+	}
+}
+
+func TestSqdUseDefaultDatasets_NilSettings(t *testing.T) {
+	got := sqdUseDefaultDatasets(nil)
+	if !got {
+		t.Fatal("expected true for nil settings")
+	}
+}
+
+func TestSqdUseDefaultDatasets_NotSet(t *testing.T) {
+	got := sqdUseDefaultDatasets(common.VendorSettings{})
+	if !got {
+		t.Fatal("expected true when useDefaultDatasets not set")
 	}
 }

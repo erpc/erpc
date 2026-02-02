@@ -2,6 +2,7 @@ package thirdparty
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -33,9 +34,9 @@ func TestSqdVendor_OwnsUpstream(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "endpoint with portal.sqd.dev but no vendorName",
+			name:     "endpoint with portal.sqd.dev detected",
 			upstream: &common.UpstreamConfig{Endpoint: "https://portal.sqd.dev/datasets/ethereum-mainnet"},
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "other vendor",
@@ -273,6 +274,33 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Equal(t, "https://portal.sqd.dev/datasets/ethereum-mainnet", configs[0].Endpoint)
 	})
 
+	t.Run("applies dataset to base endpoint with trailing slash", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://portal.sqd.dev/datasets/",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://portal.sqd.dev/datasets/ethereum-mainnet", configs[0].Endpoint)
+	})
+
+	t.Run("fails when dataset placeholder unresolved", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://portal.sqd.dev/datasets/{dataset}",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 999999},
+		}
+
+		_, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "{dataset}")
+		assert.Contains(t, err.Error(), "999999")
+	})
+
 	t.Run("preserves user-defined ignoreMethods", func(t *testing.T) {
 		upstream := &common.UpstreamConfig{
 			Id:            "test-sqd",
@@ -323,4 +351,70 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "chainId")
 	})
+}
+
+func TestSqdVendor_GetVendorSpecificErrorIfAny(t *testing.T) {
+	v := CreateSqdVendor().(*SqdVendor)
+
+	tests := []struct {
+		name       string
+		resp       *http.Response
+		expectNil  bool
+		expectType string
+	}{
+		{
+			name:      "nil response returns nil",
+			resp:      nil,
+			expectNil: true,
+		},
+		{
+			name:      "200 returns nil",
+			resp:      &http.Response{StatusCode: http.StatusOK},
+			expectNil: true,
+		},
+		{
+			name:       "401 returns unauthorized",
+			resp:       &http.Response{StatusCode: http.StatusUnauthorized},
+			expectType: "ErrEndpointUnauthorized",
+		},
+		{
+			name:       "403 returns unauthorized",
+			resp:       &http.Response{StatusCode: http.StatusForbidden},
+			expectType: "ErrEndpointUnauthorized",
+		},
+		{
+			name:       "429 returns capacity exceeded",
+			resp:       &http.Response{StatusCode: http.StatusTooManyRequests},
+			expectType: "ErrEndpointCapacityExceeded",
+		},
+		{
+			name:       "402 returns billing issue",
+			resp:       &http.Response{StatusCode: http.StatusPaymentRequired},
+			expectType: "ErrEndpointBillingIssue",
+		},
+		{
+			name:      "500 returns nil (handled by generic normalization)",
+			resp:      &http.Response{StatusCode: http.StatusInternalServerError},
+			expectNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := v.GetVendorSpecificErrorIfAny(nil, tt.resp, nil, nil)
+			if tt.expectNil {
+				assert.NoError(t, err)
+				return
+			}
+			assert.Error(t, err)
+			switch tt.expectType {
+			case "ErrEndpointUnauthorized":
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized), "expected ErrEndpointUnauthorized, got %v", err)
+			case "ErrEndpointCapacityExceeded":
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "expected ErrEndpointCapacityExceeded, got %v", err)
+			case "ErrEndpointBillingIssue":
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointBillingIssue), "expected ErrEndpointBillingIssue, got %v", err)
+			}
+		})
+	}
 }
