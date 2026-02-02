@@ -295,7 +295,7 @@ jobs:
           VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build+push by digest (main)
+      - name: Build+push by digest (branch)
         id: build_main
         if: github.event.inputs.version_tag == ''
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -303,7 +303,7 @@ jobs:
           context: .
           platforms: linux/amd64
           build-args: |
-            VERSION=main
+            VERSION=${{ github.ref_name }}
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
           sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
@@ -376,7 +376,7 @@ jobs:
           VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build+push by digest (main)
+      - name: Build+push by digest (branch)
         id: build_main
         if: github.event.inputs.version_tag == ''
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -384,7 +384,7 @@ jobs:
           context: .
           platforms: linux/arm64
           build-args: |
-            VERSION=main
+            VERSION=${{ github.ref_name }}
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
           sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
@@ -440,17 +440,17 @@ jobs:
           VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Create multi-arch manifest for main
+      - name: Create multi-arch manifest for branch
         id: main
         if: github.event.inputs.version_tag == ''
         run: |
           docker buildx imagetools create \
-            -t ghcr.io/${{ steps.meta.outputs.repo }}:main \
+            -t ghcr.io/${{ steps.meta.outputs.repo }}:${{ github.ref_name }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_main }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_main }}
 
-          docker pull ghcr.io/${{ steps.meta.outputs.repo }}:main
-          DIGEST_MAIN=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.repo }}:main)
+          docker pull ghcr.io/${{ steps.meta.outputs.repo }}:${{ github.ref_name }}
+          DIGEST_MAIN=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.repo }}:${{ github.ref_name }})
           echo "digest_main=${DIGEST_MAIN#*@}" >> "$GITHUB_OUTPUT"
 
       - name: Create multi-arch manifests for release
