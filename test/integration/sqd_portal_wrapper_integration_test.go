@@ -50,12 +50,6 @@ type sqdRpcResponse struct {
 	Parsed sqdJsonRPCResponse
 }
 
-type sqdRpcError struct {
-	Code    int                    `json:"code"`
-	Message string                 `json:"message"`
-	Data    map[string]interface{} `json:"data"`
-}
-
 type sqdCapabilitiesResponse struct {
 	Methods []string `json:"methods"`
 }
@@ -171,26 +165,6 @@ func parseHexInt64(t *testing.T, value string) int64 {
 	return parsed
 }
 
-func skipIfPortalMissingField(t *testing.T, method string, resp sqdRpcResponse) bool {
-	t.Helper()
-
-	if resp.Status == http.StatusOK {
-		return false
-	}
-	if resp.Parsed.Error == nil {
-		return false
-	}
-	var rpcErr sqdRpcError
-	if err := json.Unmarshal(*resp.Parsed.Error, &rpcErr); err != nil {
-		return false
-	}
-	if strings.Contains(rpcErr.Message, "portal does not support required field") {
-		t.Skipf("%s skipped: %s (requires upstream for this dataset)", method, rpcErr.Message)
-		return true
-	}
-	return false
-}
-
 func TestSqdPortalWrapper_Methods(t *testing.T) {
 	endpoint := getWrapperEndpoint(t)
 	capabilities := fetchWrapperCapabilities(t, endpoint)
@@ -264,9 +238,6 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 			Method:  "eth_getBlockByNumber",
 			Params:  []interface{}{"latest", false},
 		})
-		if skipIfPortalMissingField(t, "eth_getBlockByNumber", resp) {
-			return
-		}
 		if resp.Status != http.StatusOK {
 			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
 		}
@@ -287,9 +258,6 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 			Method:  "eth_getTransactionByBlockNumberAndIndex",
 			Params:  []interface{}{"latest", "0x0"},
 		})
-		if skipIfPortalMissingField(t, "eth_getTransactionByBlockNumberAndIndex", resp) {
-			return
-		}
 		if resp.Status != http.StatusOK {
 			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
 		}
@@ -326,9 +294,6 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 			Method:  "trace_block",
 			Params:  []interface{}{"latest"},
 		})
-		if skipIfPortalMissingField(t, "trace_block", resp) {
-			return
-		}
 		if resp.Status != http.StatusOK {
 			t.Fatalf("unexpected status %d: %s", resp.Status, string(resp.Body))
 		}
