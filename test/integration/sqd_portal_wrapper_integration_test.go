@@ -185,7 +185,7 @@ func skipIfPortalMissingField(t *testing.T, method string, resp sqdRpcResponse) 
 		return false
 	}
 	if strings.Contains(rpcErr.Message, "portal does not support required field") {
-		t.Skipf("%s skipped: %s (configure upstream or update portal)", method, rpcErr.Message)
+		t.Skipf("%s skipped: %s (requires upstream for this dataset)", method, rpcErr.Message)
 		return true
 	}
 	return false
@@ -203,10 +203,21 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 		"eth_getLogs",
 		"trace_block",
 	}
+	upstreamOnlyMethods := []string{
+		"eth_getBlockByHash",
+		"eth_getTransactionByHash",
+		"eth_getTransactionReceipt",
+		"trace_transaction",
+	}
 
 	for _, method := range baseMethods {
 		if !capabilities[method] {
 			t.Fatalf("capabilities missing base method %s", method)
+		}
+	}
+	for _, method := range upstreamOnlyMethods {
+		if capabilities[method] {
+			t.Logf("capabilities advertises upstream-only method %s; skipping per test config", method)
 		}
 	}
 
@@ -327,4 +338,15 @@ func TestSqdPortalWrapper_Methods(t *testing.T) {
 		var traces []interface{}
 		require.NoError(t, json.Unmarshal(resp.Parsed.Result, &traces))
 	})
+
+	t.Run("eth_getLogs blockHash (requires upstream)", func(t *testing.T) {
+		t.Skip("requires upstream for blockHash filter")
+	})
+
+	for _, method := range upstreamOnlyMethods {
+		method := method
+		t.Run(method+" (requires upstream)", func(t *testing.T) {
+			t.Skip("requires upstream")
+		})
+	}
 }
