@@ -69,6 +69,12 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 	upstream.Type = common.UpstreamTypeEvm
 	upstream.VendorName = v.Name()
 
+	if dataset, ok := sqdDatasetForChain(settings, upstream.Evm.ChainId); ok {
+		if endpoint, updated := sqdApplyDatasetToEndpoint(upstream.Endpoint, dataset); updated {
+			upstream.Endpoint = endpoint
+		}
+	}
+
 	if upstream.IgnoreMethods == nil {
 		upstream.IgnoreMethods = []string{"*"}
 	}
@@ -89,9 +95,6 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 			if headerOverride, ok := settings["wrapperApiKeyHeader"].(string); ok && headerOverride != "" {
 				header = headerOverride
 			}
-			if upstream.JsonRpc == nil {
-				upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
-			}
 			if upstream.JsonRpc.Headers == nil {
 				upstream.JsonRpc.Headers = make(map[string]string)
 			}
@@ -109,6 +112,46 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 }
 
 func (v *SqdVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+	if resp == nil {
+		return nil
+	}
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return common.NewErrEndpointUnauthorized(fmt.Errorf("sqd portal wrapper unauthorized: %d", resp.StatusCode))
+	case http.StatusTooManyRequests:
+		return common.NewErrEndpointCapacityExceeded(fmt.Errorf("sqd portal wrapper rate limited: %d", resp.StatusCode))
+	case http.StatusPaymentRequired:
+		return common.NewErrEndpointBillingIssue(fmt.Errorf("sqd portal wrapper billing issue: %d", resp.StatusCode))
+	}
+
 	// Wrapper returns standard JSON-RPC errors; let generic normalization handle them.
 	return nil
+}
+
+func sqdDatasetForChain(settings common.VendorSettings, chainId int64) (string, bool) {
+	if dataset, ok := sqdDatasetFromSettings(settings, chainId); ok {
+		return dataset, true
+	}
+	if !sqdUseDefaultDatasets(settings) {
+		return "", false
+	}
+	if dataset, ok := sqdChainToDataset[chainId]; ok {
+		return dataset, true
+	}
+	return "", false
+}
+
+func sqdApplyDatasetToEndpoint(endpoint string, dataset string) (string, bool) {
+	if dataset == "" {
+		return endpoint, false
+	}
+	if strings.Contains(endpoint, "{dataset}") {
+		return strings.ReplaceAll(endpoint, "{dataset}", dataset), true
+	}
+	trimmed := strings.TrimRight(endpoint, "/")
+	if strings.HasSuffix(strings.ToLower(trimmed), "/datasets") {
+		return trimmed + "/" + dataset, true
+	}
+	return endpoint, false
 }

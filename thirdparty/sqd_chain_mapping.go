@@ -1,9 +1,12 @@
 package thirdparty
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog/log"
 )
 
 // sqdChainToDataset maps EVM chainId to SQD Portal dataset name.
@@ -54,17 +57,44 @@ func sqdDatasetFromSettings(settings common.VendorSettings, chainId int64) (stri
 
 	if raw, ok := settings["datasetByChainId"]; ok {
 		switch m := raw.(type) {
+		case map[string]string:
+			if ds, ok := sqdDatasetFromStringKeyMapString(m, chainId); ok {
+				return ds, true
+			}
 		case map[string]interface{}:
-			if ds, ok := m[strconv.FormatInt(chainId, 10)].(string); ok && ds != "" {
+			if ds, ok := sqdDatasetFromStringKeyMap(m, chainId); ok {
+				return ds, true
+			}
+		case map[int]string:
+			if ds, ok := sqdDatasetFromIntKeyMapString(m, chainId); ok {
+				return ds, true
+			}
+		case map[int]interface{}:
+			if ds, ok := sqdDatasetFromIntKeyMap(m, chainId); ok {
+				return ds, true
+			}
+		case map[int64]string:
+			if ds, ok := sqdDatasetFromInt64KeyMapString(m, chainId); ok {
+				return ds, true
+			}
+		case map[int64]interface{}:
+			if ds, ok := sqdDatasetFromInt64KeyMap(m, chainId); ok {
+				return ds, true
+			}
+		case map[float64]string:
+			if ds, ok := sqdDatasetFromFloatKeyMapString(m, chainId); ok {
+				return ds, true
+			}
+		case map[float64]interface{}:
+			if ds, ok := sqdDatasetFromFloatKeyMap(m, chainId); ok {
 				return ds, true
 			}
 		case map[interface{}]interface{}:
-			if ds, ok := m[chainId].(string); ok && ds != "" {
+			if ds, ok := sqdDatasetFromInterfaceKeyMap(m, chainId); ok {
 				return ds, true
 			}
-			if ds, ok := m[strconv.FormatInt(chainId, 10)].(string); ok && ds != "" {
-				return ds, true
-			}
+		default:
+			log.Warn().Str("type", fmt.Sprintf("%T", raw)).Msg("sqd datasetByChainId unsupported type")
 		}
 	}
 
@@ -85,17 +115,136 @@ func sqdUseDefaultDatasets(settings common.VendorSettings) bool {
 	case bool:
 		return val
 	case string:
-		parsed, err := strconv.ParseBool(val)
-		if err == nil {
+		if parsed, ok := sqdParseBoolString(val); ok {
 			return parsed
 		}
+		log.Warn().Str("value", val).Msg("sqd useDefaultDatasets invalid string, defaulting to true")
 	case int:
 		return val != 0
 	case int64:
 		return val != 0
 	case float64:
 		return val != 0
+	default:
+		log.Warn().Str("type", fmt.Sprintf("%T", raw)).Msg("sqd useDefaultDatasets unsupported type, defaulting to true")
 	}
 
 	return true
+}
+
+func sqdParseBoolString(raw string) (bool, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	switch normalized {
+	case "true", "t", "1", "yes", "y", "on":
+		return true, true
+	case "false", "f", "0", "no", "n", "off":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func sqdDatasetFromStringKeyMap(m map[string]interface{}, chainId int64) (string, bool) {
+	if ds, ok := m[strconv.FormatInt(chainId, 10)].(string); ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromStringKeyMapString(m map[string]string, chainId int64) (string, bool) {
+	if ds, ok := m[strconv.FormatInt(chainId, 10)]; ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromIntKeyMap(m map[int]interface{}, chainId int64) (string, bool) {
+	if !sqdChainIdFitsInt(chainId) {
+		return "", false
+	}
+	if ds, ok := m[int(chainId)].(string); ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromIntKeyMapString(m map[int]string, chainId int64) (string, bool) {
+	if !sqdChainIdFitsInt(chainId) {
+		return "", false
+	}
+	if ds, ok := m[int(chainId)]; ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromInt64KeyMap(m map[int64]interface{}, chainId int64) (string, bool) {
+	if ds, ok := m[chainId].(string); ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromInt64KeyMapString(m map[int64]string, chainId int64) (string, bool) {
+	if ds, ok := m[chainId]; ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromFloatKeyMap(m map[float64]interface{}, chainId int64) (string, bool) {
+	if ds, ok := m[float64(chainId)].(string); ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromFloatKeyMapString(m map[float64]string, chainId int64) (string, bool) {
+	if ds, ok := m[float64(chainId)]; ok && ds != "" {
+		return ds, true
+	}
+	return "", false
+}
+
+func sqdDatasetFromInterfaceKeyMap(m map[interface{}]interface{}, chainId int64) (string, bool) {
+	chainIdStr := strconv.FormatInt(chainId, 10)
+	for key, value := range m {
+		dataset, ok := value.(string)
+		if !ok || dataset == "" {
+			continue
+		}
+		if sqdChainIdKeyMatches(key, chainId, chainIdStr) {
+			return dataset, true
+		}
+	}
+	return "", false
+}
+
+func sqdChainIdKeyMatches(key interface{}, chainId int64, chainIdStr string) bool {
+	switch k := key.(type) {
+	case int:
+		return int64(k) == chainId
+	case int32:
+		return int64(k) == chainId
+	case int64:
+		return k == chainId
+	case uint:
+		return int64(k) == chainId
+	case uint32:
+		return int64(k) == chainId
+	case uint64:
+		return k == uint64(chainId)
+	case float64:
+		return k == float64(chainId)
+	case string:
+		return strings.TrimSpace(k) == chainIdStr
+	default:
+		return false
+	}
+}
+
+func sqdChainIdFitsInt(chainId int64) bool {
+	maxInt := int64(^uint(0) >> 1)
+	minInt := -maxInt - 1
+	return chainId >= minInt && chainId <= maxInt
 }

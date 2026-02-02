@@ -105,6 +105,13 @@ func TestSqdVendor_SupportsNetwork(t *testing.T) {
 			expected:  false,
 		},
 		{
+			name:      "evm network with non-numeric chainId",
+			networkId: "evm:notanumber",
+			settings:  nil,
+			expected:  false,
+			wantErr:   true,
+		},
+		{
 			name:      "unsupported chainId with dataset override",
 			networkId: "evm:999999",
 			settings:  common.VendorSettings{"dataset": "custom-dataset"},
@@ -204,6 +211,24 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Equal(t, "secret", configs[0].JsonRpc.Headers["X-API-Key"])
 	})
 
+	t.Run("sets wrapper api key custom header", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://portal-wrapper.internal/v1/evm/1",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, common.VendorSettings{
+			"wrapperApiKey":       "secret",
+			"wrapperApiKeyHeader": "X-SQD-Key",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, "secret", configs[0].JsonRpc.Headers["X-SQD-Key"])
+		_, hasDefault := configs[0].JsonRpc.Headers["X-API-Key"]
+		assert.False(t, hasDefault)
+	})
+
 	t.Run("preserves existing wrapper header", func(t *testing.T) {
 		upstream := &common.UpstreamConfig{
 			Id:       "test-sqd",
@@ -220,6 +245,32 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, "existing", configs[0].JsonRpc.Headers["X-API-Key"])
+	})
+
+	t.Run("applies dataset placeholder to endpoint", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://portal.sqd.dev/datasets/{dataset}",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://portal.sqd.dev/datasets/ethereum-mainnet", configs[0].Endpoint)
+	})
+
+	t.Run("applies dataset to base endpoint", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://portal.sqd.dev/datasets",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://portal.sqd.dev/datasets/ethereum-mainnet", configs[0].Endpoint)
 	})
 
 	t.Run("preserves user-defined ignoreMethods", func(t *testing.T) {
