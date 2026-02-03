@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,10 @@ const (
 )
 
 const (
+	// Cache envelope format (prefix):
+	// [0..3]  magic "ERPC"
+	// [4]     version (1)
+	// [5..12] big-endian unix seconds (cached-at)
 	cacheEnvelopeMagic   = "ERPC"
 	cacheEnvelopeVersion = byte(1)
 	cacheEnvelopeHeader  = 4 + 1 + 8
@@ -391,7 +396,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	// TODO after subscription epic this method can be called for every new block data to pre-populate the cache,
-	// based on the evmJsonRpcCache.hyrdation.filters which is only the data (logs, txs) that user cares about.
+	// based on the evmJsonRpcCache.hydration.filters which is only the data (logs, txs) that user cares about.
 	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest(ctx)
 	if err != nil {
@@ -899,8 +904,12 @@ func generateKeysForJsonRpcRequest(
 	}
 }
 
+// wrapCacheEnvelope prefixes cached result bytes with envelope metadata.
 func wrapCacheEnvelope(result []byte) []byte {
 	cachedAt := time.Now().Unix()
+	if len(result) > math.MaxInt-cacheEnvelopeHeader {
+		return result
+	}
 	out := make([]byte, cacheEnvelopeHeader+len(result))
 	copy(out[:4], []byte(cacheEnvelopeMagic))
 	out[4] = cacheEnvelopeVersion
@@ -909,6 +918,7 @@ func wrapCacheEnvelope(result []byte) []byte {
 	return out
 }
 
+// unwrapCacheEnvelope returns (payload, cachedAtUnix, ok).
 func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
 	if len(data) < cacheEnvelopeHeader {
 		return data, 0, false

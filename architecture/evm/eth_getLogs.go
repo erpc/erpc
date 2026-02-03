@@ -715,6 +715,7 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
+// getLogsMergeMeta captures cache metadata for merged eth_getLogs results.
 type getLogsMergeMeta struct {
 	allFromCache  bool
 	oldestCacheAt int64
@@ -737,10 +738,22 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 		concurrency = cfg.Evm.GetLogsSplitConcurrency
 	}
 	semaphore := make(chan struct{}, concurrency)
+	loopCtxErr := error(nil)
+loop:
 	for idx, sr := range subRequests {
+		if ctx.Err() != nil {
+			loopCtxErr = ctx.Err()
+			break
+		}
 		wg.Add(1)
 		// Acquire semaphore token (blocks if at capacity)
-		semaphore <- struct{}{}
+		select {
+		case semaphore <- struct{}{}:
+		case <-ctx.Done():
+			wg.Done()
+			loopCtxErr = ctx.Err()
+			break loop
+		}
 		go func(req ethGetLogsSubRequest, i int) {
 			defer wg.Done()
 			defer func() {
@@ -857,6 +870,11 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 	}
 	wg.Wait()
 
+	if loopCtxErr != nil {
+		mu.Lock()
+		errs = append(errs, loopCtxErr)
+		mu.Unlock()
+	}
 	if len(errs) > 0 {
 		return nil, nil, errors.Join(errs...)
 	}

@@ -428,3 +428,17 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 		assert.Equal(t, cachedAt, resp.CacheStoredAtUnix())
 	})
 }
+
+func TestCacheEnvelope_RoundTrip(t *testing.T) {
+	before := time.Now().Unix()
+	payload := []byte(`"hello"`)
+	wrapped := wrapCacheEnvelope(payload)
+	unwrapped, cachedAt, ok := unwrapCacheEnvelope(wrapped)
+	after := time.Now().Unix()
+
+	require.True(t, ok)
+	require.Equal(t, payload, unwrapped)
+	require.NotZero(t, cachedAt)
+	assert.GreaterOrEqual(t, cachedAt, before)
+	assert.LessOrEqual(t, cachedAt, after)
+}

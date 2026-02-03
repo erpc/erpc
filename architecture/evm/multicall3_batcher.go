@@ -58,6 +58,8 @@ type Batcher struct {
 	runtimeBypassMu sync.RWMutex
 }
 
+const runtimeBypassMaxEntries = 1024
+
 // NewBatcher creates a new Multicall3 batcher.
 // Returns nil if cfg is nil or disabled - callers should check the return value.
 // The logger parameter is optional (can be nil) - if nil, debug logging is disabled.
@@ -107,6 +109,12 @@ func (b *Batcher) isRuntimeBypassed(addrHex string) bool {
 func (b *Batcher) addRuntimeBypass(addrHex string, projectId, networkId string) {
 	b.runtimeBypassMu.Lock()
 	defer b.runtimeBypassMu.Unlock()
+	if len(b.runtimeBypass) >= runtimeBypassMaxEntries {
+		for key := range b.runtimeBypass {
+			delete(b.runtimeBypass, key)
+			break
+		}
+	}
 	if !b.runtimeBypass[addrHex] {
 		b.runtimeBypass[addrHex] = true
 		telemetry.MetricMulticall3RuntimeBypassTotal.WithLabelValues(projectId, networkId).Inc()
@@ -269,17 +277,7 @@ func (b *Batcher) Enqueue(ctx context.Context, key BatchingKey, req *common.Norm
 		}
 	}
 
-	// Create entry
-	entry := &BatchEntry{
-		Ctx:       ctx,
-		Request:   req,
-		CallKey:   callKey,
-		Target:    target,
-		CallData:  callData,
-		ResultCh:  make(chan BatchResult, 1),
-		CreatedAt: now,
-		Deadline:  deadline,
-	}
+	entry := NewBatchEntry(ctx, req, callKey, target, callData, now, deadline)
 
 	// Add to batch
 	batch.Entries = append(batch.Entries, entry)
@@ -942,6 +940,9 @@ func DeriveDirectivesKey(dirs *common.RequestDirectives) string {
 	if dirs.SkipCacheRead {
 		parts = append(parts, "skip-cache-read=true")
 	}
+	if dirs.CacheMaxAgeSeconds != nil {
+		parts = append(parts, fmt.Sprintf("cache-max-age=%d", *dirs.CacheMaxAgeSeconds))
+	}
 
 	sort.Strings(parts)
 	return fmt.Sprintf("v%d:%s", DirectivesKeyVersion, strings.Join(parts, ","))
@@ -975,6 +976,19 @@ type BatchEntry struct {
 	ResultCh  chan BatchResult          // Channel to receive the result (buffered, size 1)
 	CreatedAt time.Time                 // When the entry was created (for wait time metrics)
 	Deadline  time.Time                 // Deadline from context (for deadline-aware flushing)
+}
+
+func NewBatchEntry(ctx context.Context, req *common.NormalizedRequest, callKey string, target []byte, callData []byte, createdAt time.Time, deadline time.Time) *BatchEntry {
+	return &BatchEntry{
+		Ctx:       ctx,
+		Request:   req,
+		CallKey:   callKey,
+		Target:    target,
+		CallData:  callData,
+		ResultCh:  make(chan BatchResult, 1),
+		CreatedAt: createdAt,
+		Deadline:  deadline,
+	}
 }
 
 // BatchResult is the outcome delivered to a waiting request.

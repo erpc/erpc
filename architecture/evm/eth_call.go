@@ -220,8 +220,16 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 	if nq == nil || network == nil {
 		return false, nil, nil
 	}
+	logger := network.Logger()
+	logDebug := func(err error, msg string) {
+		if err == nil || logger == nil {
+			return
+		}
+		logger.Debug().Err(err).Msg(msg)
+	}
 	jrq, err := nq.JsonRpcRequest()
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: json-rpc request parse failed, falling back")
 		return false, nil, nil
 	}
 
@@ -257,12 +265,22 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 	}
 	calldata, err := common.HexToBytes(dataStr)
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: calldata hex decode failed, falling back")
 		return false, nil, nil
 	}
 
 	decodedCalls, err := DecodeMulticall3Aggregate3Calls(calldata)
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: multicall3 calldata decode failed, falling back")
 		return false, nil, nil
+	}
+	for _, call := range decodedCalls {
+		if !call.AllowFailure {
+			if logger != nil {
+				logger.Debug().Msg("handleUserMulticall3: allowFailure=false detected, skipping optimization")
+			}
+			return false, nil, nil
+		}
 	}
 
 	blockParam := interface{}("latest")
@@ -296,7 +314,9 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 	if cacheDal != nil && !cacheDal.IsObjectNull() && !nq.SkipCacheRead() {
 		for i, req := range perCallReqs {
 			cachedResp, cacheErr := cacheDal.Get(ctx, req)
-			if cacheErr == nil && cachedResp != nil && !cachedResp.IsObjectNull(ctx) {
+			if cacheErr != nil {
+				logDebug(cacheErr, "handleUserMulticall3: per-call cache get failed, treating as miss")
+			} else if cachedResp != nil && !cachedResp.IsObjectNull(ctx) {
 				cachedResp.SetFromCache(true)
 				cachedResponses[i] = cachedResp
 				continue
@@ -317,18 +337,32 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 		allCacheAt := true
 		for i, resp := range cachedResponses {
 			if resp == nil {
+				if logger != nil {
+					logger.Debug().Msg("handleUserMulticall3: cached response missing, falling back")
+				}
 				return false, nil, nil
 			}
 			jrr, err := resp.JsonRpcResponse(ctx)
 			if err != nil || jrr == nil || jrr.Error != nil {
+				if err != nil {
+					logDebug(err, "handleUserMulticall3: cached response parse failed, falling back")
+				} else if logger != nil {
+					if jrr == nil {
+						logger.Debug().Msg("handleUserMulticall3: cached response missing, falling back")
+					} else {
+						logger.Debug().Interface("jsonRpcError", jrr.Error).Msg("handleUserMulticall3: cached response error, falling back")
+					}
+				}
 				return false, nil, nil
 			}
 			resultHex, err := getJsonRpcResultHex(jrr)
 			if err != nil {
+				logDebug(err, "handleUserMulticall3: cached result decode failed, falling back")
 				return false, nil, nil
 			}
 			resultBytes, err := common.HexToBytes(resultHex)
 			if err != nil {
+				logDebug(err, "handleUserMulticall3: cached result hex decode failed, falling back")
 				return false, nil, nil
 			}
 			results[i] = Multicall3Result{Success: true, ReturnData: resultBytes}
@@ -343,10 +377,12 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 
 		encoded, err := EncodeMulticall3Aggregate3Results(results)
 		if err != nil {
+			logDebug(err, "handleUserMulticall3: encode cached results failed, falling back")
 			return false, nil, nil
 		}
 		jrr, err := common.NewJsonRpcResponse(nq.ID(), "0x"+hex.EncodeToString(encoded), nil)
 		if err != nil {
+			logDebug(err, "handleUserMulticall3: build cached json-rpc response failed, falling back")
 			return false, nil, nil
 		}
 		resp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr)
@@ -359,6 +395,7 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 
 	mcReq, _, err := BuildMulticall3Request(missingReqs, blockParam)
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: build multicall3 request failed, falling back")
 		return false, nil, nil
 	}
 	mcReq.SetNetwork(network)
@@ -367,26 +404,46 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 
 	mcResp, err := network.Forward(ctx, mcReq)
 	if err != nil || mcResp == nil {
+		logDebug(err, "handleUserMulticall3: multicall3 forward failed, falling back")
 		return false, nil, nil
 	}
 	mcUpstream := mcResp.Upstream()
 	mcJrr, err := mcResp.JsonRpcResponse(ctx)
 	if err != nil || mcJrr == nil || mcJrr.Error != nil {
+		if err != nil {
+			logDebug(err, "handleUserMulticall3: multicall3 response parse failed, falling back")
+		} else if logger != nil {
+			if mcJrr == nil {
+				logger.Debug().Msg("handleUserMulticall3: multicall3 response missing, falling back")
+			} else {
+				logger.Debug().Interface("jsonRpcError", mcJrr.Error).Msg("handleUserMulticall3: multicall3 response error, falling back")
+			}
+		}
 		mcResp.Release()
 		return false, nil, nil
 	}
 	mcResultHex, err := getJsonRpcResultHex(mcJrr)
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: multicall3 result decode failed, falling back")
 		mcResp.Release()
 		return false, nil, nil
 	}
 	mcResultBytes, err := common.HexToBytes(mcResultHex)
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: multicall3 result hex decode failed, falling back")
 		mcResp.Release()
 		return false, nil, nil
 	}
 	missingResults, err := DecodeMulticall3Aggregate3Result(mcResultBytes)
 	if err != nil || len(missingResults) != len(missingReqs) {
+		if err != nil {
+			logDebug(err, "handleUserMulticall3: multicall3 result decode failed, falling back")
+		} else if logger != nil {
+			logger.Debug().
+				Int("expected", len(missingReqs)).
+				Int("actual", len(missingResults)).
+				Msg("handleUserMulticall3: multicall3 result length mismatch, falling back")
+		}
 		mcResp.Release()
 		return false, nil, nil
 	}
@@ -398,16 +455,27 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 		}
 		jrr, err := resp.JsonRpcResponse(ctx)
 		if err != nil || jrr == nil || jrr.Error != nil {
+			if err != nil {
+				logDebug(err, "handleUserMulticall3: cached response parse failed, falling back")
+			} else if logger != nil {
+				if jrr == nil {
+					logger.Debug().Msg("handleUserMulticall3: cached response missing, falling back")
+				} else {
+					logger.Debug().Interface("jsonRpcError", jrr.Error).Msg("handleUserMulticall3: cached response error, falling back")
+				}
+			}
 			mcResp.Release()
 			return false, nil, nil
 		}
 		resultHex, err := getJsonRpcResultHex(jrr)
 		if err != nil {
+			logDebug(err, "handleUserMulticall3: cached result decode failed, falling back")
 			mcResp.Release()
 			return false, nil, nil
 		}
 		resultBytes, err := common.HexToBytes(resultHex)
 		if err != nil {
+			logDebug(err, "handleUserMulticall3: cached result hex decode failed, falling back")
 			mcResp.Release()
 			return false, nil, nil
 		}
@@ -434,17 +502,23 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 			}
 			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 			resp.SetUpstream(mcUpstream)
-			_ = cacheDal.Set(context.Background(), req, resp)
+			if err := cacheDal.Set(context.Background(), req, resp); err != nil {
+				if logger != nil {
+					logger.Warn().Err(err).Msg("handleUserMulticall3: failed to write per-call cache entry")
+				}
+			}
 		}
 	}
 
 	encoded, err := EncodeMulticall3Aggregate3Results(fullResults)
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: encode results failed, falling back")
 		mcResp.Release()
 		return false, nil, nil
 	}
 	jrr, err := common.NewJsonRpcResponse(nq.ID(), "0x"+hex.EncodeToString(encoded), nil)
 	if err != nil {
+		logDebug(err, "handleUserMulticall3: build json-rpc response failed, falling back")
 		mcResp.Release()
 		return false, nil, nil
 	}
