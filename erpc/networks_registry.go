@@ -111,6 +111,7 @@ func NewNetwork(
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
 				method:                 method,
 				finalities:             fsCfg.MatchFinality,
+				upstreamGroup:          fsCfg.MatchUpstreamGroup,
 				executor:               failsafe.NewExecutor(policyArray...),
 				timeout:                timeoutDuration,
 				consensusPolicyEnabled: fsCfg.Consensus != nil,

@@ -41,6 +41,48 @@ projects:
           # When true (default), duplicate transaction errors are converted to success responses,
           # allowing safe use of retry/hedge policies with transaction sending.
           idempotentTransactionBroadcast: true
+          # (OPTIONAL) Configure Multicall3 aggregation for eth_call batching.
+          # When enabled (default), multiple eth_call requests targeting the same block are batched
+          # into a single Multicall3 aggregate3 call, reducing RPC calls and improving efficiency.
+          multicall3Aggregation:
+            # Enable or disable Multicall3 aggregation.
+            # DEFAULT: true
+            enabled: true
+            # Time window in milliseconds to collect requests before batching.
+            # DEFAULT: 25
+            windowMs: 25
+            # Minimum wait time in milliseconds before flushing a batch.
+            # DEFAULT: 2
+            minWaitMs: 2
+            # Safety margin in milliseconds subtracted from request deadlines when computing flush time.
+            # DEFAULT: min(2, minWaitMs)
+            safetyMarginMs: 2
+            # If true, only batch if another request is already waiting. Avoids adding latency
+            # when requests arrive sporadically.
+            # DEFAULT: false
+            onlyIfPending: false
+            # Maximum number of calls per batch.
+            # DEFAULT: 20
+            maxCalls: 20
+            # Maximum total calldata size in bytes for a batch.
+            # DEFAULT: 64000
+            maxCalldataBytes: 64000
+            # Maximum number of requests waiting to be batched.
+            # DEFAULT: 1000
+            maxQueueSize: 1000
+            # Maximum number of pending batches being processed.
+            # DEFAULT: 200
+            maxPendingBatches: 200
+            # Enable per-call cache writes after successful Multicall3 response.
+            # DEFAULT: true
+            cachePerCall: true
+            # Allow batching requests from different users together.
+            # Set to false to isolate user requests into separate batches.
+            # DEFAULT: true
+            allowCrossUserBatching: true
+            # Allow batching calls with "pending" block tag.
+            # DEFAULT: false
+            allowPendingTagBatching: false
 
         # (OPTIONAL) A friendly alias for this network. This allows you to reference the network using the alias
         # instead of the architecture/chainId format. For example, instead of using /main/evm/1, you can use /main/ethereum.
@@ -174,6 +216,37 @@ export default createConfig({
             * allowing safe use of retry/hedge policies with transaction sending.
             */
             idempotentTransactionBroadcast: true,
+            /**
+            * (OPTIONAL) Configure Multicall3 aggregation for eth_call batching.
+            * When enabled (default), multiple eth_call requests targeting the same block are batched
+            * into a single Multicall3 aggregate3 call, reducing RPC calls and improving efficiency.
+            */
+            multicall3Aggregation: {
+              // Enable or disable Multicall3 aggregation. DEFAULT: true
+              enabled: true,
+              // Time window in milliseconds to collect requests before batching. DEFAULT: 25
+              windowMs: 25,
+              // Minimum wait time in milliseconds before flushing a batch. DEFAULT: 2
+              minWaitMs: 2,
+              // Safety margin in milliseconds subtracted from request deadlines. DEFAULT: min(2, minWaitMs)
+              safetyMarginMs: 2,
+              // If true, only batch if another request is already waiting. DEFAULT: false
+              onlyIfPending: false,
+              // Maximum number of calls per batch. DEFAULT: 20
+              maxCalls: 20,
+              // Maximum total calldata size in bytes for a batch. DEFAULT: 64000
+              maxCalldataBytes: 64000,
+              // Maximum number of requests waiting to be batched. DEFAULT: 1000
+              maxQueueSize: 1000,
+              // Maximum number of pending batches being processed. DEFAULT: 200
+              maxPendingBatches: 200,
+              // Enable per-call cache writes after successful Multicall3. DEFAULT: true
+              cachePerCall: true,
+              // Allow batching requests from different users together. DEFAULT: true
+              allowCrossUserBatching: true,
+              // Allow batching calls with "pending" block tag. DEFAULT: false
+              allowPendingTagBatching: false,
+            },
           },
 
           /**

@@ -410,6 +410,106 @@ var (
 		Help:      "eth_getLogs requested block-range sizes.",
 		Buckets:   EvmGetLogsRangeHistogramBuckets,
 	}, []string{"project", "network", "category", "user", "finality"})
+
+	// Multicall3 aggregation metrics
+	MetricMulticall3AggregationTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_aggregation_total",
+		Help:      "Total number of multicall3 aggregation attempts.",
+	}, []string{"project", "network", "outcome"})
+
+	MetricMulticall3FallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_fallback_total",
+		Help:      "Total number of multicall3 fallbacks to individual requests.",
+	}, []string{"project", "network", "reason"})
+
+	MetricMulticall3CacheHitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_hits_total",
+		Help:      "Total number of per-call cache hits in multicall3 batch aggregation.",
+	}, []string{"project", "network"})
+
+	// Network-level Multicall3 batching metrics
+	MetricMulticall3BatchSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_batch_size",
+		Help:      "Number of unique calls per Multicall3 batch.",
+		Buckets:   []float64{1, 2, 5, 10, 15, 20, 30, 50},
+	}, []string{"project", "network"})
+
+	MetricMulticall3BatchWaitMs = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_batch_wait_ms",
+		Help:      "Time requests waited in batch before flush (milliseconds).",
+		Buckets:   []float64{1, 2, 5, 10, 15, 20, 25, 30, 50},
+	}, []string{"project", "network"})
+
+	MetricMulticall3QueueLen = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_queue_len",
+		Help:      "Current number of requests queued for batching.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3QueueOverflowTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_queue_overflow_total",
+		Help:      "Total number of requests that bypassed batching due to queue overflow.",
+	}, []string{"project", "network", "reason"})
+
+	MetricMulticall3DedupeTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_dedupe_total",
+		Help:      "Total number of deduplicated requests within batches.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3CacheWriteErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_write_errors_total",
+		Help:      "Total number of per-call cache write errors in multicall3 batch responses.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3CacheReadErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_read_errors_total",
+		Help:      "Total number of cache read errors during multicall3 pre-aggregation cache check.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3FallbackRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_fallback_requests_total",
+		Help:      "Total number of individual requests during multicall3 fallback, labeled by outcome.",
+	}, []string{"project", "network", "outcome"})
+
+	MetricMulticall3AbandonedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_abandoned_total",
+		Help:      "Total number of multicall3 batch results not delivered because caller context was cancelled.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3PanicTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_panic_total",
+		Help:      "Total number of panics recovered in multicall3 batch processing.",
+	}, []string{"project", "network", "location"})
+
+	MetricMulticall3CacheWriteDroppedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_cache_write_dropped_total",
+		Help:      "Total number of multicall3 per-call cache writes dropped due to backpressure.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3RuntimeBypassTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_runtime_bypass_total",
+		Help:      "Total number of contracts auto-detected as requiring bypass (revert via multicall3 but succeed individually).",
+	}, []string{"project", "network"})
+
+	MetricMulticall3AutoDetectRetryTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_auto_detect_retry_total",
+		Help:      "Total number of auto-detect retry attempts for reverted calls.",
+	}, []string{"project", "network", "outcome"})
 )
 
 var DefaultHistogramBuckets = []float64{
