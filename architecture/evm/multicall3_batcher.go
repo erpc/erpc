@@ -567,6 +567,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 				// Propagate upstream metadata from multicall response
 				resp.SetUpstream(mcResp.Upstream())
 				resp.SetFromCache(mcResp.FromCache())
+				resp.SetCacheStoredAtUnix(mcResp.CacheStoredAtUnix())
 
 				// Write to cache once per unique call (not once per duplicate entry)
 				if cachePerCall && !cachedOnce {
@@ -666,6 +667,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 							resp := common.NewNormalizedResponse().WithRequest(entry.Request).WithJsonRpcResponse(jrr)
 							resp.SetUpstream(retryResp.Upstream())
 							resp.SetFromCache(retryResp.FromCache())
+							resp.SetCacheStoredAtUnix(retryResp.CacheStoredAtUnix())
 							b.sendResult(entry, BatchResult{Response: resp}, projectId, networkId)
 						}
 

@@ -2,10 +2,14 @@ package evm
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 )
 
 // Global batcher manager for network-level Multicall3 batching
@@ -75,6 +79,10 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 		return false, nil, nil
 	}
 
+	if nq.ParentRequestId() != nil || nq.IsCompositeRequest() {
+		return false, nil, nil
+	}
+
 	// Normalize params: ensure block param is present
 	jrq.RLock()
 	paramsLen := len(jrq.Params)
@@ -89,6 +97,10 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 		jrq.Lock()
 		jrq.Params = append(jrq.Params, "latest")
 		jrq.Unlock()
+	}
+
+	if handled, resp, err := handleUserMulticall3(ctx, network, nq); handled || err != nil {
+		return true, resp, err
 	}
 
 	// Get Multicall3 aggregation config, using defaults if not explicitly configured
@@ -202,4 +214,283 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 	case <-ctx.Done():
 		return true, nil, ctx.Err()
 	}
+}
+
+func handleUserMulticall3(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	if nq == nil || network == nil {
+		return false, nil, nil
+	}
+	jrq, err := nq.JsonRpcRequest()
+	if err != nil {
+		return false, nil, nil
+	}
+
+	jrq.RLock()
+	method := strings.ToLower(jrq.Method)
+	params := jrq.Params
+	jrq.RUnlock()
+	if method != "eth_call" || len(params) < 1 {
+		return false, nil, nil
+	}
+
+	callObj, ok := params[0].(map[string]interface{})
+	if !ok {
+		return false, nil, nil
+	}
+	toVal, ok := callObj["to"]
+	if !ok {
+		return false, nil, nil
+	}
+	toStr, ok := toVal.(string)
+	if !ok || toStr == "" || !strings.EqualFold(toStr, multicall3Address) {
+		return false, nil, nil
+	}
+
+	dataStr := ""
+	if v, ok := callObj["data"].(string); ok {
+		dataStr = v
+	} else if v, ok := callObj["input"].(string); ok {
+		dataStr = v
+	}
+	if dataStr == "" {
+		return false, nil, nil
+	}
+	calldata, err := common.HexToBytes(dataStr)
+	if err != nil {
+		return false, nil, nil
+	}
+
+	decodedCalls, err := DecodeMulticall3Aggregate3Calls(calldata)
+	if err != nil {
+		return false, nil, nil
+	}
+
+	blockParam := interface{}("latest")
+	if len(params) >= 2 {
+		blockParam = params[1]
+	}
+
+	perCallReqs := make([]*common.NormalizedRequest, len(decodedCalls))
+	for i, call := range decodedCalls {
+		callObj := map[string]interface{}{
+			"to":   "0x" + hex.EncodeToString(call.Target),
+			"data": "0x" + hex.EncodeToString(call.CallData),
+		}
+		callReq := common.NewJsonRpcRequest("eth_call", []interface{}{callObj, blockParam})
+		callReq.ID = util.RandomID()
+
+		nr := common.NewNormalizedRequestFromJsonRpcRequest(callReq)
+		nr.CopyHttpContextFrom(nq)
+		if dirs := nq.Directives(); dirs != nil {
+			nr.SetDirectives(dirs.Clone())
+		}
+		nr.SetNetwork(network)
+		nr.SetParentRequestId(nq.ID())
+		perCallReqs[i] = nr
+	}
+
+	cacheDal := network.Cache()
+	cachedResponses := make([]*common.NormalizedResponse, len(decodedCalls))
+	missingReqs := make([]*common.NormalizedRequest, 0)
+	missingIdx := make([]int, 0)
+	if cacheDal != nil && !cacheDal.IsObjectNull() && !nq.SkipCacheRead() {
+		for i, req := range perCallReqs {
+			cachedResp, cacheErr := cacheDal.Get(ctx, req)
+			if cacheErr == nil && cachedResp != nil && !cachedResp.IsObjectNull(ctx) {
+				cachedResp.SetFromCache(true)
+				cachedResponses[i] = cachedResp
+				continue
+			}
+			missingReqs = append(missingReqs, req)
+			missingIdx = append(missingIdx, i)
+		}
+	} else {
+		missingReqs = append(missingReqs, perCallReqs...)
+		for i := range perCallReqs {
+			missingIdx = append(missingIdx, i)
+		}
+	}
+
+	if len(missingReqs) == 0 {
+		results := make([]Multicall3Result, len(decodedCalls))
+		oldestCacheAt := int64(0)
+		allCacheAt := true
+		for i, resp := range cachedResponses {
+			if resp == nil {
+				return false, nil, nil
+			}
+			jrr, err := resp.JsonRpcResponse(ctx)
+			if err != nil || jrr == nil || jrr.Error != nil {
+				return false, nil, nil
+			}
+			resultHex, err := getJsonRpcResultHex(jrr)
+			if err != nil {
+				return false, nil, nil
+			}
+			resultBytes, err := common.HexToBytes(resultHex)
+			if err != nil {
+				return false, nil, nil
+			}
+			results[i] = Multicall3Result{Success: true, ReturnData: resultBytes}
+			if cachedAt := resp.CacheStoredAtUnix(); cachedAt > 0 {
+				if oldestCacheAt == 0 || cachedAt < oldestCacheAt {
+					oldestCacheAt = cachedAt
+				}
+			} else {
+				allCacheAt = false
+			}
+		}
+
+		encoded, err := EncodeMulticall3Aggregate3Results(results)
+		if err != nil {
+			return false, nil, nil
+		}
+		jrr, err := common.NewJsonRpcResponse(nq.ID(), "0x"+hex.EncodeToString(encoded), nil)
+		if err != nil {
+			return false, nil, nil
+		}
+		resp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr)
+		resp.SetFromCache(true)
+		if allCacheAt && oldestCacheAt > 0 {
+			resp.SetCacheStoredAtUnix(oldestCacheAt)
+		}
+		return true, resp, nil
+	}
+
+	mcReq, _, err := BuildMulticall3Request(missingReqs, blockParam)
+	if err != nil {
+		return false, nil, nil
+	}
+	mcReq.SetNetwork(network)
+	mcReq.SetParentRequestId(nq.ID())
+	mcReq.SetCompositeType(common.CompositeTypeMulticall3)
+
+	mcResp, err := network.Forward(ctx, mcReq)
+	if err != nil || mcResp == nil {
+		return false, nil, nil
+	}
+	mcUpstream := mcResp.Upstream()
+	mcJrr, err := mcResp.JsonRpcResponse(ctx)
+	if err != nil || mcJrr == nil || mcJrr.Error != nil {
+		mcResp.Release()
+		return false, nil, nil
+	}
+	mcResultHex, err := getJsonRpcResultHex(mcJrr)
+	if err != nil {
+		mcResp.Release()
+		return false, nil, nil
+	}
+	mcResultBytes, err := common.HexToBytes(mcResultHex)
+	if err != nil {
+		mcResp.Release()
+		return false, nil, nil
+	}
+	missingResults, err := DecodeMulticall3Aggregate3Result(mcResultBytes)
+	if err != nil || len(missingResults) != len(missingReqs) {
+		mcResp.Release()
+		return false, nil, nil
+	}
+
+	fullResults := make([]Multicall3Result, len(decodedCalls))
+	for i, resp := range cachedResponses {
+		if resp == nil {
+			continue
+		}
+		jrr, err := resp.JsonRpcResponse(ctx)
+		if err != nil || jrr == nil || jrr.Error != nil {
+			mcResp.Release()
+			return false, nil, nil
+		}
+		resultHex, err := getJsonRpcResultHex(jrr)
+		if err != nil {
+			mcResp.Release()
+			return false, nil, nil
+		}
+		resultBytes, err := common.HexToBytes(resultHex)
+		if err != nil {
+			mcResp.Release()
+			return false, nil, nil
+		}
+		fullResults[i] = Multicall3Result{Success: true, ReturnData: resultBytes}
+	}
+	for i, res := range missingResults {
+		fullResults[missingIdx[i]] = res
+	}
+
+	cachePerCall := true
+	if cfg := network.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.Multicall3Aggregation != nil && cfg.Evm.Multicall3Aggregation.CachePerCall != nil {
+		cachePerCall = *cfg.Evm.Multicall3Aggregation.CachePerCall
+	}
+	if cachePerCall && cacheDal != nil && !cacheDal.IsObjectNull() {
+		for i, res := range missingResults {
+			if !res.Success {
+				continue
+			}
+			req := missingReqs[i]
+			resultHex := "0x" + hex.EncodeToString(res.ReturnData)
+			jrr, err := common.NewJsonRpcResponse(req.ID(), resultHex, nil)
+			if err != nil {
+				continue
+			}
+			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+			resp.SetUpstream(mcUpstream)
+			_ = cacheDal.Set(context.Background(), req, resp)
+		}
+	}
+
+	encoded, err := EncodeMulticall3Aggregate3Results(fullResults)
+	if err != nil {
+		mcResp.Release()
+		return false, nil, nil
+	}
+	jrr, err := common.NewJsonRpcResponse(nq.ID(), "0x"+hex.EncodeToString(encoded), nil)
+	if err != nil {
+		mcResp.Release()
+		return false, nil, nil
+	}
+	resp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr)
+	resp.SetUpstream(mcUpstream)
+	if mcResp.FromCache() {
+		resp.SetFromCache(true)
+		if mcCacheAt := mcResp.CacheStoredAtUnix(); mcCacheAt > 0 {
+			oldestCacheAt := mcCacheAt
+			allCacheAt := true
+			for _, cached := range cachedResponses {
+				if cached == nil {
+					continue
+				}
+				cachedAt := cached.CacheStoredAtUnix()
+				if cachedAt <= 0 {
+					allCacheAt = false
+					break
+				}
+				if cachedAt < oldestCacheAt {
+					oldestCacheAt = cachedAt
+				}
+			}
+			if allCacheAt {
+				resp.SetCacheStoredAtUnix(oldestCacheAt)
+			}
+		}
+	}
+	mcResp.Release()
+	return true, resp, nil
+}
+
+func getJsonRpcResultHex(jrr *common.JsonRpcResponse) (string, error) {
+	if jrr == nil {
+		return "", fmt.Errorf("nil response")
+	}
+	resultStr := strings.TrimSpace(jrr.GetResultString())
+	if resultStr == "" {
+		return "", fmt.Errorf("empty result")
+	}
+	if strings.HasPrefix(resultStr, "\"") {
+		unquoted, err := strconv.Unquote(resultStr)
+		if err != nil {
+			return "", err
+		}
+		resultStr = unquoted
+	}
+	return resultStr, nil
 }

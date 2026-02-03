@@ -18,6 +18,7 @@ const (
 	CompositeTypeNone               = "none"
 	CompositeTypeLogsSplitOnError   = "logs-split-on-error"
 	CompositeTypeLogsSplitProactive = "logs-split-proactive"
+	CompositeTypeLogsCacheChunk     = "logs-cache-chunk"
 	CompositeTypeMulticall3         = "multicall3"
 )
 
@@ -33,6 +34,7 @@ const (
 	headerDirectiveRetryEmpty                 = "X-ERPC-Retry-Empty"
 	headerDirectiveRetryPending               = "X-ERPC-Retry-Pending"
 	headerDirectiveSkipCacheRead              = "X-ERPC-Skip-Cache-Read"
+	headerDirectiveCacheMaxAge                = "X-ERPC-Cache-Max-Age"
 	headerDirectiveUseUpstream                = "X-ERPC-Use-Upstream"
 	headerDirectiveSkipInterpolation          = "X-ERPC-Skip-Interpolation"
 	headerDirectiveEnforceHighestBlock        = "X-ERPC-Enforce-Highest-Block"
@@ -57,6 +59,7 @@ const (
 	queryDirectiveRetryEmpty                 = "retry-empty"
 	queryDirectiveRetryPending               = "retry-pending"
 	queryDirectiveSkipCacheRead              = "skip-cache-read"
+	queryDirectiveCacheMaxAge                = "cache-max-age"
 	queryDirectiveUseUpstream                = "use-upstream"
 	queryDirectiveSkipInterpolation          = "skip-interpolation"
 	queryDirectiveEnforceHighestBlock        = "enforce-highest-block"
@@ -81,6 +84,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveRetryEmpty, query: queryDirectiveRetryEmpty},
 	{header: headerDirectiveRetryPending, query: queryDirectiveRetryPending},
 	{header: headerDirectiveSkipCacheRead, query: queryDirectiveSkipCacheRead},
+	{header: headerDirectiveCacheMaxAge, query: queryDirectiveCacheMaxAge},
 	{header: headerDirectiveUseUpstream, query: queryDirectiveUseUpstream},
 	{header: headerDirectiveSkipInterpolation, query: queryDirectiveSkipInterpolation},
 	{header: headerDirectiveEnforceHighestBlock, query: queryDirectiveEnforceHighestBlock},
@@ -118,6 +122,10 @@ type RequestDirectives struct {
 	// Instruct the proxy to skip cache reads for example to force freshness,
 	// or override some cache corruption.
 	SkipCacheRead bool `json:"skipCacheRead"`
+
+	// CacheMaxAgeSeconds limits how old a cached entry can be (per request).
+	// When set, entries older than this age are treated as cache misses.
+	CacheMaxAgeSeconds *int64 `json:"cacheMaxAgeSeconds,omitempty"`
 
 	// Instruct the proxy to forward the request to a specific upstream(s) only.
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
@@ -210,6 +218,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		RetryEmpty:                      d.RetryEmpty,
 		RetryPending:                    d.RetryPending,
 		SkipCacheRead:                   d.SkipCacheRead,
+		CacheMaxAgeSeconds:              nil,
 		UseUpstream:                     d.UseUpstream,
 		ByPassMethodExclusion:           d.ByPassMethodExclusion,
 		SkipInterpolation:               d.SkipInterpolation,
@@ -241,6 +250,10 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 	if d.ValidationExpectedBlockNumber != nil {
 		v := *d.ValidationExpectedBlockNumber
 		cloned.ValidationExpectedBlockNumber = &v
+	}
+	if d.CacheMaxAgeSeconds != nil {
+		v := *d.CacheMaxAgeSeconds
+		cloned.CacheMaxAgeSeconds = &v
 	}
 	// Deep copy GroundTruthTransactions slice (shallow copy of byte slices is fine - they're immutable)
 	if len(d.GroundTruthTransactions) > 0 {
@@ -509,6 +522,10 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	if directiveDefaults.SkipCacheRead != nil {
 		r.directives.SkipCacheRead = *directiveDefaults.SkipCacheRead
 	}
+	if directiveDefaults.CacheMaxAgeSeconds != nil {
+		v := *directiveDefaults.CacheMaxAgeSeconds
+		r.directives.CacheMaxAgeSeconds = &v
+	}
 	if directiveDefaults.UseUpstream != nil {
 		r.directives.UseUpstream = *directiveDefaults.UseUpstream
 	}
@@ -652,6 +669,11 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get(headerDirectiveSkipCacheRead); hv != "" {
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
+	if hv := headers.Get(headerDirectiveCacheMaxAge); hv != "" {
+		if v, err := strconv.ParseInt(strings.TrimSpace(hv), 10, 64); err == nil && v >= 0 {
+			r.directives.CacheMaxAgeSeconds = &v
+		}
+	}
 	if hv := headers.Get(headerDirectiveUseUpstream); hv != "" {
 		r.directives.UseUpstream = hv
 	}
@@ -732,6 +754,11 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if skipCacheRead := queryArgs.Get(queryDirectiveSkipCacheRead); skipCacheRead != "" {
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
 	}
+	if cacheMaxAge := queryArgs.Get(queryDirectiveCacheMaxAge); cacheMaxAge != "" {
+		if v, err := strconv.ParseInt(strings.TrimSpace(cacheMaxAge), 10, 64); err == nil && v >= 0 {
+			r.directives.CacheMaxAgeSeconds = &v
+		}
+	}
 
 	if skipInterpolation := queryArgs.Get(queryDirectiveSkipInterpolation); skipInterpolation != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(skipInterpolation)) == "true"
@@ -802,6 +829,13 @@ func (r *NormalizedRequest) SkipCacheRead() bool {
 		return false
 	}
 	return r.directives.SkipCacheRead
+}
+
+func (r *NormalizedRequest) CacheMaxAgeSeconds() *int64 {
+	if r == nil || r.directives == nil {
+		return nil
+	}
+	return r.directives.CacheMaxAgeSeconds
 }
 
 func (r *NormalizedRequest) Directives() *RequestDirectives {

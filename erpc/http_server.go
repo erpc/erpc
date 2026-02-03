@@ -1024,6 +1024,15 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 	}
 	if resp, ok := res.(*common.NormalizedResponse); ok {
 		w.Header().Set("X-ERPC-Duration", fmt.Sprintf("%d", resp.Duration().Milliseconds()))
+		if resp.FromCache() {
+			if cachedAt := resp.CacheStoredAtUnix(); cachedAt > 0 {
+				age, ok := resp.CacheAgeSeconds()
+				if ok {
+					w.Header().Set("X-ERPC-Cache-Age", fmt.Sprintf("%d", age))
+					w.Header().Set("X-ERPC-Cache-At", fmt.Sprintf("%d", cachedAt))
+				}
+			}
+		}
 	}
 }
 

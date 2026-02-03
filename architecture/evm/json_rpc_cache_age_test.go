@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -29,7 +30,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 	t.Run("AcceptsResultWithinTTL", func(t *testing.T) {
 		// Create mock connector
 		mockConnector := &data.MockConnector{}
-		mockConnector.On("Id").Return("mock-connector")
+		mockConnector.On("Id").Return("mock-connector").Maybe()
 
 		// Create a cached block response with a recent timestamp (5 seconds ago)
 		currentTime := time.Now().Unix()
@@ -43,7 +44,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 				"hash":      "0xabcd",
 			},
 		}
-		cachedBytes, _ := json.Marshal(cachedResponse)
+		cachedBytes, _ := json.Marshal(cachedResponse["result"])
 
 		// Set up mock to return the cached response
 		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
@@ -86,7 +87,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 	t.Run("RejectsResultExceedingTTL", func(t *testing.T) {
 		// Create mock connector
 		mockConnector := &data.MockConnector{}
-		mockConnector.On("Id").Return("mock-connector")
+		mockConnector.On("Id").Return("mock-connector").Maybe()
 
 		// Create a cached block response with an old timestamp (2 minutes ago)
 		currentTime := time.Now().Unix()
@@ -100,7 +101,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 				"hash":      "0xabcd",
 			},
 		}
-		cachedBytes, _ := json.Marshal(cachedResponse)
+		cachedBytes, _ := json.Marshal(cachedResponse["result"])
 
 		// Set up mock to return the old cached response
 		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
@@ -150,7 +151,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			"id":      1,
 			"result":  "0x1",
 		}
-		cachedBytes, _ := json.Marshal(cachedResponse)
+		cachedBytes, _ := json.Marshal(cachedResponse["result"])
 
 		// Set up mock to return the cached response
 		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
@@ -205,7 +206,7 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 				"hash":      "0xabcd",
 			},
 		}
-		cachedBytes, _ := json.Marshal(cachedResponse)
+		cachedBytes, _ := json.Marshal(cachedResponse["result"])
 
 		// Set up mock to return the old cached response
 		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
@@ -325,5 +326,105 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 
 		// Ensure we received a cached response; hash may vary depending on age-guard acceptance
 		assert.True(t, resp.FromCache())
+	})
+}
+
+func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
+	ctx := context.Background()
+	logger := log.Logger
+
+	buildEnvelope := func(result []byte, cachedAt int64) []byte {
+		out := make([]byte, cacheEnvelopeHeader+len(result))
+		copy(out[:4], []byte(cacheEnvelopeMagic))
+		out[4] = cacheEnvelopeVersion
+		binary.BigEndian.PutUint64(out[5:13], uint64(cachedAt))
+		copy(out[cacheEnvelopeHeader:], result)
+		return out
+	}
+
+	t.Run("RejectsStaleEntryAndDeletes", func(t *testing.T) {
+		mockConnector := &data.MockConnector{}
+		mockConnector.On("Id").Return("mock-connector").Maybe()
+
+		result := map[string]interface{}{
+			"number":    "0x1234",
+			"timestamp": "0x1",
+			"hash":      "0xabcd",
+		}
+		resultBytes, _ := json.Marshal(result)
+		cachedAt := time.Now().Add(-10 * time.Second).Unix()
+		cachedBytes := buildEnvelope(resultBytes, cachedAt)
+
+		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
+			Return(cachedBytes, nil)
+		mockConnector.On("Delete", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+
+		ttl := 5 * time.Minute
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Connector: "mock-connector",
+			TTL:       common.Duration(ttl),
+			Network:   "*",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateUnknown,
+		}, mockConnector)
+		require.NoError(t, err)
+
+		cache := &EvmJsonRpcCache{
+			projectId: "test-project",
+			logger:    &logger,
+			policies:  []*data.CachePolicy{policy},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1234",true],"id":1}`))
+		maxAge := int64(1)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+
+		resp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, resp)
+		mockConnector.AssertExpectations(t)
+	})
+
+	t.Run("AcceptsFreshEntryWithCachedAt", func(t *testing.T) {
+		mockConnector := &data.MockConnector{}
+		mockConnector.On("Id").Return("mock-connector").Maybe()
+
+		result := map[string]interface{}{
+			"number":    "0x1234",
+			"timestamp": "0x1",
+			"hash":      "0xabcd",
+		}
+		resultBytes, _ := json.Marshal(result)
+		cachedAt := time.Now().Add(-1 * time.Second).Unix()
+		cachedBytes := buildEnvelope(resultBytes, cachedAt)
+
+		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
+			Return(cachedBytes, nil)
+
+		ttl := 5 * time.Minute
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Connector: "mock-connector",
+			TTL:       common.Duration(ttl),
+			Network:   "*",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateUnknown,
+		}, mockConnector)
+		require.NoError(t, err)
+
+		cache := &EvmJsonRpcCache{
+			projectId: "test-project",
+			logger:    &logger,
+			policies:  []*data.CachePolicy{policy},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1234",true],"id":1}`))
+		maxAge := int64(60)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+
+		resp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.True(t, resp.FromCache())
+		assert.Equal(t, cachedAt, resp.CacheStoredAtUnix())
 	})
 }

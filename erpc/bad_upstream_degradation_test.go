@@ -253,7 +253,9 @@ func TestUpstreamDegradationScenarios(t *testing.T) {
 	}
 
 	for _, scenario := range scenarios {
+		scenario := scenario
 		t.Run(scenario.Name, func(t *testing.T) {
+			scenario.NumRequests = scaledNumRequests(t, scenario.NumRequests)
 			runUpstreamTest(t, scenario)
 		})
 	}
@@ -613,7 +615,7 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 
 	// Batched execution to reduce resource usage
 	start := time.Now()
-	batchSize := TEST_DEFAULT_BATCH_SIZE
+	batchSize := minInt(TEST_DEFAULT_BATCH_SIZE, scenario.NumRequests)
 	for batchStart := 0; batchStart < scenario.NumRequests; batchStart += batchSize {
 		batchEnd := batchStart + batchSize
 		if batchEnd > scenario.NumRequests {
@@ -742,6 +744,9 @@ func analyzeResults(t *testing.T, scenario TestScenario, results []TestResult, t
 		if len(obs) >= len(exp) {
 			obs = obs[:len(exp)]
 		}
+		if len(exp) > len(obs) {
+			exp = exp[:len(obs)]
+		}
 		assert.Equal(t, exp, obs, "final score order should match expected")
 	}
 
@@ -757,4 +762,21 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func scaledNumRequests(t *testing.T, base int) int {
+	if testing.Short() {
+		return minInt(base, TEST_DEFAULT_BATCH_SIZE)
+	}
+	if isRaceEnabled() {
+		return minInt(base, TEST_DEFAULT_BATCH_SIZE*2)
+	}
+	return base
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

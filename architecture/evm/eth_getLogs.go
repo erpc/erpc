@@ -203,6 +203,11 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return false, nil, nil
 	}
 
+	skipCacheRead := false
+	if dirs := nrq.Directives(); dirs != nil {
+		skipCacheRead = dirs.SkipCacheRead
+	}
+
 	// Enforce network-level hard limits first
 	requestRange := toBlock - fromBlock + 1
 	if maxRange := ncfg.Evm.GetLogsMaxAllowedRange; maxRange > 0 && requestRange > maxRange {
@@ -213,6 +218,44 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	}
 	if maxTopics := ncfg.Evm.GetLogsMaxAllowedTopics; maxTopics > 0 && topicCount > maxTopics {
 		return true, nil, common.NewErrGetLogsExceededMaxAllowedTopics(topicCount, maxTopics)
+	}
+
+	// Cache-aware chunking: split into deterministic ranges to maximize cache hits
+	if cacheDal := n.Cache(); cacheDal != nil && !cacheDal.IsObjectNull() && !skipCacheRead {
+		chunkSize := int64(0)
+		if ncfg.Evm.GetLogsCacheChunkSize != nil {
+			chunkSize = *ncfg.Evm.GetLogsCacheChunkSize
+		}
+		if requestRange > 0 && chunkSize > 0 && requestRange > chunkSize {
+			subRequests := make([]ethGetLogsSubRequest, 0)
+			sb := fromBlock
+			for sb <= toBlock {
+				eb := min(sb+chunkSize-1, toBlock)
+				subRequests = append(subRequests, ethGetLogsSubRequest{
+					fromBlock: sb,
+					toBlock:   eb,
+					address:   filter["address"],
+					topics:    filter["topics"],
+				})
+				sb = eb + 1
+			}
+
+			nrq.SetCompositeType(common.CompositeTypeLogsCacheChunk)
+			mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead)
+			if err != nil {
+				return true, nil, err
+			}
+
+			nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+			if meta != nil && meta.allFromCache {
+				nrs.SetFromCache(true)
+				if meta.oldestCacheAt > 0 {
+					nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
+				}
+			}
+			nrq.SetLastValidResponse(ctx, nrs)
+			return true, nrs, nil
+		}
 	}
 
 	// Compute effective auto-splitting threshold (min across upstreams)
@@ -252,16 +295,18 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 
 		nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-		skipCache := false
-		if dirs := nrq.Directives(); dirs != nil {
-			skipCache = dirs.SkipCacheRead
-		}
-		mergedResponse, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache)
+		mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead)
 		if err != nil {
 			return true, nil, err
 		}
 
 		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+		if meta != nil && meta.allFromCache {
+			nrs.SetFromCache(true)
+			if meta.oldestCacheAt > 0 {
+				nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
+			}
+		}
 		nrq.SetLastValidResponse(ctx, nrs)
 		return true, nrs, nil
 	}
@@ -361,6 +406,7 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 		}
 		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
 		nnr.SetFromCache(rs.FromCache())
+		nnr.SetCacheStoredAtUnix(rs.CacheStoredAtUnix())
 		nnr.SetEvmBlockRef(rs.EvmBlockRef())
 		nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
 		nnr.SetAttempts(rs.Attempts())
@@ -416,14 +462,21 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	if dirs := rq.Directives(); dirs != nil {
 		skipCacheRead = dirs.SkipCacheRead
 	}
-	merged, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
+	merged, meta, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
 	if err != nil {
 		return rs, re
 	}
 	if rs != nil {
 		rs.Release()
 	}
-	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged), nil
+	nrs := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged)
+	if meta != nil && meta.allFromCache {
+		nrs.SetFromCache(true)
+		if meta.oldestCacheAt > 0 {
+			nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
+		}
+	}
+	return nrs, nil
 }
 
 type GetLogsMultiResponseWriter struct {
@@ -662,12 +715,19 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
-func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
+type getLogsMergeMeta struct {
+	allFromCache  bool
+	oldestCacheAt int64
+}
+
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
 	// Preserve sub-request order for deterministic merged output
 	responses := make([]*common.JsonRpcResponse, len(subRequests))
+	fromCacheFlags := make([]bool, len(subRequests))
+	cacheAts := make([]int64, len(subRequests))
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
@@ -746,6 +806,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 				return
 			}
 
+			fromCacheFlags[i] = rs.FromCache()
+			cacheAts[i] = rs.CacheStoredAtUnix()
+
 			if jrr == nil {
 				mu.Lock()
 				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
@@ -795,17 +858,38 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 	wg.Wait()
 
 	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		return nil, nil, errors.Join(errs...)
 	}
 
 	mergedResponse := mergeEthGetLogsResults(responses)
 	jrq, _ := r.JsonRpcRequest()
 	err := mergedResponse.SetID(jrq.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return mergedResponse, nil
+	meta := &getLogsMergeMeta{
+		allFromCache:  true,
+		oldestCacheAt: 0,
+	}
+	for i := range subRequests {
+		if !fromCacheFlags[i] {
+			meta.allFromCache = false
+			break
+		}
+		if cacheAts[i] <= 0 {
+			meta.oldestCacheAt = 0
+			continue
+		}
+		if meta.oldestCacheAt == 0 || cacheAts[i] < meta.oldestCacheAt {
+			meta.oldestCacheAt = cacheAts[i]
+		}
+	}
+	if !meta.allFromCache {
+		meta.oldestCacheAt = 0
+	}
+
+	return mergedResponse, meta, nil
 }
 
 func mergeEthGetLogsResults(responses []*common.JsonRpcResponse) *common.JsonRpcResponse {

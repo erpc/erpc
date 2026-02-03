@@ -537,6 +537,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			nr := common.NewNormalizedResponse().WithRequest(cand.req).WithJsonRpcResponse(jrr)
 			nr.SetUpstream(mcResp.Upstream())
 			nr.SetFromCache(mcResp.FromCache())
+			nr.SetCacheStoredAtUnix(mcResp.CacheStoredAtUnix())
 			nr.SetAttempts(mcResp.Attempts())
 			nr.SetRetries(mcResp.Retries())
 			nr.SetHedges(mcResp.Hedges())

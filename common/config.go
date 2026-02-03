@@ -1473,11 +1473,12 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type DirectiveDefaultsConfig struct {
-	RetryEmpty        *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
-	RetryPending      *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
-	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
-	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
-	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+	RetryEmpty         *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending       *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead      *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	CacheMaxAgeSeconds *int64  `yaml:"cacheMaxAgeSeconds,omitempty" json:"cacheMaxAgeSeconds"`
+	UseUpstream        *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	SkipInterpolation  *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
 
 	// Validation: Block Integrity
 	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
@@ -1526,6 +1527,7 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	GetLogsCacheChunkSize       *int64              `yaml:"getLogsCacheChunkSize,omitempty" json:"getLogsCacheChunkSize"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.
