@@ -9,7 +9,7 @@
 #     - final -> Final stage where we copy the Go binary and the TS files
 
 # Build stage for Go
-FROM golang:1.25-alpine@sha256:d9b2e14101f27ec8d09674cd01186798d227bb0daec90e032aeb1cd22ac0f029 AS go-builder
+FROM golang:1.25-alpine@sha256:98e6cffc31ccc44c7c15d83df1d69891efee8115a5bb7ede2bf30a38af3e3c92 AS go-builder
 
 WORKDIR /build
 
@@ -34,7 +34,7 @@ RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/e
     go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
 
 # Global typescript related image
-FROM node:20-alpine@sha256:3960ed74dfe320a67bf8da9555b6bade25ebda2b22b6081d2f60fd7d5d430e9c AS ts-core
+FROM node:20-alpine@sha256:09e2b3d9726018aecf269bd35325f46bf75046a643a66d28360ec71132750ec8 AS ts-core
 RUN npm install -g pnpm
 
 # Stage where we will install dev dependencies + compile sdk
@@ -63,7 +63,7 @@ COPY package.json /temp/prod/package.json
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install --prod --frozen-lockfile
 
 # Create symlink stage (for backwards compatibility with earlier image file structure)
-FROM alpine:latest@sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62 AS symlink
+FROM alpine:latest@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 AS symlink
 RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
 
 # Final stage
