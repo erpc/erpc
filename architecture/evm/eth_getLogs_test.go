@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -1405,6 +1406,143 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		assert.False(t, handled) // Validation passed
 		assert.NoError(t, err)
 		assert.Nil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("cache_chunking_partial_cache", func(t *testing.T) {
+		chunkSize := int64(2)
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Cache").Return(&common.MockCacheDal{}).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				GetLogsCacheChunkSize:   &chunkSize,
+				GetLogsSplitConcurrency: 2,
+			},
+		}).Maybe()
+
+		oldest := int64(1700000000)
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jreq, _ := r.JsonRpcRequest()
+				filter := jreq.Params[0].(map[string]interface{})
+				fb := filter["fromBlock"].(string)
+				tb := filter["toBlock"].(string)
+				jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(fmt.Sprintf(`["%s-%s"]`, fb, tb)), nil)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+				if fb == "0x1" {
+					resp.SetFromCache(true)
+					resp.SetCacheStoredAtUnix(oldest)
+				}
+				return resp, nil
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x4",
+		})
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		require.NoError(t, err)
+		require.True(t, handled)
+		require.NotNil(t, resp)
+		assert.False(t, resp.FromCache())
+		assert.Equal(t, int64(0), resp.CacheStoredAtUnix())
+		assert.Equal(t, common.CompositeTypeLogsCacheChunk, r.CompositeType())
+
+		n.AssertExpectations(t)
+	})
+
+	t.Run("cache_chunking_all_cached_oldest_cache_at", func(t *testing.T) {
+		chunkSize := int64(2)
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Cache").Return(&common.MockCacheDal{}).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				GetLogsCacheChunkSize:   &chunkSize,
+				GetLogsSplitConcurrency: 2,
+			},
+		}).Maybe()
+
+		oldest := int64(1700000000)
+		newest := int64(1700000100)
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jreq, _ := r.JsonRpcRequest()
+				filter := jreq.Params[0].(map[string]interface{})
+				fb := filter["fromBlock"].(string)
+				tb := filter["toBlock"].(string)
+				jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(fmt.Sprintf(`["%s-%s"]`, fb, tb)), nil)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+				resp.SetFromCache(true)
+				if fb == "0x1" {
+					resp.SetCacheStoredAtUnix(oldest)
+				} else {
+					resp.SetCacheStoredAtUnix(newest)
+				}
+				return resp, nil
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x4",
+		})
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		require.NoError(t, err)
+		require.True(t, handled)
+		require.NotNil(t, resp)
+		assert.True(t, resp.FromCache())
+		assert.Equal(t, oldest, resp.CacheStoredAtUnix())
+		assert.Equal(t, common.CompositeTypeLogsCacheChunk, r.CompositeType())
+
+		n.AssertExpectations(t)
+	})
+
+	t.Run("cache_chunking_all_cached_without_cache_at", func(t *testing.T) {
+		chunkSize := int64(2)
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Cache").Return(&common.MockCacheDal{}).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				GetLogsCacheChunkSize:   &chunkSize,
+				GetLogsSplitConcurrency: 2,
+			},
+		}).Maybe()
+
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jreq, _ := r.JsonRpcRequest()
+				filter := jreq.Params[0].(map[string]interface{})
+				fb := filter["fromBlock"].(string)
+				tb := filter["toBlock"].(string)
+				jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(fmt.Sprintf(`["%s-%s"]`, fb, tb)), nil)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+				resp.SetFromCache(true)
+				return resp, nil
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x4",
+		})
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		require.NoError(t, err)
+		require.True(t, handled)
+		require.NotNil(t, resp)
+		assert.True(t, resp.FromCache())
+		assert.Equal(t, int64(0), resp.CacheStoredAtUnix())
+		assert.Equal(t, common.CompositeTypeLogsCacheChunk, r.CompositeType())
+
 		n.AssertExpectations(t)
 	})
 }
