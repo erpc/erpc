@@ -91,14 +91,29 @@ func NewGenericHttpJsonRpcClient(
 
 	// Default fallback transport (no proxy)
 	// Optimized for high-latency, high-RPS scenarios to prevent connection churn
+	var timeouts *common.HTTPClientTimeouts
+	if jsonRpcCfg != nil {
+		timeouts = &jsonRpcCfg.HTTPClientTimeouts
+	}
+	resolved := timeouts.Resolve()
+
+	logger.Debug().
+		Dur("timeout", resolved.Timeout).
+		Dur("responseHeaderTimeout", resolved.ResponseHeaderTimeout).
+		Dur("tlsHandshakeTimeout", resolved.TLSHandshakeTimeout).
+		Dur("idleConnTimeout", resolved.IdleConnTimeout).
+		Dur("expectContinueTimeout", resolved.ExpectContinueTimeout).
+		Str("upstreamId", upstream.Id()).
+		Msg("creating HTTP client with timeout configuration")
+
 	transport := &http.Transport{
 		MaxIdleConns:          1024,
 		MaxIdleConnsPerHost:   256,
 		MaxConnsPerHost:       0, // Unlimited active connections (prevents bottleneck)
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       resolved.IdleConnTimeout,
+		ResponseHeaderTimeout: resolved.ResponseHeaderTimeout,
+		TLSHandshakeTimeout:   resolved.TLSHandshakeTimeout,
+		ExpectContinueTimeout: resolved.ExpectContinueTimeout,
 	}
 
 	if util.IsTest() {
@@ -107,7 +122,7 @@ func NewGenericHttpJsonRpcClient(
 		}
 	} else {
 		client.httpClient = &http.Client{
-			Timeout:   60 * time.Second,
+			Timeout:   resolved.Timeout,
 			Transport: transport,
 		}
 	}
@@ -203,13 +218,26 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
 	if c.proxyPool != nil {
 		client, err := c.proxyPool.GetClient()
-		if c.isLogLevelTrace {
-			proxy, _ := client.Transport.(*http.Transport).Proxy(nil)
-			c.logger.Trace().Str("proxyPool", c.proxyPool.ID).Str("ptr", fmt.Sprintf("%p", client.Transport)).Str("proxy", proxy.String()).Msgf("using client from proxy pool")
-		}
 		if err != nil {
-			c.logger.Error().Err(err).Msgf("failed to get client from proxy pool")
+			c.logger.Error().
+				Err(err).
+				Str("proxyPool", c.proxyPool.ID).
+				Str("upstreamId", c.upstream.Id()).
+				Bool("fallbackToDirectConnection", true).
+				Msg("failed to get client from proxy pool, falling back to direct connection")
 			return c.httpClient
+		}
+		if c.isLogLevelTrace {
+			if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+				proxy, proxyErr := transport.Proxy(nil)
+				if proxyErr == nil && proxy != nil {
+					c.logger.Trace().
+						Str("proxyPool", c.proxyPool.ID).
+						Str("ptr", fmt.Sprintf("%p", client.Transport)).
+						Str("proxy", proxy.String()).
+						Msg("using client from proxy pool")
+				}
+			}
 		}
 		return client
 	}

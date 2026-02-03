@@ -243,6 +243,12 @@ func (p *ProxyPoolConfig) Validate() error {
 			return fmt.Errorf("proxyPool.*.urls under proxyPool.*.id '%s' must be valid HTTP, HTTPS, or SOCKS5 URLs, got: %s", p.ID, url)
 		}
 	}
+
+	// Validate HTTP client timeout settings
+	if err := p.HTTPClientTimeouts.Validate(fmt.Sprintf("proxyPool '%s': ", p.ID)); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -1187,6 +1193,12 @@ func (j *JsonRpcUpstreamConfig) Validate(c *Config) error {
 			return fmt.Errorf("jsonRpc.proxyPool '%s' does not exist in configured proxyPools, must be one of: %v", j.ProxyPool, allIds)
 		}
 	}
+
+	// Validate HTTP client timeout settings
+	if err := j.HTTPClientTimeouts.Validate("jsonRpc: "); err != nil {
+		return err
+	}
+
 	return nil
 }
 
