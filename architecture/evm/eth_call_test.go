@@ -18,6 +18,7 @@ type mockNetworkForEthCall struct {
 	projectId string
 	cfg       *common.NetworkConfig
 	forwardFn func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+	cache     common.CacheDAL
 	mu        sync.Mutex
 	callCount int
 }
@@ -46,12 +47,37 @@ func (m *mockNetworkForEthCall) GetFinality(ctx context.Context, req *common.Nor
 func (m *mockNetworkForEthCall) EvmHighestLatestBlockNumber(ctx context.Context) int64    { return 0 }
 func (m *mockNetworkForEthCall) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 { return 0 }
 func (m *mockNetworkForEthCall) EvmLeaderUpstream(ctx context.Context) common.Upstream    { return nil }
-func (m *mockNetworkForEthCall) Cache() common.CacheDAL                                   { return nil }
+func (m *mockNetworkForEthCall) Cache() common.CacheDAL                                   { return m.cache }
 
 func (m *mockNetworkForEthCall) GetCallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.callCount
+}
+
+type captureCacheDal struct {
+	t     *testing.T
+	froms []string
+}
+
+func (c *captureCacheDal) Get(ctx context.Context, nrq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	jrq, err := nrq.JsonRpcRequest()
+	require.NoError(c.t, err)
+	require.NotEmpty(c.t, jrq.Params)
+	callObj, ok := jrq.Params[0].(map[string]interface{})
+	require.True(c.t, ok)
+	from, ok := callObj["from"].(string)
+	require.True(c.t, ok)
+	c.froms = append(c.froms, from)
+	return nil, nil
+}
+
+func (c *captureCacheDal) Set(ctx context.Context, nrq *common.NormalizedRequest, nrs *common.NormalizedResponse) error {
+	return nil
+}
+
+func (c *captureCacheDal) IsObjectNull() bool {
+	return false
 }
 
 func TestProjectPreForward_eth_call_Batching(t *testing.T) {
@@ -292,6 +318,65 @@ func TestProjectPreForward_eth_call_AddsBlockParam(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, capturedJrq.Params, 2)
 	require.Equal(t, "latest", capturedJrq.Params[1])
+}
+
+func TestHandleUserMulticall3_PreservesMsgSender(t *testing.T) {
+	target1, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	target2, err := common.HexToBytes("0x2222222222222222222222222222222222222222")
+	require.NoError(t, err)
+
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target1, CallData: []byte{0x01}},
+		{Target: target2, CallData: []byte{0x02}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   multicall3Address,
+			"data": "0x" + hexEncode(encodedCalls),
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xaa}},
+		{Success: true, ReturnData: []byte{0xbb}},
+	}
+	encodedResult, err := EncodeMulticall3Aggregate3Results(results)
+	require.NoError(t, err)
+	mcJrr, err := common.NewJsonRpcResponse(nil, "0x"+hexEncode(encodedResult), nil)
+	require.NoError(t, err)
+	mcResp := common.NewNormalizedResponse().WithJsonRpcResponse(mcJrr)
+
+	cacheDal := &captureCacheDal{t: t}
+	cfg := &common.NetworkConfig{
+		Evm: &common.EvmNetworkConfig{
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				CachePerCall: util.BoolPtr(false),
+			},
+		},
+	}
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       cfg,
+		cache:     cacheDal,
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return mcResp, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.NotNil(t, resp)
+	require.Len(t, cacheDal.froms, 2)
+	for _, from := range cacheDal.froms {
+		require.Equal(t, multicall3Address, from)
+	}
 }
 
 // hexEncode is a helper to encode bytes as hex string

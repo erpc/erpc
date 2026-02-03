@@ -292,6 +292,7 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 	for i, call := range decodedCalls {
 		callObj := map[string]interface{}{
 			"to":   "0x" + hex.EncodeToString(call.Target),
+			"from": multicall3Address,
 			"data": "0x" + hex.EncodeToString(call.CallData),
 		}
 		callReq := common.NewJsonRpcRequest("eth_call", []interface{}{callObj, blockParam})
@@ -393,7 +394,50 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 		return true, resp, nil
 	}
 
-	mcReq, _, err := BuildMulticall3Request(missingReqs, blockParam)
+	missingBatchReqs := make([]*common.NormalizedRequest, len(missingReqs))
+	for i, req := range missingReqs {
+		jrq, err := req.JsonRpcRequest()
+		if err != nil {
+			logDebug(err, "handleUserMulticall3: per-call request parse failed, falling back")
+			return false, nil, nil
+		}
+		jrq.RLock()
+		params := jrq.Params
+		jrq.RUnlock()
+		if len(params) < 1 {
+			logDebug(fmt.Errorf("missing eth_call params"), "handleUserMulticall3: per-call params missing, falling back")
+			return false, nil, nil
+		}
+		callObj, ok := params[0].(map[string]interface{})
+		if !ok {
+			logDebug(fmt.Errorf("invalid call object"), "handleUserMulticall3: per-call params invalid, falling back")
+			return false, nil, nil
+		}
+		target, ok := callObj["to"].(string)
+		if !ok || target == "" {
+			logDebug(fmt.Errorf("missing call target"), "handleUserMulticall3: per-call target missing, falling back")
+			return false, nil, nil
+		}
+		dataStr, ok := callObj["data"].(string)
+		if !ok || dataStr == "" {
+			if inputStr, ok := callObj["input"].(string); ok {
+				dataStr = inputStr
+			}
+		}
+		if dataStr == "" {
+			logDebug(fmt.Errorf("missing call data"), "handleUserMulticall3: per-call data missing, falling back")
+			return false, nil, nil
+		}
+		batchCallObj := map[string]interface{}{
+			"to":   target,
+			"data": dataStr,
+		}
+		batchReq := common.NewJsonRpcRequest("eth_call", []interface{}{batchCallObj})
+		batchReq.ID = util.RandomID()
+		missingBatchReqs[i] = common.NewNormalizedRequestFromJsonRpcRequest(batchReq)
+	}
+
+	mcReq, _, err := BuildMulticall3Request(missingBatchReqs, blockParam)
 	if err != nil {
 		logDebug(err, "handleUserMulticall3: build multicall3 request failed, falling back")
 		return false, nil, nil
