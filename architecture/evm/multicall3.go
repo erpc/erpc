@@ -37,6 +37,15 @@ func safeUint64ToInt(v uint64) (int, error) {
 	return int(v), nil
 }
 
+// safeIntToUint64 converts int to uint64 with overflow protection.
+// Returns an error if the value is negative.
+func safeIntToUint64(v int) (uint64, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("integer overflow: %d is negative", v)
+	}
+	return uint64(v), nil // #nosec G115 -- bounds checked
+}
+
 const (
 	abiWordSize              = 32
 	aggregate3ElementHeadLen = 3 * abiWordSize // address + allowFailure + data offset
@@ -405,22 +414,30 @@ func DecodeMulticall3Aggregate3Calls(calldata []byte) ([]DecodedMulticall3Call, 
 }
 
 func EncodeMulticall3Aggregate3Results(results []Multicall3Result) ([]byte, error) {
-	offsetTableSize := abiWordSize * len(results)
+	resultsLenUint, err := safeIntToUint64(len(results))
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 results length overflow: %w", err)
+	}
+	offsetTableSize := uint64(abiWordSize) * resultsLenUint
 	offsets := make([]uint64, len(results))
 	elems := make([][]byte, len(results))
-	cur := uint64(offsetTableSize)
+	cur := offsetTableSize
 
 	for i, res := range results {
 		elems[i] = encodeAggregate3ResultElementInternal(res)
+		elemLenUint, err := safeIntToUint64(len(elems[i]))
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 result element length overflow: %w", err)
+		}
 		offsets[i] = cur
-		cur += uint64(len(elems[i]))
+		cur += elemLenUint
 	}
 	capacity, err := safeUint64ToInt(cur)
 	if err != nil {
 		return nil, fmt.Errorf("multicall3 encoded result too large: %w", err)
 	}
 	array := make([]byte, 0, capacity)
-	array = append(array, encodeUint64(uint64(len(results)))...)
+	array = append(array, encodeUint64(resultsLenUint)...)
 	for _, off := range offsets {
 		array = append(array, encodeUint64(off)...)
 	}

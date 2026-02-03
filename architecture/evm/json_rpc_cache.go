@@ -904,16 +904,34 @@ func generateKeysForJsonRpcRequest(
 	}
 }
 
+func safeInt64ToUint64(v int64) (uint64, bool) {
+	if v < 0 {
+		return 0, false
+	}
+	return uint64(v), true // #nosec G115 -- bounds checked
+}
+
+func safeUint64ToInt64(v uint64) (int64, bool) {
+	if v > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(v), true // #nosec G115 -- bounds checked
+}
+
 // wrapCacheEnvelope prefixes cached result bytes with envelope metadata.
 func wrapCacheEnvelope(result []byte) []byte {
 	cachedAt := time.Now().Unix()
 	if len(result) > math.MaxInt-cacheEnvelopeHeader {
 		return result
 	}
+	cachedAtUint, ok := safeInt64ToUint64(cachedAt)
+	if !ok {
+		return result
+	}
 	out := make([]byte, cacheEnvelopeHeader+len(result))
 	copy(out[:4], []byte(cacheEnvelopeMagic))
 	out[4] = cacheEnvelopeVersion
-	binary.BigEndian.PutUint64(out[5:13], uint64(cachedAt))
+	binary.BigEndian.PutUint64(out[5:13], cachedAtUint)
 	copy(out[cacheEnvelopeHeader:], result)
 	return out
 }
@@ -929,7 +947,10 @@ func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
 	if data[4] != cacheEnvelopeVersion {
 		return data, 0, false
 	}
-	cachedAt := int64(binary.BigEndian.Uint64(data[5:13]))
+	cachedAt, ok := safeUint64ToInt64(binary.BigEndian.Uint64(data[5:13]))
+	if !ok {
+		return data[cacheEnvelopeHeader:], 0, false
+	}
 	return data[cacheEnvelopeHeader:], cachedAt, true
 }
 
