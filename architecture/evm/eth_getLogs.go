@@ -454,6 +454,12 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	// Split by range/addresses/topics
 	subs, err := splitEthGetLogsRequest(rq)
 	if err != nil || len(subs) == 0 {
+		if logger := n.Logger(); logger != nil {
+			logger.Debug().
+				Err(err).
+				Int("subRequests", len(subs)).
+				Msg("eth_getLogs split failed; returning original error")
+		}
 		return rs, re
 	}
 
@@ -464,6 +470,9 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	}
 	merged, meta, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
 	if err != nil {
+		if logger := n.Logger(); logger != nil {
+			logger.Debug().Err(err).Msg("eth_getLogs split execution failed; returning original error")
+		}
 		return rs, re
 	}
 	if rs != nil {

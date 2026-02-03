@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -240,6 +241,12 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 	if method != "eth_call" || len(params) < 1 {
 		return false, nil, nil
 	}
+	if len(params) > 2 {
+		if logger != nil {
+			logger.Debug().Msg("handleUserMulticall3: state override present, skipping optimization")
+		}
+		return false, nil, nil
+	}
 
 	callObj, ok := params[0].(map[string]interface{})
 	if !ok {
@@ -445,6 +452,10 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 	mcReq.SetNetwork(network)
 	mcReq.SetParentRequestId(nq.ID())
 	mcReq.SetCompositeType(common.CompositeTypeMulticall3)
+	mcReq.CopyHttpContextFrom(nq)
+	if dirs := nq.Directives(); dirs != nil {
+		mcReq.SetDirectives(dirs.Clone())
+	}
 
 	mcResp, err := network.Forward(ctx, mcReq)
 	if err != nil || mcResp == nil {
@@ -546,11 +557,13 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 			}
 			resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 			resp.SetUpstream(mcUpstream)
-			if err := cacheDal.Set(context.Background(), req, resp); err != nil {
+			cacheCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := cacheDal.Set(cacheCtx, req, resp); err != nil {
 				if logger != nil {
 					logger.Warn().Err(err).Msg("handleUserMulticall3: failed to write per-call cache entry")
 				}
 			}
+			cancel()
 		}
 	}
 

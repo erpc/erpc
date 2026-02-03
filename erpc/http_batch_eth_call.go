@@ -83,7 +83,7 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 	var blockRef string
 	var blockParam interface{}
 	// Track requireCanonical state across requests:
-	// 0 = not yet set, 1 = explicitly true, 2 = explicitly false, 3 = not specified (default true)
+	// 0 = not yet set, 1 = explicitly true, 2 = explicitly false
 	var requireCanonicalState int
 
 	for _, raw := range requests {

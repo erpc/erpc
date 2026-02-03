@@ -557,7 +557,15 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				ttl.String(),
 			).Add(float64(len(valueToStore)))
 
-			storedValue := wrapCacheEnvelope(valueToStore)
+			storedValue, wrapped := wrapCacheEnvelope(valueToStore)
+			if !wrapped {
+				lg.Debug().
+					Str("blockRef", blockRef).
+					Str("primaryKey", pk).
+					Str("rangeKey", rk).
+					Int("resultBytes", len(valueToStore)).
+					Msg("cache envelope wrap failed; storing legacy payload")
+			}
 			if c.compressionEnabled && len(storedValue) >= c.compressionThreshold {
 				compressedValue, isCompressed := c.compressValueBytes(storedValue)
 				if isCompressed {
@@ -836,7 +844,15 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		resultBytes = decompressed
 	}
 
-	resultBytes, cachedAt, _ := unwrapCacheEnvelope(resultBytes)
+	originalSize := len(resultBytes)
+	resultBytes, cachedAt, ok := unwrapCacheEnvelope(resultBytes)
+	if !ok && req.CacheMaxAgeSeconds() != nil {
+		c.logger.Debug().
+			Str("pk", groupKey).
+			Str("rk", requestKey).
+			Int("payloadBytes", originalSize).
+			Msg("cache envelope missing or invalid; treating as legacy")
+	}
 	if c.isCacheEntryStale(req, cachedAt) {
 		// Best-effort delete of stale entry
 		if delErr := connector.Delete(ctx, groupKey, requestKey); delErr != nil {
@@ -919,21 +935,21 @@ func safeUint64ToInt64(v uint64) (int64, bool) {
 }
 
 // wrapCacheEnvelope prefixes cached result bytes with envelope metadata.
-func wrapCacheEnvelope(result []byte) []byte {
+func wrapCacheEnvelope(result []byte) ([]byte, bool) {
 	cachedAt := time.Now().Unix()
 	if len(result) > math.MaxInt-cacheEnvelopeHeader {
-		return result
+		return result, false
 	}
 	cachedAtUint, ok := safeInt64ToUint64(cachedAt)
 	if !ok {
-		return result
+		return result, false
 	}
 	out := make([]byte, cacheEnvelopeHeader+len(result))
 	copy(out[:4], []byte(cacheEnvelopeMagic))
 	out[4] = cacheEnvelopeVersion
 	binary.BigEndian.PutUint64(out[5:13], cachedAtUint)
 	copy(out[cacheEnvelopeHeader:], result)
-	return out
+	return out, true
 }
 
 // unwrapCacheEnvelope returns (payload, cachedAtUnix, ok).
