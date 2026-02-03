@@ -1398,7 +1398,7 @@ func TestNetworkFailsafe_UpstreamGroupFilter(t *testing.T) {
 			},
 		}
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		require.NoError(t, err)
 
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
@@ -1509,7 +1509,7 @@ func TestNetworkFailsafe_UpstreamGroupFilter(t *testing.T) {
 			},
 		}
 
-		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		require.NoError(t, err)
 
 		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
