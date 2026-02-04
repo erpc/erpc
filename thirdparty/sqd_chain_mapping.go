@@ -9,47 +9,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// sqdChainToDataset maps EVM chainId to SQD Portal dataset name.
-// Dataset slug is the last segment of the Portal gateway URL.
+// sqdDatasetFromSettings extracts a dataset name from vendor settings for a given chainId.
+// Returns the dataset and true if found, empty string and false otherwise.
 //
-// NOTE: This mapping is only needed for backward compatibility with the {dataset}
-// placeholder format. When using the preferred {chainId} placeholder format
-// (e.g., https://wrapper.example.com/v1/evm/{chainId}), this mapping is bypassed
-// and any EVM chain is supported without requiring an entry here.
-var sqdChainToDataset = map[int64]string{
-	// Mainnets
-	1:       "ethereum-mainnet",
-	10:      "optimism-mainnet",
-	56:      "binance-mainnet",
-	100:     "gnosis-mainnet",
-	137:     "polygon-mainnet",
-	250:     "fantom-mainnet",
-	324:     "zksync-mainnet",
-	8453:    "base-mainnet",
-	42161:   "arbitrum-one",
-	42170:   "arbitrum-nova",
-	43114:   "avalanche-mainnet",
-	59144:   "linea-mainnet",
-	534352:  "scroll-mainnet",
-	81457:   "blast-mainnet",
-	7777777: "zora-mainnet",
-
-	// Testnets (commonly used)
-	11155111: "ethereum-sepolia",
-	84532:    "base-sepolia",
-	421614:   "arbitrum-sepolia",
-	11155420: "optimism-sepolia",
-}
-
-// sqdSupportedChainIds returns a slice of all supported chain IDs.
-func sqdSupportedChainIds() []int64 {
-	chains := make([]int64, 0, len(sqdChainToDataset))
-	for chainId := range sqdChainToDataset {
-		chains = append(chains, chainId)
-	}
-	return chains
-}
-
+// Supported settings:
+//   - "dataset": string - use this dataset for all chains
+//   - "datasetByChainId": map[chainId]dataset - per-chain dataset mapping
 func sqdDatasetFromSettings(settings common.VendorSettings, chainId int64) (string, bool) {
 	if settings == nil {
 		return "", false
@@ -151,49 +116,6 @@ func sqdDatasetFromInterfaceMap(m map[interface{}]interface{}, chainId int64, ch
 		return dataset, true
 	}
 	return "", false
-}
-
-func sqdUseDefaultDatasets(settings common.VendorSettings) bool {
-	if settings == nil {
-		return true
-	}
-
-	raw, ok := settings["useDefaultDatasets"]
-	if !ok {
-		return true
-	}
-
-	switch val := raw.(type) {
-	case bool:
-		return val
-	case string:
-		if parsed, ok := sqdParseBoolString(val); ok {
-			return parsed
-		}
-		log.Warn().Str("value", val).Msg("sqd useDefaultDatasets unrecognized string, defaulting to false")
-		return false
-	case int:
-		return val != 0
-	case int64:
-		return val != 0
-	case float64:
-		return val != 0
-	default:
-		log.Warn().Str("type", fmt.Sprintf("%T", raw)).Msg("sqd useDefaultDatasets unsupported type, defaulting to false")
-		return false
-	}
-}
-
-func sqdParseBoolString(raw string) (bool, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(raw))
-	switch normalized {
-	case "true", "t", "1", "yes", "y", "on":
-		return true, true
-	case "false", "f", "0", "no", "n", "off":
-		return false, true
-	default:
-		return false, false
-	}
 }
 
 func sqdChainIdKeyMatches(key interface{}, chainId int64, chainIdStr string) bool {

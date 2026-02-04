@@ -45,16 +45,13 @@ func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger,
 		return true, nil
 	}
 
+	// Check if a custom dataset is configured for this chain
 	if dataset, ok := sqdDatasetFromSettings(settings, chainID); ok && dataset != "" {
 		return true, nil
 	}
 
-	if !sqdUseDefaultDatasets(settings) {
-		return false, nil
-	}
-
-	_, exists := sqdChainToDataset[chainID]
-	return exists, nil
+	// No {chainId} placeholder and no custom dataset configured
+	return false, nil
 }
 
 func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -148,16 +145,7 @@ func (v *SqdVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, r
 }
 
 func sqdDatasetForChain(settings common.VendorSettings, chainId int64) (string, bool) {
-	if dataset, ok := sqdDatasetFromSettings(settings, chainId); ok {
-		return dataset, true
-	}
-	if !sqdUseDefaultDatasets(settings) {
-		return "", false
-	}
-	if dataset, ok := sqdChainToDataset[chainId]; ok {
-		return dataset, true
-	}
-	return "", false
+	return sqdDatasetFromSettings(settings, chainId)
 }
 
 func sqdApplyDatasetToEndpoint(endpoint string, dataset string) (string, bool) {
