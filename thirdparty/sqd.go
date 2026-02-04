@@ -35,21 +35,13 @@ func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger,
 		return false, nil
 	}
 
-	chainID, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
+	_, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
 
-	if dataset, ok := sqdDatasetFromSettings(settings, chainID); ok && dataset != "" {
-		return true, nil
-	}
-
-	if !sqdUseDefaultDatasets(settings) {
-		return false, nil
-	}
-
-	_, exists := sqdChainToDataset[chainID]
-	return exists, nil
+	// Any EVM chain is supported - endpoint uses {chainId} placeholder
+	return true, nil
 }
 
 func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -66,25 +58,18 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 	}
 
 	if upstream.Endpoint == "" {
-		return nil, fmt.Errorf("sqd vendor requires upstream.endpoint to be defined (portal wrapper)")
+		return nil, fmt.Errorf("sqd vendor requires upstream.endpoint to be defined")
+	}
+
+	if !strings.Contains(upstream.Endpoint, "{chainId}") {
+		return nil, fmt.Errorf("sqd vendor requires endpoint to contain {chainId} placeholder (e.g., https://wrapper.example.com/v1/evm/{chainId})")
 	}
 
 	upstream.Type = common.UpstreamTypeEvm
 	upstream.VendorName = v.Name()
 
-	if dataset, ok := sqdDatasetForChain(settings, upstream.Evm.ChainId); ok {
-		if endpoint, updated := sqdApplyDatasetToEndpoint(upstream.Endpoint, dataset); updated {
-			upstream.Endpoint = endpoint
-		} else if logger != nil {
-			logger.Warn().
-				Int64("chainId", upstream.Evm.ChainId).
-				Str("dataset", dataset).
-				Str("endpoint", upstream.Endpoint).
-				Msg("sqd dataset resolved but could not be applied to endpoint format")
-		}
-	} else if strings.Contains(upstream.Endpoint, "{dataset}") {
-		return nil, fmt.Errorf("sqd endpoint contains {dataset} placeholder but no dataset found for chainId %d", upstream.Evm.ChainId)
-	}
+	// Substitute {chainId} placeholder
+	upstream.Endpoint = strings.ReplaceAll(upstream.Endpoint, "{chainId}", strconv.FormatInt(upstream.Evm.ChainId, 10))
 
 	if upstream.IgnoreMethods == nil {
 		upstream.IgnoreMethods = []string{"*"}
@@ -100,16 +85,13 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 		}
 	}
 
-	if apiKey, ok := settings["wrapperApiKey"].(string); ok && apiKey != "" {
-		header := "X-API-Key"
-		if headerOverride, ok := settings["wrapperApiKeyHeader"].(string); ok && headerOverride != "" {
-			header = headerOverride
-		}
+	// Set X-Api-Key header if provided
+	if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 		if upstream.JsonRpc.Headers == nil {
 			upstream.JsonRpc.Headers = make(map[string]string)
 		}
-		if _, exists := upstream.JsonRpc.Headers[header]; !exists {
-			upstream.JsonRpc.Headers[header] = apiKey
+		if _, exists := upstream.JsonRpc.Headers["X-Api-Key"]; !exists {
+			upstream.JsonRpc.Headers["X-Api-Key"] = apiKey
 		}
 	}
 
@@ -136,31 +118,4 @@ func (v *SqdVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, r
 
 	// Wrapper returns standard JSON-RPC errors; let generic normalization handle them.
 	return nil
-}
-
-func sqdDatasetForChain(settings common.VendorSettings, chainId int64) (string, bool) {
-	if dataset, ok := sqdDatasetFromSettings(settings, chainId); ok {
-		return dataset, true
-	}
-	if !sqdUseDefaultDatasets(settings) {
-		return "", false
-	}
-	if dataset, ok := sqdChainToDataset[chainId]; ok {
-		return dataset, true
-	}
-	return "", false
-}
-
-func sqdApplyDatasetToEndpoint(endpoint string, dataset string) (string, bool) {
-	if dataset == "" {
-		return endpoint, false
-	}
-	if strings.Contains(endpoint, "{dataset}") {
-		return strings.ReplaceAll(endpoint, "{dataset}", dataset), true
-	}
-	trimmed := strings.TrimRight(endpoint, "/")
-	if strings.HasSuffix(strings.ToLower(trimmed), "/datasets") {
-		return trimmed + "/" + dataset, true
-	}
-	return endpoint, false
 }
