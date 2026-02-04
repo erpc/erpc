@@ -77,7 +77,10 @@ func (f *networkForwarder) SetCache(ctx context.Context, req *common.NormalizedR
 func projectPreForward_eth_call(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	jrq, err := nq.JsonRpcRequest()
 	if err != nil {
-		return false, nil, nil
+		if logger := network.Logger(); logger != nil {
+			logger.Warn().Err(err).Msg("projectPreForward_eth_call: failed to parse json-rpc request")
+		}
+		return false, nil, err
 	}
 
 	if nq.ParentRequestId() != nil || nq.IsCompositeRequest() {
@@ -226,7 +229,7 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 		if err == nil || logger == nil {
 			return
 		}
-		logger.Debug().Err(err).Msg(msg)
+		logger.Warn().Err(err).Msg(msg)
 	}
 	jrq, err := nq.JsonRpcRequest()
 	if err != nil {
@@ -251,6 +254,17 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 	callObj, ok := params[0].(map[string]interface{})
 	if !ok {
 		return false, nil, nil
+	}
+	for key := range callObj {
+		switch key {
+		case "to", "data", "input":
+			continue
+		default:
+			if logger != nil {
+				logger.Debug().Str("field", key).Msg("handleUserMulticall3: extra call object field, skipping optimization")
+			}
+			return false, nil, nil
+		}
 	}
 	toVal, ok := callObj["to"]
 	if !ok {

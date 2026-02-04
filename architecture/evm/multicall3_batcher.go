@@ -51,8 +51,7 @@ type Batcher struct {
 	// runtimeBypass holds contracts detected at runtime that revert when called via Multicall3
 	// but succeed when called individually. This in-memory cache resets on process restart.
 	// For persistent bypass configuration, use the BypassContracts config field.
-	// Note: This map can grow without bound; in practice this is limited by the number of
-	// unique contracts that fail via multicall3 but succeed individually (typically few).
+	// Note: This map is capped (see runtimeBypassMaxEntries) to avoid unbounded growth.
 	// Protected by runtimeBypassMu.
 	runtimeBypass   map[string]bool
 	runtimeBypassMu sync.RWMutex
@@ -570,7 +569,8 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 				// Write to cache once per unique call (not once per duplicate entry)
 				if cachePerCall && !cachedOnce {
 					// Use background context for cache write to avoid request deadline issues
-					if err := b.forwarder.SetCache(context.Background(), entry.Request, resp); err != nil {
+					cacheCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := b.forwarder.SetCache(cacheCtx, entry.Request, resp); err != nil {
 						// Cache write failures are non-critical but we track them for observability
 						telemetry.MetricMulticall3CacheWriteErrorsTotal.WithLabelValues(projectId, networkId).Inc()
 						if b.logger != nil {
@@ -582,6 +582,7 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 								Msg("multicall3 per-call cache write failed")
 						}
 					}
+					cancel()
 					cachedOnce = true
 				}
 
@@ -796,9 +797,12 @@ func (b *Batcher) deliverError(entries []*BatchEntry, err error, projectId, netw
 // Records metrics for each fallback request outcome.
 func (b *Batcher) fallbackIndividual(entries []*BatchEntry, projectId, networkId string) {
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
 	for _, entry := range entries {
 		wg.Add(1)
 		go func(e *BatchEntry) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {

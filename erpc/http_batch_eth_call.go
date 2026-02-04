@@ -581,7 +581,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 				default:
 					// Semaphore full - skip cache write to avoid unbounded goroutine growth
 					telemetry.MetricMulticall3CacheWriteDroppedTotal.WithLabelValues(projectId, batchInfo.networkId).Inc()
-					cand.logger.Debug().Msg("skipping multicall3 per-call cache write due to backpressure")
+					cand.logger.Warn().Msg("skipping multicall3 per-call cache write due to backpressure")
 				}
 			}
 			continue

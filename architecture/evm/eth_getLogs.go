@@ -454,6 +454,12 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	// Split by range/addresses/topics
 	subs, err := splitEthGetLogsRequest(rq)
 	if err != nil || len(subs) == 0 {
+		telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
+			n.ProjectId(),
+			n.Label(),
+			rq.UserId(),
+			rq.AgentName(),
+		).Inc()
 		if logger := n.Logger(); logger != nil {
 			logger.Debug().
 				Err(err).
@@ -470,6 +476,12 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	}
 	merged, meta, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
 	if err != nil {
+		telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
+			n.ProjectId(),
+			n.Label(),
+			rq.UserId(),
+			rq.AgentName(),
+		).Inc()
 		if logger := n.Logger(); logger != nil {
 			logger.Debug().Err(err).Msg("eth_getLogs split execution failed; returning original error")
 		}
@@ -870,6 +882,7 @@ loop:
 			if err != nil {
 				errs = append(errs, err)
 				mu.Unlock()
+				rs.Release()
 				return
 			}
 			responses[i] = jrrc

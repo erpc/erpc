@@ -481,6 +481,41 @@ func TestHandleUserMulticall3_SkipsStateOverride(t *testing.T) {
 	require.Equal(t, 0, network.GetCallCount())
 }
 
+func TestHandleUserMulticall3_SkipsExtraCallObjectFields(t *testing.T) {
+	target, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target, CallData: []byte{0x01}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":    multicall3Address,
+			"data":  "0x" + hexEncode(encodedCalls),
+			"value": "0x1",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       &common.NetworkConfig{},
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			t.Fatalf("unexpected multicall3 forward with extra call fields")
+			return nil, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.False(t, handled)
+	require.Nil(t, resp)
+	require.Equal(t, 0, network.GetCallCount())
+}
+
 // hexEncode is a helper to encode bytes as hex string
 func hexEncode(b []byte) string {
 	const hexChars = "0123456789abcdef"

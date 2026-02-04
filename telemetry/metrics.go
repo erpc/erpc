@@ -239,6 +239,12 @@ var (
 		Help:      "Total number of cache set skips.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
+	MetricCacheEnvelopeWrapFailureTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_envelope_wrap_failure_total",
+		Help:      "Total number of cache envelope wrap failures.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
 	MetricCacheGetSuccessHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_total",

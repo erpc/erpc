@@ -565,6 +565,14 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					Str("rangeKey", rk).
 					Int("resultBytes", len(valueToStore)).
 					Msg("cache envelope wrap failed; storing legacy payload")
+				telemetry.MetricCacheEnvelopeWrapFailureTotal.WithLabelValues(
+					c.projectId,
+					req.NetworkLabel(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					ttl.String(),
+				).Inc()
 			}
 			if c.compressionEnabled && len(storedValue) >= c.compressionThreshold {
 				compressedValue, isCompressed := c.compressValueBytes(storedValue)
@@ -854,10 +862,6 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 			Msg("cache envelope missing or invalid; treating as legacy")
 	}
 	if c.isCacheEntryStale(req, cachedAt) {
-		// Best-effort delete of stale entry
-		if delErr := connector.Delete(ctx, groupKey, requestKey); delErr != nil {
-			c.logger.Debug().Err(delErr).Str("pk", groupKey).Str("rk", requestKey).Msg("failed to delete stale cache entry")
-		}
 		return nil, 0, nil
 	}
 

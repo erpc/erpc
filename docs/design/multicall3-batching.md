@@ -123,6 +123,7 @@ Directives key uses a stable, versioned subset:
 - `RetryEmpty`
 - `RetryPending`
 - `SkipCacheRead` (optional; can be per-request, but include for clarity)
+- `CacheMaxAgeSeconds`
 
 Any new directive must be explicitly added to the subset or ignored. The
 directives key version is defined in code (not config) to avoid cross-node
@@ -200,8 +201,8 @@ Infrastructure failure:
   to distinguish infra failures from per-call failures.
 
 ## Cancellation Handling
-- If a request is canceled before flush, remove it from the batch and return
-  a context error for that request only.
+- If a request is canceled before flush, it stays in the batch; delivery checks
+  the context and skips sending while recording abandonment metrics.
 - Cancellation does not affect other requests in the batch.
 - Rate limit permits are not released (standard behavior). This keeps rate
   limiting conservative and avoids races; a future enhancement could reclaim
@@ -282,10 +283,9 @@ Maintain backward compatibility with existing `multicall3Aggregation: true|false
 
 ## Algorithm Sketch
 ```
-Enqueue(req):
+Handle(req):
+  if SkipCacheRead == false and cache hit: return cached response
   if not eligible or deadline too tight: return notHandled
-  if SkipCacheRead == false:
-    if cache hit: return cached response
   if batch for key is flushing: create a new batch for key
   add to batch key
   if callKey duplicate: attach waiter and wait for result

@@ -342,7 +342,7 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 		return out
 	}
 
-	t.Run("RejectsStaleEntryAndDeletes", func(t *testing.T) {
+	t.Run("RejectsStaleEntryWithoutDelete", func(t *testing.T) {
 		mockConnector := &data.MockConnector{}
 		mockConnector.On("Id").Return("mock-connector").Maybe()
 
@@ -357,7 +357,6 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 
 		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
 			Return(cachedBytes, nil)
-		mockConnector.On("Delete", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 
 		ttl := 5 * time.Minute
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
@@ -428,7 +427,7 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 		assert.Equal(t, cachedAt, resp.CacheStoredAtUnix())
 	})
 
-	t.Run("RejectsEntryWithoutEnvelopeAndDeletes", func(t *testing.T) {
+	t.Run("RejectsEntryWithoutEnvelope", func(t *testing.T) {
 		mockConnector := &data.MockConnector{}
 		mockConnector.On("Id").Return("mock-connector").Maybe()
 
@@ -441,7 +440,6 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 
 		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
 			Return(resultBytes, nil)
-		mockConnector.On("Delete", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 
 		ttl := 5 * time.Minute
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
@@ -467,6 +465,91 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, resp)
 		mockConnector.AssertExpectations(t)
+	})
+
+	t.Run("NegativeMaxAgeDisablesStalenessCheck", func(t *testing.T) {
+		mockConnector := &data.MockConnector{}
+		mockConnector.On("Id").Return("mock-connector").Maybe()
+
+		result := map[string]interface{}{
+			"number":    "0x1234",
+			"timestamp": "0x1",
+			"hash":      "0xabcd",
+		}
+		resultBytes, _ := json.Marshal(result)
+		cachedAt := time.Now().Add(-10 * time.Minute).Unix()
+		cachedBytes := buildEnvelope(resultBytes, cachedAt)
+
+		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
+			Return(cachedBytes, nil)
+
+		ttl := 5 * time.Minute
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Connector: "mock-connector",
+			TTL:       common.Duration(ttl),
+			Network:   "*",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateUnknown,
+		}, mockConnector)
+		require.NoError(t, err)
+
+		cache := &EvmJsonRpcCache{
+			projectId: "test-project",
+			logger:    &logger,
+			policies:  []*data.CachePolicy{policy},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1234",true],"id":1}`))
+		maxAge := int64(-1)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+
+		resp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.True(t, resp.FromCache())
+	})
+
+	t.Run("AcceptsEntryWithFutureCachedAt", func(t *testing.T) {
+		mockConnector := &data.MockConnector{}
+		mockConnector.On("Id").Return("mock-connector").Maybe()
+
+		result := map[string]interface{}{
+			"number":    "0x1234",
+			"timestamp": "0x1",
+			"hash":      "0xabcd",
+		}
+		resultBytes, _ := json.Marshal(result)
+		cachedAt := time.Now().Add(5 * time.Minute).Unix()
+		cachedBytes := buildEnvelope(resultBytes, cachedAt)
+
+		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
+			Return(cachedBytes, nil)
+
+		ttl := 5 * time.Minute
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Connector: "mock-connector",
+			TTL:       common.Duration(ttl),
+			Network:   "*",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateUnknown,
+		}, mockConnector)
+		require.NoError(t, err)
+
+		cache := &EvmJsonRpcCache{
+			projectId: "test-project",
+			logger:    &logger,
+			policies:  []*data.CachePolicy{policy},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1234",true],"id":1}`))
+		maxAge := int64(60)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+
+		resp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.True(t, resp.FromCache())
+		assert.Equal(t, cachedAt, resp.CacheStoredAtUnix())
 	})
 }
 
