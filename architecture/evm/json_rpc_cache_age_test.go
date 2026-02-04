@@ -467,6 +467,90 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 		mockConnector.AssertExpectations(t)
 	})
 
+	t.Run("RejectsEntryWithInvalidEnvelopeMagic", func(t *testing.T) {
+		mockConnector := &data.MockConnector{}
+		mockConnector.On("Id").Return("mock-connector").Maybe()
+
+		result := map[string]interface{}{
+			"number":    "0x1234",
+			"timestamp": "0x1",
+			"hash":      "0xabcd",
+		}
+		resultBytes, _ := json.Marshal(result)
+		cachedAt := time.Now().Add(-10 * time.Second).Unix()
+		cachedBytes := buildEnvelope(resultBytes, cachedAt)
+		cachedBytes[0] = 'X'
+
+		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
+			Return(cachedBytes, nil)
+
+		ttl := 5 * time.Minute
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Connector: "mock-connector",
+			TTL:       common.Duration(ttl),
+			Network:   "*",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateUnknown,
+		}, mockConnector)
+		require.NoError(t, err)
+
+		cache := &EvmJsonRpcCache{
+			projectId: "test-project",
+			logger:    &logger,
+			policies:  []*data.CachePolicy{policy},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1234",true],"id":1}`))
+		maxAge := int64(1)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+
+		resp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, resp)
+		mockConnector.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	t.Run("RejectsEntryWhenMaxAgeZeroAndCachedAtStale", func(t *testing.T) {
+		mockConnector := &data.MockConnector{}
+		mockConnector.On("Id").Return("mock-connector").Maybe()
+
+		result := map[string]interface{}{
+			"number":    "0x1234",
+			"timestamp": "0x1",
+			"hash":      "0xabcd",
+		}
+		resultBytes, _ := json.Marshal(result)
+		cachedAt := time.Now().Add(-2 * time.Second).Unix()
+		cachedBytes := buildEnvelope(resultBytes, cachedAt)
+
+		mockConnector.On("Get", mock.Anything, data.ConnectorMainIndex, mock.Anything, mock.Anything, mock.Anything).
+			Return(cachedBytes, nil)
+
+		ttl := 5 * time.Minute
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Connector: "mock-connector",
+			TTL:       common.Duration(ttl),
+			Network:   "*",
+			Method:    "eth_getBlockByNumber",
+			Finality:  common.DataFinalityStateUnknown,
+		}, mockConnector)
+		require.NoError(t, err)
+
+		cache := &EvmJsonRpcCache{
+			projectId: "test-project",
+			logger:    &logger,
+			policies:  []*data.CachePolicy{policy},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1234",true],"id":1}`))
+		maxAge := int64(0)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+
+		resp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, resp)
+	})
+
 	t.Run("NegativeMaxAgeDisablesStalenessCheck", func(t *testing.T) {
 		mockConnector := &data.MockConnector{}
 		mockConnector.On("Id").Return("mock-connector").Maybe()

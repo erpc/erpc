@@ -226,3 +226,54 @@ func TestEnrichFromHttpHandlesBloomValidationQueryParams(t *testing.T) {
 		t.Fatalf("expected ValidateLogsBloomMatch to be true")
 	}
 }
+
+func TestEnrichFromHttp_CacheMaxAgeDirective(t *testing.T) {
+	t.Run("HeaderValue", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		headers := http.Header{}
+		headers.Set("X-ERPC-Cache-Max-Age", "15")
+
+		req.EnrichFromHttp(headers, nil, UserAgentTrackingModeSimplified)
+
+		dirs := req.Directives()
+		if dirs == nil || dirs.CacheMaxAgeSeconds == nil {
+			t.Fatalf("expected CacheMaxAgeSeconds from header")
+		}
+		if *dirs.CacheMaxAgeSeconds != 15 {
+			t.Fatalf("expected CacheMaxAgeSeconds=15, got %d", *dirs.CacheMaxAgeSeconds)
+		}
+	})
+
+	t.Run("QueryOverridesHeader", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		headers := http.Header{}
+		headers.Set("X-ERPC-Cache-Max-Age", "15")
+		query := url.Values{}
+		query.Set("cache-max-age", "7")
+
+		req.EnrichFromHttp(headers, query, UserAgentTrackingModeSimplified)
+
+		dirs := req.Directives()
+		if dirs == nil || dirs.CacheMaxAgeSeconds == nil {
+			t.Fatalf("expected CacheMaxAgeSeconds from query")
+		}
+		if *dirs.CacheMaxAgeSeconds != 7 {
+			t.Fatalf("expected CacheMaxAgeSeconds=7, got %d", *dirs.CacheMaxAgeSeconds)
+		}
+	})
+
+	t.Run("InvalidValuesIgnored", func(t *testing.T) {
+		req := NewNormalizedRequest(nil)
+		headers := http.Header{}
+		headers.Set("X-ERPC-Cache-Max-Age", "-1")
+		query := url.Values{}
+		query.Set("cache-max-age", "not-a-number")
+
+		req.EnrichFromHttp(headers, query, UserAgentTrackingModeSimplified)
+
+		dirs := req.Directives()
+		if dirs != nil && dirs.CacheMaxAgeSeconds != nil {
+			t.Fatalf("expected CacheMaxAgeSeconds to be nil for invalid values")
+		}
+	})
+}
