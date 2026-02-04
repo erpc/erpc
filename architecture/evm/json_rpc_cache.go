@@ -223,7 +223,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			attribute.String("cache.policy_summary", policy.String()),
 			attribute.String("cache.connector_id", connector.Id()),
 		))
-		jrr, cachedAt, err = c.doGet(policyCtx, connector, req, rpcReq)
+		jrr, cachedAt, err = c.doGet(policyCtx, connector, policy, req, rpcReq)
 		if err != nil {
 			common.SetTraceSpanError(policySpan, err)
 			telemetry.MetricCacheGetErrorTotal.WithLabelValues(
@@ -548,6 +548,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			// Compress the value before storing if compression is enabled
 			valueToStore := rpcResp.GetResultBytes()
+			cachedCategory := rpcReq.Method
 			telemetry.MetricCacheSetOriginalBytes.WithLabelValues(
 				c.projectId,
 				req.NetworkLabel(),
@@ -568,7 +569,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				telemetry.MetricCacheEnvelopeWrapFailureTotal.WithLabelValues(
 					c.projectId,
 					req.NetworkLabel(),
-					rpcReq.Method,
+					cachedCategory,
 					connector.Id(),
 					policy.String(),
 					ttl.String(),
@@ -797,7 +798,7 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 	return policies, nil
 }
 
-func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, int64, error) {
+func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, policy *data.CachePolicy, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, int64, error) {
 	rpcReq.RLockWithTrace(ctx)
 	defer rpcReq.RUnlock()
 
@@ -854,14 +855,52 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 
 	originalSize := len(resultBytes)
 	resultBytes, cachedAt, ok := unwrapCacheEnvelope(resultBytes)
-	if !ok && req.CacheMaxAgeSeconds() != nil {
+	if !ok {
 		c.logger.Debug().
 			Str("pk", groupKey).
 			Str("rk", requestKey).
 			Int("payloadBytes", originalSize).
 			Msg("cache envelope missing or invalid; treating as legacy")
+		cachedCategory := rpcReq.Method
+		policyStr := "unknown"
+		policyTTL := "unknown"
+		if policy != nil {
+			policyStr = policy.String()
+			policyTTL = policy.GetTTL().String()
+		}
+		connectorId := data.ConnectorMainIndex
+		if blockRef == "*" {
+			connectorId = data.ConnectorReverseIndex
+		}
+		telemetry.MetricCacheEnvelopeUnwrapFailureTotal.WithLabelValues(
+			c.projectId,
+			req.NetworkLabel(),
+			cachedCategory,
+			connectorId,
+			policyStr,
+			policyTTL,
+		).Inc()
 	}
 	if c.isCacheEntryStale(req, cachedAt) {
+		cachedCategory := rpcReq.Method
+		policyStr := "unknown"
+		policyTTL := "unknown"
+		if policy != nil {
+			policyStr = policy.String()
+			policyTTL = policy.GetTTL().String()
+		}
+		connectorId := data.ConnectorMainIndex
+		if blockRef == "*" {
+			connectorId = data.ConnectorReverseIndex
+		}
+		telemetry.MetricCacheMaxAgeStaleTotal.WithLabelValues(
+			c.projectId,
+			req.NetworkLabel(),
+			cachedCategory,
+			connectorId,
+			policyStr,
+			policyTTL,
+		).Inc()
 		return nil, 0, nil
 	}
 

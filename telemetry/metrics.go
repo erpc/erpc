@@ -245,6 +245,18 @@ var (
 		Help:      "Total number of cache envelope wrap failures.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
+	MetricCacheEnvelopeUnwrapFailureTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_envelope_unwrap_failure_total",
+		Help:      "Total number of cache envelope unwrap failures.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheMaxAgeStaleTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_max_age_stale_total",
+		Help:      "Total number of cache entries treated as stale due to cache-max-age.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
 	MetricCacheGetSuccessHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_total",
