@@ -133,6 +133,18 @@ func TestSqdVendor_SupportsNetwork(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name:      "chainId placeholder supports any EVM chain",
+			networkId: "evm:999999",
+			settings:  common.VendorSettings{"endpoint": "https://wrapper.example.com/v1/evm/{chainId}"},
+			expected:  true,
+		},
+		{
+			name:      "chainId placeholder supports known chain",
+			networkId: "evm:1",
+			settings:  common.VendorSettings{"endpoint": "https://wrapper.example.com/v1/evm/{chainId}"},
+			expected:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -350,6 +362,46 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		_, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "chainId")
+	})
+
+	t.Run("applies chainId placeholder to endpoint", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://wrapper.example.com/v1/evm/{chainId}",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 42161},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://wrapper.example.com/v1/evm/42161", configs[0].Endpoint)
+	})
+
+	t.Run("chainId placeholder works for any chain without dataset mapping", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://wrapper.example.com/v1/evm/{chainId}",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 999999},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://wrapper.example.com/v1/evm/999999", configs[0].Endpoint)
+	})
+
+	t.Run("chainId placeholder takes precedence over dataset placeholder", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://wrapper.example.com/{chainId}/datasets/{dataset}",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		// chainId is replaced, dataset placeholder remains (no dataset resolution when chainId is used)
+		assert.Equal(t, "https://wrapper.example.com/1/datasets/{dataset}", configs[0].Endpoint)
 	})
 }
 

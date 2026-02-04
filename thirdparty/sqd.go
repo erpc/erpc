@@ -40,6 +40,11 @@ func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger,
 		return false, err
 	}
 
+	// If endpoint uses {chainId} placeholder, any EVM chain is supported
+	if endpoint, ok := settings["endpoint"].(string); ok && strings.Contains(endpoint, "{chainId}") {
+		return true, nil
+	}
+
 	if dataset, ok := sqdDatasetFromSettings(settings, chainID); ok && dataset != "" {
 		return true, nil
 	}
@@ -72,7 +77,11 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 	upstream.Type = common.UpstreamTypeEvm
 	upstream.VendorName = v.Name()
 
-	if dataset, ok := sqdDatasetForChain(settings, upstream.Evm.ChainId); ok {
+	// Support {chainId} placeholder for direct chain ID substitution (preferred)
+	if strings.Contains(upstream.Endpoint, "{chainId}") {
+		upstream.Endpoint = strings.ReplaceAll(upstream.Endpoint, "{chainId}", strconv.FormatInt(upstream.Evm.ChainId, 10))
+	} else if dataset, ok := sqdDatasetForChain(settings, upstream.Evm.ChainId); ok {
+		// Fall back to {dataset} placeholder for backward compatibility
 		if endpoint, updated := sqdApplyDatasetToEndpoint(upstream.Endpoint, dataset); updated {
 			upstream.Endpoint = endpoint
 		} else if logger != nil {
