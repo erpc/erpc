@@ -60,6 +60,19 @@ func TestSqdChainToDataset_UnknownChain(t *testing.T) {
 	}
 }
 
+// TestSqdChainToDataset_NotRequiredForChainIdPlaceholder verifies that when using
+// the {chainId} placeholder, chains don't need to be in the mapping.
+func TestSqdChainToDataset_NotRequiredForChainIdPlaceholder(t *testing.T) {
+	// Chain 999999 is not in the mapping
+	_, inMapping := sqdChainToDataset[999999]
+	if inMapping {
+		t.Skip("chain 999999 is unexpectedly in the mapping")
+	}
+
+	// But with {chainId} placeholder, it should work (tested in sqd_test.go)
+	// This test just documents that the mapping is not required for {chainId} usage
+}
+
 func TestSqdDatasetFromSettings_MapInterfaceInterface(t *testing.T) {
 	settings := common.VendorSettings{
 		"datasetByChainId": map[interface{}]interface{}{

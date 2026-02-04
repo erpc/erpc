@@ -11,7 +11,11 @@ import (
 
 // sqdChainToDataset maps EVM chainId to SQD Portal dataset name.
 // Dataset slug is the last segment of the Portal gateway URL.
-// Kept for supported-chain detection and vendor settings overrides.
+//
+// NOTE: This mapping is only needed for backward compatibility with the {dataset}
+// placeholder format. When using the preferred {chainId} placeholder format
+// (e.g., https://wrapper.example.com/v1/evm/{chainId}), this mapping is bypassed
+// and any EVM chain is supported without requiring an entry here.
 var sqdChainToDataset = map[int64]string{
 	// Mainnets
 	1:       "ethereum-mainnet",

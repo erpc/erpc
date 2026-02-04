@@ -4,13 +4,22 @@
 //
 // Environment variables:
 //   - SQD_WRAPPER_E2E_ENDPOINT: wrapper JSON-RPC endpoint (required)
-//   - SQD_WRAPPER_E2E_CHAIN_ID: chain id for X-Chain-Id header (optional, default 1)
+//     Supports two formats:
+//     1. Base URL with X-Chain-Id header: http://localhost:8080
+//     2. Chain-specific URL: http://localhost:8080/v1/evm/{chainId} (preferred)
+//   - SQD_WRAPPER_E2E_CHAIN_ID: chain id (optional, default 1)
+//     Used for X-Chain-Id header when using base URL format
 //   - SQD_WRAPPER_E2E_AUTH: auth headers "Header: value" format, ";" separated (optional)
 //
 // Usage:
 //
+//	# Using X-Chain-Id header (legacy)
 //	SQD_WRAPPER_E2E_ENDPOINT=http://localhost:8080 \
 //	  SQD_WRAPPER_E2E_CHAIN_ID=1 \
+//	  go test -v -run TestSqdPortalWrapper_Methods ./test/integration/...
+//
+//	# Using chain-specific URL (preferred)
+//	SQD_WRAPPER_E2E_ENDPOINT=http://localhost:8080/v1/evm/1 \
 //	  go test -v -run TestSqdPortalWrapper_Methods ./test/integration/...
 package integration
 
@@ -96,6 +105,7 @@ func wrapperBaseURL(endpoint string) string {
 	if parsed.Host == "" {
 		return strings.TrimRight(endpoint, "/")
 	}
+	// Return scheme://host (strip any path like /v1/evm/1)
 	return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 }
 
@@ -125,6 +135,12 @@ func fetchWrapperCapabilities(t *testing.T, endpoint string) map[string]bool {
 	return methods
 }
 
+// endpointHasChainId checks if the endpoint URL contains a chain ID path segment
+// (e.g., /v1/evm/1 or /v1/evm/42161)
+func endpointHasChainId(endpoint string) bool {
+	return strings.Contains(endpoint, "/v1/evm/") || strings.Contains(endpoint, "/evm/")
+}
+
 func makeWrapperRequest(t *testing.T, endpoint string, payload interface{}) sqdRpcResponse {
 	t.Helper()
 
@@ -134,7 +150,11 @@ func makeWrapperRequest(t *testing.T, endpoint string, payload interface{}) sqdR
 	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Chain-Id", getWrapperChainID())
+
+	// Only set X-Chain-Id header if endpoint doesn't already contain chain ID in URL
+	if !endpointHasChainId(endpoint) {
+		req.Header.Set("X-Chain-Id", getWrapperChainID())
+	}
 
 	for key, value := range getWrapperAuthHeaders() {
 		req.Header.Set(key, value)
