@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -48,6 +49,18 @@ func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger,
 func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	// Set batch defaults - SQD portal supports efficient batching
+	if upstream.JsonRpc.SupportsBatch == nil {
+		supportsBatch := true
+		upstream.JsonRpc.SupportsBatch = &supportsBatch
+	}
+	if upstream.JsonRpc.BatchMaxWait == 0 {
+		upstream.JsonRpc.BatchMaxWait = common.Duration(time.Nanosecond)
+	}
+	if upstream.JsonRpc.BatchMaxSize == 0 {
+		upstream.JsonRpc.BatchMaxSize = 1000
 	}
 
 	if upstream.Evm == nil {

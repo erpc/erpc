@@ -181,6 +181,22 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Contains(t, configs[0].AllowMethods, "trace_block")
 	})
 
+	t.Run("sets batch defaults", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://wrapper.example.com/v1/evm/{chainId}",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, configs[0].JsonRpc.SupportsBatch)
+		assert.True(t, *configs[0].JsonRpc.SupportsBatch)
+		assert.Equal(t, common.Duration(1), configs[0].JsonRpc.BatchMaxWait) // 1ns
+		assert.Equal(t, 1000, configs[0].JsonRpc.BatchMaxSize)
+	})
+
 	t.Run("sets X-Api-Key header from settings", func(t *testing.T) {
 		upstream := &common.UpstreamConfig{
 			Id:       "test-sqd",
