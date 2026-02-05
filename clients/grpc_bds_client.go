@@ -59,6 +59,7 @@ func NewGrpcBdsClient(
 	projectId string,
 	upstream common.Upstream,
 	parsedUrl *url.URL,
+	loadBalancingCfg *common.GrpcLoadBalancingConfig,
 ) (GrpcBdsClient, error) {
 	upsId := "n/a"
 	if upstream != nil {
@@ -81,6 +82,13 @@ func NewGrpcBdsClient(
 	if parsedUrl.Port() == "" {
 		// Default gRPC port if not specified
 		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
+	}
+
+	// Apply dns:/// prefix for load balancing (enables multi-address resolution)
+	// This tells gRPC to use its DNS resolver which returns all A records for headless services
+	if loadBalancingCfg != nil {
+		target = fmt.Sprintf("dns:///%s", target)
+		logger.Debug().Str("target", target).Msg("using DNS resolver for gRPC load balancing")
 	}
 
 	// Determine whether to use TLS based on port or URL scheme
@@ -112,9 +120,8 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
-	// Create gRPC connection with aggressive timeouts suitable for cache services
-	// These should fail fast to allow failover to other upstreams
-	conn, err := grpc.NewClient(target,
+	// Build dial options
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(100*1024*1024),
@@ -134,7 +141,22 @@ func NewGrpcBdsClient(
 				MaxDelay:   500 * time.Millisecond, // Don't backoff too long
 			},
 		}),
-	)
+	}
+
+	// Add load balancing service config
+	if loadBalancingCfg != nil {
+		policy := loadBalancingCfg.Policy
+		if policy == "" {
+			policy = "round_robin"
+		}
+		serviceConfig := fmt.Sprintf(`{"loadBalancingConfig": [{"%s":{}}]}`, policy)
+		dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(serviceConfig))
+		logger.Debug().Str("policy", policy).Msg("gRPC client-side load balancing enabled")
+	}
+
+	// Create gRPC connection with aggressive timeouts suitable for cache services
+	// These should fail fast to allow failover to other upstreams
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to gRPC server at %s: %w", target, err)
 	}
