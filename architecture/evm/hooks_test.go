@@ -26,9 +26,8 @@ func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 		// Blocks (eth_getBlockByHash excluded - subgraphs return empty for it)
 		"eth_getBlockByNumber",
 		"eth_getBlockReceipts",
-		// Transactions
+		// Transactions (eth_getTransactionReceipt excluded - pending txs return null)
 		"eth_getTransactionByHash",
-		"eth_getTransactionReceipt",
 		"eth_getTransactionByBlockHashAndIndex",
 		"eth_getTransactionByBlockNumberAndIndex",
 		// Uncles/ommers
@@ -78,7 +77,6 @@ func TestUpstreamPostForward_UnexpectedEmpty_RetryEmptyFalse(t *testing.T) {
 		"eth_getBlockByNumber",
 		"eth_getBlockReceipts",
 		"eth_getTransactionByHash",
-		"eth_getTransactionReceipt",
 		"debug_traceTransaction",
 		"trace_transaction",
 	}
@@ -122,6 +120,8 @@ func TestUpstreamPostForward_UnexpectedEmpty_NonListedMethods(t *testing.T) {
 		"eth_getCode",
 		"eth_getStorageAt",
 		"eth_estimateGas",
+		// eth_getTransactionReceipt intentionally excluded - pending txs correctly return null
+		"eth_getTransactionReceipt",
 	}
 
 	// Create a test network with the default methods configured
