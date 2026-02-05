@@ -34,9 +34,19 @@ func TestSqdVendor_OwnsUpstream(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "endpoint with sqd.dev detected",
+			name:     "endpoint with .sqd.dev detected",
 			upstream: &common.UpstreamConfig{Endpoint: "https://portal.sqd.dev/v1/evm/1"},
 			expected: true,
+		},
+		{
+			name:     "endpoint with ://sqd.dev detected",
+			upstream: &common.UpstreamConfig{Endpoint: "https://sqd.dev/v1/evm/1"},
+			expected: true,
+		},
+		{
+			name:     "false positive avoided - notsqd.dev",
+			upstream: &common.UpstreamConfig{Endpoint: "https://notsqd.dev/api"},
+			expected: false,
 		},
 		{
 			name:     "other vendor",
@@ -171,6 +181,22 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Contains(t, configs[0].AllowMethods, "trace_block")
 	})
 
+	t.Run("sets batch defaults", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://wrapper.example.com/v1/evm/{chainId}",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, configs[0].JsonRpc.SupportsBatch)
+		assert.True(t, *configs[0].JsonRpc.SupportsBatch)
+		assert.Equal(t, common.Duration(1), configs[0].JsonRpc.BatchMaxWait) // 1ns
+		assert.Equal(t, 1000, configs[0].JsonRpc.BatchMaxSize)
+	})
+
 	t.Run("sets X-Api-Key header from settings", func(t *testing.T) {
 		upstream := &common.UpstreamConfig{
 			Id:       "test-sqd",
@@ -253,6 +279,35 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		_, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "chainId")
+	})
+
+	t.Run("reads endpoint and apiKey from settings when not on upstream", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:   "test-sqd",
+			Type: common.UpstreamTypeEvm,
+			Evm:  &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, common.VendorSettings{
+			"endpoint": "https://wrapper.example.com/v1/evm/{chainId}",
+			"apiKey":   "settings-api-key",
+		})
+		assert.NoError(t, err)
+		assert.Len(t, configs, 1)
+		assert.Equal(t, "https://wrapper.example.com/v1/evm/1", configs[0].Endpoint)
+		assert.Equal(t, "settings-api-key", configs[0].JsonRpc.Headers["X-Api-Key"])
+	})
+
+	t.Run("fails when endpoint missing from both upstream and settings", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:   "test-sqd",
+			Type: common.UpstreamTypeEvm,
+			Evm:  &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		_, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "endpoint")
 	})
 }
 

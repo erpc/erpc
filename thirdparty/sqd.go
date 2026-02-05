@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -27,7 +28,8 @@ func (v *SqdVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	if ups.VendorName == v.Name() {
 		return true
 	}
-	return strings.Contains(ups.Endpoint, "sqd.dev")
+	// Match .sqd.dev or ://sqd.dev to avoid false positives like "notsqd.dev"
+	return strings.Contains(ups.Endpoint, ".sqd.dev") || strings.Contains(ups.Endpoint, "://sqd.dev")
 }
 
 func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
@@ -49,6 +51,18 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
+	// Set batch defaults - SQD portal supports efficient batching
+	if upstream.JsonRpc.SupportsBatch == nil {
+		supportsBatch := true
+		upstream.JsonRpc.SupportsBatch = &supportsBatch
+	}
+	if upstream.JsonRpc.BatchMaxWait == 0 {
+		upstream.JsonRpc.BatchMaxWait = common.Duration(time.Nanosecond)
+	}
+	if upstream.JsonRpc.BatchMaxSize == 0 {
+		upstream.JsonRpc.BatchMaxSize = 1000
+	}
+
 	if upstream.Evm == nil {
 		return nil, fmt.Errorf("sqd vendor requires upstream.evm to be defined")
 	}
@@ -57,8 +71,13 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 		return nil, fmt.Errorf("sqd vendor requires upstream.evm.chainId to be defined")
 	}
 
+	// If endpoint not set on upstream, read from settings
 	if upstream.Endpoint == "" {
-		return nil, fmt.Errorf("sqd vendor requires upstream.endpoint to be defined")
+		endpoint, ok := settings["endpoint"].(string)
+		if !ok || endpoint == "" {
+			return nil, fmt.Errorf("sqd vendor requires endpoint in upstream config or settings")
+		}
+		upstream.Endpoint = endpoint
 	}
 
 	if !strings.Contains(upstream.Endpoint, "{chainId}") {
