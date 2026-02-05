@@ -57,8 +57,13 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 		return nil, fmt.Errorf("sqd vendor requires upstream.evm.chainId to be defined")
 	}
 
+	// If endpoint not set on upstream, read from settings
 	if upstream.Endpoint == "" {
-		return nil, fmt.Errorf("sqd vendor requires upstream.endpoint to be defined")
+		endpoint, ok := settings["endpoint"].(string)
+		if !ok || endpoint == "" {
+			return nil, fmt.Errorf("sqd vendor requires endpoint in upstream config or settings")
+		}
+		upstream.Endpoint = endpoint
 	}
 
 	if !strings.Contains(upstream.Endpoint, "{chainId}") {

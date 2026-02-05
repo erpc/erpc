@@ -254,6 +254,33 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "chainId")
 	})
+
+	t.Run("reads endpoint from settings when not on upstream", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:   "test-sqd",
+			Type: common.UpstreamTypeEvm,
+			Evm:  &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, common.VendorSettings{
+			"endpoint": "https://wrapper.example.com/v1/evm/{chainId}",
+		})
+		assert.NoError(t, err)
+		assert.Len(t, configs, 1)
+		assert.Equal(t, "https://wrapper.example.com/v1/evm/1", configs[0].Endpoint)
+	})
+
+	t.Run("fails when endpoint missing from both upstream and settings", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:   "test-sqd",
+			Type: common.UpstreamTypeEvm,
+			Evm:  &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		_, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "endpoint")
+	})
 }
 
 func TestSqdVendor_GetVendorSpecificErrorIfAny(t *testing.T) {
