@@ -734,6 +734,9 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 		builder = builder.WithPreferHighestValueFor(cfg.PreferHighestValueFor)
 	}
 
+	// Set fire-and-forget mode (for write operations like eth_sendRawTransaction)
+	builder = builder.WithFireAndForget(cfg.FireAndForget)
+
 	// Parse dispute log level if specified
 	if cfg.DisputeLogLevel != "" {
 		level, err := zerolog.ParseLevel(cfg.DisputeLogLevel)

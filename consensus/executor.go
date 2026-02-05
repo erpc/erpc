@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"runtime/debug"
@@ -28,6 +29,22 @@ var (
 	errNotConsensusValid = errors.New("error is not consensus-valid")
 	errPanicInConsensus  = errors.New("panic in consensus execution")
 )
+
+// drainResponsesInBackground spawns a goroutine to drain remaining responses from the channel
+// and release any results to avoid memory retention. This is called when short-circuiting
+// or when the context is cancelled.
+func drainResponsesInBackground(responseChan <-chan *execResult, startIdx, maxToSpawn int) {
+	go func() {
+		for j := startIdx; j < maxToSpawn; j++ {
+			er := <-responseChan
+			if er != nil && er.Result != nil {
+				if releasable, ok := any(er.Result).(interface{ Release() }); ok && releasable != nil {
+					releasable.Release()
+				}
+			}
+		}
+	}()
+}
 
 type metricsLabels struct {
 	method      string
@@ -171,8 +188,33 @@ func (e *executor) executeConsensus(
 	ctx, collectionSpan := common.StartDetailSpan(ctx, "Consensus.CollectResponses")
 	defer collectionSpan.End()
 
-	cancellableCtx, cancelRemaining := context.WithCancel(ctx)
-	defer cancelRemaining()
+	// For fire-and-forget mode, detach from parent context cancellation so background
+	// requests continue even after the HTTP response is sent. This is critical for
+	// transaction broadcasting where we want all nodes to receive the transaction.
+	// For normal mode, inherit parent cancellation for proper resource cleanup.
+	var baseCtx context.Context
+	if e.config.fireAndForget {
+		baseCtx = context.WithoutCancel(ctx)
+	} else {
+		baseCtx = ctx
+	}
+
+	cancellableCtx, cancelFunc := context.WithCancel(baseCtx)
+	var cancelOnce sync.Once
+	cancelRemaining := func() {
+		cancelOnce.Do(cancelFunc)
+	}
+
+	// Cancel remaining requests on exit, unless fire-and-forget mode is enabled.
+	// In fire-and-forget mode we want background requests to complete naturally.
+	// sync.Once ensures cancel is called at most once even if called explicitly earlier.
+	defer func() {
+		if !e.config.fireAndForget {
+			cancelRemaining()
+		}
+	}()
+
+	var shortCircuited bool
 
 	// Spawn only as many participants as configured by policy
 	maxToSpawn := e.maxParticipants
@@ -188,7 +230,6 @@ func (e *executor) executeConsensus(
 	}
 
 	responses := make([]*execResult, 0, maxToSpawn)
-	var shortCircuited bool
 	var shortCircuitReason string
 	var analysis *consensusAnalysis
 	var winner *failsafeCommon.PolicyResult[*common.NormalizedResponse]
@@ -205,51 +246,60 @@ collectLoop:
 					if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
 						shortCircuited = true
 						shortCircuitReason = reason
-						cancelRemaining()
-						// Explicitly cancel all outstanding attempt executions to abort in-flight work
-						for ai := range attempts {
-							if attempts[ai] != nil {
-								attempts[ai].Cancel(nil)
-							}
-						}
-						go func() {
-							for j := i + 1; j < maxToSpawn; j++ {
-								er := <-responseChan // Drain remaining
-								if er != nil && er.Result != nil {
-									if releasable, ok := any(er.Result).(interface{ Release() }); ok && releasable != nil {
-										releasable.Release()
-									}
+
+						// In fire-and-forget mode, let remaining requests complete in background
+						// without cancelling them. This is useful for write operations like
+						// eth_sendRawTransaction where we want to broadcast to all nodes.
+						if e.config.fireAndForget {
+							lg.Debug().
+								Str("reason", reason).
+								Int("remaining", maxToSpawn-i-1).
+								Msg("fire-and-forget mode: letting remaining requests complete in background")
+
+							// Drain remaining responses in background without cancelling
+							// The HTTP requests will complete naturally
+							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
+						} else {
+							// Normal mode: cancel remaining requests immediately to save resources
+							cancelRemaining()
+							// Explicitly cancel all outstanding attempt executions to abort in-flight work
+							for ai := range attempts {
+								if attempts[ai] != nil {
+									attempts[ai].Cancel(nil)
 								}
 							}
-						}()
+							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
+						}
 						break collectLoop
 					}
 				}
 			}
 		case <-ctx.Done():
 			lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
-			cancelRemaining()
 			// Record collection phase cancellation
 			telemetry.MetricConsensusCancellations.
 				WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).
 				Inc()
-			// Best-effort cancel all attempts when parent context is done
-			for ai := range attempts {
-				if attempts[ai] != nil {
-					attempts[ai].Cancel(nil)
-				}
-			}
-			// Drain remaining responses and release any results to avoid retention
-			go func(startIdx int) {
-				for j := startIdx; j < maxToSpawn; j++ {
-					er := <-responseChan
-					if er != nil && er.Result != nil {
-						if releasable, ok := any(er.Result).(interface{ Release() }); ok && releasable != nil {
-							releasable.Release()
-						}
+
+			// In fire-and-forget mode, let remaining requests complete in background
+			// even when parent context is cancelled. This is critical for transaction
+			// broadcasting where we want all nodes to receive the transaction regardless
+			// of whether the client's HTTP connection dropped.
+			if e.config.fireAndForget {
+				lg.Debug().
+					Int("remaining", maxToSpawn-i).
+					Msg("fire-and-forget mode: letting remaining requests complete despite parent cancellation")
+				drainResponsesInBackground(responseChan, i, maxToSpawn)
+			} else {
+				// Normal mode: cancel remaining requests to save resources
+				cancelRemaining()
+				for ai := range attempts {
+					if attempts[ai] != nil {
+						attempts[ai].Cancel(nil)
 					}
 				}
-			}(i + 1)
+				drainResponsesInBackground(responseChan, i, maxToSpawn)
+			}
 			break collectLoop
 		}
 	}
