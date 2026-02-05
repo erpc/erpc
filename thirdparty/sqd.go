@@ -27,7 +27,8 @@ func (v *SqdVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	if ups.VendorName == v.Name() {
 		return true
 	}
-	return strings.Contains(ups.Endpoint, "sqd.dev")
+	// Match .sqd.dev or ://sqd.dev to avoid false positives like "notsqd.dev"
+	return strings.Contains(ups.Endpoint, ".sqd.dev") || strings.Contains(ups.Endpoint, "://sqd.dev")
 }
 
 func (v *SqdVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
