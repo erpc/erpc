@@ -100,12 +100,17 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
 				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
+					var lbCfg *common.GrpcLoadBalancingConfig
+					if cfg.Grpc != nil {
+						lbCfg = cfg.Grpc.LoadBalancing
+					}
 					newClient, err = NewGrpcBdsClient(
 						appCtx,
 						&lg,
 						manager.projectId,
 						ups,
 						parsedUrl,
+						lbCfg,
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
