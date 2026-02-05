@@ -1894,13 +1894,14 @@ const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 // should be treated as "missing data" errors, triggering retry on other upstreams.
 // Note: eth_getBlockByHash is intentionally excluded because subgraph-based upstreams
 // commonly return empty for this method, which is expected behavior.
+// Note: eth_getTransactionReceipt is intentionally excluded because pending transactions
+// correctly return null until mined, and treating this as an error breaks standard polling patterns.
 var DefaultMarkEmptyAsErrorMethods = []string{
 	// Block lookups (eth_getBlockByHash excluded - subgraphs return empty for it)
 	"eth_getBlockByNumber",
 	"eth_getBlockReceipts",
-	// Transaction lookups
+	// Transaction lookups (eth_getTransactionReceipt excluded - pending txs return null)
 	"eth_getTransactionByHash",
-	"eth_getTransactionReceipt",
 	"eth_getTransactionByBlockHashAndIndex",
 	"eth_getTransactionByBlockNumberAndIndex",
 	// Uncle/ommers (legacy API)
