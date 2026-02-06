@@ -269,15 +269,29 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		labelConnectorId := connector.Id()
 		labelPolicyStr := policy.String()
 		labelTTL := policy.GetTTL().String()
+		missReason := "empty_result"
 		if lastRejectConnectorId != "" {
 			labelConnectorId = lastRejectConnectorId
 			labelPolicyStr = lastRejectPolicyStr
 			labelTTL = lastRejectTTL
+			missReason = "ttl_rejected"
 		} else if lastMissConnectorId != "" {
 			labelConnectorId = lastMissConnectorId
 			labelPolicyStr = lastMissPolicyStr
 			labelTTL = lastMissTTL
+			missReason = "connector_miss"
 		}
+		if err != nil {
+			missReason = "connector_error"
+			labelConnectorId = connector.Id()
+			labelPolicyStr = policy.String()
+			labelTTL = policy.GetTTL().String()
+		}
+		span.SetAttributes(
+			attribute.String("cache.miss_reason", missReason),
+			attribute.String("cache.miss_connector_id", labelConnectorId),
+			attribute.String("cache.miss_policy", labelPolicyStr),
+		)
 
 		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
