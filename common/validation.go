@@ -811,6 +811,12 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
+	// Validate websocket endpoint if provided
+	if u.WebsocketEndpoint != "" {
+		if !strings.HasPrefix(u.WebsocketEndpoint, "ws://") && !strings.HasPrefix(u.WebsocketEndpoint, "wss://") {
+			return fmt.Errorf("upstream.*.websocketEndpoint must start with ws:// or wss://, got: %s", u.WebsocketEndpoint)
+		}
+	}
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {
 			return err
