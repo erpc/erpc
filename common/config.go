@@ -276,10 +276,44 @@ type ConnectorConfig struct {
 }
 
 type GrpcConnectorConfig struct {
-	Bootstrap  string            `yaml:"bootstrap,omitempty" json:"bootstrap"`
-	Servers    []string          `yaml:"servers,omitempty" json:"servers"`
-	Headers    map[string]string `yaml:"headers,omitempty" json:"headers"`
-	GetTimeout Duration          `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	Bootstrap     string                   `yaml:"bootstrap,omitempty" json:"bootstrap"`
+	Servers       []string                 `yaml:"servers,omitempty" json:"servers"`
+	Headers       map[string]string        `yaml:"headers,omitempty" json:"headers"`
+	GetTimeout    Duration                 `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	LoadBalancing *GrpcLoadBalancingConfig `yaml:"loadBalancing,omitempty" json:"loadBalancing"`
+}
+
+// GrpcLoadBalancingConfig configures client-side load balancing for gRPC connections.
+// When enabled, gRPC will use its DNS resolver to discover all pod IPs (useful for
+// Kubernetes headless services) and distribute RPCs across them.
+type GrpcLoadBalancingConfig struct {
+	// Policy specifies the load balancing policy: "round_robin" (default) or "pick_first"
+	Policy string `yaml:"policy,omitempty" json:"policy"`
+}
+
+// GrpcUpstreamConfig configures gRPC-specific settings for upstreams.
+type GrpcUpstreamConfig struct {
+	LoadBalancing *GrpcLoadBalancingConfig `yaml:"loadBalancing,omitempty" json:"loadBalancing"`
+}
+
+func (c *GrpcUpstreamConfig) Copy() *GrpcUpstreamConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &GrpcUpstreamConfig{}
+	if c.LoadBalancing != nil {
+		copied.LoadBalancing = c.LoadBalancing.Copy()
+	}
+	return copied
+}
+
+func (c *GrpcLoadBalancingConfig) Copy() *GrpcLoadBalancingConfig {
+	if c == nil {
+		return nil
+	}
+	return &GrpcLoadBalancingConfig{
+		Policy: c.Policy,
+	}
 }
 
 type MemoryConnectorConfig struct {
@@ -528,6 +562,7 @@ type UpstreamConfig struct {
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
+	Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty" json:"grpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
 	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty" json:"autoIgnoreUnsupportedMethods"`
@@ -570,6 +605,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Endpoint                     string                   `yaml:"endpoint,omitempty"`
 		Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty"`
 		JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty"`
+		Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty"`
 		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
 		AllowMethods                 []string                 `yaml:"allowMethods,omitempty"`
 		AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty"`
@@ -595,6 +631,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.Endpoint = old.Endpoint
 	u.Evm = old.Evm
 	u.JsonRpc = old.JsonRpc
+	u.Grpc = old.Grpc
 	u.IgnoreMethods = old.IgnoreMethods
 	u.AllowMethods = old.AllowMethods
 	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
@@ -633,6 +670,9 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 	if c.JsonRpc != nil {
 		copied.JsonRpc = c.JsonRpc.Copy()
+	}
+	if c.Grpc != nil {
+		copied.Grpc = c.Grpc.Copy()
 	}
 	if c.Routing != nil {
 		copied.Routing = c.Routing.Copy()
