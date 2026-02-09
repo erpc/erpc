@@ -211,6 +211,53 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+### Bypass contracts
+
+Some contracts check `msg.sender` using `extcodesize()` and revert if the caller is a contract. Since Multicall3 changes `msg.sender` to the Multicall3 contract address, these calls fail when batched.
+
+Use `bypassContracts` to exclude specific contracts from batching:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          multicall3Aggregation:
+            enabled: true
+            bypassContracts:
+              # Chronicle Oracle feeds check msg.sender code size
+              - "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"
+```
+
+Addresses are case-insensitive and can be specified with or without the `0x` prefix.
+
+### Auto-detect bypass
+
+Enable `autoDetectBypass` to automatically discover contracts that revert via Multicall3 but succeed individually:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+          multicall3Aggregation:
+            enabled: true
+            autoDetectBypass: true
+```
+
+When a call reverts within a Multicall3 batch and `autoDetectBypass` is enabled:
+1. The call is retried individually (bypassing Multicall3)
+2. If the individual call succeeds, the contract is added to a runtime bypass cache for future requests
+3. If the individual call also fails, the original error is returned
+
+<Callout type="info">
+  The runtime bypass cache is in-memory and resets on restart. For known contracts, use `bypassContracts` for persistent configuration.
+</Callout>
+
 ### When to disable
 
 You might want to disable multicall3 aggregation if:

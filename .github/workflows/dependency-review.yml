@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   dependency-review:
-    if: github.repository == 'erpc/erpc'
+    if: github.repository == 'erpc/erpc' || github.repository == '0x666c6f/erpc'
     runs-on: ubuntu-24.04
     steps:
       - name: Harden the runner (Audit all outbound calls)

@@ -533,7 +533,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 					if architecture == "" || chainId == "" {
 						var req map[string]interface{}
-						if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
+						if err := common.SonicCfg.Unmarshal(nq.Body(), &req); err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
 							common.EndRequestSpan(requestCtx, nil, err)
 							return
@@ -691,9 +691,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				w.WriteHeader(statusCode)
 
-				msg, err := common.SonicCfg.Marshal(err.Error())
-				if err != nil {
-					msg, _ = common.SonicCfg.Marshal(err.Error())
+				msg, marshalErr := common.SonicCfg.Marshal(err.Error())
+				if marshalErr != nil {
+					msg, _ = common.SonicCfg.Marshal(marshalErr.Error())
 				}
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":%s}}`, msg)
 

@@ -868,15 +868,11 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, p
 			policyStr = policy.String()
 			policyTTL = policy.GetTTL().String()
 		}
-		connectorId := data.ConnectorMainIndex
-		if blockRef == "*" {
-			connectorId = data.ConnectorReverseIndex
-		}
 		telemetry.MetricCacheEnvelopeUnwrapFailureTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
 			cachedCategory,
-			connectorId,
+			connector.Id(),
 			policyStr,
 			policyTTL,
 		).Inc()
@@ -889,15 +885,11 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, p
 			policyStr = policy.String()
 			policyTTL = policy.GetTTL().String()
 		}
-		connectorId := data.ConnectorMainIndex
-		if blockRef == "*" {
-			connectorId = data.ConnectorReverseIndex
-		}
 		telemetry.MetricCacheMaxAgeStaleTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
 			cachedCategory,
-			connectorId,
+			connector.Id(),
 			policyStr,
 			policyTTL,
 		).Inc()
@@ -1004,7 +996,7 @@ func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
 		return data, 0, false
 	}
 	if data[4] != cacheEnvelopeVersion {
-		return data, 0, false
+		return data[cacheEnvelopeHeader:], 0, false
 	}
 	cachedAt, ok := safeUint64ToInt64(binary.BigEndian.Uint64(data[5:13]))
 	if !ok {
@@ -1046,7 +1038,11 @@ func (c *EvmJsonRpcCache) compressValueBytes(value []byte) ([]byte, bool) {
 		c.logger.Warn().Msg("failed to get encoder from pool, storing uncompressed")
 		return value, false
 	}
-	encoder := encoderInterface.(*zstd.Encoder)
+	encoder, ok := encoderInterface.(*zstd.Encoder)
+	if !ok {
+		c.logger.Error().Msg("encoder pool returned wrong type, storing uncompressed")
+		return value, false
+	}
 	defer c.encoderPool.Put(encoder)
 
 	// Compress using the pooled encoder
@@ -1093,7 +1089,10 @@ func (c *EvmJsonRpcCache) decompressValueBytes(compressedData []byte) ([]byte, e
 	if decoderInterface == nil {
 		return nil, fmt.Errorf("failed to get decoder from pool")
 	}
-	decoder := decoderInterface.(*zstd.Decoder)
+	decoder, ok := decoderInterface.(*zstd.Decoder)
+	if !ok {
+		return nil, fmt.Errorf("decoder pool returned wrong type")
+	}
 	defer c.decoderPool.Put(decoder)
 
 	// Reset decoder with the compressed data

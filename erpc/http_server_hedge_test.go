@@ -16,6 +16,9 @@ import (
 )
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	t.Run("SimpleHedgePolicyDifferentUpstreams", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

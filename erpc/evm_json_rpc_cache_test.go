@@ -1369,6 +1369,9 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test with background goroutines in short mode")
+	}
 	t.Run("ShouldNotCacheEmptyResponseWhenUpstreamIsNotSynced", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

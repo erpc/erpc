@@ -172,6 +172,9 @@ func (m *MockUpstreamServer) Stats() (requests int64, errors int64) {
 
 // TestUpstreamDegradationScenarios tests various upstream behavior scenarios
 func TestUpstreamDegradationScenarios(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stress test in short mode")
+	}
 	scenarios := []TestScenario{
 		{
 			Name:                    "TwoBadOneGood",

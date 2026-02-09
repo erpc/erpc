@@ -1545,6 +1545,106 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 		n.AssertExpectations(t)
 	})
+
+	t.Run("cache_chunking_error_propagation", func(t *testing.T) {
+		// Test that when one chunk fails during cache chunking, the error is properly propagated
+		chunkSize := int64(2)
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Cache").Return(&common.MockCacheDal{}).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				GetLogsCacheChunkSize:   &chunkSize,
+				GetLogsSplitConcurrency: 2,
+			},
+		}).Maybe()
+
+		chunkError := errors.New("upstream returned error for chunk")
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jreq, _ := r.JsonRpcRequest()
+				filter := jreq.Params[0].(map[string]interface{})
+				fb := filter["fromBlock"].(string)
+				tb := filter["toBlock"].(string)
+				// First chunk succeeds, second chunk fails
+				if fb == "0x1" && tb == "0x2" {
+					jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil)
+					resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+					return resp, nil
+				}
+				// Second chunk returns error
+				return nil, chunkError
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x4", // Will create 2 chunks: 0x1-0x2 and 0x3-0x4
+		})
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+
+		// Error from the failing chunk should be propagated
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "upstream returned error for chunk")
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+
+		n.AssertExpectations(t)
+	})
+
+	t.Run("cache_chunking_json_rpc_error_propagation", func(t *testing.T) {
+		// Test that JSON-RPC errors from chunks are properly propagated
+		chunkSize := int64(2)
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Cache").Return(&common.MockCacheDal{}).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				GetLogsCacheChunkSize:   &chunkSize,
+				GetLogsSplitConcurrency: 2,
+			},
+		}).Maybe()
+
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jreq, _ := r.JsonRpcRequest()
+				filter := jreq.Params[0].(map[string]interface{})
+				fb := filter["fromBlock"].(string)
+				// First chunk succeeds, second chunk returns JSON-RPC error
+				if fb == "0x1" {
+					jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil)
+					resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+					return resp, nil
+				}
+				// Second chunk returns JSON-RPC error
+				jrrErr := common.MustNewJsonRpcResponseFromBytes(
+					[]byte(`"0x1"`),
+					nil,
+					[]byte(`{"code":-32000,"message":"query returned more than 10000 results"}`),
+				)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrrErr)
+				return resp, nil
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x4",
+		})
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+
+		// JSON-RPC error should be propagated
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "query returned more than 10000 results")
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+
+		n.AssertExpectations(t)
+	})
 }
 
 func createTestRequest(filter interface{}) *common.NormalizedRequest {

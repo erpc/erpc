@@ -84,6 +84,9 @@ func setupTestNetworkForInterpolation(t *testing.T, ctx context.Context, network
 
 // Test "latest" tag translation to hex number
 func TestInterpolation_LatestTag_ToHex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
