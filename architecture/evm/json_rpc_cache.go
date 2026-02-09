@@ -209,10 +209,15 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		policyCtx, policySpan := common.StartDetailSpan(ctx, "Cache.GetForPolicy", trace.WithAttributes(
 			attribute.String("cache.policy_summary", policy.String()),
 			attribute.String("cache.connector_id", connector.Id()),
+			attribute.String("cache.method", rpcReq.Method),
 		))
 		jrr, err = c.doGet(policyCtx, connector, req, rpcReq)
 		if err != nil {
 			common.SetTraceSpanError(policySpan, err)
+			policySpan.SetAttributes(
+				attribute.String("cache.get_outcome", "error"),
+				attribute.String("cache.error", common.ErrorSummary(err)),
+			)
 			telemetry.MetricCacheGetErrorTotal.WithLabelValues(
 				c.projectId,
 				req.NetworkLabel(),
@@ -231,6 +236,10 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				policy.GetTTL().String(),
 				common.ErrorSummary(err),
 			).Observe(time.Since(start).Seconds())
+		} else if jrr == nil {
+			policySpan.SetAttributes(attribute.String("cache.get_outcome", "miss"))
+		} else {
+			policySpan.SetAttributes(attribute.String("cache.get_outcome", "found"))
 		}
 		if c.logger.GetLevel() == zerolog.TraceLevel {
 			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
@@ -269,15 +278,29 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		labelConnectorId := connector.Id()
 		labelPolicyStr := policy.String()
 		labelTTL := policy.GetTTL().String()
+		missReason := "empty_result"
 		if lastRejectConnectorId != "" {
 			labelConnectorId = lastRejectConnectorId
 			labelPolicyStr = lastRejectPolicyStr
 			labelTTL = lastRejectTTL
+			missReason = "ttl_rejected"
 		} else if lastMissConnectorId != "" {
 			labelConnectorId = lastMissConnectorId
 			labelPolicyStr = lastMissPolicyStr
 			labelTTL = lastMissTTL
+			missReason = "connector_miss"
 		}
+		if err != nil {
+			missReason = "connector_error"
+			labelConnectorId = connector.Id()
+			labelPolicyStr = policy.String()
+			labelTTL = policy.GetTTL().String()
+		}
+		span.SetAttributes(
+			attribute.String("cache.miss_reason", missReason),
+			attribute.String("cache.miss_connector_id", labelConnectorId),
+			attribute.String("cache.miss_policy", labelPolicyStr),
+		)
 
 		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
@@ -773,15 +796,12 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		return nil, err
 	}
 	if blockRef == "" {
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			c.logger.Trace().
-				Object("request", req).
-				Msg("skip fetching from cache because we cannot resolve a block reference")
-		} else {
-			c.logger.Debug().
-				Str("method", rpcReq.Method).
-				Msg("skip fetching from cache because we cannot resolve a block reference")
-		}
+		// Add trace attribute for empty blockRef so we know WHY cache was skipped
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("cache.skip_reason", "empty_block_ref"),
+			attribute.String("cache.method", rpcReq.Method),
+		)
 		return nil, nil
 	}
 
@@ -790,7 +810,14 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		return nil, err
 	}
 
-	c.logger.Trace().Str("pk", groupKey).Str("rk", requestKey).Msg("fetching from cache")
+	// Annotate the span with cache lookup details for debugging
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("cache.block_ref", blockRef),
+		attribute.String("cache.group_key", groupKey),
+		attribute.String("cache.request_key", requestKey),
+		attribute.String("cache.connector_driver", connector.Id()),
+	)
 
 	var resultBytes []byte
 	if blockRef == "*" {
@@ -799,11 +826,17 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		resultBytes, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey, req)
 	}
 	if err != nil {
+		span.SetAttributes(attribute.String("cache.connector_error", common.ErrorSummary(err)))
 		return nil, err
 	}
 	if len(resultBytes) == 0 {
+		span.SetAttributes(attribute.String("cache.connector_result", "empty_bytes"))
 		return nil, nil
 	}
+	span.SetAttributes(
+		attribute.String("cache.connector_result", "found"),
+		attribute.Int("cache.result_bytes", len(resultBytes)),
+	)
 
 	// Check if it's compressed data
 	if c.compressionEnabled && c.isCompressed(resultBytes) {
