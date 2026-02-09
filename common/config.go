@@ -982,6 +982,9 @@ type RetryPolicyConfig struct {
 	EmptyResultIgnore     []string              `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
 	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
 	EmptyResultMaxAttempts int `yaml:"emptyResultMaxAttempts,omitempty" json:"emptyResultMaxAttempts"`
+	// EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
+	// When set, empty result retries wait this long instead of using the normal error delay/backoff.
+	EmptyResultDelay Duration `yaml:"emptyResultDelay,omitempty" json:"emptyResultDelay" tstype:"Duration"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
