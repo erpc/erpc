@@ -21,6 +21,7 @@ func TestHttpServer_BatchEthCall_MulticallAggregation(t *testing.T) {
 	defer util.AssertNoPendingMocks(t, 0)
 
 	cfg := baseBatchConfig()
+	cfg.Projects[0].Networks[0].Evm.Multicall3Aggregation = &common.Multicall3AggregationConfig{Enabled: true}
 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 	defer shutdown()
 

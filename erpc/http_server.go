@@ -1156,7 +1156,8 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 
 	// To simplify client's life if there's only one upstream error, we can use that as the error
 	// instead of Exhausted error which obfuscates underlying errors.
-	if ex, ok := err.(*common.ErrUpstreamsExhausted); ok {
+	var ex *common.ErrUpstreamsExhausted
+	if errors.As(err, &ex) {
 		if len(ex.Errors()) == 1 {
 			err = ex.Errors()[0]
 		}
