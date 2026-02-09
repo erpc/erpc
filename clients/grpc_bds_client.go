@@ -349,7 +349,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 	grpcSpan.SetAttributes(attribute.Bool("response_has_block", hasBlock))
 	if hasBlock {
 		grpcSpan.SetAttributes(
-			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)),
+			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)), // #nosec G115
 			attribute.String("response_block_hash", fmt.Sprintf("%x", grpcResp.Block.Hash)),
 		)
 	}
