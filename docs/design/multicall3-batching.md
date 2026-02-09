@@ -230,9 +230,22 @@ Per-call cache writes:
 Metrics:
 - `multicall3_aggregation_total{outcome}`
 - `multicall3_fallback_total{reason}`
-- `multicall3_cache_hits_total`
+- `multicall3_cache_hits_total` (batch path per-call cache hits)
 - Optional: `multicall3_batch_size`, `multicall3_batch_wait_ms`,
   `multicall3_queue_len`, `multicall3_queue_overflow_total`
+
+Per-call cache metrics (separated to avoid inflating general cache counters):
+- `multicall3_user_percall_cache_hit_total{project, network}` — per-call cache
+  hits during user multicall3 decomposition (`handleUserMulticall3`)
+- `multicall3_user_percall_cache_miss_total{project, network}` — per-call cache
+  misses during user multicall3 decomposition
+- `multicall3_batch_percall_cache_miss_total{project, network}` — per-call cache
+  misses during batch aggregation pre-check
+- `multicall3_batch_percall_cache_set_total{project, network}` — per-call cache
+  writes after batch response processing
+
+These allow computing an "adjusted" cache hit ratio that excludes MC3 per-call
+amplification (which inflates general cache miss counters 30-100x per request).
 
 Aggregation outcome values:
 - `success`
