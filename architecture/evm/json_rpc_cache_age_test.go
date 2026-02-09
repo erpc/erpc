@@ -668,10 +668,11 @@ func TestCacheEnvelope_VersionMismatch(t *testing.T) {
 
 	unwrapped, cachedAt, ok := unwrapCacheEnvelope(wrapped)
 
-	// Should return the payload (stripped header) but with cachedAt=0 and ok=false
+	// Should return the full data as-is (not stripped) with cachedAt=0 and ok=false
+	// so callers treat it as opaque/legacy rather than silently truncating
 	assert.False(t, ok, "version mismatch should return ok=false")
 	assert.Equal(t, int64(0), cachedAt, "version mismatch should return cachedAt=0")
-	assert.Equal(t, payload, unwrapped, "version mismatch should still return the payload with header stripped")
+	assert.Equal(t, wrapped, unwrapped, "version mismatch should return full data as-is")
 }
 
 func TestCacheEnvelope_NoEnvelope(t *testing.T) {

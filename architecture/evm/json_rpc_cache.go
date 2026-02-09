@@ -1006,10 +1006,12 @@ func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
 		return data, 0, false
 	}
 	if data[4] != cacheEnvelopeVersion {
-		// Future/unknown version: strip the fixed-size header but return payload without timestamp.
-		// The header size is assumed to be the same across versions; if a future version changes
-		// header size, this code must be updated.
-		return data[cacheEnvelopeHeader:], 0, false
+		// Unknown version: return the entire value as-is rather than stripping bytes
+		// from an envelope whose layout we don't understand. Callers treat ok=false
+		// as legacy and will attempt to parse the raw bytes; they'll fail JSON parse
+		// (because of the ERPC prefix) and treat it as a cache miss, which is safer
+		// than silently truncating a payload whose header size may differ.
+		return data, 0, false
 	}
 	cachedAt, ok := safeUint64ToInt64(binary.BigEndian.Uint64(data[5:13]))
 	if !ok {
