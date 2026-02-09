@@ -211,6 +211,22 @@ func EndRequestSpan(ctx context.Context, resp *NormalizedResponse, err interface
 			if jrpcResp, err := resp.JsonRpcResponse(); err == nil && jrpcResp != nil {
 				span.SetAttributes(attribute.Int("response.result_size", jrpcResp.ResultLength()))
 			}
+			// Enrich with request-level context that's now available after forwarding
+			if req := resp.Request(); req != nil {
+				if nw := req.Network(); nw != nil {
+					span.SetAttributes(attribute.String("network.id", nw.Id()))
+				}
+				span.SetAttributes(
+					attribute.String("user.id", req.UserId()),
+					attribute.String("request.finality", req.Finality(ctx).String()),
+					attribute.String("response.finality", resp.Finality(ctx).String()),
+				)
+			}
+			span.SetAttributes(
+				attribute.Int("execution.attempts", resp.Attempts()),
+				attribute.Int("execution.retries", resp.Retries()),
+				attribute.Int("execution.hedges", resp.Hedges()),
+			)
 		}
 	}
 

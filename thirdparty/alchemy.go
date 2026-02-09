@@ -126,6 +126,7 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	988:        "stable-mainnet",
 	2201:       "stable-testnet",
 	510525:     "clankermon-mainnet",
+	4114:       "citrea-mainnet",
 	5115:       "citrea-testnet",
 	5042002:    "arc-testnet",
 	1284:       "moonbeam-mainnet",

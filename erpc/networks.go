@@ -979,9 +979,23 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	blockRef, blockNumber, _ := evm.ExtractBlockReferenceFromRequest(ctx, req)
 
 	if blockRef == "*" && blockNumber == 0 {
-		finality = common.DataFinalityStateUnknown
-		return finality
-	} else if blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
+		// Request has no block reference (e.g., eth_getTransactionReceipt by tx hash).
+		// Try to extract the block number from the response body instead.
+		// This is critical for cache responses where the receipt contains blockNumber
+		// but the request only has a tx hash.
+		if resp != nil {
+			if _, respBlockNumber, err := evm.ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlockNumber > 0 {
+				blockNumber = respBlockNumber
+				// Don't return unknown — fall through to the block number checks below
+			} else {
+				return finality // unknown
+			}
+		} else {
+			return finality // unknown
+		}
+	}
+
+	if blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
 		finality = common.DataFinalityStateRealtime
 		return finality
 	} else if blockNumber > 0 && resp != nil {

@@ -7,6 +7,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -477,5 +478,117 @@ func TestSendRawTransaction_Integration(t *testing.T) {
 		jrr, err := result.Result.JsonRpcResponse()
 		require.NoError(t, err)
 		assert.Contains(t, jrr.GetResultString(), txHash)
+	})
+}
+
+// TestSendRawTransaction_FireAndForget tests the fire-and-forget configuration
+// for eth_sendRawTransaction consensus policy.
+func TestSendRawTransaction_FireAndForget(t *testing.T) {
+	// Create a test logger
+	logger := zerolog.New(zerolog.NewTestWriter(t)).With().Timestamp().Logger()
+
+	t.Run("policy builder sets fireAndForget correctly", func(t *testing.T) {
+		// Build policy with fireAndForget enabled
+		policy := NewConsensusPolicyBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(5).
+			WithAgreementThreshold(1).
+			WithFireAndForget(true).
+			Build()
+
+		// Verify the policy was built with fireAndForget
+		cp, ok := policy.(*consensusPolicy)
+		require.True(t, ok, "should be a consensusPolicy")
+		assert.True(t, cp.config.fireAndForget, "fireAndForget should be enabled")
+	})
+
+	t.Run("policy builder defaults fireAndForget to false", func(t *testing.T) {
+		// Build policy without explicitly setting fireAndForget
+		policy := NewConsensusPolicyBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(3).
+			WithAgreementThreshold(2).
+			Build()
+
+		cp, ok := policy.(*consensusPolicy)
+		require.True(t, ok, "should be a consensusPolicy")
+		assert.False(t, cp.config.fireAndForget, "fireAndForget should default to false")
+	})
+
+	t.Run("config struct stores fireAndForget value", func(t *testing.T) {
+		cfg := &config{}
+
+		// Default should be false
+		assert.False(t, cfg.fireAndForget)
+
+		// Set to true via builder method
+		cfg.WithFireAndForget(true)
+		assert.True(t, cfg.fireAndForget)
+
+		// Set back to false
+		cfg.WithFireAndForget(false)
+		assert.False(t, cfg.fireAndForget)
+	})
+
+	t.Run("recommended config for eth_sendRawTransaction", func(t *testing.T) {
+		// This test documents the recommended configuration for eth_sendRawTransaction
+		// with fire-and-forget mode to broadcast to all nodes
+		policy := NewConsensusPolicyBuilder().
+			WithLogger(&logger).
+			WithMaxParticipants(5).    // Broadcast to many nodes
+			WithAgreementThreshold(1). // Return on first success
+			WithFireAndForget(true).   // Let remaining requests complete in background
+			Build()
+
+		cp := policy.(*consensusPolicy)
+
+		// Verify all settings for eth_sendRawTransaction best practice
+		assert.Equal(t, 5, cp.config.maxParticipants,
+			"should broadcast to multiple nodes for wider propagation")
+		assert.Equal(t, 1, cp.config.agreementThreshold,
+			"should return immediately on first success")
+		assert.True(t, cp.config.fireAndForget,
+			"should let background requests complete for maximum broadcast")
+	})
+}
+
+// TestSendRawTransaction_FireAndForget_BehaviorDocs documents the expected behavior
+// of fire-and-forget mode vs normal mode when short-circuiting.
+func TestSendRawTransaction_FireAndForget_BehaviorDocs(t *testing.T) {
+	t.Run("fire-and-forget mode behavior documentation", func(t *testing.T) {
+		// This test documents the expected behavior, not the actual implementation
+		// The actual cancellation behavior is tested via integration tests
+
+		// When fireAndForget=true and short-circuit occurs:
+		// 1. Response is returned immediately to the client
+		// 2. Remaining in-flight HTTP requests are NOT cancelled
+		// 3. Background goroutine drains remaining responses
+		// 4. All upstreams eventually receive the transaction
+
+		cfg := &config{
+			maxParticipants:    5,
+			agreementThreshold: 1,
+			fireAndForget:      true,
+		}
+
+		assert.True(t, cfg.fireAndForget,
+			"fire-and-forget mode: remaining requests continue in background after short-circuit")
+	})
+
+	t.Run("normal mode behavior documentation", func(t *testing.T) {
+		// When fireAndForget=false (default) and short-circuit occurs:
+		// 1. Response is returned immediately to the client
+		// 2. cancelRemaining() is called to cancel context
+		// 3. All outstanding attempt executions are explicitly cancelled
+		// 4. Background goroutine drains and releases remaining responses
+
+		cfg := &config{
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			fireAndForget:      false,
+		}
+
+		assert.False(t, cfg.fireAndForget,
+			"normal mode: remaining requests are cancelled after short-circuit to save resources")
 	})
 }

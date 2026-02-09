@@ -243,83 +243,52 @@ Notes:
 ## Performance
 Consensus increases costs and latency since it waits for multiple responses. Use it selectively for critical workloads and specific methods rather than all requests.
 
-## Full flow diagram
+## Transaction inclusion
 
-```mermaid
-flowchart TD
-  A[Start: collected responses] --> B{Any responses?}
-  B -- No --> B1[Error: LowParticipants - no responses available]
-  B -- Yes --> C[Group responses and compute counts, sizes, validParticipants]
-  C --> D{Low participants?}
-  D -- Yes --> LP{LowParticipantsBehavior}
-  LP -- OnlyBlockHeadLeader --> LPO[OnlyBHL - low participants]
-  LPO --> LPO_Q1{Leader non-error exists?}
-  LPO_Q1 -- Yes --> LPO_R1[Return leader result]
-  LPO_Q1 -- No --> LPO_Q2{Leader has only error?}
-  LPO_Q2 -- Yes --> LPO_R2[Return leader error]
-  LPO_Q2 -- No --> LPO_R3[Error: LowParticipants - not enough participants]
-  LP -- AcceptMostCommon --> LPA[LowParticipants + AcceptMostCommon]
-  LPA --> LPA_Q1{Any NonEmpty exists?}
-  LPA_Q1 -- Yes --> LPA_R1[Return best NonEmpty by count then size]
-  LPA_Q1 -- No --> LPA_Q2{Any Empty exists?}
-  LPA_Q2 -- Yes --> LPA_R2[Return best Empty]
-  LPA_Q2 -- No --> LPA_Q3{Any ConsensusError exists?}
-  LPA_Q3 -- Yes --> LPA_R3[Return best ConsensusError]
-  LPA_Q3 -- No --> LPA_R4[Error: LowParticipants]
-  LP -- ReturnError --> LPR[Error: LowParticipants]
-  D -- No --> E[Dispute/normal path]
-  E --> PBL{DisputeBehavior == PreferBlockHeadLeader}
-  PBL -- No --> E2[Proceed]
-  PBL -- Yes --> PBL_Q1{Any valid group meets threshold?}
-  PBL_Q1 -- Yes --> E2
-  PBL_Q1 -- No --> PBL_Q2{Leader non-error exists?}
-  PBL_Q2 -- Yes --> PBL_R[Return leader result]
-  PBL_Q2 -- No --> E2
-  E2 --> PLB{PreferLargerResponses AND DisputeBehavior==AcceptMostCommon}
-  PLB -- No --> ENE[Proceed]
-  PLB -- Yes --> PLB_Q{Best count < threshold?}
-  PLB_Q -- Yes --> PLB_R[Return largest NonEmpty]
-  PLB_Q -- No --> ENE
-  ENE --> PNE{PreferNonEmpty AND AcceptMostCommon context}
-  PNE -- No --> ENE2[Proceed]
-  PNE -- Yes --> PNE_Q1{Best-by-count >= threshold?}
-  PNE_Q1 -- Yes --> PNE_Q2{Best type is Empty or ConsensusError?}
-  PNE_Q2 -- Yes --> PNE_Q3{Any NonEmpty exists?}
-  PNE_Q3 -- Yes --> PNE_R1[Return best NonEmpty]
-  PNE_Q3 -- No --> ENE2
-  PNE_Q2 -- No --> ENE2
-  PNE_Q1 -- No --> PNE_Q4{Below threshold: one NonEmpty and some Empty?}
-  PNE_Q4 -- Yes --> PNE_R2[Return best NonEmpty]
-  PNE_Q4 -- No --> ENE2
-  ENE2 --> TIE{No preference active}
-  TIE -- No --> ENE3[Proceed]
-  TIE -- Yes --> TIE_Q{Tie at/above threshold among non-error groups?}
-  TIE_Q -- Yes --> TIE_R[Error: Dispute]
-  TIE_Q -- No --> ENE3
-  ENE3 --> PLA{PreferLargerResponses}
-  PLA -- No --> ENE4[Proceed]
-  PLA -- Yes --> PLA_Q1{>1 valid group >= threshold?}
-  PLA_Q1 -- Yes --> PLA_R1[Return largest NonEmpty]
-  PLA_Q1 -- No --> ENE4
-  ENE4 --> PLS{PreferLargerResponses}
-  PLS -- No --> ENE5[Proceed]
-  PLS -- Yes --> PLS_Q{Best-by-count is NonEmpty >= threshold AND larger NonEmpty exists?}
-  PLS_Q -- No --> ENE5
-  PLS_Q -- Yes --> PLS_D{DisputeBehavior}
-  PLS_D -- AcceptMostCommon --> PLS_R1[Return largest NonEmpty]
-  PLS_D -- ReturnError --> PLS_R2[Error: Dispute]
-  ENE5 --> GTH{Any valid group meets threshold?}
-  GTH -- No --> GNL{Multiple valid groups below threshold?}
-  GNL -- Yes --> GNL_R[Error: Dispute]
-  GNL -- No --> INFCHK[Proceed]
-  GTH -- Yes --> GTH_T{Winner type}
-  GTH_T -- ConsensusError --> GTH_E[Return error]
-  GTH_T -- NonEmpty or Empty --> GTH_R[Return result]
-  INFCHK --> INF{validParticipants == 0}
-  INF -- No --> ENDALT[Fallback]
-  INF -- Yes --> INF_Q{Best is InfraError AND meets threshold?}
-  INF_Q -- Yes --> INF_R1[Return infra error]
-  INF_Q -- No --> INF_R2[Error: LowParticipants]
-  SC1[Short-circuit: ConsensusError >= threshold -> return error unless PreferNonEmpty+AcceptMostCommon]
-  SC2[Short-circuit: NonEmpty winner unassailable lead -> return result]
+For reliable transaction submission and inclusion, configure consensus policies for nonce, gas estimation, and broadcasting:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          # 1. Nonce: Always use the highest value to avoid "nonce too low" errors
+          - matchMethod: eth_getTransactionCount
+            consensus:
+              maxParticipants: 3
+              agreementThreshold: 1  # Accept any single response
+              preferHighestValueFor:
+                eth_getTransactionCount: ["result"]  # Pick the highest nonce
+
+          # 2. Gas fees: Use highest values for better inclusion during congestion
+          - matchMethod: eth_gasPrice|eth_maxPriorityFeePerGas
+            consensus:
+              maxParticipants: 3
+              agreementThreshold: 1
+              preferHighestValueFor:
+                eth_gasPrice: ["result"]  # Legacy transactions
+                eth_maxPriorityFeePerGas: ["result"]  # EIP-1559 transactions
+
+          # 3. Send transaction: Broadcast to all nodes, return immediately
+          - matchMethod: eth_sendRawTransaction
+            consensus:
+              maxParticipants: 5  # Broadcast widely (uses all available if fewer exist)
+              agreementThreshold: 1  # Return on first success
+              fireAndForget: true  # Don't cancel other requests - let them complete in background
 ```
+
+### Key settings explained
+
+| Method | Goal | Settings |
+|--------|------|----------|
+| `eth_getTransactionCount` | Avoid "nonce too low" | `preferHighestValueFor` picks highest nonce |
+| `eth_gasPrice` | Better inclusion (legacy) | `preferHighestValueFor` picks highest gas price |
+| `eth_maxPriorityFeePerGas` | Better inclusion (EIP-1559) | `preferHighestValueFor` picks highest priority fee |
+| `eth_sendRawTransaction` | Maximum broadcast | `fireAndForget: true` returns quickly but broadcasts to all nodes |
+
+<Callout type="info">
+  **`fireAndForget`**: When enabled, consensus returns immediately upon reaching agreement but allows remaining upstream requests to complete in the background. This is ideal for write operations like `eth_sendRawTransaction` where you want to broadcast to as many nodes as possible while still returning quickly to the client.
+</Callout>

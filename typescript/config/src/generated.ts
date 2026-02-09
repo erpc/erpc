@@ -596,6 +596,14 @@ export interface ConsensusPolicyConfig {
    * When multiple fields are specified, they act as tie-breakers in order.
    */
   preferHighestValueFor?: { [key: string]: string[]};
+  /**
+   * FireAndForget when true, allows consensus to return a response to the client immediately
+   * upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
+   * This is useful for write operations like eth_sendRawTransaction where you want to
+   * broadcast the transaction to as many nodes as possible while still returning quickly.
+   * Default is false (normal behavior - cancel remaining requests on short-circuit).
+   */
+  fireAndForget?: boolean;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";

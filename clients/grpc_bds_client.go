@@ -269,16 +269,28 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 			IncludeTransactions: includeTransactions,
 		}
 
+		hashHex := hex.EncodeToString(blockHash)
 		c.logger.Debug().
-			Str("blockHash", hex.EncodeToString(blockHash)).
+			Str("blockHash", hashHex).
 			Interface("originalParam", params[0]).
 			Bool("includeTransactions", includeTransactions).
 			Msg("calling gRPC GetBlockByHash (from eth_getBlockByNumber with blockHash)")
 
+		ctx, grpcHashSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetBlockByHash",
+			trace.WithAttributes(
+				attribute.String("block_hash", hashHex),
+				attribute.String("original_param", fmt.Sprintf("%v", params[0])),
+			),
+		)
 		grpcResp, err := c.rpcClient.GetBlockByHash(ctx, grpcReq)
 		if err != nil {
+			grpcHashSpan.SetAttributes(attribute.String("grpc_error", err.Error()))
+			common.SetTraceSpanError(grpcHashSpan, err)
+			grpcHashSpan.End()
 			return nil, fmt.Errorf("gRPC call failed: %w", err)
 		}
+		grpcHashSpan.SetAttributes(attribute.Bool("response_has_block", grpcResp.Block != nil))
+		grpcHashSpan.End()
 
 		var result interface{}
 		if grpcResp.Block != nil {
@@ -318,19 +330,33 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 		Bool("includeTransactions", includeTransactions).
 		Msg("calling gRPC GetBlockByNumber")
 
+	isTag := blockNumber == "latest" || blockNumber == "earliest" || blockNumber == "finalized" || blockNumber == "safe" || blockNumber == "pending"
 	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetBlockByNumber",
 		trace.WithAttributes(
 			attribute.String("block_number", blockNumber),
+			attribute.Bool("is_block_tag", isTag),
+			attribute.String("original_param", fmt.Sprintf("%v", params[0])),
 		),
 	)
 	grpcResp, err := c.rpcClient.GetBlockByNumber(ctx, grpcReq)
-	grpcSpan.End()
 	if err != nil {
+		grpcSpan.SetAttributes(attribute.String("grpc_error", err.Error()))
+		common.SetTraceSpanError(grpcSpan, err)
+		grpcSpan.End()
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
+	hasBlock := grpcResp.Block != nil
+	grpcSpan.SetAttributes(attribute.Bool("response_has_block", hasBlock))
+	if hasBlock {
+		grpcSpan.SetAttributes(
+			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)), // #nosec G115
+			attribute.String("response_block_hash", fmt.Sprintf("%x", grpcResp.Block.Hash)),
+		)
+	}
+	grpcSpan.End()
 
 	var result interface{}
-	if grpcResp.Block != nil {
+	if hasBlock {
 		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals)
 	}
 
