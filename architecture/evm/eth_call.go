@@ -82,7 +82,7 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 		if logger := network.Logger(); logger != nil {
 			logger.Warn().Err(err).Msg("projectPreForward_eth_call: failed to parse json-rpc request")
 		}
-		return false, nil, err
+		return true, nil, err
 	}
 
 	if nq.ParentRequestId() != nil || nq.IsCompositeRequest() {
@@ -386,6 +386,15 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 			missingIdx = append(missingIdx, i)
 		}
 	}
+
+	// Release cached responses once their data has been extracted
+	defer func() {
+		for _, resp := range cachedResponses {
+			if resp != nil {
+				resp.Release()
+			}
+		}
+	}()
 
 	if len(missingReqs) == 0 {
 		results := make([]Multicall3Result, len(decodedCalls))

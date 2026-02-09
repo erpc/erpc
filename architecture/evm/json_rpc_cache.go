@@ -908,16 +908,20 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, p
 		policyTTL := "unknown"
 		if policy != nil {
 			policyStr = policy.String()
-			policyTTL = policy.GetTTL().String()
+			if ttl := policy.GetTTL(); ttl != nil {
+				policyTTL = ttl.String()
+			}
 		}
-		telemetry.MetricCacheEnvelopeUnwrapFailureTotal.WithLabelValues(
-			c.projectId,
-			req.NetworkLabel(),
-			cachedCategory,
-			connector.Id(),
-			policyStr,
-			policyTTL,
-		).Inc()
+		if c.envelopeEnabled {
+			telemetry.MetricCacheEnvelopeUnwrapFailureTotal.WithLabelValues(
+				c.projectId,
+				req.NetworkLabel(),
+				cachedCategory,
+				connector.Id(),
+				policyStr,
+				policyTTL,
+			).Inc()
+		}
 	}
 	policyFinality := common.DataFinalityStateUnknown
 	if policy != nil {
@@ -929,7 +933,9 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, p
 		policyTTL := "unknown"
 		if policy != nil {
 			policyStr = policy.String()
-			policyTTL = policy.GetTTL().String()
+			if ttl := policy.GetTTL(); ttl != nil {
+				policyTTL = ttl.String()
+			}
 		}
 		telemetry.MetricCacheMaxAgeStaleTotal.WithLabelValues(
 			c.projectId,

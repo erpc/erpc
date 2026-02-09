@@ -345,6 +345,11 @@ func DecodeMulticall3Aggregate3Calls(calldata []byte) ([]DecodedMulticall3Call, 
 	}
 
 	offsetTableStart := base + 32
+	// Bound-check: ensure count doesn't exceed what the payload can hold
+	maxCount := (len(payload) - offsetTableStart) / abiWordSize
+	if countInt > maxCount {
+		return nil, errors.New("multicall3 calldata count exceeds payload bounds")
+	}
 	offsetTableEnd := offsetTableStart + countInt*abiWordSize
 	if offsetTableEnd > len(payload) {
 		return nil, errors.New("multicall3 calldata offsets out of bounds")
