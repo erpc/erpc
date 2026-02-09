@@ -21,9 +21,10 @@ var (
 )
 
 // defaultMulticall3AggregationConfig is the default config when Multicall3Aggregation
-// is not explicitly configured. Enabled by default to match documented behavior.
+// is not explicitly configured. Disabled by default; users must opt-in because
+// some contracts revert when called through Multicall3 (msg.sender/code-size patterns).
 var defaultMulticall3AggregationConfig = func() *common.Multicall3AggregationConfig {
-	cfg := &common.Multicall3AggregationConfig{Enabled: true}
+	cfg := &common.Multicall3AggregationConfig{Enabled: false}
 	cfg.SetDefaults()
 	return cfg
 }()
@@ -114,7 +115,7 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.Multicall3Aggregation != nil {
 		aggCfg = cfg.Evm.Multicall3Aggregation
 	} else {
-		// Use default config (enabled by default)
+		// Use default config (disabled by default)
 		aggCfg = defaultMulticall3AggregationConfig
 	}
 
@@ -142,6 +143,9 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 	// Extract call info for batching key
 	_, _, blockRef, err := ExtractCallInfo(nq)
 	if err != nil {
+		if logger := network.Logger(); logger != nil {
+			logger.Warn().Err(err).Msg("ExtractCallInfo failed after eligibility check passed, forwarding normally")
+		}
 		resp, err := network.Forward(ctx, nq)
 		return true, resp, err
 	}
@@ -500,9 +504,11 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 		if mcResp != nil {
 			mcResp.Release()
 		}
-		logWarn(err, "handleUserMulticall3: multicall3 forward failed, falling back")
+		logWarn(err, "handleUserMulticall3: multicall3 forward failed, forwarding original request")
 		recordFallback("user_mc3_forward_failed")
-		return false, nil, nil
+		// Forward the original request so the upstream error is visible to the caller
+		resp, fwdErr := network.Forward(ctx, nq)
+		return true, resp, fwdErr
 	}
 	mcUpstream := mcResp.Upstream()
 	mcJrr, err := mcResp.JsonRpcResponse(ctx)

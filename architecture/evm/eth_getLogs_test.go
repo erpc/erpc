@@ -1431,7 +1431,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 				tb := filter["toBlock"].(string)
 				jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(fmt.Sprintf(`["%s-%s"]`, fb, tb)), nil)
 				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
-				if fb == "0x1" {
+				if fb == "0x0" {
 					resp.SetFromCache(true)
 					resp.SetCacheStoredAtUnix(oldest)
 				}
@@ -1441,8 +1441,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		).Times(2)
 
 		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x4",
+			"fromBlock": "0x0",
+			"toBlock":   "0x3",
 		})
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
 		require.NoError(t, err)
@@ -1479,7 +1479,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 				jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(fmt.Sprintf(`["%s-%s"]`, fb, tb)), nil)
 				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
 				resp.SetFromCache(true)
-				if fb == "0x1" {
+				if fb == "0x0" {
 					resp.SetCacheStoredAtUnix(oldest)
 				} else {
 					resp.SetCacheStoredAtUnix(newest)
@@ -1490,8 +1490,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		).Times(2)
 
 		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x4",
+			"fromBlock": "0x0",
+			"toBlock":   "0x3",
 		})
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
 		require.NoError(t, err)
@@ -1532,8 +1532,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		).Times(2)
 
 		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x4",
+			"fromBlock": "0x0",
+			"toBlock":   "0x3",
 		})
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
 		require.NoError(t, err)
@@ -1568,7 +1568,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 				fb := filter["fromBlock"].(string)
 				tb := filter["toBlock"].(string)
 				// First chunk succeeds, second chunk fails
-				if fb == "0x1" && tb == "0x2" {
+				if fb == "0x0" && tb == "0x1" {
 					jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil)
 					resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
 					return resp, nil
@@ -1580,8 +1580,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		).Times(2)
 
 		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x4", // Will create 2 chunks: 0x1-0x2 and 0x3-0x4
+			"fromBlock": "0x0",
+			"toBlock":   "0x3", // Will create 2 aligned chunks: 0x0-0x1 and 0x2-0x3
 		})
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
 
@@ -1614,7 +1614,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 				filter := jreq.Params[0].(map[string]interface{})
 				fb := filter["fromBlock"].(string)
 				// First chunk succeeds, second chunk returns JSON-RPC error
-				if fb == "0x1" {
+				if fb == "0x0" {
 					jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil)
 					resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
 					return resp, nil
@@ -1632,8 +1632,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		).Times(2)
 
 		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x4",
+			"fromBlock": "0x0",
+			"toBlock":   "0x3",
 		})
 		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
 

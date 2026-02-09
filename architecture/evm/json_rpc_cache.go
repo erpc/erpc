@@ -26,6 +26,9 @@ type EvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// Envelope controls whether values are wrapped with a metadata header on write.
+	envelopeEnabled bool
+
 	// Compression settings
 	compressionEnabled   bool
 	compressionThreshold int
@@ -77,8 +80,9 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	cache := &EvmJsonRpcCache{
-		policies: policies,
-		logger:   logger,
+		policies:        policies,
+		logger:          logger,
+		envelopeEnabled: cfg.Envelope != nil && *cfg.Envelope,
 	}
 
 	// Initialize compression if configured
@@ -149,6 +153,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		logger:               &lg,
 		policies:             c.policies,
 		projectId:            projectId,
+		envelopeEnabled:      c.envelopeEnabled,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
 		compressionLevel:     c.compressionLevel,
@@ -558,22 +563,26 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				ttl.String(),
 			).Add(float64(len(valueToStore)))
 
-			storedValue, wrapped := wrapCacheEnvelope(valueToStore)
-			if !wrapped {
-				lg.Debug().
-					Str("blockRef", blockRef).
-					Str("primaryKey", pk).
-					Str("rangeKey", rk).
-					Int("resultBytes", len(valueToStore)).
-					Msg("cache envelope wrap failed; storing legacy payload")
-				telemetry.MetricCacheEnvelopeWrapFailureTotal.WithLabelValues(
-					c.projectId,
-					req.NetworkLabel(),
-					cachedCategory,
-					connector.Id(),
-					policy.String(),
-					ttl.String(),
-				).Inc()
+			storedValue := valueToStore
+			if c.envelopeEnabled {
+				var wrapped bool
+				storedValue, wrapped = wrapCacheEnvelope(valueToStore)
+				if !wrapped {
+					lg.Debug().
+						Str("blockRef", blockRef).
+						Str("primaryKey", pk).
+						Str("rangeKey", rk).
+						Int("resultBytes", len(valueToStore)).
+						Msg("cache envelope wrap failed; storing legacy payload")
+					telemetry.MetricCacheEnvelopeWrapFailureTotal.WithLabelValues(
+						c.projectId,
+						req.NetworkLabel(),
+						cachedCategory,
+						connector.Id(),
+						policy.String(),
+						ttl.String(),
+					).Inc()
+				}
 			}
 			if c.compressionEnabled && len(storedValue) >= c.compressionThreshold {
 				compressedValue, isCompressed := c.compressValueBytes(storedValue)
@@ -988,6 +997,7 @@ func wrapCacheEnvelope(result []byte) ([]byte, bool) {
 }
 
 // unwrapCacheEnvelope returns (payload, cachedAtUnix, ok).
+// When ok is false, the payload is still usable (legacy or version-mismatched entry).
 func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
 	if len(data) < cacheEnvelopeHeader {
 		return data, 0, false
@@ -996,6 +1006,9 @@ func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
 		return data, 0, false
 	}
 	if data[4] != cacheEnvelopeVersion {
+		// Future/unknown version: strip the fixed-size header but return payload without timestamp.
+		// The header size is assumed to be the same across versions; if a future version changes
+		// header size, this code must be updated.
 		return data[cacheEnvelopeHeader:], 0, false
 	}
 	cachedAt, ok := safeUint64ToInt64(binary.BigEndian.Uint64(data[5:13]))
@@ -1017,7 +1030,9 @@ func (c *EvmJsonRpcCache) isCacheEntryStale(req *common.NormalizedRequest, cache
 		return false
 	}
 	if cachedAt <= 0 {
-		return true
+		// Legacy entry without envelope or unknown age - accept for backward compatibility
+		// during migration from non-envelope to envelope cache format
+		return false
 	}
 	age := time.Now().Unix() - cachedAt
 	if age < 0 {

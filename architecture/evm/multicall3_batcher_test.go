@@ -1368,7 +1368,7 @@ func TestNewBatcher_EnabledConfig(t *testing.T) {
 	batcher.Shutdown()
 }
 
-func TestNewBatcher_NilForwarder_Panics(t *testing.T) {
+func TestNewBatcher_NilForwarder_ReturnsNil(t *testing.T) {
 	cfg := &common.Multicall3AggregationConfig{
 		Enabled:           true,
 		WindowMs:          50,
@@ -1380,10 +1380,9 @@ func TestNewBatcher_NilForwarder_Panics(t *testing.T) {
 	}
 	cfg.SetDefaults()
 
-	// Test that nil forwarder causes panic
-	require.Panics(t, func() {
-		NewBatcher(cfg, nil, nil)
-	}, "NewBatcher should panic when forwarder is nil")
+	// Test that nil forwarder returns nil (graceful degradation)
+	batcher := NewBatcher(cfg, nil, nil)
+	require.Nil(t, batcher, "NewBatcher should return nil when forwarder is nil")
 }
 
 // mockForwarderWithCacheError is a forwarder that returns errors from SetCache

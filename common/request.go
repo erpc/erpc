@@ -670,7 +670,8 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
 	if hv := headers.Get(headerDirectiveCacheMaxAge); hv != "" {
-		if v, err := strconv.ParseInt(strings.TrimSpace(hv), 10, 64); err == nil && v >= 0 {
+		trimmed := strings.TrimSpace(hv)
+		if v, err := strconv.ParseInt(trimmed, 10, 64); err == nil && v >= 0 {
 			r.directives.CacheMaxAgeSeconds = &v
 		}
 	}
@@ -755,7 +756,8 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
 	}
 	if cacheMaxAge := queryArgs.Get(queryDirectiveCacheMaxAge); cacheMaxAge != "" {
-		if v, err := strconv.ParseInt(strings.TrimSpace(cacheMaxAge), 10, 64); err == nil && v >= 0 {
+		trimmed := strings.TrimSpace(cacheMaxAge)
+		if v, err := strconv.ParseInt(trimmed, 10, 64); err == nil && v >= 0 {
 			r.directives.CacheMaxAgeSeconds = &v
 		}
 	}

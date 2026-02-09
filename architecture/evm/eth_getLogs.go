@@ -19,18 +19,18 @@ import (
 // resolveBlockTagForGetLogs attempts to resolve a block tag (like "latest", "finalized")
 // to a hex block number string and its int64 value. If the value is already a hex number,
 // it parses and returns it. If the tag cannot be resolved (e.g., "safe", "pending", or
-// network state not available), it returns empty string and 0.
-// This allows eth_getLogs hooks to validate block ranges even when tags are used.
+// network state not available), it returns empty string and -1.
+// Block 0 (genesis) is a valid return value.
 func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, blockValue string) (hexStr string, blockNum int64) {
 	if blockValue == "" {
-		return "", 0
+		return "", -1
 	}
 
 	// If already a hex number, parse and return it
 	if strings.HasPrefix(blockValue, "0x") {
 		bn, err := strconv.ParseInt(blockValue, 0, 64)
 		if err != nil {
-			return "", 0
+			return "", -1
 		}
 		return blockValue, bn
 	}
@@ -39,13 +39,13 @@ func resolveBlockTagForGetLogs(ctx context.Context, network common.Network, bloc
 	if resolved, ok := resolveBlockTagToHex(ctx, network, blockValue); ok {
 		bn, err := common.HexToInt64(resolved)
 		if err != nil {
-			return "", 0
+			return "", -1
 		}
 		return resolved, bn
 	}
 
 	// Tag could not be resolved (e.g., "safe", "pending", "earliest", or no state available)
-	return "", 0
+	return "", -1
 }
 
 func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
@@ -111,7 +111,7 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
 	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
 
-	if fromBlock > 0 && toBlock >= fromBlock {
+	if fromBlock >= 0 && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
 		finalityStr := nq.Finality(ctx).String()
 		telemetry.MetricNetworkEvmGetLogsRangeRequested.
@@ -188,7 +188,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
 
 	// If either block couldn't be resolved to a number, skip validation and pass to upstream
-	if fromBlock == 0 || toBlock == 0 {
+	if fromBlock < 0 || toBlock < 0 {
 		return false, nil, nil
 	}
 
@@ -228,9 +228,13 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 		if requestRange > 0 && chunkSize > 0 && requestRange > chunkSize {
 			subRequests := make([]ethGetLogsSubRequest, 0)
+			// Align first chunk start to chunkSize boundary for deterministic cache keys
+			// e.g. with chunkSize=1000, fromBlock=1500 -> first chunk starts at 1500, ends at 1999
 			sb := fromBlock
 			for sb <= toBlock {
-				eb := min(sb+chunkSize-1, toBlock)
+				// Compute aligned chunk end: next boundary - 1, clamped to toBlock
+				alignedEnd := sb - (sb % chunkSize) + chunkSize - 1
+				eb := min(alignedEnd, toBlock)
 				subRequests = append(subRequests, ethGetLogsSubRequest{
 					fromBlock: sb,
 					toBlock:   eb,
@@ -372,7 +376,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tb)
 
 	// If either block couldn't be resolved to a number, skip validation and pass to upstream
-	if fromBlock == 0 || toBlock == 0 {
+	if fromBlock < 0 || toBlock < 0 {
 		return false, nil, nil
 	}
 
@@ -795,7 +799,7 @@ loop:
 					r.UserId(),
 					r.AgentName(),
 				).Inc()
-				errs = append(errs, err)
+				errs = append(errs, fmt.Errorf("sub-request [%d-%d] failed: %w", req.fromBlock, req.toBlock, err))
 				mu.Unlock()
 				return
 			}
@@ -820,7 +824,7 @@ loop:
 					r.UserId(),
 					r.AgentName(),
 				).Inc()
-				errs = append(errs, re)
+				errs = append(errs, fmt.Errorf("sub-request [%d-%d] forward failed: %w", req.fromBlock, req.toBlock, re))
 				mu.Unlock()
 				return
 			}
@@ -834,7 +838,7 @@ loop:
 					r.UserId(),
 					r.AgentName(),
 				).Inc()
-				errs = append(errs, err)
+				errs = append(errs, fmt.Errorf("sub-request [%d-%d] response parse failed: %w", req.fromBlock, req.toBlock, err))
 				mu.Unlock()
 				rs.Release()
 				return

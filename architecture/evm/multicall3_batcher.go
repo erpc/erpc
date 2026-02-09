@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // stopAndDrainTimer safely stops a timer and drains its channel if needed.
@@ -60,15 +61,14 @@ type Batcher struct {
 const runtimeBypassMaxEntries = 1024
 
 // NewBatcher creates a new Multicall3 batcher.
-// Returns nil if cfg is nil or disabled - callers should check the return value.
+// Returns nil if cfg is nil or disabled, or if forwarder is nil - callers should check the return value.
 // The logger parameter is optional (can be nil) - if nil, debug logging is disabled.
-// Panics if forwarder is nil (programming error - caller must provide a valid forwarder).
 func NewBatcher(cfg *common.Multicall3AggregationConfig, forwarder Forwarder, logger *zerolog.Logger) *Batcher {
 	if cfg == nil || !cfg.Enabled {
 		return nil
 	}
 	if forwarder == nil {
-		panic("NewBatcher: forwarder cannot be nil")
+		return nil
 	}
 	b := &Batcher{
 		cfg:           cfg,
@@ -473,6 +473,8 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 	// Create a context with the earliest deadline from all entries.
 	// We don't use a single entry's context to avoid canceling the whole batch
 	// if one entry's context is canceled.
+	// Propagate trace/span context from the first entry so distributed tracing
+	// links the batch to the originating request.
 	var earliestDeadline time.Time
 	for _, entry := range entries {
 		if entry.Deadline.IsZero() {
@@ -482,13 +484,19 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 			earliestDeadline = entry.Deadline
 		}
 	}
+	baseCtx := context.Background()
+	if len(entries) > 0 && entries[0].Ctx != nil {
+		if sc := trace.SpanContextFromContext(entries[0].Ctx); sc.IsValid() {
+			baseCtx = trace.ContextWithSpanContext(baseCtx, sc)
+		}
+	}
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if !earliestDeadline.IsZero() {
-		ctx, cancel = context.WithDeadline(context.Background(), earliestDeadline)
+		ctx, cancel = context.WithDeadline(baseCtx, earliestDeadline)
 		defer cancel()
 	} else {
-		ctx = context.Background()
+		ctx = baseCtx
 	}
 
 	// Forward the multicall request
@@ -793,52 +801,68 @@ func (b *Batcher) deliverError(entries []*BatchEntry, err error, projectId, netw
 }
 
 // fallbackIndividual forwards each entry individually when multicall3 fails.
-// Uses parallel goroutines for concurrent forwarding with panic recovery.
-// Records metrics for each fallback request outcome.
+// Uses a bounded worker pool (max 10 goroutines) to limit goroutine creation
+// under load. Records metrics for each fallback request outcome.
 func (b *Batcher) fallbackIndividual(entries []*BatchEntry, projectId, networkId string) {
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 10)
+	const maxWorkers = 10
+	workers := maxWorkers
+	if len(entries) < workers {
+		workers = len(entries)
+	}
+
+	ch := make(chan *BatchEntry, len(entries))
 	for _, entry := range entries {
-		wg.Add(1)
-		go func(e *BatchEntry) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
+		ch <- entry
+	}
+	close(ch)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
 			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					// Log panic with stack trace
-					if b.logger != nil {
-						b.logger.Error().
-							Str("panic", fmt.Sprintf("%v", r)).
-							Str("stack", string(debug.Stack())).
-							Str("projectId", projectId).
-							Str("networkId", networkId).
-							Msg("panic in fallback forward goroutine")
-					}
-					// Send error to entry
-					err := fmt.Errorf("panic in fallback forward: %v", r)
-					b.sendResult(e, BatchResult{Error: err}, projectId, networkId)
-					telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "panic").Inc()
-				}
-			}()
-			// Skip if context is already cancelled
-			select {
-			case <-e.Ctx.Done():
-				b.sendResult(e, BatchResult{Error: e.Ctx.Err()}, projectId, networkId)
-				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "cancelled").Inc()
-				return
-			default:
+			for e := range ch {
+				b.fallbackOne(e, projectId, networkId)
 			}
-			resp, err := b.forwarder.Forward(e.Ctx, e.Request)
-			b.sendResult(e, BatchResult{Response: resp, Error: err}, projectId, networkId)
-			if err != nil {
-				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "error").Inc()
-			} else {
-				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "success").Inc()
-			}
-		}(entry)
+		}()
 	}
 	wg.Wait()
+}
+
+func (b *Batcher) fallbackOne(e *BatchEntry, projectId, networkId string) {
+	defer func() {
+		if r := recover(); r != nil {
+			if b.logger != nil {
+				b.logger.Error().
+					Str("panic", fmt.Sprintf("%v", r)).
+					Str("stack", string(debug.Stack())).
+					Str("projectId", projectId).
+					Str("networkId", networkId).
+					Msg("panic in fallback forward goroutine")
+			}
+			err := fmt.Errorf("panic in fallback forward: %v", r)
+			b.sendResult(e, BatchResult{Error: err}, projectId, networkId)
+			telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "panic").Inc()
+		}
+	}()
+	select {
+	case <-e.Ctx.Done():
+		b.sendResult(e, BatchResult{Error: e.Ctx.Err()}, projectId, networkId)
+		telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "cancelled").Inc()
+		return
+	default:
+	}
+	resp, err := b.forwarder.Forward(e.Ctx, e.Request)
+	if err != nil {
+		if resp != nil {
+			resp.Release()
+		}
+		b.sendResult(e, BatchResult{Error: err}, projectId, networkId)
+		telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "error").Inc()
+	} else {
+		b.sendResult(e, BatchResult{Response: resp}, projectId, networkId)
+		telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "success").Inc()
+	}
 }
 
 // Shutdown stops the batcher and waits for pending operations.

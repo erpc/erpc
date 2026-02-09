@@ -1280,6 +1280,11 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.GetLogsCacheChunkSize != nil && *e.GetLogsCacheChunkSize < 0 {
 		return fmt.Errorf("network.*.evm.getLogsCacheChunkSize must be greater than or equal to 0")
 	}
+	if e.Multicall3Aggregation != nil && e.Multicall3Aggregation.Enabled {
+		if err := e.Multicall3Aggregation.IsValid(); err != nil {
+			return fmt.Errorf("network.*.evm.multicall3Aggregation: %w", err)
+		}
+	}
 	return nil
 }
 

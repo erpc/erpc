@@ -43,7 +43,11 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 		// Process the response if provided
 		if resp != nil {
 			if jrr, parseErr := resp.JsonRpcResponse(ctx); parseErr != nil {
-				resp.Request().Network().Logger().Warn().Err(parseErr).Str("multiplexerHash", m.hash).Object("response", resp).Msg("failed to parse response before storing in multiplexer")
+				if req := resp.Request(); req != nil {
+					if nw := req.Network(); nw != nil {
+						nw.Logger().Warn().Err(parseErr).Str("multiplexerHash", m.hash).Object("response", resp).Msg("failed to parse response before storing in multiplexer")
+					}
+				}
 				// If parsing fails, propagate this error instead of storing a response that can't be copied
 				if err == nil {
 					err = parseErr

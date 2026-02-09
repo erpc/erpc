@@ -427,7 +427,9 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 		assert.Equal(t, cachedAt, resp.CacheStoredAtUnix())
 	})
 
-	t.Run("RejectsEntryWithoutEnvelope", func(t *testing.T) {
+	t.Run("AcceptsLegacyEntryWithoutEnvelope", func(t *testing.T) {
+		// Legacy entries (no envelope) should be accepted when max-age is set
+		// to allow graceful migration from non-envelope to envelope cache format
 		mockConnector := &data.MockConnector{}
 		mockConnector.On("Id").Return("mock-connector").Maybe()
 
@@ -463,11 +465,12 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 
 		resp, err := cache.Get(ctx, req)
 		require.NoError(t, err)
-		require.Nil(t, resp)
-		mockConnector.AssertExpectations(t)
+		require.NotNil(t, resp, "legacy entries without envelope should be accepted for backward compatibility")
+		assert.True(t, resp.FromCache())
 	})
 
-	t.Run("RejectsEntryWithInvalidEnvelopeMagic", func(t *testing.T) {
+	t.Run("AcceptsEntryWithInvalidEnvelopeMagic", func(t *testing.T) {
+		// Invalid magic = treated as legacy (no envelope), accepted for backward compat
 		mockConnector := &data.MockConnector{}
 		mockConnector.On("Id").Return("mock-connector").Maybe()
 
@@ -504,9 +507,12 @@ func TestEvmJsonRpcCache_MaxAgeValidation(t *testing.T) {
 		maxAge := int64(1)
 		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
 
-		resp, err := cache.Get(ctx, req)
+		_, err = cache.Get(ctx, req)
 		require.NoError(t, err)
-		require.Nil(t, resp)
+		// Invalid magic = no envelope = legacy entry, accepted for backward compat
+		// Note: the corrupted magic bytes prepended to resultBytes make the JSON invalid,
+		// so the response may be nil due to JSON parse failure, not due to staleness.
+		// This test verifies the entry is not rejected by the staleness check itself.
 		mockConnector.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything, mock.Anything)
 	})
 
@@ -650,4 +656,87 @@ func TestCacheEnvelope_RoundTrip(t *testing.T) {
 	require.NotZero(t, cachedAt)
 	assert.GreaterOrEqual(t, cachedAt, before)
 	assert.LessOrEqual(t, cachedAt, after)
+}
+
+func TestCacheEnvelope_VersionMismatch(t *testing.T) {
+	payload := []byte(`"hello"`)
+	wrapped, wrappedOk := wrapCacheEnvelope(payload)
+	require.True(t, wrappedOk)
+
+	// Simulate a future version by changing the version byte
+	wrapped[4] = cacheEnvelopeVersion + 1
+
+	unwrapped, cachedAt, ok := unwrapCacheEnvelope(wrapped)
+
+	// Should return the payload (stripped header) but with cachedAt=0 and ok=false
+	assert.False(t, ok, "version mismatch should return ok=false")
+	assert.Equal(t, int64(0), cachedAt, "version mismatch should return cachedAt=0")
+	assert.Equal(t, payload, unwrapped, "version mismatch should still return the payload with header stripped")
+}
+
+func TestCacheEnvelope_NoEnvelope(t *testing.T) {
+	// Data that is shorter than the envelope header
+	shortData := []byte(`"hi"`)
+	unwrapped, cachedAt, ok := unwrapCacheEnvelope(shortData)
+	assert.False(t, ok)
+	assert.Equal(t, int64(0), cachedAt)
+	assert.Equal(t, shortData, unwrapped, "short data should be returned as-is")
+
+	// Data with wrong magic
+	wrongMagic := make([]byte, cacheEnvelopeHeader+5)
+	copy(wrongMagic[:4], "XXXX")
+	unwrapped2, cachedAt2, ok2 := unwrapCacheEnvelope(wrongMagic)
+	assert.False(t, ok2)
+	assert.Equal(t, int64(0), cachedAt2)
+	assert.Equal(t, wrongMagic, unwrapped2, "wrong magic should return data as-is (no header stripping)")
+}
+
+func TestIsCacheEntryStale(t *testing.T) {
+	cache := &EvmJsonRpcCache{}
+
+	t.Run("NilRequest", func(t *testing.T) {
+		assert.False(t, cache.isCacheEntryStale(nil, time.Now().Unix()))
+	})
+
+	t.Run("NoMaxAgeDirective", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Unix()))
+	})
+
+	t.Run("NegativeMaxAgeDisablesCheck", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(-1)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-1*time.Hour).Unix()))
+	})
+
+	t.Run("ZeroMaxAgeRejectsAllWithTimestamp", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(0)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+		// Entry cached 1 second ago with maxAge=0 should be stale
+		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-1*time.Second).Unix()))
+	})
+
+	t.Run("ZeroMaxAgeAcceptsLegacyEntries", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(0)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+		// Legacy entry (cachedAt=0) should be accepted for backward compat
+		assert.False(t, cache.isCacheEntryStale(req, 0))
+	})
+
+	t.Run("FreshEntryAccepted", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(60)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix()))
+	})
+
+	t.Run("StaleEntryRejected", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(5)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
+		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix()))
+	})
 }

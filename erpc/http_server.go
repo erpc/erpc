@@ -693,7 +693,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				msg, marshalErr := common.SonicCfg.Marshal(err.Error())
 				if marshalErr != nil {
-					msg, _ = common.SonicCfg.Marshal(marshalErr.Error())
+					msg = []byte(`"internal error"`)
 				}
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":%s}}`, msg)
 
@@ -1661,10 +1661,10 @@ func stripAddrDecorations(s string) string {
 }
 
 // isMulticall3AggregationEnabled checks if multicall3 aggregation is enabled for a given network.
-// Returns true (default) if no explicit config is set, or if the config is explicitly set to enabled.
+// Returns false (default) if no explicit config is set; users must opt-in.
 func isMulticall3AggregationEnabled(project *PreparedProject, networkId string) bool {
 	if project == nil || project.Config == nil {
-		return true // Default to enabled
+		return false
 	}
 
 	project.cfgMu.RLock()
@@ -1679,5 +1679,5 @@ func isMulticall3AggregationEnabled(project *PreparedProject, networkId string) 
 		}
 	}
 
-	return true // Default to enabled
+	return false
 }

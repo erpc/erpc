@@ -217,6 +217,11 @@ type CacheConfig struct {
 	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
+	// Envelope enables wrapping cached values with a metadata header (magic + version + timestamp).
+	// The header is required for cache-max-age staleness checks.
+	// Default: false (disabled) for safe rolling deploys. Old binaries cannot parse
+	// the envelope prefix, so enable only after all pods are on the new version.
+	Envelope *bool `yaml:"envelope,omitempty" json:"envelope"`
 }
 
 type CompressionConfig struct {
@@ -1556,7 +1561,7 @@ type EvmNetworkConfig struct {
 
 	// Multicall3Aggregation configures aggregating eth_call requests into Multicall3.
 	// Accepts either a boolean (backward compat) or a full config object.
-	// Default: enabled with default settings
+	// Default: disabled; must be explicitly enabled.
 	Multicall3Aggregation *Multicall3AggregationConfig `yaml:"multicall3Aggregation,omitempty" json:"multicall3Aggregation,omitempty"`
 }
 
@@ -1564,7 +1569,7 @@ type EvmNetworkConfig struct {
 // into Multicall3 aggregate calls. This batches requests across all entrypoints
 // (HTTP single, HTTP batch, gRPC) rather than just JSON-RPC batch requests.
 type Multicall3AggregationConfig struct {
-	// Enabled enables/disables Multicall3 aggregation. Default: true
+	// Enabled enables/disables Multicall3 aggregation. Default: false
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// WindowMs is the maximum time (milliseconds) to wait for a batch to fill.
@@ -1750,6 +1755,9 @@ func (c *Multicall3AggregationConfig) UnmarshalYAML(unmarshal func(interface{}) 
 		c.Enabled = boolVal
 		if boolVal {
 			c.SetDefaults()
+			if err := c.IsValid(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -1763,6 +1771,9 @@ func (c *Multicall3AggregationConfig) UnmarshalYAML(unmarshal func(interface{}) 
 	*c = Multicall3AggregationConfig(raw)
 	if c.Enabled {
 		c.SetDefaults()
+		if err := c.IsValid(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1775,6 +1786,9 @@ func (c *Multicall3AggregationConfig) UnmarshalJSON(data []byte) error {
 		c.Enabled = boolVal
 		if boolVal {
 			c.SetDefaults()
+			if err := c.IsValid(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -1788,6 +1802,9 @@ func (c *Multicall3AggregationConfig) UnmarshalJSON(data []byte) error {
 	*c = Multicall3AggregationConfig(raw)
 	if c.Enabled {
 		c.SetDefaults()
+		if err := c.IsValid(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
