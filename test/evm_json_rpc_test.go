@@ -1,14 +1,28 @@
 package test
 
 import (
+	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
 
 func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
+	// Skip if k6 load testing tool is not installed
+	if _, err := exec.LookPath("k6"); err != nil {
+		t.Skip("k6 not found in PATH, skipping stress test")
+	}
+
+	// Override OsExit to prevent erpc.Init goroutine from killing the test process
+	// when the HTTP server shuts down during test cleanup.
+	origExit := util.OsExit
+	util.OsExit = func(code int) {
+		t.Logf("util.OsExit(%d) intercepted during test", code)
+	}
+	t.Cleanup(func() { util.OsExit = origExit })
 	config := StressTestConfig{
 		ServicePort: 4201,
 		MetricsPort: 5201,
