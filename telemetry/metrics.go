@@ -528,6 +528,31 @@ var (
 		Name:      "multicall3_auto_detect_retry_total",
 		Help:      "Total number of auto-detect retry attempts for reverted calls.",
 	}, []string{"project", "network", "outcome"})
+
+	// Multicall3 per-call cache metrics (separate from general cache counters to avoid inflation)
+	MetricMulticall3UserPercallCacheHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_user_percall_cache_hit_total",
+		Help:      "Total number of per-call cache hits during user multicall3 decomposition.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3UserPercallCacheMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_user_percall_cache_miss_total",
+		Help:      "Total number of per-call cache misses during user multicall3 decomposition.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3BatchPercallCacheMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_batch_percall_cache_miss_total",
+		Help:      "Total number of per-call cache misses during multicall3 batch aggregation.",
+	}, []string{"project", "network"})
+
+	MetricMulticall3BatchPercallCacheSetTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_batch_percall_cache_set_total",
+		Help:      "Total number of per-call cache writes during multicall3 batch response processing.",
+	}, []string{"project", "network"})
 )
 
 var DefaultHistogramBuckets = []float64{

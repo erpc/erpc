@@ -373,6 +373,13 @@ func handleUserMulticall3(ctx context.Context, network common.Network, nq *commo
 			missingReqs = append(missingReqs, req)
 			missingIdx = append(missingIdx, i)
 		}
+		hits := len(perCallReqs) - len(missingReqs)
+		if hits > 0 {
+			telemetry.MetricMulticall3UserPercallCacheHitTotal.WithLabelValues(projectId, networkId).Add(float64(hits))
+		}
+		if len(missingReqs) > 0 {
+			telemetry.MetricMulticall3UserPercallCacheMissTotal.WithLabelValues(projectId, networkId).Add(float64(len(missingReqs)))
+		}
 	} else {
 		missingReqs = append(missingReqs, perCallReqs...)
 		for i := range perCallReqs {

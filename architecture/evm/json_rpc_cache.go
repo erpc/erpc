@@ -886,7 +886,11 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, p
 			policyTTL,
 		).Inc()
 	}
-	if c.isCacheEntryStale(req, cachedAt) {
+	policyFinality := common.DataFinalityStateUnknown
+	if policy != nil {
+		policyFinality = policy.Finality()
+	}
+	if c.isCacheEntryStale(req, cachedAt, policyFinality) {
 		cachedCategory := rpcReq.Method
 		policyStr := "unknown"
 		policyTTL := "unknown"
@@ -1020,7 +1024,7 @@ func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
 	return data[cacheEnvelopeHeader:], cachedAt, true
 }
 
-func (c *EvmJsonRpcCache) isCacheEntryStale(req *common.NormalizedRequest, cachedAt int64) bool {
+func (c *EvmJsonRpcCache) isCacheEntryStale(req *common.NormalizedRequest, cachedAt int64, policyFinality common.DataFinalityState) bool {
 	if req == nil {
 		return false
 	}
@@ -1029,6 +1033,13 @@ func (c *EvmJsonRpcCache) isCacheEntryStale(req *common.NormalizedRequest, cache
 		return false
 	}
 	if *maxAge < 0 {
+		return false
+	}
+	// Finalized/unfinalized data is immutable — only apply max-age when
+	// the client explicitly set it (via header or query param), not from
+	// directive defaults.
+	if !req.CacheMaxAgeExplicit() &&
+		(policyFinality == common.DataFinalityStateFinalized || policyFinality == common.DataFinalityStateUnfinalized) {
 		return false
 	}
 	if cachedAt <= 0 {

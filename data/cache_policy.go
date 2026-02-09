@@ -259,3 +259,7 @@ func (p *CachePolicy) String() string {
 func (p *CachePolicy) GetTTL() *time.Duration {
 	return p.config.TTL.DurationPtr()
 }
+
+func (p *CachePolicy) Finality() common.DataFinalityState {
+	return p.config.Finality
+}

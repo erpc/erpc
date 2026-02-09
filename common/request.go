@@ -125,7 +125,13 @@ type RequestDirectives struct {
 
 	// CacheMaxAgeSeconds limits how old a cached entry can be (per request).
 	// When set, entries older than this age are treated as cache misses.
+	// For finalized data, this only applies when explicitly set by the client
+	// (via header/query param), not when inherited from directive defaults.
 	CacheMaxAgeSeconds *int64 `json:"cacheMaxAgeSeconds,omitempty"`
+
+	// CacheMaxAgeExplicit indicates that CacheMaxAgeSeconds was explicitly set
+	// by the client (via HTTP header or query parameter), not from directive defaults.
+	CacheMaxAgeExplicit bool `json:"-"`
 
 	// Instruct the proxy to forward the request to a specific upstream(s) only.
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
@@ -254,6 +260,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 	if d.CacheMaxAgeSeconds != nil {
 		v := *d.CacheMaxAgeSeconds
 		cloned.CacheMaxAgeSeconds = &v
+		cloned.CacheMaxAgeExplicit = d.CacheMaxAgeExplicit
 	}
 	// Deep copy GroundTruthTransactions slice (shallow copy of byte slices is fine - they're immutable)
 	if len(d.GroundTruthTransactions) > 0 {
@@ -673,6 +680,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		trimmed := strings.TrimSpace(hv)
 		if v, err := strconv.ParseInt(trimmed, 10, 64); err == nil && v >= 0 {
 			r.directives.CacheMaxAgeSeconds = &v
+			r.directives.CacheMaxAgeExplicit = true
 		}
 	}
 	if hv := headers.Get(headerDirectiveUseUpstream); hv != "" {
@@ -759,6 +767,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		trimmed := strings.TrimSpace(cacheMaxAge)
 		if v, err := strconv.ParseInt(trimmed, 10, 64); err == nil && v >= 0 {
 			r.directives.CacheMaxAgeSeconds = &v
+			r.directives.CacheMaxAgeExplicit = true
 		}
 	}
 
@@ -838,6 +847,13 @@ func (r *NormalizedRequest) CacheMaxAgeSeconds() *int64 {
 		return nil
 	}
 	return r.directives.CacheMaxAgeSeconds
+}
+
+func (r *NormalizedRequest) CacheMaxAgeExplicit() bool {
+	if r == nil || r.directives == nil {
+		return false
+	}
+	return r.directives.CacheMaxAgeExplicit
 }
 
 func (r *NormalizedRequest) Directives() *RequestDirectives {

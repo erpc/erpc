@@ -694,21 +694,25 @@ func TestCacheEnvelope_NoEnvelope(t *testing.T) {
 
 func TestIsCacheEntryStale(t *testing.T) {
 	cache := &EvmJsonRpcCache{}
+	unknown := common.DataFinalityStateUnknown
+	finalized := common.DataFinalityStateFinalized
+	unfinalized := common.DataFinalityStateUnfinalized
+	realtime := common.DataFinalityStateRealtime
 
 	t.Run("NilRequest", func(t *testing.T) {
-		assert.False(t, cache.isCacheEntryStale(nil, time.Now().Unix()))
+		assert.False(t, cache.isCacheEntryStale(nil, time.Now().Unix(), unknown))
 	})
 
 	t.Run("NoMaxAgeDirective", func(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
-		assert.False(t, cache.isCacheEntryStale(req, time.Now().Unix()))
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Unix(), unknown))
 	})
 
 	t.Run("NegativeMaxAgeDisablesCheck", func(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
 		maxAge := int64(-1)
 		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
-		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-1*time.Hour).Unix()))
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-1*time.Hour).Unix(), unknown))
 	})
 
 	t.Run("ZeroMaxAgeRejectsAllWithTimestamp", func(t *testing.T) {
@@ -716,7 +720,7 @@ func TestIsCacheEntryStale(t *testing.T) {
 		maxAge := int64(0)
 		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
 		// Entry cached 1 second ago with maxAge=0 should be stale
-		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-1*time.Second).Unix()))
+		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-1*time.Second).Unix(), unknown))
 	})
 
 	t.Run("ZeroMaxAgeAcceptsLegacyEntries", func(t *testing.T) {
@@ -724,20 +728,60 @@ func TestIsCacheEntryStale(t *testing.T) {
 		maxAge := int64(0)
 		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
 		// Legacy entry (cachedAt=0) should be accepted for backward compat
-		assert.False(t, cache.isCacheEntryStale(req, 0))
+		assert.False(t, cache.isCacheEntryStale(req, 0, unknown))
 	})
 
 	t.Run("FreshEntryAccepted", func(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
 		maxAge := int64(60)
 		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
-		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix()))
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix(), unknown))
 	})
 
 	t.Run("StaleEntryRejected", func(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
 		maxAge := int64(5)
 		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge})
-		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix()))
+		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix(), unknown))
+	})
+
+	t.Run("FinalizedSkipsDefaultMaxAge", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(5)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge, CacheMaxAgeExplicit: false})
+		// Stale entry with finalized policy should NOT be rejected (default max-age ignored)
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix(), finalized))
+	})
+
+	t.Run("UnfinalizedSkipsDefaultMaxAge", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(5)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge, CacheMaxAgeExplicit: false})
+		// Stale entry with unfinalized policy should NOT be rejected (default max-age ignored)
+		assert.False(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix(), unfinalized))
+	})
+
+	t.Run("FinalizedRejectsExplicitMaxAge", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(5)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge, CacheMaxAgeExplicit: true})
+		// Stale entry with finalized policy SHOULD be rejected (explicit max-age)
+		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix(), finalized))
+	})
+
+	t.Run("RealtimeRejectsDefaultMaxAge", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(5)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge, CacheMaxAgeExplicit: false})
+		// Realtime data SHOULD still be rejected by default max-age
+		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix(), realtime))
+	})
+
+	t.Run("UnknownFinalityRejectsDefaultMaxAge", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+		maxAge := int64(5)
+		req.SetDirectives(&common.RequestDirectives{CacheMaxAgeSeconds: &maxAge, CacheMaxAgeExplicit: false})
+		// Unknown finality SHOULD still be rejected by default max-age
+		assert.True(t, cache.isCacheEntryStale(req, time.Now().Add(-10*time.Second).Unix(), unknown))
 	})
 }
