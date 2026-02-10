@@ -80,15 +80,15 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 		return nil, fmt.Errorf("sqd vendor requires endpoint in settings with {chainId} placeholder")
 	}
 
-	if !strings.Contains(upstream.Endpoint, "{chainId}") {
-		return nil, fmt.Errorf("sqd vendor requires endpoint to contain {chainId} placeholder (e.g., https://wrapper.example.com/v1/evm/{chainId})")
-	}
-
 	upstream.Type = common.UpstreamTypeEvm
 	upstream.VendorName = v.Name()
 
-	// Substitute {chainId} placeholder
-	upstream.Endpoint = strings.ReplaceAll(upstream.Endpoint, "{chainId}", strconv.FormatInt(upstream.Evm.ChainId, 10))
+	// Substitute {chainId} placeholder if present.
+	// When called from NewUpstream (second call for provider-generated configs),
+	// the endpoint is already substituted and settings are nil, so we skip substitution.
+	if strings.Contains(upstream.Endpoint, "{chainId}") {
+		upstream.Endpoint = strings.ReplaceAll(upstream.Endpoint, "{chainId}", strconv.FormatInt(upstream.Evm.ChainId, 10))
+	}
 
 	if upstream.IgnoreMethods == nil {
 		upstream.IgnoreMethods = []string{"*"}

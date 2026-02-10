@@ -136,7 +136,7 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Contains(t, err.Error(), "endpoint")
 	})
 
-	t.Run("fails when endpoint missing chainId placeholder", func(t *testing.T) {
+	t.Run("accepts already-substituted endpoint without chainId placeholder", func(t *testing.T) {
 		upstream := &common.UpstreamConfig{
 			Id:       "test-sqd",
 			Type:     common.UpstreamTypeEvm,
@@ -144,9 +144,10 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
 		}
 
-		_, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "{chainId}")
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
+		assert.NoError(t, err)
+		assert.Len(t, configs, 1)
+		assert.Equal(t, "https://wrapper.example.com/v1/evm/1", configs[0].Endpoint)
 	})
 
 	t.Run("substitutes chainId placeholder", func(t *testing.T) {
@@ -308,6 +309,68 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		_, err := v.GenerateConfigs(ctx, &logger, upstream, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "endpoint")
+	})
+
+	t.Run("idempotent: second call with nil settings after provider substitution", func(t *testing.T) {
+		// Simulates the provider double-call: first call from provider with settings,
+		// second call from NewUpstream with nil settings and already-substituted endpoint.
+		upstream := &common.UpstreamConfig{
+			Id:   "sqd-portal-evm-1",
+			Type: common.UpstreamTypeEvm,
+			Evm:  &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		// First call: provider flow with settings (has {chainId} template)
+		settings := common.VendorSettings{
+			"endpoint": "https://morpho.portal.sqd.dev/rpc/v1/evm/{chainId}",
+			"apiKey":   "test-key",
+		}
+		configs, err := v.GenerateConfigs(ctx, &logger, upstream, settings)
+		assert.NoError(t, err)
+		assert.Len(t, configs, 1)
+		assert.Equal(t, "https://morpho.portal.sqd.dev/rpc/v1/evm/1", configs[0].Endpoint)
+		assert.Equal(t, "test-key", configs[0].JsonRpc.Headers["X-Api-Key"])
+
+		// Second call: NewUpstream flow with nil settings and already-substituted endpoint
+		configs2, err := v.GenerateConfigs(ctx, &logger, configs[0], nil)
+		assert.NoError(t, err)
+		assert.Len(t, configs2, 1)
+		assert.Equal(t, "https://morpho.portal.sqd.dev/rpc/v1/evm/1", configs2[0].Endpoint)
+		assert.Equal(t, "test-key", configs2[0].JsonRpc.Headers["X-Api-Key"])
+	})
+
+	t.Run("idempotent: multiple networks dont interfere", func(t *testing.T) {
+		settings := common.VendorSettings{
+			"endpoint": "https://morpho.portal.sqd.dev/rpc/v1/evm/{chainId}",
+			"apiKey":   "test-key",
+		}
+
+		// Generate for chain 1
+		ups1 := &common.UpstreamConfig{
+			Id:  "sqd-portal-evm-1",
+			Evm: &common.EvmUpstreamConfig{ChainId: 1},
+		}
+		configs1, err := v.GenerateConfigs(ctx, &logger, ups1, settings)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://morpho.portal.sqd.dev/rpc/v1/evm/1", configs1[0].Endpoint)
+
+		// Generate for chain 8453
+		ups2 := &common.UpstreamConfig{
+			Id:  "sqd-portal-evm-8453",
+			Evm: &common.EvmUpstreamConfig{ChainId: 8453},
+		}
+		configs2, err := v.GenerateConfigs(ctx, &logger, ups2, settings)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://morpho.portal.sqd.dev/rpc/v1/evm/8453", configs2[0].Endpoint)
+
+		// Second calls with nil settings (NewUpstream flow)
+		configs1b, err := v.GenerateConfigs(ctx, &logger, configs1[0], nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://morpho.portal.sqd.dev/rpc/v1/evm/1", configs1b[0].Endpoint)
+
+		configs2b, err := v.GenerateConfigs(ctx, &logger, configs2[0], nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "https://morpho.portal.sqd.dev/rpc/v1/evm/8453", configs2b[0].Endpoint)
 	})
 }
 
