@@ -2117,6 +2117,12 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		}
 	}
 
+	// EmptyResultDelay inherits from defaults if provided, no hardcoded fallback.
+	// When not set, the regular delay settings are used for empty result retries.
+	if r.EmptyResultDelay == 0 && defaults != nil && defaults.EmptyResultDelay != 0 {
+		r.EmptyResultDelay = defaults.EmptyResultDelay
+	}
+
 	return nil
 }
 

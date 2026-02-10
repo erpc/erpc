@@ -402,6 +402,18 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
+	// When emptyResultDelay is configured, override the delay for empty result retries.
+	// Returning -1 tells failsafe-go to fall back to the normally configured delay/backoff for non-empty retries.
+	if cfg.EmptyResultDelay > 0 {
+		emptyResultDelayDuration := cfg.EmptyResultDelay.Duration()
+		builder = builder.WithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
+			if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
+				return emptyResultDelayDuration
+			}
+			return -1
+		})
+	}
+
 	// Add callback to trace when retries are scheduled
 	builder = builder.OnRetryScheduled(func(event failsafe.ExecutionScheduledEvent[*common.NormalizedResponse]) {
 		ctx := event.Context()
