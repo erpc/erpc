@@ -1088,6 +1088,7 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeInvalidUrlPath,
 			common.ErrCodeInvalidRequest,
 			common.ErrCodeAuthUnauthorized,
+			common.ErrCodeAuthRateLimitRuleExceeded,
 			common.ErrCodeJsonRpcRequestUnmarshal,
 			common.ErrCodeProjectNotFound,
 		) {
