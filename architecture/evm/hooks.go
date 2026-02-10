@@ -149,6 +149,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		// Then apply directive-based validation
 		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
 
+	case "eth_gettransactionreceipt":
+		rs, validationErr = upstreamPostForward_eth_getTransactionReceipt(ctx, n, u, rq, rs, re)
+
 	default:
 		// For other methods, only apply the mark empty check if configured
 		if shouldMarkEmpty {
