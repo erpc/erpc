@@ -225,79 +225,79 @@ var (
 		Namespace: "erpc",
 		Name:      "cache_set_success_total",
 		Help:      "Total number of cache set operations.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheSetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_error_total",
 		Help:      "Total number of cache set errors.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user"})
 
 	MetricCacheSetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_skipped_total",
 		Help:      "Total number of cache set skips.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheEnvelopeWrapFailureTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_envelope_wrap_failure_total",
 		Help:      "Total number of cache envelope wrap failures.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheEnvelopeUnwrapFailureTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_envelope_unwrap_failure_total",
 		Help:      "Total number of cache envelope unwrap failures.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheMaxAgeStaleTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_max_age_stale_total",
 		Help:      "Total number of cache entries treated as stale due to cache-max-age.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheGetSuccessHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_total",
 		Help:      "Total number of cache get hits.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheGetSuccessMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_miss_total",
 		Help:      "Total number of cache get misses.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheGetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_error_total",
 		Help:      "Total number of cache get errors.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user"})
 
 	MetricCacheGetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_skipped_total",
 		Help:      "Total number of cache get skips (i.e. no matching policy found).",
-	}, []string{"project", "network", "category"})
+	}, []string{"project", "network", "category", "user"})
 
 	MetricCacheGetAgeGuardRejectTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_age_guard_reject_total",
 		Help:      "Total number of cached items rejected due to block timestamp age exceeding policy TTL",
-	}, []string{"project", "network", "method", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "method", "connector", "policy", "ttl", "user"})
 
 	MetricCacheSetOriginalBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_original_bytes_total",
 		Help:      "Total number of original (uncompressed) bytes for cache set operations.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheSetCompressedBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_compressed_bytes_total",
 		Help:      "Total number of compressed bytes for cache set operations.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCORSRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -446,7 +446,7 @@ var (
 		Namespace: "erpc",
 		Name:      "multicall3_cache_hits_total",
 		Help:      "Total number of per-call cache hits in multicall3 batch aggregation.",
-	}, []string{"project", "network"})
+	}, []string{"project", "network", "user"})
 
 	// Network-level Multicall3 batching metrics
 	MetricMulticall3BatchSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -534,25 +534,25 @@ var (
 		Namespace: "erpc",
 		Name:      "multicall3_user_percall_cache_hit_total",
 		Help:      "Total number of per-call cache hits during user multicall3 decomposition.",
-	}, []string{"project", "network"})
+	}, []string{"project", "network", "user"})
 
 	MetricMulticall3UserPercallCacheMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "multicall3_user_percall_cache_miss_total",
 		Help:      "Total number of per-call cache misses during user multicall3 decomposition.",
-	}, []string{"project", "network"})
+	}, []string{"project", "network", "user"})
 
 	MetricMulticall3BatchPercallCacheMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "multicall3_batch_percall_cache_miss_total",
 		Help:      "Total number of per-call cache misses during multicall3 batch aggregation.",
-	}, []string{"project", "network"})
+	}, []string{"project", "network", "user"})
 
 	MetricMulticall3BatchPercallCacheSetTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "multicall3_batch_percall_cache_set_total",
 		Help:      "Total number of per-call cache writes during multicall3 batch response processing.",
-	}, []string{"project", "network"})
+	}, []string{"project", "network", "user"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -644,35 +644,35 @@ func SetHistogramBuckets(bucketsStr string) error {
 		Name:      "cache_set_success_duration_seconds",
 		Help:      "Duration of cache set operations.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheSetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_error_duration_seconds",
 		Help:      "Duration of cache set errors.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user"})
 
 	MetricCacheGetSuccessHitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_duration_seconds",
 		Help:      "Duration of cache get hits.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheGetSuccessMissDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_miss_duration_seconds",
 		Help:      "Duration of cache get misses.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
 	MetricCacheGetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_error_duration_seconds",
 		Help:      "Duration of cache get errors.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error", "user"})
 
 	MetricConsensusDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",

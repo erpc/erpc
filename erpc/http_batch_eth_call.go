@@ -367,7 +367,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			uncachedCandidates = append(uncachedCandidates, cand)
 		}
 		if cacheHits > 0 {
-			telemetry.MetricMulticall3CacheHitsTotal.WithLabelValues(projectId, batchInfo.networkId).Add(float64(cacheHits))
+			telemetry.MetricMulticall3CacheHitsTotal.WithLabelValues(projectId, batchInfo.networkId, candidates[0].req.UserId()).Add(float64(cacheHits))
 			baseLogger.Debug().
 				Int("cacheHits", cacheHits).
 				Int("uncached", len(uncachedCandidates)).
@@ -376,7 +376,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 				Msg("multicall3 pre-aggregation cache check")
 		}
 		if len(uncachedCandidates) > 0 {
-			telemetry.MetricMulticall3BatchPercallCacheMissTotal.WithLabelValues(projectId, batchInfo.networkId).Add(float64(len(uncachedCandidates)))
+			telemetry.MetricMulticall3BatchPercallCacheMissTotal.WithLabelValues(projectId, batchInfo.networkId, candidates[0].req.UserId()).Add(float64(len(uncachedCandidates)))
 		}
 		candidates = uncachedCandidates
 	}
@@ -584,7 +584,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 						if err := cacheDal.Set(tracedCtx, req, resp); err != nil {
 							lg.Warn().Err(err).Msg("could not store multicall3 per-call response in cache")
 						} else {
-							telemetry.MetricMulticall3BatchPercallCacheSetTotal.WithLabelValues(projectId, batchInfo.networkId).Inc()
+							telemetry.MetricMulticall3BatchPercallCacheSetTotal.WithLabelValues(projectId, batchInfo.networkId, req.UserId()).Inc()
 						}
 					}(nr, cand.req, cand.ctx, cand.logger)
 				default:
