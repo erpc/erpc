@@ -898,47 +898,47 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 
 	blockRef, blockNumber, _ := evm.ExtractBlockReferenceFromRequest(ctx, req)
 
-	if blockRef == "*" && blockNumber == 0 {
-		// Request has no block reference (e.g., eth_getTransactionReceipt by tx hash).
-		// Try to extract the block number from the response body instead.
-		// This is critical for cache responses where the receipt contains blockNumber
-		// but the request only has a tx hash.
-		if resp != nil {
-			if _, respBlockNumber, err := evm.ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlockNumber > 0 {
-				blockNumber = respBlockNumber
-				// Don't return unknown — fall through to the block number checks below
-			} else {
-				return finality // unknown
-			}
-		} else {
-			return finality // unknown
+	// When the request alone doesn't carry a block number (e.g. tx-hash lookups
+	// like eth_getTransactionReceipt, or block-hash lookups like eth_getBlockByHash),
+	// try to extract it from the response body. This is critical for cache hits where
+	// the response contains blockNumber but the request only has a hash.
+	if blockNumber == 0 && resp != nil {
+		if _, respBlockNumber, err := evm.ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlockNumber > 0 {
+			blockNumber = respBlockNumber
 		}
+	}
+
+	// If we still have no block number and the request is a wildcard/hash-only ref
+	// with no way to determine finality, return unknown early.
+	if blockNumber == 0 && (blockRef == "" || blockRef == "*") {
+		return finality // unknown
 	}
 
 	if blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
 		finality = common.DataFinalityStateRealtime
 		return finality
-	} else if blockNumber > 0 && resp != nil {
-		upstream := resp.Upstream()
-		if upstream != nil {
-			if ups, ok := upstream.(common.EvmUpstream); ok {
-				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
-					if isFinalized {
-						finality = common.DataFinalityStateFinalized
-					} else {
-						finality = common.DataFinalityStateUnfinalized
+	}
+
+	if blockNumber > 0 {
+		// Try response's upstream first (direct upstream responses)
+		if resp != nil {
+			upstream := resp.Upstream()
+			if upstream != nil {
+				if ups, ok := upstream.(common.EvmUpstream); ok {
+					if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
+						if isFinalized {
+							finality = common.DataFinalityStateFinalized
+						} else {
+							finality = common.DataFinalityStateUnfinalized
+						}
+						return finality
 					}
 				}
 			}
 		}
-	}
 
-	if blockNumber > 0 && finality == common.DataFinalityStateUnknown {
-		// When we have a block number but no response yet, try multiple fallbacks
-
-		// First, try to use LastUpstream from the request (if this is a retry or subsequent attempt)
-		upstream := req.LastUpstream()
-		if upstream != nil {
+		// Try LastUpstream from the request (retries or subsequent attempts)
+		if upstream := req.LastUpstream(); upstream != nil {
 			if ups, ok := upstream.(common.EvmUpstream); ok {
 				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
 					if isFinalized {
@@ -951,8 +951,8 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 			}
 		}
 
-		// If no LastUpstream, use the network's lowest finalized block as a heuristic
-		// This provides a conservative estimate for early metrics collection
+		// Fallback: use the network's lowest finalized block as a heuristic.
+		// This is the primary path for cache hits where no upstream is available.
 		if n.upstreamsRegistry != nil {
 			lowestFinalized := n.EvmLowestFinalizedBlockNumber(ctx)
 			if lowestFinalized > 0 {
