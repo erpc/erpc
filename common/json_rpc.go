@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -1401,7 +1402,8 @@ func hashValue(h io.Writer, v interface{}) error {
 // TranslateToJsonRpcException is mainly responsible to translate internal eRPC errors (not those coming from upstreams) to
 // a proper json-rpc error with correct numeric code.
 func TranslateToJsonRpcException(err error) error {
-	if erx, ok := err.(*ErrUpstreamsExhausted); ok {
+	var erx *ErrUpstreamsExhausted
+	if errors.As(err, &erx) {
 		// Scan an UpstreamsExhausted error to detect the most frequent error among upstreams
 		// This selection helps provide somewhat user-friendly error message vs just saying that "all upstreams failed"
 		var (

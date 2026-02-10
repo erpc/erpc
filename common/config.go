@@ -217,6 +217,11 @@ type CacheConfig struct {
 	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
+	// Envelope enables wrapping cached values with a metadata header (magic + version + timestamp).
+	// The header is required for cache-max-age staleness checks.
+	// Default: false (disabled) for safe rolling deploys. Old binaries cannot parse
+	// the envelope prefix, so enable only after all pods are on the new version.
+	Envelope *bool `yaml:"envelope,omitempty" json:"envelope"`
 }
 
 type CompressionConfig struct {
@@ -1078,6 +1083,12 @@ type ConsensusPolicyConfig struct {
 	// or field name for nested result objects (e.g., "nonce" for result.nonce).
 	// When multiple fields are specified, they act as tie-breakers in order.
 	PreferHighestValueFor map[string][]string `yaml:"preferHighestValueFor,omitempty" json:"preferHighestValueFor"`
+	// FireAndForget when true, allows consensus to return a response to the client immediately
+	// upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
+	// This is useful for write operations like eth_sendRawTransaction where you want to
+	// broadcast the transaction to as many nodes as possible while still returning quickly.
+	// Default is false (normal behavior - cancel remaining requests on short-circuit).
+	FireAndForget bool `yaml:"fireAndForget,omitempty" json:"fireAndForget"`
 }
 
 func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
@@ -1473,11 +1484,12 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type DirectiveDefaultsConfig struct {
-	RetryEmpty        *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
-	RetryPending      *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
-	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
-	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
-	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+	RetryEmpty         *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending       *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead      *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	CacheMaxAgeSeconds *int64  `yaml:"cacheMaxAgeSeconds,omitempty" json:"cacheMaxAgeSeconds"`
+	UseUpstream        *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	SkipInterpolation  *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
 
 	// Validation: Block Integrity
 	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
@@ -1526,6 +1538,7 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	GetLogsCacheChunkSize       *int64              `yaml:"getLogsCacheChunkSize,omitempty" json:"getLogsCacheChunkSize"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.
@@ -1554,7 +1567,7 @@ type EvmNetworkConfig struct {
 
 	// Multicall3Aggregation configures aggregating eth_call requests into Multicall3.
 	// Accepts either a boolean (backward compat) or a full config object.
-	// Default: enabled with default settings
+	// Default: disabled; must be explicitly enabled.
 	Multicall3Aggregation *Multicall3AggregationConfig `yaml:"multicall3Aggregation,omitempty" json:"multicall3Aggregation,omitempty"`
 }
 
@@ -1562,7 +1575,7 @@ type EvmNetworkConfig struct {
 // into Multicall3 aggregate calls. This batches requests across all entrypoints
 // (HTTP single, HTTP batch, gRPC) rather than just JSON-RPC batch requests.
 type Multicall3AggregationConfig struct {
-	// Enabled enables/disables Multicall3 aggregation. Default: true
+	// Enabled enables/disables Multicall3 aggregation. Default: false
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// WindowMs is the maximum time (milliseconds) to wait for a batch to fill.
@@ -1748,6 +1761,9 @@ func (c *Multicall3AggregationConfig) UnmarshalYAML(unmarshal func(interface{}) 
 		c.Enabled = boolVal
 		if boolVal {
 			c.SetDefaults()
+			if err := c.IsValid(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -1761,6 +1777,9 @@ func (c *Multicall3AggregationConfig) UnmarshalYAML(unmarshal func(interface{}) 
 	*c = Multicall3AggregationConfig(raw)
 	if c.Enabled {
 		c.SetDefaults()
+		if err := c.IsValid(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1773,6 +1792,9 @@ func (c *Multicall3AggregationConfig) UnmarshalJSON(data []byte) error {
 		c.Enabled = boolVal
 		if boolVal {
 			c.SetDefaults()
+			if err := c.IsValid(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -1786,6 +1808,9 @@ func (c *Multicall3AggregationConfig) UnmarshalJSON(data []byte) error {
 	*c = Multicall3AggregationConfig(raw)
 	if c.Enabled {
 		c.SetDefaults()
+		if err := c.IsValid(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

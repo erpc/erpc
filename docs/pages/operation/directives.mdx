@@ -11,6 +11,7 @@ To instruct eRPC behavior on a per-request basis, you can provide directive "Hea
 * [Retry empty responses](#retry-empty-responses)
 * [Retry pending transactions](#retry-pending-transactions)
 * [Skip cache read](#skip-cache-read)
+* [Cache max age](#cache-max-age)
 * [Use specific upstream(s)](#use-specific-upstreams)
 * [Validation directives](/config/failsafe/integrity#validations-directives) — Control response validation (bloom filters, receipts, logs)
 
@@ -154,6 +155,53 @@ curl --location 'http://localhost:4000/main/evm/42161?skip-cache-read=true'
 ```
 
 > The new response will still be subject to caching as per usual.
+
+## Cache max age
+
+Specify the maximum age (in seconds) of a cached response you're willing to accept. If the cached response is older than this threshold, eRPC treats it as stale and fetches fresh data from upstreams.
+
+* Header `X-ERPC-Cache-Max-Age: <seconds>`
+* Or query parameter `?cache-max-age=<seconds>`
+
+```bash
+# Only accept cached responses that are less than 60 seconds old
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--header 'X-ERPC-Cache-Max-Age: 60' \
+--data '{
+    "method": "eth_call",
+    "params": [
+        {"to": "0x...", "data": "0x..."},
+        "latest"
+    ],
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?cache-max-age=60'
+# ...
+```
+
+<Callout type="info">
+  Cache max-age primarily applies to data with **realtime finality** (e.g., `latest` block queries). For finalized data, default cache max-age settings are ignored and responses are served from cache because the data is immutable. However, if the client explicitly sets a cache max-age (for example via `X-ERPC-Cache-Max-Age` or `cache-max-age`), that explicit directive can still force a refresh when the cached entry is older than the specified max age.
+</Callout>
+
+### Cache age response headers
+
+When a response is served from cache, eRPC includes headers to indicate the cache age:
+
+- **`X-ERPC-Cache-Age`**: The age of the cached response in seconds (how long ago it was stored).
+- **`X-ERPC-Cache-At`**: The Unix timestamp (seconds) when the response was originally cached.
+
+These headers are only present when the response is served from cache.
+
+```bash
+# Example response headers for a cached response:
+# X-ERPC-Cache: HIT
+# X-ERPC-Cache-Age: 45
+# X-ERPC-Cache-At: 1706000000
+```
 
 ## Use specific upstream(s)
 

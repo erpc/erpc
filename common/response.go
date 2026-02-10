@@ -24,10 +24,11 @@ type NormalizedResponse struct {
 	hedges    atomic.Value
 	upstream  atomic.Value
 
-	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
-	evmBlockNumber  atomic.Value
-	evmBlockRef     atomic.Value
-	finality        atomic.Value // Cached finality state
+	jsonRpcResponse   atomic.Pointer[JsonRpcResponse]
+	evmBlockNumber    atomic.Value
+	evmBlockRef       atomic.Value
+	cacheStoredAtUnix atomic.Int64
+	finality          atomic.Value // Cached finality state
 
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
@@ -102,6 +103,35 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 	}
 	r.fromCache.Store(fromCache)
 	return r
+}
+
+func (r *NormalizedResponse) CacheStoredAtUnix() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.cacheStoredAtUnix.Load()
+}
+
+func (r *NormalizedResponse) SetCacheStoredAtUnix(ts int64) {
+	if r == nil || ts <= 0 {
+		return
+	}
+	r.cacheStoredAtUnix.Store(ts)
+}
+
+func (r *NormalizedResponse) CacheAgeSeconds() (int64, bool) {
+	if r == nil {
+		return 0, false
+	}
+	ts := r.cacheStoredAtUnix.Load()
+	if ts <= 0 {
+		return 0, false
+	}
+	age := time.Now().Unix() - ts
+	if age < 0 {
+		age = 0
+	}
+	return age, true
 }
 
 func (r *NormalizedResponse) EvmBlockRef() interface{} {
@@ -590,6 +620,7 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	r.WithRequest(req)
 	r.SetUpstream(resp.Upstream())
 	r.SetFromCache(resp.FromCache())
+	r.SetCacheStoredAtUnix(resp.CacheStoredAtUnix())
 	r.SetAttempts(resp.Attempts())
 	r.SetRetries(resp.Retries())
 	r.SetHedges(resp.Hedges())

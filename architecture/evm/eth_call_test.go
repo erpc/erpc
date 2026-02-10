@@ -18,6 +18,7 @@ type mockNetworkForEthCall struct {
 	projectId string
 	cfg       *common.NetworkConfig
 	forwardFn func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+	cache     common.CacheDAL
 	mu        sync.Mutex
 	callCount int
 }
@@ -46,12 +47,37 @@ func (m *mockNetworkForEthCall) GetFinality(ctx context.Context, req *common.Nor
 func (m *mockNetworkForEthCall) EvmHighestLatestBlockNumber(ctx context.Context) int64    { return 0 }
 func (m *mockNetworkForEthCall) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 { return 0 }
 func (m *mockNetworkForEthCall) EvmLeaderUpstream(ctx context.Context) common.Upstream    { return nil }
-func (m *mockNetworkForEthCall) Cache() common.CacheDAL                                   { return nil }
+func (m *mockNetworkForEthCall) Cache() common.CacheDAL                                   { return m.cache }
 
 func (m *mockNetworkForEthCall) GetCallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.callCount
+}
+
+type captureCacheDal struct {
+	t     *testing.T
+	froms []string
+}
+
+func (c *captureCacheDal) Get(ctx context.Context, nrq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	jrq, err := nrq.JsonRpcRequest()
+	require.NoError(c.t, err)
+	require.NotEmpty(c.t, jrq.Params)
+	callObj, ok := jrq.Params[0].(map[string]interface{})
+	require.True(c.t, ok)
+	from, ok := callObj["from"].(string)
+	require.True(c.t, ok)
+	c.froms = append(c.froms, from)
+	return nil, nil
+}
+
+func (c *captureCacheDal) Set(ctx context.Context, nrq *common.NormalizedRequest, nrs *common.NormalizedResponse) error {
+	return nil
+}
+
+func (c *captureCacheDal) IsObjectNull() bool {
+	return false
 }
 
 func TestProjectPreForward_eth_call_Batching(t *testing.T) {
@@ -160,7 +186,7 @@ func TestProjectPreForward_eth_call_NoBatching_Disabled(t *testing.T) {
 	cfg := &common.NetworkConfig{
 		Evm: &common.EvmNetworkConfig{
 			ChainId: 1,
-			// Explicitly disable batching (nil config uses default which has Enabled: true)
+			// Explicitly disable batching (nil config uses default which has Enabled: false)
 			Multicall3Aggregation: &common.Multicall3AggregationConfig{
 				Enabled: false,
 			},
@@ -255,7 +281,7 @@ func TestProjectPreForward_eth_call_AddsBlockParam(t *testing.T) {
 		Evm: &common.EvmNetworkConfig{
 			ChainId: 1,
 			// Explicitly disable batching to test block param normalization
-			// (nil config uses default which has Enabled: true)
+			// (nil config uses default which has Enabled: false)
 			Multicall3Aggregation: &common.Multicall3AggregationConfig{
 				Enabled: false,
 			},
@@ -294,6 +320,202 @@ func TestProjectPreForward_eth_call_AddsBlockParam(t *testing.T) {
 	require.Equal(t, "latest", capturedJrq.Params[1])
 }
 
+func TestHandleUserMulticall3_PreservesMsgSender(t *testing.T) {
+	target1, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	target2, err := common.HexToBytes("0x2222222222222222222222222222222222222222")
+	require.NoError(t, err)
+
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target1, CallData: []byte{0x01}},
+		{Target: target2, CallData: []byte{0x02}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   multicall3Address,
+			"data": "0x" + hexEncode(encodedCalls),
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xaa}},
+		{Success: true, ReturnData: []byte{0xbb}},
+	}
+	encodedResult, err := EncodeMulticall3Aggregate3Results(results)
+	require.NoError(t, err)
+	mcJrr, err := common.NewJsonRpcResponse(nil, "0x"+hexEncode(encodedResult), nil)
+	require.NoError(t, err)
+	mcResp := common.NewNormalizedResponse().WithJsonRpcResponse(mcJrr)
+
+	cacheDal := &captureCacheDal{t: t}
+	cfg := &common.NetworkConfig{
+		Evm: &common.EvmNetworkConfig{
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				CachePerCall: util.BoolPtr(false),
+			},
+		},
+	}
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       cfg,
+		cache:     cacheDal,
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return mcResp, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.NotNil(t, resp)
+	require.Len(t, cacheDal.froms, 2)
+	for _, from := range cacheDal.froms {
+		require.Equal(t, multicall3Address, from)
+	}
+}
+
+func TestHandleUserMulticall3_CopiesDirectives(t *testing.T) {
+	target, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target, CallData: []byte{0x01}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   multicall3Address,
+			"data": "0x" + hexEncode(encodedCalls),
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+	maxAge := int64(7)
+	req.SetDirectives(&common.RequestDirectives{
+		SkipCacheRead:      true,
+		CacheMaxAgeSeconds: &maxAge,
+		UseUpstream:        "primary-*",
+	})
+	req.SetUser(&common.User{Id: "user-1"})
+
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xaa}},
+	}
+	encodedResult, err := EncodeMulticall3Aggregate3Results(results)
+	require.NoError(t, err)
+	mcJrr, err := common.NewJsonRpcResponse(nil, "0x"+hexEncode(encodedResult), nil)
+	require.NoError(t, err)
+	mcResp := common.NewNormalizedResponse().WithJsonRpcResponse(mcJrr)
+
+	cfg := &common.NetworkConfig{
+		Evm: &common.EvmNetworkConfig{
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				CachePerCall: util.BoolPtr(false),
+			},
+		},
+	}
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       cfg,
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			dirs := req.Directives()
+			require.NotNil(t, dirs)
+			require.True(t, dirs.SkipCacheRead)
+			require.NotNil(t, dirs.CacheMaxAgeSeconds)
+			require.Equal(t, maxAge, *dirs.CacheMaxAgeSeconds)
+			require.Equal(t, "primary-*", dirs.UseUpstream)
+			require.NotNil(t, req.User())
+			require.Equal(t, "user-1", req.User().Id)
+			return mcResp, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.NotNil(t, resp)
+}
+
+func TestHandleUserMulticall3_SkipsStateOverride(t *testing.T) {
+	target, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target, CallData: []byte{0x01}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   multicall3Address,
+			"data": "0x" + hexEncode(encodedCalls),
+		},
+		"latest",
+		map[string]interface{}{
+			"0x0000000000000000000000000000000000000000": map[string]interface{}{
+				"balance": "0x1",
+			},
+		},
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       &common.NetworkConfig{},
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			t.Fatalf("unexpected multicall3 forward with state override")
+			return nil, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.False(t, handled)
+	require.Nil(t, resp)
+	require.Equal(t, 0, network.GetCallCount())
+}
+
+func TestHandleUserMulticall3_SkipsExtraCallObjectFields(t *testing.T) {
+	target, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target, CallData: []byte{0x01}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":    multicall3Address,
+			"data":  "0x" + hexEncode(encodedCalls),
+			"value": "0x1",
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       &common.NetworkConfig{},
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			t.Fatalf("unexpected multicall3 forward with extra call fields")
+			return nil, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.False(t, handled)
+	require.Nil(t, resp)
+	require.Equal(t, 0, network.GetCallCount())
+}
+
 // hexEncode is a helper to encode bytes as hex string
 func hexEncode(b []byte) string {
 	const hexChars = "0123456789abcdef"
@@ -303,4 +525,261 @@ func hexEncode(b []byte) string {
 		dst[i*2+1] = hexChars[v&0x0f]
 	}
 	return string(dst)
+}
+
+func TestHandleUserMulticall3_PartialFailures(t *testing.T) {
+	// Test that when some calls succeed and some fail in the upstream multicall3 response,
+	// the results are properly mapped back and the response contains correct Success flags.
+	target1, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	target2, err := common.HexToBytes("0x2222222222222222222222222222222222222222")
+	require.NoError(t, err)
+	target3, err := common.HexToBytes("0x3333333333333333333333333333333333333333")
+	require.NoError(t, err)
+
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target1, CallData: []byte{0x01}},
+		{Target: target2, CallData: []byte{0x02}},
+		{Target: target3, CallData: []byte{0x03}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   multicall3Address,
+			"data": "0x" + hexEncode(encodedCalls),
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	// Simulate mixed results: call 1 succeeds, call 2 fails (reverted), call 3 succeeds
+	revertData := []byte{0x08, 0xc3, 0x79, 0xa0} // Error(string) selector
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xaa, 0xbb}},
+		{Success: false, ReturnData: revertData}, // Failed call with revert data
+		{Success: true, ReturnData: []byte{0xcc, 0xdd}},
+	}
+	encodedResult, err := EncodeMulticall3Aggregate3Results(results)
+	require.NoError(t, err)
+	mcJrr, err := common.NewJsonRpcResponse(nil, "0x"+hexEncode(encodedResult), nil)
+	require.NoError(t, err)
+	mcResp := common.NewNormalizedResponse().WithJsonRpcResponse(mcJrr)
+
+	cfg := &common.NetworkConfig{
+		Evm: &common.EvmNetworkConfig{
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				CachePerCall: util.BoolPtr(false), // Disable per-call caching for simpler test
+			},
+		},
+	}
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       cfg,
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return mcResp, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.True(t, handled, "should handle user multicall3 with partial failures")
+	require.NotNil(t, resp)
+
+	// Decode the response and verify the partial failure is preserved
+	jrr, err := resp.JsonRpcResponse(context.Background())
+	require.NoError(t, err)
+	require.Nil(t, jrr.Error, "should not have JSON-RPC error")
+
+	var resultHex string
+	err = common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &resultHex)
+	require.NoError(t, err)
+
+	resultBytes, err := common.HexToBytes(resultHex)
+	require.NoError(t, err)
+
+	decodedResults, err := DecodeMulticall3Aggregate3Result(resultBytes)
+	require.NoError(t, err)
+	require.Len(t, decodedResults, 3, "should have 3 results")
+
+	// Verify each result
+	require.True(t, decodedResults[0].Success, "first call should succeed")
+	require.Equal(t, []byte{0xaa, 0xbb}, decodedResults[0].ReturnData)
+
+	require.False(t, decodedResults[1].Success, "second call should fail")
+	require.Equal(t, revertData, decodedResults[1].ReturnData, "revert data should be preserved")
+
+	require.True(t, decodedResults[2].Success, "third call should succeed")
+	require.Equal(t, []byte{0xcc, 0xdd}, decodedResults[2].ReturnData)
+}
+
+func TestHandleUserMulticall3_AllCallsFail(t *testing.T) {
+	// Test that when all calls fail, the response is still handled correctly
+	target1, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	target2, err := common.HexToBytes("0x2222222222222222222222222222222222222222")
+	require.NoError(t, err)
+
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target1, CallData: []byte{0x01}},
+		{Target: target2, CallData: []byte{0x02}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   multicall3Address,
+			"data": "0x" + hexEncode(encodedCalls),
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	// All calls fail
+	revertData1 := []byte{0x08, 0xc3, 0x79, 0xa0, 0x01}
+	revertData2 := []byte{0x08, 0xc3, 0x79, 0xa0, 0x02}
+	results := []Multicall3Result{
+		{Success: false, ReturnData: revertData1},
+		{Success: false, ReturnData: revertData2},
+	}
+	encodedResult, err := EncodeMulticall3Aggregate3Results(results)
+	require.NoError(t, err)
+	mcJrr, err := common.NewJsonRpcResponse(nil, "0x"+hexEncode(encodedResult), nil)
+	require.NoError(t, err)
+	mcResp := common.NewNormalizedResponse().WithJsonRpcResponse(mcJrr)
+
+	cfg := &common.NetworkConfig{
+		Evm: &common.EvmNetworkConfig{
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				CachePerCall: util.BoolPtr(false),
+			},
+		},
+	}
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       cfg,
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return mcResp, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.NotNil(t, resp)
+
+	// Decode and verify all failures are preserved
+	jrr, err := resp.JsonRpcResponse(context.Background())
+	require.NoError(t, err)
+	require.Nil(t, jrr.Error)
+
+	var resultHex string
+	err = common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &resultHex)
+	require.NoError(t, err)
+
+	resultBytes, err := common.HexToBytes(resultHex)
+	require.NoError(t, err)
+
+	decodedResults, err := DecodeMulticall3Aggregate3Result(resultBytes)
+	require.NoError(t, err)
+	require.Len(t, decodedResults, 2)
+
+	require.False(t, decodedResults[0].Success)
+	require.Equal(t, revertData1, decodedResults[0].ReturnData)
+
+	require.False(t, decodedResults[1].Success)
+	require.Equal(t, revertData2, decodedResults[1].ReturnData)
+}
+
+func TestHandleUserMulticall3_CachePerCallSkipsFailedCalls(t *testing.T) {
+	// Test that when CachePerCall is enabled, failed calls are NOT cached
+	target1, err := common.HexToBytes("0x1111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	target2, err := common.HexToBytes("0x2222222222222222222222222222222222222222")
+	require.NoError(t, err)
+
+	encodedCalls, err := encodeAggregate3Calls([]Multicall3Call{
+		{Target: target1, CallData: []byte{0x01}},
+		{Target: target2, CallData: []byte{0x02}},
+	})
+	require.NoError(t, err)
+
+	jrq := common.NewJsonRpcRequest("eth_call", []interface{}{
+		map[string]interface{}{
+			"to":   multicall3Address,
+			"data": "0x" + hexEncode(encodedCalls),
+		},
+		"latest",
+	})
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	// First call succeeds, second fails
+	results := []Multicall3Result{
+		{Success: true, ReturnData: []byte{0xaa}},
+		{Success: false, ReturnData: []byte{0x08, 0xc3, 0x79, 0xa0}},
+	}
+	encodedResult, err := EncodeMulticall3Aggregate3Results(results)
+	require.NoError(t, err)
+	mcJrr, err := common.NewJsonRpcResponse(nil, "0x"+hexEncode(encodedResult), nil)
+	require.NoError(t, err)
+	mcResp := common.NewNormalizedResponse().WithJsonRpcResponse(mcJrr)
+
+	setCalls := 0
+	cacheDal := &mockCacheDal{
+		setFn: func(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+			setCalls++
+			return nil
+		},
+	}
+
+	cfg := &common.NetworkConfig{
+		Evm: &common.EvmNetworkConfig{
+			Multicall3Aggregation: &common.Multicall3AggregationConfig{
+				CachePerCall: util.BoolPtr(true), // Enable per-call caching
+			},
+		},
+	}
+	network := &mockNetworkForEthCall{
+		networkId: "evm:1",
+		projectId: "test",
+		cfg:       cfg,
+		cache:     cacheDal,
+		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return mcResp, nil
+		},
+	}
+
+	handled, resp, err := handleUserMulticall3(context.Background(), network, req)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.NotNil(t, resp)
+
+	// Only the successful call should be cached
+	require.Equal(t, 1, setCalls, "only successful calls should be cached")
+}
+
+// mockCacheDal is a simple mock for testing cache behavior
+type mockCacheDal struct {
+	getFn func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+	setFn func(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error
+}
+
+func (m *mockCacheDal) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	if m.getFn != nil {
+		return m.getFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (m *mockCacheDal) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	if m.setFn != nil {
+		return m.setFn(ctx, req, resp)
+	}
+	return nil
+}
+
+func (m *mockCacheDal) IsObjectNull() bool {
+	return false
 }

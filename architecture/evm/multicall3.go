@@ -5,6 +5,7 @@
 package evm
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -36,6 +37,15 @@ func safeUint64ToInt(v uint64) (int, error) {
 	return int(v), nil
 }
 
+// safeIntToUint64 converts int to uint64 with overflow protection.
+// Returns an error if the value is negative.
+func safeIntToUint64(v int) (uint64, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("integer overflow: %d is negative", v)
+	}
+	return uint64(v), nil // #nosec G115 -- bounds checked
+}
+
 const (
 	abiWordSize              = 32
 	aggregate3ElementHeadLen = 3 * abiWordSize // address + allowFailure + data offset
@@ -51,6 +61,12 @@ type Multicall3Call struct {
 type Multicall3Result struct {
 	Success    bool
 	ReturnData []byte
+}
+
+type DecodedMulticall3Call struct {
+	Target       []byte
+	AllowFailure bool
+	CallData     []byte
 }
 
 func NewMulticall3Call(req *common.NormalizedRequest, targetHex, dataHex string) (Multicall3Call, error) {
@@ -293,6 +309,159 @@ func DecodeMulticall3Aggregate3Result(data []byte) ([]Multicall3Result, error) {
 	}
 
 	return results, nil
+}
+
+func DecodeMulticall3Aggregate3Calls(calldata []byte) ([]DecodedMulticall3Call, error) {
+	if len(calldata) < 4+abiWordSize {
+		return nil, errors.New("multicall3 calldata too short")
+	}
+	if !bytes.Equal(calldata[:4], multicall3Aggregate3Selector) {
+		return nil, errors.New("multicall3 calldata selector mismatch")
+	}
+
+	payload := calldata[4:]
+	offset, err := readUint256(payload[:32])
+	if err != nil {
+		return nil, err
+	}
+	base, err := safeUint64ToInt(offset)
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 calldata offset overflow: %w", err)
+	}
+	if base < 0 || base+32 > len(payload) {
+		return nil, errors.New("multicall3 calldata offset out of bounds")
+	}
+
+	count, err := readUint256(payload[base : base+32])
+	if err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return []DecodedMulticall3Call{}, nil
+	}
+	countInt, err := safeUint64ToInt(count)
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 calldata count overflow: %w", err)
+	}
+
+	offsetTableStart := base + 32
+	// Bound-check: ensure count doesn't exceed what the payload can hold
+	maxCount := (len(payload) - offsetTableStart) / abiWordSize
+	if countInt > maxCount {
+		return nil, errors.New("multicall3 calldata count exceeds payload bounds")
+	}
+	offsetTableEnd := offsetTableStart + countInt*abiWordSize
+	if offsetTableEnd > len(payload) {
+		return nil, errors.New("multicall3 calldata offsets out of bounds")
+	}
+
+	calls := make([]DecodedMulticall3Call, 0, countInt)
+	arrayDataStart := offsetTableStart
+	for i := 0; i < countInt; i++ {
+		offStart := offsetTableStart + i*abiWordSize
+		offVal, err := readUint256(payload[offStart : offStart+abiWordSize])
+		if err != nil {
+			return nil, err
+		}
+		elemOffset, err := safeUint64ToInt(offVal)
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 calldata element offset overflow: %w", err)
+		}
+		elemStart := arrayDataStart + elemOffset
+		if elemStart < 0 || elemStart+aggregate3ElementHeadLen > len(payload) {
+			return nil, errors.New("multicall3 calldata element out of bounds")
+		}
+
+		addrWord := payload[elemStart : elemStart+abiWordSize]
+		target := make([]byte, evmAddressLength)
+		copy(target, addrWord[abiWordSize-evmAddressLength:])
+
+		allowFailure, err := readBool(payload[elemStart+abiWordSize : elemStart+2*abiWordSize])
+		if err != nil {
+			return nil, err
+		}
+		dataOffset, err := readUint256(payload[elemStart+2*abiWordSize : elemStart+3*abiWordSize])
+		if err != nil {
+			return nil, err
+		}
+		dataOffsetInt, err := safeUint64ToInt(dataOffset)
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 calldata data offset overflow: %w", err)
+		}
+		bytesStart := elemStart + dataOffsetInt
+		if bytesStart < 0 || bytesStart+abiWordSize > len(payload) {
+			return nil, errors.New("multicall3 calldata bytes out of bounds")
+		}
+		dataLen, err := readUint256(payload[bytesStart : bytesStart+abiWordSize])
+		if err != nil {
+			return nil, err
+		}
+		dataLenInt, err := safeUint64ToInt(dataLen)
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 calldata data length overflow: %w", err)
+		}
+		dataStart := bytesStart + abiWordSize
+		dataEnd := dataStart + dataLenInt
+		if dataStart < 0 || dataEnd > len(payload) {
+			return nil, errors.New("multicall3 calldata data length out of bounds")
+		}
+		callData := make([]byte, dataLenInt)
+		copy(callData, payload[dataStart:dataEnd])
+
+		calls = append(calls, DecodedMulticall3Call{
+			Target:       target,
+			AllowFailure: allowFailure,
+			CallData:     callData,
+		})
+	}
+
+	return calls, nil
+}
+
+func EncodeMulticall3Aggregate3Results(results []Multicall3Result) ([]byte, error) {
+	resultsLenUint, err := safeIntToUint64(len(results))
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 results length overflow: %w", err)
+	}
+	offsetTableSize := uint64(abiWordSize) * resultsLenUint
+	offsets := make([]uint64, len(results))
+	elems := make([][]byte, len(results))
+	cur := offsetTableSize
+
+	for i, res := range results {
+		elems[i] = encodeAggregate3ResultElementInternal(res)
+		elemLenUint, err := safeIntToUint64(len(elems[i]))
+		if err != nil {
+			return nil, fmt.Errorf("multicall3 result element length overflow: %w", err)
+		}
+		offsets[i] = cur
+		cur += elemLenUint
+	}
+	capacity, err := safeUint64ToInt(cur)
+	if err != nil {
+		return nil, fmt.Errorf("multicall3 encoded result too large: %w", err)
+	}
+	array := make([]byte, 0, capacity)
+	array = append(array, encodeUint64(resultsLenUint)...)
+	for _, off := range offsets {
+		array = append(array, encodeUint64(off)...)
+	}
+	for _, elem := range elems {
+		array = append(array, elem...)
+	}
+
+	out := make([]byte, 0, abiWordSize+len(array))
+	out = append(out, encodeUint64(abiWordSize)...)
+	out = append(out, array...)
+	return out, nil
+}
+
+func encodeAggregate3ResultElementInternal(result Multicall3Result) []byte {
+	head := make([]byte, 0, 2*abiWordSize)
+	head = append(head, encodeBool(result.Success)...)
+	head = append(head, encodeUint64(2*abiWordSize)...)
+	tail := encodeBytes(result.ReturnData)
+	return append(head, tail...)
 }
 
 // ShouldFallbackMulticall3 determines if an error should trigger fallback to individual requests.

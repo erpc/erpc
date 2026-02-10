@@ -3,9 +3,11 @@ package evm
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,9 @@ type EvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// Envelope controls whether values are wrapped with a metadata header on write.
+	envelopeEnabled bool
+
 	// Compression settings
 	compressionEnabled   bool
 	compressionThreshold int
@@ -34,6 +39,16 @@ type EvmJsonRpcCache struct {
 
 const (
 	JsonRpcCacheContext common.ContextKey = "jsonRpcCache"
+)
+
+const (
+	// Cache envelope format (prefix):
+	// [0..3]  magic "ERPC"
+	// [4]     version (1)
+	// [5..12] big-endian unix seconds (cached-at)
+	cacheEnvelopeMagic   = "ERPC"
+	cacheEnvelopeVersion = byte(1)
+	cacheEnvelopeHeader  = 4 + 1 + 8
 )
 
 func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common.CacheConfig) (*EvmJsonRpcCache, error) {
@@ -65,8 +80,9 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	cache := &EvmJsonRpcCache{
-		policies: policies,
-		logger:   logger,
+		policies:        policies,
+		logger:          logger,
+		envelopeEnabled: cfg.Envelope != nil && *cfg.Envelope,
 	}
 
 	// Initialize compression if configured
@@ -137,6 +153,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		logger:               &lg,
 		policies:             c.policies,
 		projectId:            projectId,
+		envelopeEnabled:      c.envelopeEnabled,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
 		compressionLevel:     c.compressionLevel,
@@ -190,6 +207,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			c.projectId,
 			req.NetworkLabel(),
 			rpcReq.Method,
+			req.UserId(),
 		).Inc()
 		span.SetAttributes(attribute.Bool("cache.hit", false))
 		policySpan.End()
@@ -199,6 +217,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	policySpan.End()
 
 	var jrr *common.JsonRpcResponse
+	var cachedAt int64
 	var connector data.Connector
 	var policy *data.CachePolicy
 	// Track context for correct miss attribution
@@ -209,10 +228,15 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		policyCtx, policySpan := common.StartDetailSpan(ctx, "Cache.GetForPolicy", trace.WithAttributes(
 			attribute.String("cache.policy_summary", policy.String()),
 			attribute.String("cache.connector_id", connector.Id()),
+			attribute.String("cache.method", rpcReq.Method),
 		))
-		jrr, err = c.doGet(policyCtx, connector, req, rpcReq)
+		jrr, cachedAt, err = c.doGet(policyCtx, connector, policy, req, rpcReq)
 		if err != nil {
 			common.SetTraceSpanError(policySpan, err)
+			policySpan.SetAttributes(
+				attribute.String("cache.get_outcome", "error"),
+				attribute.String("cache.error", common.ErrorSummary(err)),
+			)
 			telemetry.MetricCacheGetErrorTotal.WithLabelValues(
 				c.projectId,
 				req.NetworkLabel(),
@@ -221,6 +245,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				policy.String(),
 				policy.GetTTL().String(),
 				common.ErrorSummary(err),
+				req.UserId(),
 			).Inc()
 			telemetry.MetricCacheGetErrorDuration.WithLabelValues(
 				c.projectId,
@@ -230,7 +255,12 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				policy.String(),
 				policy.GetTTL().String(),
 				common.ErrorSummary(err),
+				req.UserId(),
 			).Observe(time.Since(start).Seconds())
+		} else if jrr == nil {
+			policySpan.SetAttributes(attribute.String("cache.get_outcome", "miss"))
+		} else {
+			policySpan.SetAttributes(attribute.String("cache.get_outcome", "found"))
 		}
 		if c.logger.GetLevel() == zerolog.TraceLevel {
 			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
@@ -269,15 +299,29 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		labelConnectorId := connector.Id()
 		labelPolicyStr := policy.String()
 		labelTTL := policy.GetTTL().String()
+		missReason := "empty_result"
 		if lastRejectConnectorId != "" {
 			labelConnectorId = lastRejectConnectorId
 			labelPolicyStr = lastRejectPolicyStr
 			labelTTL = lastRejectTTL
+			missReason = "ttl_rejected"
 		} else if lastMissConnectorId != "" {
 			labelConnectorId = lastMissConnectorId
 			labelPolicyStr = lastMissPolicyStr
 			labelTTL = lastMissTTL
+			missReason = "connector_miss"
 		}
+		if err != nil {
+			missReason = "connector_error"
+			labelConnectorId = connector.Id()
+			labelPolicyStr = policy.String()
+			labelTTL = policy.GetTTL().String()
+		}
+		span.SetAttributes(
+			attribute.String("cache.miss_reason", missReason),
+			attribute.String("cache.miss_connector_id", labelConnectorId),
+			attribute.String("cache.miss_policy", labelPolicyStr),
+		)
 
 		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
@@ -286,6 +330,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			labelConnectorId,
 			labelPolicyStr,
 			labelTTL,
+			req.UserId(),
 		).Inc()
 		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
@@ -294,6 +339,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			labelConnectorId,
 			labelPolicyStr,
 			labelTTL,
+			req.UserId(),
 		).Observe(time.Since(start).Seconds())
 		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, nil
@@ -310,6 +356,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				connector.Id(),
 				policy.String(),
 				policy.GetTTL().String(),
+				req.UserId(),
 			).Inc()
 			telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 				c.projectId,
@@ -318,6 +365,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				connector.Id(),
 				policy.String(),
 				policy.GetTTL().String(),
+				req.UserId(),
 			).Observe(time.Since(start).Seconds())
 			span.SetAttributes(attribute.Bool("cache.hit", false))
 			return nil, nil
@@ -331,6 +379,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		WithRequest(req).
 		WithFromCache(true).
 		WithJsonRpcResponse(jrr)
+	if cachedAt > 0 {
+		resp.SetCacheStoredAtUnix(cachedAt)
+	}
 
 	telemetry.MetricCacheGetSuccessHitTotal.WithLabelValues(
 		c.projectId,
@@ -339,6 +390,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		connector.Id(),
 		policy.String(),
 		policy.GetTTL().String(),
+		req.UserId(),
 	).Inc()
 	telemetry.MetricCacheGetSuccessHitDuration.WithLabelValues(
 		c.projectId,
@@ -347,6 +399,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		connector.Id(),
 		policy.String(),
 		policy.GetTTL().String(),
+		req.UserId(),
 	).Observe(time.Since(start).Seconds())
 	span.SetAttributes(attribute.Bool("cache.hit", true))
 	if c.logger.GetLevel() <= zerolog.DebugLevel {
@@ -380,7 +433,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	// TODO after subscription epic this method can be called for every new block data to pre-populate the cache,
-	// based on the evmJsonRpcCache.hyrdation.filters which is only the data (logs, txs) that user cares about.
+	// based on the evmJsonRpcCache.hydration.filters which is only the data (logs, txs) that user cares about.
 	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest(ctx)
 	if err != nil {
@@ -504,6 +557,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						policy.String(),
 						ttl.String(),
 						common.ErrorSummary(err),
+						req.UserId(),
 					).Inc()
 					telemetry.MetricCacheSetErrorDuration.WithLabelValues(
 						c.projectId,
@@ -513,6 +567,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						policy.String(),
 						ttl.String(),
 						common.ErrorSummary(err),
+						req.UserId(),
 					).Observe(time.Since(start).Seconds())
 					errsMu.Lock()
 					errs = append(errs, err)
@@ -525,6 +580,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						connector.Id(),
 						policy.String(),
 						ttl.String(),
+						req.UserId(),
 					).Inc()
 				}
 				return
@@ -532,6 +588,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			// Compress the value before storing if compression is enabled
 			valueToStore := rpcResp.GetResultBytes()
+			cachedCategory := rpcReq.Method
 			telemetry.MetricCacheSetOriginalBytes.WithLabelValues(
 				c.projectId,
 				req.NetworkLabel(),
@@ -539,12 +596,35 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				connector.Id(),
 				policy.String(),
 				ttl.String(),
+				req.UserId(),
 			).Add(float64(len(valueToStore)))
 
-			if c.compressionEnabled && len(valueToStore) >= c.compressionThreshold {
-				compressedValue, isCompressed := c.compressValueBytes(valueToStore)
+			storedValue := valueToStore
+			if c.envelopeEnabled {
+				var wrapped bool
+				storedValue, wrapped = wrapCacheEnvelope(valueToStore)
+				if !wrapped {
+					lg.Debug().
+						Str("blockRef", blockRef).
+						Str("primaryKey", pk).
+						Str("rangeKey", rk).
+						Int("resultBytes", len(valueToStore)).
+						Msg("cache envelope wrap failed; storing legacy payload")
+					telemetry.MetricCacheEnvelopeWrapFailureTotal.WithLabelValues(
+						c.projectId,
+						req.NetworkLabel(),
+						cachedCategory,
+						connector.Id(),
+						policy.String(),
+						ttl.String(),
+						req.UserId(),
+					).Inc()
+				}
+			}
+			if c.compressionEnabled && len(storedValue) >= c.compressionThreshold {
+				compressedValue, isCompressed := c.compressValueBytes(storedValue)
 				if isCompressed {
-					originalSize := len(valueToStore)
+					originalSize := len(storedValue)
 					compressedSize := len(compressedValue)
 					savings := float64(originalSize-compressedSize) / float64(originalSize) * 100
 					lg.Debug().
@@ -559,14 +639,15 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						connector.Id(),
 						policy.String(),
 						ttl.String(),
+						req.UserId(),
 					).Add(float64(compressedSize))
-					valueToStore = compressedValue
+					storedValue = compressedValue
 				}
 			}
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, ttl)
+			err = connector.Set(ctx, pk, rk, storedValue, ttl)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -579,6 +660,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					policy.String(),
 					ttl.String(),
 					common.ErrorSummary(err),
+					req.UserId(),
 				).Inc()
 				telemetry.MetricCacheSetErrorDuration.WithLabelValues(
 					c.projectId,
@@ -588,6 +670,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					policy.String(),
 					ttl.String(),
 					common.ErrorSummary(err),
+					req.UserId(),
 				).Observe(time.Since(start).Seconds())
 			} else {
 				telemetry.MetricCacheSetSuccessTotal.WithLabelValues(
@@ -597,6 +680,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					connector.Id(),
 					policy.String(),
 					ttl.String(),
+					req.UserId(),
 				).Inc()
 				telemetry.MetricCacheSetSuccessDuration.WithLabelValues(
 					c.projectId,
@@ -605,6 +689,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					connector.Id(),
 					policy.String(),
 					ttl.String(),
+					req.UserId(),
 				).Observe(time.Since(start).Seconds())
 			}
 		}(policy)
@@ -701,6 +786,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 			policy.GetConnector().Id(),
 			policy.String(),
 			ttl.String(),
+			req.UserId(),
 		).Inc()
 
 		return false
@@ -764,33 +850,37 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 	return policies, nil
 }
 
-func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, error) {
+func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, policy *data.CachePolicy, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, int64, error) {
 	rpcReq.RLockWithTrace(ctx)
 	defer rpcReq.RUnlock()
 
 	blockRef, _, err := ExtractBlockReferenceFromRequest(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if blockRef == "" {
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			c.logger.Trace().
-				Object("request", req).
-				Msg("skip fetching from cache because we cannot resolve a block reference")
-		} else {
-			c.logger.Debug().
-				Str("method", rpcReq.Method).
-				Msg("skip fetching from cache because we cannot resolve a block reference")
-		}
-		return nil, nil
+		// Add trace attribute for empty blockRef so we know WHY cache was skipped
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("cache.skip_reason", "empty_block_ref"),
+			attribute.String("cache.method", rpcReq.Method),
+		)
+		return nil, 0, nil
 	}
 
 	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef, ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	c.logger.Trace().Str("pk", groupKey).Str("rk", requestKey).Msg("fetching from cache")
+	// Annotate the span with cache lookup details for debugging
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("cache.block_ref", blockRef),
+		attribute.String("cache.group_key", groupKey),
+		attribute.String("cache.request_key", requestKey),
+		attribute.String("cache.connector_driver", connector.Id()),
+	)
 
 	var resultBytes []byte
 	if blockRef == "*" {
@@ -799,18 +889,24 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		resultBytes, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey, req)
 	}
 	if err != nil {
-		return nil, err
+		span.SetAttributes(attribute.String("cache.connector_error", common.ErrorSummary(err)))
+		return nil, 0, err
 	}
 	if len(resultBytes) == 0 {
-		return nil, nil
+		span.SetAttributes(attribute.String("cache.connector_result", "empty_bytes"))
+		return nil, 0, nil
 	}
+	span.SetAttributes(
+		attribute.String("cache.connector_result", "found"),
+		attribute.Int("cache.result_bytes", len(resultBytes)),
+	)
 
 	// Check if it's compressed data
 	if c.compressionEnabled && c.isCompressed(resultBytes) {
 		decompressed, err := c.decompressValueBytes(resultBytes)
 		if err != nil {
 			c.logger.Error().Err(err).Msg("failed to decompress cached value")
-			return nil, fmt.Errorf("failed to decompress cached value: %w", err)
+			return nil, 0, fmt.Errorf("failed to decompress cached value: %w", err)
 		}
 		c.logger.Debug().
 			Int("compressedSize", len(resultBytes)).
@@ -819,13 +915,68 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		resultBytes = decompressed
 	}
 
+	originalSize := len(resultBytes)
+	resultBytes, cachedAt, ok := unwrapCacheEnvelope(resultBytes)
+	if !ok {
+		c.logger.Debug().
+			Str("pk", groupKey).
+			Str("rk", requestKey).
+			Int("payloadBytes", originalSize).
+			Msg("cache envelope missing or invalid; treating as legacy")
+		cachedCategory := rpcReq.Method
+		policyStr := "unknown"
+		policyTTL := "unknown"
+		if policy != nil {
+			policyStr = policy.String()
+			if ttl := policy.GetTTL(); ttl != nil {
+				policyTTL = ttl.String()
+			}
+		}
+		if c.envelopeEnabled {
+			telemetry.MetricCacheEnvelopeUnwrapFailureTotal.WithLabelValues(
+				c.projectId,
+				req.NetworkLabel(),
+				cachedCategory,
+				connector.Id(),
+				policyStr,
+				policyTTL,
+				req.UserId(),
+			).Inc()
+		}
+	}
+	policyFinality := common.DataFinalityStateUnknown
+	if policy != nil {
+		policyFinality = policy.Finality()
+	}
+	if c.isCacheEntryStale(req, cachedAt, policyFinality) {
+		cachedCategory := rpcReq.Method
+		policyStr := "unknown"
+		policyTTL := "unknown"
+		if policy != nil {
+			policyStr = policy.String()
+			if ttl := policy.GetTTL(); ttl != nil {
+				policyTTL = ttl.String()
+			}
+		}
+		telemetry.MetricCacheMaxAgeStaleTotal.WithLabelValues(
+			c.projectId,
+			req.NetworkLabel(),
+			cachedCategory,
+			connector.Id(),
+			policyStr,
+			policyTTL,
+			req.UserId(),
+		).Inc()
+		return nil, 0, nil
+	}
+
 	jrr, err := common.NewJsonRpcResponseFromBytes(nil, resultBytes, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	_ = jrr.SetID(rpcReq.ID)
 
-	return jrr, nil
+	return jrr, cachedAt, nil
 }
 
 func shouldCacheResponse(
@@ -878,6 +1029,92 @@ func generateKeysForJsonRpcRequest(
 	}
 }
 
+func safeInt64ToUint64(v int64) (uint64, bool) {
+	if v < 0 {
+		return 0, false
+	}
+	return uint64(v), true // #nosec G115 -- bounds checked
+}
+
+func safeUint64ToInt64(v uint64) (int64, bool) {
+	if v > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(v), true // #nosec G115 -- bounds checked
+}
+
+// wrapCacheEnvelope prefixes cached result bytes with envelope metadata.
+func wrapCacheEnvelope(result []byte) ([]byte, bool) {
+	cachedAt := time.Now().Unix()
+	if len(result) > math.MaxInt-cacheEnvelopeHeader {
+		return result, false
+	}
+	cachedAtUint, ok := safeInt64ToUint64(cachedAt)
+	if !ok {
+		return result, false
+	}
+	out := make([]byte, cacheEnvelopeHeader+len(result))
+	copy(out[:4], []byte(cacheEnvelopeMagic))
+	out[4] = cacheEnvelopeVersion
+	binary.BigEndian.PutUint64(out[5:13], cachedAtUint)
+	copy(out[cacheEnvelopeHeader:], result)
+	return out, true
+}
+
+// unwrapCacheEnvelope returns (payload, cachedAtUnix, ok).
+// When ok is false, the payload is still usable (legacy or version-mismatched entry).
+func unwrapCacheEnvelope(data []byte) ([]byte, int64, bool) {
+	if len(data) < cacheEnvelopeHeader {
+		return data, 0, false
+	}
+	if string(data[:4]) != cacheEnvelopeMagic {
+		return data, 0, false
+	}
+	if data[4] != cacheEnvelopeVersion {
+		// Unknown version: return the entire value as-is rather than stripping bytes
+		// from an envelope whose layout we don't understand. Callers treat ok=false
+		// as legacy and will attempt to parse the raw bytes; they'll fail JSON parse
+		// (because of the ERPC prefix) and treat it as a cache miss, which is safer
+		// than silently truncating a payload whose header size may differ.
+		return data, 0, false
+	}
+	cachedAt, ok := safeUint64ToInt64(binary.BigEndian.Uint64(data[5:13]))
+	if !ok {
+		return data[cacheEnvelopeHeader:], 0, false
+	}
+	return data[cacheEnvelopeHeader:], cachedAt, true
+}
+
+func (c *EvmJsonRpcCache) isCacheEntryStale(req *common.NormalizedRequest, cachedAt int64, policyFinality common.DataFinalityState) bool {
+	if req == nil {
+		return false
+	}
+	maxAge := req.CacheMaxAgeSeconds()
+	if maxAge == nil {
+		return false
+	}
+	if *maxAge < 0 {
+		return false
+	}
+	// Finalized/unfinalized data is immutable — only apply max-age when
+	// the client explicitly set it (via header or query param), not from
+	// directive defaults.
+	if !req.CacheMaxAgeExplicit() &&
+		(policyFinality == common.DataFinalityStateFinalized || policyFinality == common.DataFinalityStateUnfinalized) {
+		return false
+	}
+	if cachedAt <= 0 {
+		// Legacy entry without envelope or unknown age - accept for backward compatibility
+		// during migration from non-envelope to envelope cache format
+		return false
+	}
+	age := time.Now().Unix() - cachedAt
+	if age < 0 {
+		age = 0
+	}
+	return age > *maxAge
+}
+
 // compressValueBytes compresses byte data using zstd
 func (c *EvmJsonRpcCache) compressValueBytes(value []byte) ([]byte, bool) {
 	if !c.compressionEnabled || len(value) < c.compressionThreshold {
@@ -890,7 +1127,11 @@ func (c *EvmJsonRpcCache) compressValueBytes(value []byte) ([]byte, bool) {
 		c.logger.Warn().Msg("failed to get encoder from pool, storing uncompressed")
 		return value, false
 	}
-	encoder := encoderInterface.(*zstd.Encoder)
+	encoder, ok := encoderInterface.(*zstd.Encoder)
+	if !ok {
+		c.logger.Error().Msg("encoder pool returned wrong type, storing uncompressed")
+		return value, false
+	}
 	defer c.encoderPool.Put(encoder)
 
 	// Compress using the pooled encoder
@@ -937,7 +1178,10 @@ func (c *EvmJsonRpcCache) decompressValueBytes(compressedData []byte) ([]byte, e
 	if decoderInterface == nil {
 		return nil, fmt.Errorf("failed to get decoder from pool")
 	}
-	decoder := decoderInterface.(*zstd.Decoder)
+	decoder, ok := decoderInterface.(*zstd.Decoder)
+	if !ok {
+		return nil, fmt.Errorf("decoder pool returned wrong type")
+	}
 	defer c.decoderPool.Put(decoder)
 
 	// Reset decoder with the compressed data

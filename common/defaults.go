@@ -119,6 +119,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 							EnforceNonNullTaggedBlocks: util.BoolPtr(true),
 						},
 						GetLogsMaxAllowedRange: 30_000,
+						GetLogsCacheChunkSize:  func() *int64 { v := int64(1000); return &v }(),
 						GetLogsSplitOnError:    util.BoolPtr(true),
 					},
 					Failsafe: []*FailsafeConfig{
@@ -1802,6 +1803,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
+			if n.Evm.GetLogsCacheChunkSize == nil && defaults.Evm.GetLogsCacheChunkSize != nil {
+				v := *defaults.Evm.GetLogsCacheChunkSize
+				n.Evm.GetLogsCacheChunkSize = &v
+			}
 			if n.Evm.Multicall3Aggregation == nil && defaults.Evm.Multicall3Aggregation != nil {
 				n.Evm.Multicall3Aggregation = &Multicall3AggregationConfig{}
 				*n.Evm.Multicall3Aggregation = *defaults.Evm.Multicall3Aggregation
@@ -1898,13 +1903,15 @@ const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 // should be treated as "missing data" errors, triggering retry on other upstreams.
 // Note: eth_getBlockByHash is intentionally excluded because subgraph-based upstreams
 // commonly return empty for this method, which is expected behavior.
+// Note: eth_getTransactionReceipt is excluded as a quick remedy. Ideally we'd only allow null
+// for pending txs (historical txs should retry on other upstreams). The "retry on empty" directive
+// can still be used since some nodes may already have the receipt.
 var DefaultMarkEmptyAsErrorMethods = []string{
 	// Block lookups (eth_getBlockByHash excluded - subgraphs return empty for it)
 	"eth_getBlockByNumber",
 	"eth_getBlockReceipts",
-	// Transaction lookups
+	// Transaction lookups (eth_getTransactionReceipt excluded - see note above)
 	"eth_getTransactionByHash",
-	"eth_getTransactionReceipt",
 	"eth_getTransactionByBlockHashAndIndex",
 	"eth_getTransactionByBlockNumberAndIndex",
 	// Uncle/ommers (legacy API)
@@ -1940,6 +1947,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.GetLogsSplitConcurrency == 0 {
 		e.GetLogsSplitConcurrency = 10
+	}
+	if e.GetLogsCacheChunkSize == nil {
+		v := int64(1000)
+		e.GetLogsCacheChunkSize = &v
 	}
 
 	// Default methods for marking empty results as errors

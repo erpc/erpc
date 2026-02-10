@@ -1369,6 +1369,9 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test with background goroutines in short mode")
+	}
 	t.Run("ShouldNotCacheEmptyResponseWhenUpstreamIsNotSynced", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2781,7 +2784,8 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 		// Verify NO compression occurred
 		assert.False(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
-		assert.Equal(t, `"`+smallData+`"`, string(storedValue))
+		unwrapped := unwrapCacheEnvelopeForTest(storedValue)
+		assert.Equal(t, `"`+smallData+`"`, string(unwrapped))
 	})
 
 	t.Run("CompressionNotBeneficial", func(t *testing.T) {
@@ -3168,7 +3172,11 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 
 				testData := ""
 				if tc.dataSize > 0 {
-					testData = strings.Repeat("a", tc.dataSize)
+					payloadSize := tc.dataSize - cacheEnvelopeHeaderBytes - 2
+					if payloadSize < 0 {
+						payloadSize = 0
+					}
+					testData = strings.Repeat("a", payloadSize)
 				}
 
 				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
@@ -3294,6 +3302,18 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 	}
 
 	return []*data.MockConnector{mockConnector1, mockConnector2}, mockNetwork, upstreams, cache
+}
+
+const cacheEnvelopeHeaderBytes = 13
+
+func unwrapCacheEnvelopeForTest(data []byte) []byte {
+	if len(data) < cacheEnvelopeHeaderBytes {
+		return data
+	}
+	if string(data[:4]) != "ERPC" || data[4] != 1 {
+		return data
+	}
+	return data[cacheEnvelopeHeaderBytes:]
 }
 
 // Helper function to generate random string for compression tests

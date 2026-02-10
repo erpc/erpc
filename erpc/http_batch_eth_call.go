@@ -29,6 +29,13 @@ const maxConcurrentCacheWrites = 100
 // to prevent unbounded goroutine growth under high load.
 var cacheWriteSem = make(chan struct{}, maxConcurrentCacheWrites)
 
+// requireCanonical consistency states across batch requests
+const (
+	requireCanonicalUnset = 0
+	requireCanonicalTrue  = 1
+	requireCanonicalFalse = 2
+)
+
 type ethCallBatchInfo struct {
 	networkId  string
 	blockRef   string
@@ -82,9 +89,7 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 	var networkId string
 	var blockRef string
 	var blockParam interface{}
-	// Track requireCanonical state across requests:
-	// 0 = not yet set, 1 = explicitly true, 2 = explicitly false, 3 = not specified (default true)
-	var requireCanonicalState int
+	var requireCanonicalState int // one of requireCanonicalUnset, requireCanonicalTrue, requireCanonicalFalse
 
 	for _, raw := range requests {
 		var probe ethCallBatchProbe
@@ -126,17 +131,16 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 		// Check for mixed requireCanonical values in block-hash params (EIP-1898)
 		// We need to ensure all requests in a batch have compatible requireCanonical values,
 		// otherwise the Multicall3 call won't honor individual semantics.
-		// States: 0 = not yet set, 1 = true (explicit or default), 2 = explicitly false
-		// Explicit true and absent (default true) are treated as compatible (both = 1)
+		// Explicit true and absent (default true) are treated as compatible (both = requireCanonicalTrue)
 		if blockObj, ok := param.(map[string]interface{}); ok {
 			if _, hasBlockHash := blockObj["blockHash"]; hasBlockHash {
-				currentState := 1 // default: true (EIP-1898 default)
+				currentState := requireCanonicalTrue // default: true (EIP-1898 default)
 				if reqCanonical, hasReqCanonical := blockObj["requireCanonical"]; hasReqCanonical {
 					if reqCanonicalBool, ok := reqCanonical.(bool); ok && !reqCanonicalBool {
-						currentState = 2 // explicitly false
+						currentState = requireCanonicalFalse
 					}
 				}
-				if requireCanonicalState == 0 {
+				if requireCanonicalState == requireCanonicalUnset {
 					requireCanonicalState = currentState
 				} else if requireCanonicalState != currentState {
 					// Mixed requireCanonical values - not eligible for batching
@@ -363,13 +367,16 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			uncachedCandidates = append(uncachedCandidates, cand)
 		}
 		if cacheHits > 0 {
-			telemetry.MetricMulticall3CacheHitsTotal.WithLabelValues(projectId, batchInfo.networkId).Add(float64(cacheHits))
+			telemetry.MetricMulticall3CacheHitsTotal.WithLabelValues(projectId, batchInfo.networkId, candidates[0].req.UserId()).Add(float64(cacheHits))
 			baseLogger.Debug().
 				Int("cacheHits", cacheHits).
 				Int("uncached", len(uncachedCandidates)).
 				Int("total", len(candidates)).
 				Str("networkId", batchInfo.networkId).
 				Msg("multicall3 pre-aggregation cache check")
+		}
+		if len(uncachedCandidates) > 0 {
+			telemetry.MetricMulticall3BatchPercallCacheMissTotal.WithLabelValues(projectId, batchInfo.networkId, candidates[0].req.UserId()).Add(float64(len(uncachedCandidates)))
 		}
 		candidates = uncachedCandidates
 	}
@@ -537,6 +544,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			nr := common.NewNormalizedResponse().WithRequest(cand.req).WithJsonRpcResponse(jrr)
 			nr.SetUpstream(mcResp.Upstream())
 			nr.SetFromCache(mcResp.FromCache())
+			nr.SetCacheStoredAtUnix(mcResp.CacheStoredAtUnix())
 			nr.SetAttempts(mcResp.Attempts())
 			nr.SetRetries(mcResp.Retries())
 			nr.SetHedges(mcResp.Hedges())
@@ -575,12 +583,14 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 						tracedCtx := trace.ContextWithSpanContext(timeoutCtx, trace.SpanContextFromContext(reqCtx))
 						if err := cacheDal.Set(tracedCtx, req, resp); err != nil {
 							lg.Warn().Err(err).Msg("could not store multicall3 per-call response in cache")
+						} else {
+							telemetry.MetricMulticall3BatchPercallCacheSetTotal.WithLabelValues(projectId, batchInfo.networkId, req.UserId()).Inc()
 						}
 					}(nr, cand.req, cand.ctx, cand.logger)
 				default:
 					// Semaphore full - skip cache write to avoid unbounded goroutine growth
 					telemetry.MetricMulticall3CacheWriteDroppedTotal.WithLabelValues(projectId, batchInfo.networkId).Inc()
-					cand.logger.Debug().Msg("skipping multicall3 per-call cache write due to backpressure")
+					cand.logger.Warn().Msg("skipping multicall3 per-call cache write due to backpressure")
 				}
 			}
 			continue

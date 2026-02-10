@@ -123,6 +123,7 @@ Directives key uses a stable, versioned subset:
 - `RetryEmpty`
 - `RetryPending`
 - `SkipCacheRead` (optional; can be per-request, but include for clarity)
+- `CacheMaxAgeSeconds`
 
 Any new directive must be explicitly added to the subset or ignored. The
 directives key version is defined in code (not config) to avoid cross-node
@@ -200,8 +201,8 @@ Infrastructure failure:
   to distinguish infra failures from per-call failures.
 
 ## Cancellation Handling
-- If a request is canceled before flush, remove it from the batch and return
-  a context error for that request only.
+- If a request is canceled before flush, it stays in the batch; delivery checks
+  the context and skips sending while recording abandonment metrics.
 - Cancellation does not affect other requests in the batch.
 - Rate limit permits are not released (standard behavior). This keeps rate
   limiting conservative and avoids races; a future enhancement could reclaim
@@ -229,9 +230,22 @@ Per-call cache writes:
 Metrics:
 - `multicall3_aggregation_total{outcome}`
 - `multicall3_fallback_total{reason}`
-- `multicall3_cache_hits_total`
+- `multicall3_cache_hits_total` (batch path per-call cache hits)
 - Optional: `multicall3_batch_size`, `multicall3_batch_wait_ms`,
   `multicall3_queue_len`, `multicall3_queue_overflow_total`
+
+Per-call cache metrics (separated to avoid inflating general cache counters):
+- `multicall3_user_percall_cache_hit_total{project, network}` — per-call cache
+  hits during user multicall3 decomposition (`handleUserMulticall3`)
+- `multicall3_user_percall_cache_miss_total{project, network}` — per-call cache
+  misses during user multicall3 decomposition
+- `multicall3_batch_percall_cache_miss_total{project, network}` — per-call cache
+  misses during batch aggregation pre-check
+- `multicall3_batch_percall_cache_set_total{project, network}` — per-call cache
+  writes after batch response processing
+
+These allow computing an "adjusted" cache hit ratio that excludes MC3 per-call
+amplification (which inflates general cache miss counters 30-100x per request).
 
 Aggregation outcome values:
 - `success`
@@ -282,10 +296,9 @@ Maintain backward compatibility with existing `multicall3Aggregation: true|false
 
 ## Algorithm Sketch
 ```
-Enqueue(req):
+Handle(req):
+  if SkipCacheRead == false and cache hit: return cached response
   if not eligible or deadline too tight: return notHandled
-  if SkipCacheRead == false:
-    if cache hit: return cached response
   if batch for key is flushing: create a new batch for key
   add to batch key
   if callKey duplicate: attach waiter and wait for result

@@ -533,7 +533,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 					if architecture == "" || chainId == "" {
 						var req map[string]interface{}
-						if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
+						if err := common.SonicCfg.Unmarshal(nq.Body(), &req); err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
 							common.EndRequestSpan(requestCtx, nil, err)
 							return
@@ -691,9 +691,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				w.WriteHeader(statusCode)
 
-				msg, err := common.SonicCfg.Marshal(err.Error())
-				if err != nil {
-					msg, _ = common.SonicCfg.Marshal(err.Error())
+				msg, marshalErr := common.SonicCfg.Marshal(err.Error())
+				if marshalErr != nil {
+					msg = []byte(`"internal error"`)
 				}
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":%s}}`, msg)
 
@@ -1024,6 +1024,15 @@ func setResponseHeaders(ctx context.Context, res interface{}, w http.ResponseWri
 	}
 	if resp, ok := res.(*common.NormalizedResponse); ok {
 		w.Header().Set("X-ERPC-Duration", fmt.Sprintf("%d", resp.Duration().Milliseconds()))
+		if resp.FromCache() {
+			if cachedAt := resp.CacheStoredAtUnix(); cachedAt > 0 {
+				age, ok := resp.CacheAgeSeconds()
+				if ok {
+					w.Header().Set("X-ERPC-Cache-Age", fmt.Sprintf("%d", age))
+					w.Header().Set("X-ERPC-Cache-At", fmt.Sprintf("%d", cachedAt))
+				}
+			}
+		}
 	}
 }
 
@@ -1147,7 +1156,8 @@ func buildErrorResponseBody(nq *common.NormalizedRequest, err, origErr error, in
 
 	// To simplify client's life if there's only one upstream error, we can use that as the error
 	// instead of Exhausted error which obfuscates underlying errors.
-	if ex, ok := err.(*common.ErrUpstreamsExhausted); ok {
+	var ex *common.ErrUpstreamsExhausted
+	if errors.As(err, &ex) {
 		if len(ex.Errors()) == 1 {
 			err = ex.Errors()[0]
 		}
@@ -1652,10 +1662,10 @@ func stripAddrDecorations(s string) string {
 }
 
 // isMulticall3AggregationEnabled checks if multicall3 aggregation is enabled for a given network.
-// Returns true (default) if no explicit config is set, or if the config is explicitly set to enabled.
+// Returns false (default) if no explicit config is set; users must opt-in.
 func isMulticall3AggregationEnabled(project *PreparedProject, networkId string) bool {
 	if project == nil || project.Config == nil {
-		return true // Default to enabled
+		return false
 	}
 
 	project.cfgMu.RLock()
@@ -1670,5 +1680,5 @@ func isMulticall3AggregationEnabled(project *PreparedProject, networkId string) 
 		}
 	}
 
-	return true // Default to enabled
+	return false
 }

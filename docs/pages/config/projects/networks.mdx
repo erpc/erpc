@@ -83,6 +83,16 @@ projects:
             # Allow batching calls with "pending" block tag.
             # DEFAULT: false
             allowPendingTagBatching: false
+            # Automatically detect contracts that revert when called via Multicall3
+            # but succeed when called individually (e.g., contracts using extcodesize checks).
+            # Detected contracts are added to a runtime bypass cache.
+            # DEFAULT: false
+            autoDetectBypass: false
+            # List of contract addresses to exclude from Multicall3 batching.
+            # Useful for contracts that check msg.sender code size (e.g., Chronicle Oracle).
+            # Addresses are case-insensitive and can include/exclude the 0x prefix.
+            bypassContracts:
+              - "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"
 
         # (OPTIONAL) A friendly alias for this network. This allows you to reference the network using the alias
         # instead of the architecture/chainId format. For example, instead of using /main/evm/1, you can use /main/ethereum.
@@ -246,6 +256,12 @@ export default createConfig({
               allowCrossUserBatching: true,
               // Allow batching calls with "pending" block tag. DEFAULT: false
               allowPendingTagBatching: false,
+              // Automatically detect contracts that revert via Multicall3. DEFAULT: false
+              autoDetectBypass: false,
+              // Contract addresses to exclude from Multicall3 batching (case-insensitive).
+              bypassContracts: [
+                "0x057f30e63A69175C69A4Af5656b8C9EE647De3D0",
+              ],
             },
           },
 
