@@ -80,12 +80,18 @@ func (v *SqdVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger,
 		return nil, fmt.Errorf("sqd vendor requires endpoint in settings with {chainId} placeholder")
 	}
 
+	// When settings are provided (first call from provider flow), require {chainId}
+	// to prevent misconfigured endpoints from silently producing non-chain-specific URLs.
+	// When settings are nil (second call from NewUpstream), the endpoint is already
+	// substituted so we skip this validation.
+	if settings != nil && !strings.Contains(upstream.Endpoint, "{chainId}") {
+		return nil, fmt.Errorf("sqd vendor requires endpoint to contain {chainId} placeholder (e.g., https://wrapper.example.com/v1/evm/{chainId})")
+	}
+
 	upstream.Type = common.UpstreamTypeEvm
 	upstream.VendorName = v.Name()
 
-	// Substitute {chainId} placeholder if present.
-	// When called from NewUpstream (second call for provider-generated configs),
-	// the endpoint is already substituted and settings are nil, so we skip substitution.
+	// Substitute {chainId} placeholder if present
 	if strings.Contains(upstream.Endpoint, "{chainId}") {
 		upstream.Endpoint = strings.ReplaceAll(upstream.Endpoint, "{chainId}", strconv.FormatInt(upstream.Evm.ChainId, 10))
 	}

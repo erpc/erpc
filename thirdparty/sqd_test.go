@@ -136,7 +136,7 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Contains(t, err.Error(), "endpoint")
 	})
 
-	t.Run("accepts already-substituted endpoint without chainId placeholder", func(t *testing.T) {
+	t.Run("accepts already-substituted endpoint when settings are nil", func(t *testing.T) {
 		upstream := &common.UpstreamConfig{
 			Id:       "test-sqd",
 			Type:     common.UpstreamTypeEvm,
@@ -148,6 +148,19 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Len(t, configs, 1)
 		assert.Equal(t, "https://wrapper.example.com/v1/evm/1", configs[0].Endpoint)
+	})
+
+	t.Run("fails when endpoint missing chainId placeholder and settings provided", func(t *testing.T) {
+		upstream := &common.UpstreamConfig{
+			Id:       "test-sqd",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "https://wrapper.example.com/v1/evm/1",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+		}
+
+		_, err := v.GenerateConfigs(ctx, &logger, upstream, common.VendorSettings{})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "{chainId}")
 	})
 
 	t.Run("substitutes chainId placeholder", func(t *testing.T) {
@@ -339,7 +352,7 @@ func TestSqdVendor_GenerateConfigs(t *testing.T) {
 		assert.Equal(t, "test-key", configs2[0].JsonRpc.Headers["X-Api-Key"])
 	})
 
-	t.Run("idempotent: multiple networks dont interfere", func(t *testing.T) {
+	t.Run("idempotent: multiple networks don't interfere", func(t *testing.T) {
 		settings := common.VendorSettings{
 			"endpoint": "https://morpho.portal.sqd.dev/rpc/v1/evm/{chainId}",
 			"apiKey":   "test-key",
