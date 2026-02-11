@@ -18,7 +18,7 @@ func upstreamPostForward_eth_getTransactionReceipt(
 	rs *common.NormalizedResponse,
 	re error,
 ) (*common.NormalizedResponse, error) {
-	if re != nil || rs == nil || rs.IsObjectNull() || !rs.IsResultEmptyish() {
+	if re != nil || rs == nil || rs.IsObjectNull() || !rs.IsResultEmptyish() || u == nil {
 		return rs, re
 	}
 
