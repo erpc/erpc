@@ -103,7 +103,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0) // Both mocks should be consumed
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// First upstream returns empty (null) receipt
 		gock.New("http://rpc1.localhost").
@@ -120,7 +120,27 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 				"result":  nil, // Empty receipt
 			})
 
-			// Second upstream returns actual receipt (will be used on retry)
+		// The post-forward hook side-calls eth_getTransactionByHash on rpc1
+		// to check if the tx is pending or mined. Return a mined tx so the
+		// hook treats the null receipt as "mined but unindexed" and retries.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"hash":        "0xed9b8902d8c588112481f5b4d0011b2ff30a98587862a527984fae417649cbed",
+					"blockNumber": "0x100",
+				},
+			})
+
+		// Second upstream returns actual receipt (will be used on retry)
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
