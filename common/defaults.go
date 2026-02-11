@@ -1414,6 +1414,9 @@ func (d *DirectiveDefaultsConfig) SetDefaults() error {
 	if d.EnforceNonNullTaggedBlocks == nil {
 		d.EnforceNonNullTaggedBlocks = util.BoolPtr(true)
 	}
+	if d.ValidateTransactionsRoot == nil {
+		d.ValidateTransactionsRoot = util.BoolPtr(true)
+	}
 	return nil
 }
 
