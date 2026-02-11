@@ -54,6 +54,7 @@ func upstreamPostForward_eth_getTransactionReceipt(
 	}
 	if txErr != nil || txResp == nil || txResp.IsResultEmptyish() {
 		span.SetAttributes(attribute.String("result", "tx_not_found"))
+		rs.SetEmptyAccepted(true)
 		return rs, re
 	}
 
@@ -70,6 +71,7 @@ func upstreamPostForward_eth_getTransactionReceipt(
 	blockNumber, exists := txObj["blockNumber"]
 	if !exists || blockNumber == nil {
 		span.SetAttributes(attribute.String("result", "tx_pending"))
+		rs.SetEmptyAccepted(true)
 		return rs, re
 	}
 

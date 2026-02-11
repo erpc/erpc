@@ -34,6 +34,8 @@ type NormalizedResponse struct {
 
 	duration time.Duration
 
+	emptyAccepted atomic.Bool
+
 	// pendingOps tracks background users (e.g., async cache writes).
 	// Release will wait for all pending ops to finish before freeing buffers.
 	pendingOps sync.WaitGroup
@@ -102,6 +104,19 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 	}
 	r.fromCache.Store(fromCache)
 	return r
+}
+
+func (r *NormalizedResponse) IsEmptyAccepted() bool {
+	if r == nil {
+		return false
+	}
+	return r.emptyAccepted.Load()
+}
+
+func (r *NormalizedResponse) SetEmptyAccepted(v bool) {
+	if r != nil {
+		r.emptyAccepted.Store(v)
+	}
 }
 
 func (r *NormalizedResponse) EvmBlockRef() interface{} {
