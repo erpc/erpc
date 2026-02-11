@@ -451,6 +451,8 @@ func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Netw
 // blockValidationTxLite is a minimal transaction model for block validation
 type blockValidationTxLite struct {
 	Hash             string `json:"hash"`
+	From             string `json:"from"`
+	Gas              string `json:"gas"`
 	BlockHash        string `json:"blockHash"`
 	BlockNumber      string `json:"blockNumber"`
 	TransactionIndex string `json:"transactionIndex"`
@@ -498,6 +500,10 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 	// Some chains (e.g. ZKSync Era) use the all-zeros hash instead.
 	// If they disagree, the upstream returned truncated/incomplete data.
 	// Disable via validateTransactionsRoot: false for non-standard chains.
+	//
+	// Special case: some chains (e.g. Polygon PoS) inject "phantom" system transactions
+	// (from=0x0, gas=0x0) that do NOT participate in the transactions trie. These blocks
+	// legitimately have an empty trie root while containing transaction objects.
 	if dirs.ValidateTransactionsRoot && block.TransactionsRoot != "" {
 		txRootLower := strings.ToLower(block.TransactionsRoot)
 		isEmptyRoot := txRootLower == emptyTrieRoot || txRootLower == zeroHash32
@@ -509,9 +515,9 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 				u,
 			)
 		}
-		if isEmptyRoot && txCount > 0 {
+		if isEmptyRoot && txCount > 0 && !allPhantomTransactions(block.Transactions) {
 			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("transactionsRoot is empty trie root but block contains %d transactions; inconsistent block data", txCount),
+				fmt.Errorf("transactionsRoot is empty trie root but block contains %d non-phantom transactions; inconsistent block data", txCount),
 				u,
 			)
 		}
@@ -555,6 +561,47 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 	}
 
 	return nil
+}
+
+// allPhantomTransactions returns true when every transaction in the slice is a
+// "phantom" system transaction that does not participate in the transactions
+// trie. Some chains (Polygon PoS, BSC) inject these for internal bookkeeping;
+// they have from=0x0 and gas=0x0. When a block contains only phantoms the
+// empty trie root is expected even though the transactions array is non-empty.
+func allPhantomTransactions(txs []any) bool {
+	for _, tx := range txs {
+		switch t := tx.(type) {
+		case map[string]interface{}:
+			from, _ := t["from"].(string)
+			gas, _ := t["gas"].(string)
+			if !isZeroishHex(gas) || !isZeroishHex(from) {
+				// At least one real transaction — not all phantoms.
+				return false
+			}
+		case string:
+			// Hash-only response — we can't inspect the tx, so we must
+			// assume it is a real transaction (conservative).
+			return false
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isZeroishHex returns true if h is a hex string representing zero or empty
+// (e.g. "0x", "0x0", "0x00", "0x0000").
+func isZeroishHex(h string) bool {
+	if h == "" {
+		return false
+	}
+	h = strings.TrimPrefix(h, "0x")
+	for _, c := range h {
+		if c != '0' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateHeaderFieldLengths(u common.Upstream, block *blockValidationBlockLite) error {

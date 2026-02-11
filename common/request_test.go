@@ -226,3 +226,65 @@ func TestEnrichFromHttpHandlesBloomValidationQueryParams(t *testing.T) {
 		t.Fatalf("expected ValidateLogsBloomMatch to be true")
 	}
 }
+
+// TestHeaderOverridesConfigDefault_ValidateTransactionsRoot verifies that when the
+// config defaults set ValidateTransactionsRoot=true, a header/query-string can
+// override it to false.
+func TestHeaderOverridesConfigDefault_ValidateTransactionsRoot(t *testing.T) {
+	trueVal := true
+	cfgDefaults := &DirectiveDefaultsConfig{
+		ValidateTransactionsRoot: &trueVal,
+	}
+
+	t.Run("header_overrides_config_true_to_false", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
+		req.ApplyDirectiveDefaults(cfgDefaults)
+
+		if dir := req.Directives(); dir == nil || !dir.ValidateTransactionsRoot {
+			t.Fatalf("expected ValidateTransactionsRoot=true after ApplyDirectiveDefaults")
+		}
+
+		headers := http.Header{}
+		headers.Set("X-ERPC-Validate-Transactions-Root", "false")
+		req.EnrichFromHttp(headers, nil, UserAgentTrackingModeSimplified)
+
+		if dir := req.Directives(); dir == nil || dir.ValidateTransactionsRoot {
+			t.Fatalf("expected ValidateTransactionsRoot=false after header override, but got true")
+		}
+	})
+
+	t.Run("query_string_overrides_config_true_to_false", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
+		req.ApplyDirectiveDefaults(cfgDefaults)
+
+		query := url.Values{}
+		query.Set("validate-transactions-root", "false")
+		req.EnrichFromHttp(nil, query, UserAgentTrackingModeSimplified)
+
+		if dir := req.Directives(); dir == nil || dir.ValidateTransactionsRoot {
+			t.Fatalf("expected ValidateTransactionsRoot=false after query string override, but got true")
+		}
+	})
+
+	t.Run("header_and_query_both_false_override_config_true", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
+		req.ApplyDirectiveDefaults(cfgDefaults)
+
+		headers := http.Header{}
+		headers.Set("X-ERPC-Validate-Transactions-Root", "false")
+		headers.Set("X-ERPC-Skip-Cache-Read", "true")
+
+		query := url.Values{}
+		query.Set("validate-transactions-root", "false")
+
+		req.EnrichFromHttp(headers, query, UserAgentTrackingModeSimplified)
+
+		dir := req.Directives()
+		if dir == nil || dir.ValidateTransactionsRoot {
+			t.Fatalf("expected ValidateTransactionsRoot=false after header+query override, but got true")
+		}
+		if !dir.SkipCacheRead {
+			t.Fatalf("expected SkipCacheRead=true from header")
+		}
+	})
+}
