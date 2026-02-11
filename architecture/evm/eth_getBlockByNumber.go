@@ -435,13 +435,12 @@ func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Netw
 		return rs, re
 	}
 
-	// Get directives - if nil, no validation needed
+	// Only run validation when directives are set (avoids JSON parsing overhead otherwise).
+	// Always-on integrity checks piggyback on the same parse as directive-gated checks.
 	dirs := rq.Directives()
 	if dirs == nil {
 		return rs, re
 	}
-
-	// Run directive-based validation
 	if err := validateBlock(ctx, u, dirs, rs); err != nil {
 		return rs, err
 	}
@@ -457,6 +456,10 @@ type blockValidationTxLite struct {
 	TransactionIndex string `json:"transactionIndex"`
 }
 
+// emptyTrieRoot is the keccak256 of the RLP-encoded empty trie.
+// Blocks with zero transactions have this as their transactionsRoot.
+const emptyTrieRoot = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+
 // blockValidationBlockLite is a minimal block model for validation
 type blockValidationBlockLite struct {
 	Hash             string `json:"hash"`
@@ -469,7 +472,9 @@ type blockValidationBlockLite struct {
 	Transactions     []any  `json:"transactions"` // Can be []string (hashes) or []blockValidationTxLite (full txs)
 }
 
-// validateBlock validates eth_getBlockByNumber/Hash responses based on request directives.
+// validateBlock validates eth_getBlockByNumber/Hash responses.
+// It runs always-on integrity checks first (fundamental Ethereum invariants),
+// then directive-gated checks. Callers must ensure dirs is non-nil.
 func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rs *common.NormalizedResponse) error {
 	jrr, err := rs.JsonRpcResponse(ctx)
 	if err != nil {
@@ -480,6 +485,33 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &block); err != nil {
 		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid JSON result for block validation: %w", err), u)
 	}
+
+	// ── Always-on integrity checks (fundamental Ethereum invariants) ──────
+
+	// TransactionsRoot vs Transaction Count:
+	// The transactionsRoot is a Merkle trie root over the block's transactions.
+	// The empty trie root is a universal constant for blocks with zero transactions.
+	// If they disagree, the upstream returned truncated/incomplete data.
+	if block.TransactionsRoot != "" {
+		txRootLower := strings.ToLower(block.TransactionsRoot)
+		isEmptyRoot := txRootLower == emptyTrieRoot
+		txCount := len(block.Transactions)
+
+		if !isEmptyRoot && txCount == 0 {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("transactionsRoot is %s (non-empty) but block contains 0 transactions; upstream returned incomplete block data", block.TransactionsRoot),
+				u,
+			)
+		}
+		if isEmptyRoot && txCount > 0 {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("transactionsRoot is empty trie root but block contains %d transactions; inconsistent block data", txCount),
+				u,
+			)
+		}
+	}
+
+	// ── Directive-gated checks (opt-in via config/library) ───────────────
 
 	// 1. Header Field Length Validation
 	if dirs.ValidateHeaderFieldLengths {

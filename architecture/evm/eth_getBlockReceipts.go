@@ -39,13 +39,12 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 		return rs, re
 	}
 
-	// Get directives - if nil, no validation needed
+	// Only run validation when directives are set (avoids JSON parsing overhead otherwise).
+	// Always-on integrity checks piggyback on the same parse as directive-gated checks.
 	dirs := rq.Directives()
 	if dirs == nil {
 		return rs, re
 	}
-
-	// Run directive-based validation
 	if err := validateGetBlockReceipts(ctx, u, dirs, rs); err != nil {
 		return rs, err
 	}
@@ -53,12 +52,19 @@ func upstreamPostForward_eth_getBlockReceipts(ctx context.Context, n common.Netw
 	return rs, re
 }
 
-// validateGetBlockReceipts validates eth_getBlockReceipts responses based on request directives.
-// It performs comprehensive validation including:
+// validateGetBlockReceipts validates eth_getBlockReceipts responses.
+// It runs always-on integrity checks first (fundamental Ethereum invariants),
+// then directive-gated checks. Callers must ensure dirs is non-nil.
+//
+// Always-on checks (only when the field is present):
+// - Transaction hashes must be unique within a block
+// - All receipts must reference the same block hash
+//
+// Directive-gated checks:
 // - ReceiptsCountExact / ReceiptsCountAtLeast
 // - ValidationExpectedBlockHash / ValidationExpectedBlockNumber
-// - ValidateTxHashUniqueness
-// - ValidateTransactionIndex
+// - ValidateTxHashUniqueness (stricter: rejects empty hashes too)
+// - ValidateTransactionIndex (transactionIndex must equal array position)
 // - EnforceNonEmptyLogsBloom
 // - EnforceLogIndexStrictIncrements
 // - ValidateLogsBloom
@@ -101,6 +107,43 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 	}
 
 	count := int64(len(receipts))
+
+	// ── Always-on integrity checks (fundamental Ethereum invariants) ──────
+	// These only validate fields when present -- absent/empty fields are skipped.
+
+	if count > 0 {
+		seenTxHashes := make(map[string]struct{}, count)
+		var firstBlockHash string
+
+		for i, r := range receipts {
+			// If transactionHash is present, it must be valid and unique
+			if r.TransactionHash != "" {
+				txHashLower := strings.ToLower(r.TransactionHash)
+				if _, exists := seenTxHashes[txHashLower]; exists {
+					return common.NewErrEndpointContentValidation(
+						fmt.Errorf("duplicate transactionHash %s at receipt index %d", r.TransactionHash, i),
+						u,
+					)
+				}
+				seenTxHashes[txHashLower] = struct{}{}
+			}
+
+			// All receipts must reference the same block hash (when present)
+			if r.BlockHash != "" {
+				bhLower := strings.ToLower(r.BlockHash)
+				if firstBlockHash == "" {
+					firstBlockHash = bhLower
+				} else if bhLower != firstBlockHash {
+					return common.NewErrEndpointContentValidation(
+						fmt.Errorf("receipt %d: blockHash %s differs from first receipt blockHash %s; receipts are from mixed blocks", i, r.BlockHash, firstBlockHash),
+						u,
+					)
+				}
+			}
+		}
+	}
+
+	// ── Directive-gated checks (opt-in via config/library) ───────────────
 
 	// 1. Count Validations (nil means unset/don't check)
 	if dirs.ReceiptsCountExact != nil {
@@ -155,17 +198,18 @@ func validateGetBlockReceipts(ctx context.Context, u common.Upstream, dirs *comm
 		}
 	}
 
-	// 3. Tx Hash Uniqueness
+	// 3. Tx Hash Uniqueness (stricter than always-on: rejects empty hashes too)
 	if dirs.ValidateTxHashUniqueness {
 		seen := make(map[string]struct{}, count)
 		for i, r := range receipts {
 			if r.TransactionHash == "" {
-				continue
+				return common.NewErrEndpointContentValidation(fmt.Errorf("empty transaction hash at index %d", i), u)
 			}
-			if _, exists := seen[r.TransactionHash]; exists {
+			lower := strings.ToLower(r.TransactionHash)
+			if _, exists := seen[lower]; exists {
 				return common.NewErrEndpointContentValidation(fmt.Errorf("duplicate transaction hash %s at index %d", r.TransactionHash, i), u)
 			}
-			seen[r.TransactionHash] = struct{}{}
+			seen[lower] = struct{}{}
 		}
 	}
 
