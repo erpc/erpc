@@ -460,6 +460,10 @@ type blockValidationTxLite struct {
 // Blocks with zero transactions have this as their transactionsRoot.
 const emptyTrieRoot = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
 
+// zeroHash32 is the 32-byte all-zeros hash. Some non-standard chains (e.g. ZKSync Era)
+// use this instead of the canonical empty trie root for blocks with zero transactions.
+const zeroHash32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
 // blockValidationBlockLite is a minimal block model for validation
 type blockValidationBlockLite struct {
 	Hash             string `json:"hash"`
@@ -486,15 +490,17 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid JSON result for block validation: %w", err), u)
 	}
 
-	// ── Always-on integrity checks (fundamental Ethereum invariants) ──────
+	// ── Directive-gated checks (opt-in via config/library) ───────────────
 
-	// TransactionsRoot vs Transaction Count:
+	// 1. TransactionsRoot vs Transaction Count (default: enabled)
 	// The transactionsRoot is a Merkle trie root over the block's transactions.
-	// The empty trie root is a universal constant for blocks with zero transactions.
+	// The canonical empty trie root is a universal constant for blocks with zero transactions.
+	// Some chains (e.g. ZKSync Era) use the all-zeros hash instead.
 	// If they disagree, the upstream returned truncated/incomplete data.
-	if block.TransactionsRoot != "" {
+	// Disable via validateTransactionsRoot: false for non-standard chains.
+	if dirs.ValidateTransactionsRoot && block.TransactionsRoot != "" {
 		txRootLower := strings.ToLower(block.TransactionsRoot)
-		isEmptyRoot := txRootLower == emptyTrieRoot
+		isEmptyRoot := txRootLower == emptyTrieRoot || txRootLower == zeroHash32
 		txCount := len(block.Transactions)
 
 		if !isEmptyRoot && txCount == 0 {
@@ -511,16 +517,14 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 		}
 	}
 
-	// ── Directive-gated checks (opt-in via config/library) ───────────────
-
-	// 1. Header Field Length Validation
+	// 2. Header Field Length Validation
 	if dirs.ValidateHeaderFieldLengths {
 		if err := validateHeaderFieldLengths(u, &block); err != nil {
 			return err
 		}
 	}
 
-	// 2. Transaction Validation (only if we have full transactions)
+	// 3. Transaction Validation (only if we have full transactions)
 	if len(block.Transactions) > 0 {
 		// Check if transactions are full objects or just hashes
 		var fullTxs []blockValidationTxLite
