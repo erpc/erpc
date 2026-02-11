@@ -22,6 +22,11 @@ func upstreamPostForward_eth_getTransactionReceipt(
 		return rs, re
 	}
 
+	// Feature flag: skip the side-call unless explicitly enabled
+	if nCfg := n.Config(); nCfg == nil || nCfg.Evm == nil || nCfg.Evm.ReceiptPendingCheck == nil || !*nCfg.Evm.ReceiptPendingCheck {
+		return rs, re
+	}
+
 	if rq != nil {
 		if rd := rq.Directives(); rd != nil && !rd.RetryEmpty {
 			return rs, re

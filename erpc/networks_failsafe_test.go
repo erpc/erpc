@@ -171,6 +171,8 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 				MaxAttempts: 3,
 			},
 		)
+		// Enable the receipt pending check feature flag
+		network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xed9b8902d8c588112481f5b4d0011b2ff30a98587862a527984fae417649cbed"]}`)
 		req := common.NewNormalizedRequest(requestBytes)

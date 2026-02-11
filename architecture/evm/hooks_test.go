@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -201,6 +202,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_EmptyConfig(t *testing.T) {
 
 func TestUpstreamPostForward_TransactionReceipt_PendingTx(t *testing.T) {
 	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
 
 	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
 	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
@@ -231,6 +233,7 @@ func TestUpstreamPostForward_TransactionReceipt_PendingTx(t *testing.T) {
 
 func TestUpstreamPostForward_TransactionReceipt_MinedTx(t *testing.T) {
 	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
 
 	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
 	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
@@ -262,6 +265,7 @@ func TestUpstreamPostForward_TransactionReceipt_MinedTx(t *testing.T) {
 
 func TestUpstreamPostForward_TransactionReceipt_UnknownTx(t *testing.T) {
 	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
 
 	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
 	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
@@ -288,6 +292,7 @@ func TestUpstreamPostForward_TransactionReceipt_UnknownTx(t *testing.T) {
 
 func TestUpstreamPostForward_TransactionReceipt_SideCallFails(t *testing.T) {
 	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
 
 	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
 	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {

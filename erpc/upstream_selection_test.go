@@ -518,6 +518,8 @@ func TestMixedResponseTypes(t *testing.T) {
 				},
 			}
 			network := setupTestNetworkForTiming(t, ctx, failsafeConfig)
+			// Enable the receipt pending check feature flag
+			network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
 
 			time.Sleep(100 * time.Millisecond)
 			upstream.ReorderUpstreams(network.upstreamsRegistry)
