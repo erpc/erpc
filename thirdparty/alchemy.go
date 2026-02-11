@@ -245,6 +245,8 @@ func (v *AlchemyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 		}
 
 		upstream.Endpoint = parsedURL.String()
+		// Alchemy uses the same URL pattern for WebSocket, just with wss:// scheme
+		upstream.WebsocketEndpoint = fmt.Sprintf("wss://%s.g.alchemy.com/v2/%s", subdomain, apiKey)
 		upstream.Type = common.UpstreamTypeEvm
 	}
 

@@ -19,6 +19,10 @@ type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 	GetLockTtl() time.Duration
 	GetFallbackTimeout() time.Duration
+	// TryLock attempts to acquire a distributed lock with the given key.
+	// Returns the lock if acquired, or nil if the lock is held by another instance.
+	// The lock should be renewed periodically and released when no longer needed.
+	TryLock(ctx context.Context, key string) (DistributedLock, error)
 }
 
 type sharedStateRegistry struct {
@@ -251,4 +255,8 @@ func (r *sharedStateRegistry) GetLockTtl() time.Duration {
 
 func (r *sharedStateRegistry) GetFallbackTimeout() time.Duration {
 	return r.fallbackTimeout
+}
+
+func (r *sharedStateRegistry) TryLock(ctx context.Context, key string) (DistributedLock, error) {
+	return r.connector.Lock(ctx, key, r.lockTtl)
 }

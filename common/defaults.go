@@ -1472,6 +1472,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			NodeType:                 defaults.Evm.NodeType,
 			StatePollerInterval:      defaults.Evm.StatePollerInterval,
 			StatePollerDebounce:      defaults.Evm.StatePollerDebounce,
+			StatePollerSubscribe:     defaults.Evm.StatePollerSubscribe,
 			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
 		}
 		if err := u.Evm.SetDefaults(defaults.Evm); err != nil {
@@ -1489,6 +1490,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		}
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
 			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
+		}
+		if u.Evm.StatePollerSubscribe == nil && defaults.Evm.StatePollerSubscribe != nil {
+			u.Evm.StatePollerSubscribe = defaults.Evm.StatePollerSubscribe
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
