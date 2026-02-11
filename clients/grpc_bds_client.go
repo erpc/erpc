@@ -112,6 +112,24 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
+	// gRPC service config: enables transparent retries and wait-for-ready semantics.
+	// Retries handle transient failures (UNAVAILABLE from connection resets, TCP retransmits)
+	// without surfacing errors to callers. WaitForReady queues RPCs during brief reconnects
+	// instead of failing immediately with UNAVAILABLE.
+	serviceConfig := `{
+		"methodConfig": [{
+			"name": [{"service": ""}],
+			"waitForReady": true,
+			"retryPolicy": {
+				"maxAttempts": 3,
+				"initialBackoff": "0.05s",
+				"maxBackoff": "0.3s",
+				"backoffMultiplier": 2,
+				"retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED"]
+			}
+		}]
+	}`
+
 	// Create gRPC connection with aggressive timeouts suitable for cache services
 	// These should fail fast to allow failover to other upstreams
 	conn, err := grpc.NewClient(target,
@@ -120,16 +138,17 @@ func NewGrpcBdsClient(
 			grpc.MaxCallRecvMsgSize(100*1024*1024),
 			grpc.MaxCallSendMsgSize(100*1024*1024),
 		),
+		grpc.WithDefaultServiceConfig(serviceConfig),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                2 * time.Minute,
-			Timeout:             5 * time.Second, // Fail faster on dead connections
-			PermitWithoutStream: false,
+			Time:                30 * time.Second, // Detect dead connections faster (was 2min)
+			Timeout:             5 * time.Second,  // Fail fast on dead connections
+			PermitWithoutStream: true,             // Keep connection warm even during idle periods
 		}),
 		grpc.WithConnectParams(grpc.ConnectParams{
-			MinConnectTimeout: 200 * time.Millisecond, // Fail very fast for cache services
+			MinConnectTimeout: 500 * time.Millisecond, // Allow time for TLS handshake on cross-region
 			Backoff: backoff.Config{
-				BaseDelay:  100 * time.Millisecond, // Faster retries
-				Multiplier: 1.5,                    // Slightly less aggressive multiplier
+				BaseDelay:  50 * time.Millisecond, // Fast initial retry
+				Multiplier: 1.5,
 				Jitter:     0.2,
 				MaxDelay:   500 * time.Millisecond, // Don't backoff too long
 			},

@@ -867,7 +867,7 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 			c.Grpc = &GrpcConnectorConfig{}
 		}
 		if c.Grpc.GetTimeout == 0 {
-			c.Grpc.GetTimeout = Duration(200 * time.Millisecond)
+			c.Grpc.GetTimeout = Duration(100 * time.Millisecond)
 		}
 	}
 
