@@ -8,5 +8,5 @@ func IsNativeProtocol(endpoint string) bool {
 		strings.HasPrefix(endpoint, "ws://") ||
 		strings.HasPrefix(endpoint, "wss://") ||
 		strings.HasPrefix(endpoint, "grpc://") ||
-		strings.HasPrefix(endpoint, "grpc+bds://")
+		strings.HasPrefix(endpoint, "grpc+")
 }

@@ -1148,7 +1148,7 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 	if strings.HasPrefix(upstream.Endpoint, "http://") ||
 		strings.HasPrefix(upstream.Endpoint, "https://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
-		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
+		strings.HasPrefix(upstream.Endpoint, "grpc+") {
 		return nil, nil
 	}
 

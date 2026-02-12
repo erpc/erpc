@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/erpc/erpc/common"
@@ -99,18 +100,13 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
-				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
-					var lbCfg *common.GrpcLoadBalancingConfig
-					if cfg.Grpc != nil {
-						lbCfg = cfg.Grpc.LoadBalancing
-					}
+				} else if strings.HasPrefix(parsedUrl.Scheme, "grpc") {
 					newClient, err = NewGrpcBdsClient(
 						appCtx,
 						&lg,
 						manager.projectId,
 						ups,
 						parsedUrl,
-						lbCfg,
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)

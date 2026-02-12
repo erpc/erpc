@@ -113,7 +113,7 @@ func NewGrpcConnector(
 					gc.logger.Error().Err(perr).Str("server", serverURL).Msg("invalid gRPC server URL")
 					return common.NewTaskFatal(perr)
 				}
-				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed, cfg.LoadBalancing)
+				cli, cerr := clients.NewGrpcBdsClient(gc.appCtx, &lg, "<cache>", nil, parsed)
 				if cerr != nil {
 					gc.logger.Warn().Err(cerr).Str("server", serverURL).Msg("failed to create gRPC client")
 					return cerr

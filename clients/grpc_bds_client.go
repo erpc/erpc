@@ -59,7 +59,6 @@ func NewGrpcBdsClient(
 	projectId string,
 	upstream common.Upstream,
 	parsedUrl *url.URL,
-	loadBalancingCfg *common.GrpcLoadBalancingConfig,
 ) (GrpcBdsClient, error) {
 	upsId := "n/a"
 	if upstream != nil {
@@ -84,9 +83,12 @@ func NewGrpcBdsClient(
 		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
 	}
 
+	// Detect dns-based load balancing from URL scheme (e.g. grpc+dns://)
+	useDNSLoadBalancing := strings.Contains(parsedUrl.Scheme, "dns")
+
 	// Apply dns:/// prefix for load balancing (enables multi-address resolution)
 	// This tells gRPC to use its DNS resolver which returns all A records for headless services
-	if loadBalancingCfg != nil {
+	if useDNSLoadBalancing {
 		target = fmt.Sprintf("dns:///%s", target)
 		logger.Debug().Str("target", target).Msg("using DNS resolver for gRPC load balancing")
 	}
@@ -139,10 +141,10 @@ func NewGrpcBdsClient(
 		}]
 	}`
 
-	// If load balancing is configured, include it in the service config
-	if loadBalancingCfg != nil {
-		serviceConfig = fmt.Sprintf(`{
-			"loadBalancingConfig": [{"%s":{}}],
+	// If DNS load balancing is enabled, add round_robin to the service config
+	if useDNSLoadBalancing {
+		serviceConfig = `{
+			"loadBalancingConfig": [{"round_robin":{}}],
 			"methodConfig": [{
 				"name": [{"service": ""}],
 				"waitForReady": true,
@@ -154,8 +156,8 @@ func NewGrpcBdsClient(
 					"retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED"]
 				}
 			}]
-		}`, loadBalancingCfg.Policy)
-		logger.Debug().Str("policy", loadBalancingCfg.Policy).Msg("gRPC client-side load balancing enabled")
+		}`
+		logger.Debug().Msg("gRPC DNS-based round_robin load balancing enabled")
 	}
 
 	// Build dial options
