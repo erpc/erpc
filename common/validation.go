@@ -846,7 +846,6 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	return nil
 }
 
-
 func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if !util.IsNativeProtocol(u.Endpoint) {
 		if e.ChainId > 0 {

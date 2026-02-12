@@ -276,12 +276,11 @@ type ConnectorConfig struct {
 }
 
 type GrpcConnectorConfig struct {
-	Bootstrap     string                   `yaml:"bootstrap,omitempty" json:"bootstrap"`
-	Servers       []string                 `yaml:"servers,omitempty" json:"servers"`
-	Headers       map[string]string        `yaml:"headers,omitempty" json:"headers"`
-	GetTimeout Duration `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	Bootstrap  string            `yaml:"bootstrap,omitempty" json:"bootstrap"`
+	Servers    []string          `yaml:"servers,omitempty" json:"servers"`
+	Headers    map[string]string `yaml:"headers,omitempty" json:"headers"`
+	GetTimeout Duration          `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 }
-
 
 type MemoryConnectorConfig struct {
 	MaxItems     int    `yaml:"maxItems" json:"maxItems"`

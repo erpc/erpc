@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strings"
 	"sync"
 
 	"github.com/erpc/erpc/common"
@@ -100,7 +99,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
-				} else if strings.HasPrefix(parsedUrl.Scheme, "grpc") {
+				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
 					newClient, err = NewGrpcBdsClient(
 						appCtx,
 						&lg,
