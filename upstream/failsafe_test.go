@@ -229,7 +229,7 @@ func TestRetryPolicy_EmptyResultWithIgnore(t *testing.T) {
 			// Create retry config with ignore list
 			cfg := &common.RetryPolicyConfig{
 				MaxAttempts:           3,
-				EmptyResultIgnore:     tt.ignoreList,
+				EmptyResultAccept:     tt.ignoreList,
 				EmptyResultConfidence: common.AvailbilityConfidenceBlockHead,
 			}
 
@@ -402,7 +402,7 @@ func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {
 		cfg := &common.RetryPolicyConfig{
 			MaxAttempts:           3,
 			EmptyResultConfidence: common.AvailbilityConfidenceFinalized,
-			EmptyResultIgnore:     []string{"eth_getBalance"},
+			EmptyResultAccept:     []string{"eth_getBalance"},
 		}
 
 		req := common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc9e7595f8fA49","0x64"],"id":1,"jsonrpc":"2.0"}`))
@@ -428,7 +428,7 @@ func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {
 		cfg := &common.RetryPolicyConfig{
 			MaxAttempts:           3,
 			EmptyResultConfidence: common.AvailbilityConfidenceFinalized,
-			EmptyResultIgnore:     []string{"eth_getBalance"},
+			EmptyResultAccept:     []string{"eth_getBalance"},
 		}
 
 		req := common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber","params":["0x64",true],"id":1,"jsonrpc":"2.0"}`))
@@ -456,7 +456,7 @@ func TestRetryPolicy_UpstreamScope(t *testing.T) {
 		cfg := &common.RetryPolicyConfig{
 			MaxAttempts:           3,
 			EmptyResultConfidence: common.AvailbilityConfidenceFinalized,
-			EmptyResultIgnore:     []string{"eth_getBalance"},
+			EmptyResultAccept:     []string{"eth_getBalance"},
 		}
 
 		req := common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc9e7595f8fA49","0x64"],"id":1,"jsonrpc":"2.0"}`))
@@ -639,7 +639,7 @@ func TestRetryPolicy_EmptyWithEvmUpstream(t *testing.T) {
 	cfg := &common.RetryPolicyConfig{
 		MaxAttempts:           3,
 		EmptyResultConfidence: common.AvailbilityConfidenceFinalized,
-		EmptyResultIgnore:     []string{},
+		EmptyResultAccept:     []string{},
 	}
 
 	// Create mock request with block number

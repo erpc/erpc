@@ -382,6 +382,12 @@ export interface NetworkDefaults {
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -421,6 +427,12 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -531,11 +543,30 @@ export interface RetryPolicyConfig {
     backoffFactor?: number;
     jitter?: Duration;
     emptyResultConfidence?: AvailbilityConfidence;
+    /**
+     * EmptyResultAccept lists methods for which an empty/null result is considered valid
+     * and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
+     */
+    emptyResultAccept?: string[];
+    /**
+     * @deprecated: use EmptyResultAccept instead.
+     */
     emptyResultIgnore?: string[];
     /**
      * EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
      */
     emptyResultMaxAttempts?: number;
+    /**
+     * EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
+     * When set, empty result retries wait this long instead of using the normal error delay/backoff.
+     */
+    emptyResultDelay?: Duration;
+    /**
+     * BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
+     * requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
+     * time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
+     */
+    blockUnavailableDelay?: Duration;
 }
 export interface CircuitBreakerPolicyConfig {
     failureThresholdCount: number;
@@ -587,6 +618,14 @@ export interface ConsensusPolicyConfig {
     preferHighestValueFor?: {
         [key: string]: string[];
     };
+    /**
+     * FireAndForget when true, allows consensus to return a response to the client immediately
+     * upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
+     * This is useful for write operations like eth_sendRawTransaction where you want to
+     * broadcast the transaction to as many nodes as possible while still returning quickly.
+     * Default is false (normal behavior - cancel remaining requests on short-circuit).
+     */
+    fireAndForget?: boolean;
 }
 export type MisbehaviorsDestinationType = string;
 export declare const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType;
@@ -705,6 +744,12 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -717,6 +762,11 @@ export interface DirectiveDefaultsConfig {
     enforceHighestBlock?: boolean;
     enforceGetLogsBlockRange?: boolean;
     enforceNonNullTaggedBlocks?: boolean;
+    /**
+     * ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
+     * Defaults to true. Disable for non-standard chains that use unusual trie roots.
+     */
+    validateTransactionsRoot?: boolean;
     /**
      * Validation: Header Field Lengths
      */

@@ -13,6 +13,7 @@ module.exports = {
 			{name: "Retry", href: "/config/failsafe#retry-policy"},
 			{name: "Timeout", href: "/config/failsafe#timeout-policy"},
 			{name: "Integrity", href: "/config/failsafe/integrity"},
+			{name: "Empty/missing data", href: "/config/failsafe/integrity#empty-or-missing-data-handling"},
 			{name: "Consensus", href: "/config/failsafe/consensus"},
 		],
 	},
