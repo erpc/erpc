@@ -76,22 +76,14 @@ func NewGrpcBdsClient(
 	}
 
 	// Extract host and port from URL
-	// For grpc:// or grpc+bds:// schemes, use the host:port directly
 	target := parsedUrl.Host
 	if parsedUrl.Port() == "" {
-		// Default gRPC port if not specified
 		target = fmt.Sprintf("%s:50051", parsedUrl.Hostname())
 	}
 
-	// Detect dns-based load balancing from URL scheme (e.g. grpc+dns://)
-	useDNSLoadBalancing := strings.Contains(parsedUrl.Scheme, "dns")
-
-	// Apply dns:/// prefix for load balancing (enables multi-address resolution)
-	// This tells gRPC to use its DNS resolver which returns all A records for headless services
-	if useDNSLoadBalancing {
-		target = fmt.Sprintf("dns:///%s", target)
-		logger.Debug().Str("target", target).Msg("using DNS resolver for gRPC load balancing")
-	}
+	// Use dns:/// prefix so gRPC resolves all A records (e.g. Kubernetes headless services)
+	// and round_robin distributes RPCs across them. For single-target hosts this is a no-op.
+	target = fmt.Sprintf("dns:///%s", target)
 
 	// Determine whether to use TLS based on port or URL scheme
 	var transportCredentials credentials.TransportCredentials
@@ -122,12 +114,13 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
-	// gRPC service config: enables transparent retries, wait-for-ready semantics,
-	// and optionally client-side load balancing.
-	// Retries handle transient failures (UNAVAILABLE from connection resets, TCP retransmits)
-	// without surfacing errors to callers. WaitForReady queues RPCs during brief reconnects
-	// instead of failing immediately with UNAVAILABLE.
+	// gRPC service config: round_robin distributes RPCs across all resolved addresses
+	// (no-op for single-target hosts). Transparent retries handle transient failures
+	// (UNAVAILABLE from connection resets, TCP retransmits) without surfacing errors
+	// to callers. WaitForReady queues RPCs during brief reconnects instead of failing
+	// immediately with UNAVAILABLE.
 	serviceConfig := `{
+		"loadBalancingConfig": [{"round_robin":{}}],
 		"methodConfig": [{
 			"name": [{"service": ""}],
 			"waitForReady": true,
@@ -140,25 +133,6 @@ func NewGrpcBdsClient(
 			}
 		}]
 	}`
-
-	// If DNS load balancing is enabled, add round_robin to the service config
-	if useDNSLoadBalancing {
-		serviceConfig = `{
-			"loadBalancingConfig": [{"round_robin":{}}],
-			"methodConfig": [{
-				"name": [{"service": ""}],
-				"waitForReady": true,
-				"retryPolicy": {
-					"maxAttempts": 3,
-					"initialBackoff": "0.05s",
-					"maxBackoff": "0.3s",
-					"backoffMultiplier": 2,
-					"retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED"]
-				}
-			}]
-		}`
-		logger.Debug().Msg("gRPC DNS-based round_robin load balancing enabled")
-	}
 
 	// Build dial options
 	dialOpts := []grpc.DialOption{
