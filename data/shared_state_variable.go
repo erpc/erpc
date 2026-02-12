@@ -405,10 +405,15 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	_, mutexSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.AcquireMutex")
 	c.updateMu.Lock()
 	mutexSpan.End()
+	muLocked := true
+	defer func() {
+		if muLocked {
+			c.updateMu.Unlock()
+		}
+	}()
 
 	// Double-check staleness after acquiring mutex
 	if !c.IsStale(staleness) {
-		c.updateMu.Unlock()
 		span.SetAttributes(attribute.Bool("skipped_not_stale_after_mutex", true))
 		return c.value.Load(), nil
 	}
@@ -433,6 +438,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			// This matters on request-handler paths (forceFreshIfStale) where stale
 			// values cause wrong availability decisions.
 			c.updateMu.Unlock()
+			muLocked = false
 			span.SetAttributes(attribute.String("poll_lock", "contention"))
 			telemetry.MetricSharedStatePollLockTotal.WithLabelValues(c.key, "contention").Inc()
 
@@ -471,7 +477,6 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			unlock()
 			span.SetAttributes(attribute.String("poll_lock", "skipped_fresh"))
 			telemetry.MetricSharedStatePollLockTotal.WithLabelValues(c.key, "skipped_fresh").Inc()
-			c.updateMu.Unlock()
 			return c.value.Load(), nil
 		}
 		span.SetAttributes(attribute.String("poll_lock", "acquired"))
@@ -518,16 +523,13 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			attribute.String("result_path", "got_result"),
 			attribute.Bool("async_refresh", false),
 		)
-		result, err := c.applyRefreshResult(initialVal, r)
-		c.updateMu.Unlock()
-		return result, err
+		return c.applyRefreshResult(initialVal, r)
 	case <-timer.C:
 		span.SetAttributes(
 			attribute.String("result_path", "timeout"),
 			attribute.Bool("async_refresh", true),
 		)
 		c.markFreshAttempt()
-		c.updateMu.Unlock()
 		c.continueAsyncRefresh(resultCh)
 		return initialVal, nil
 	}

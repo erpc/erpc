@@ -936,11 +936,54 @@ func TestCounterInt64_TryUpdateIfStale_ContentionTimeout(t *testing.T) {
 	assert.Equal(t, int64(5), val, "should return current (stale) value after contention timeout")
 	assert.Equal(t, int32(0), calls, "refresh function should NOT be called during contention wait")
 
-	// Should be bounded by updateMaxWait (default 50ms from setupTest)
-	assert.Less(t, elapsed, 200*time.Millisecond, "should be bounded by updateMaxWait")
+	// Should be bounded by updateMaxWait (50ms from setupTest) + small overhead
+	assert.Less(t, elapsed, 100*time.Millisecond, "should be bounded by updateMaxWait")
 
 	// P1 fix: updatedAtUnixMs should NOT be advanced — the next caller should retry immediately.
 	assert.True(t, counter.IsStale(time.Second), "value should still be stale after contention timeout (no markFreshAttempt)")
+
+	connector.AssertExpectations(t)
+}
+
+// Test: contention path — caller's context cancelled during wait (exercises ctx.Done() branch)
+func TestCounterInt64_TryUpdateIfStale_ContentionCtxCancellation(t *testing.T) {
+	registry, connector, _ := setupTest("my-dev")
+
+	// Poll lock returns ErrLockContention.
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Return(nil, fmt.Errorf("lock held: %w", ErrLockContention))
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 50, nil
+	}
+
+	// Use a short-lived context that will cancel before updateMaxWait (50ms)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+	elapsed := time.Since(start)
+
+	assert.ErrorIs(t, err, context.DeadlineExceeded, "should return context error on cancellation")
+	assert.Equal(t, int64(5), val, "should return current value on context cancellation")
+	assert.Equal(t, int32(0), calls, "refresh function should NOT be called during contention wait")
+
+	// Should exit quickly after context cancellation, well before updateMaxWait (50ms)
+	assert.Less(t, elapsed, 40*time.Millisecond, "should exit promptly on context cancellation")
+
+	// Value should still be stale — no markFreshAttempt on cancellation
+	assert.True(t, counter.IsStale(time.Second), "value should still be stale after context cancellation")
 
 	connector.AssertExpectations(t)
 }
@@ -994,12 +1037,6 @@ func TestCounterInt64_TryUpdateIfStale_SkippedFreshAfterLock(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 
 	pollLock := &MockLock{}
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
-		Run(func(args mock.Arguments) {
-			// Simulate: while waiting for the lock, a pubsub update makes the value fresh.
-			// We directly update the counter's timestamp to simulate this.
-		}).
-		Return(pollLock, nil)
 	// The lock should be unlocked since we acquired it but skip the refresh.
 	pollLock.On("Unlock", mock.Anything).Return(nil).Once()
 
@@ -1012,15 +1049,10 @@ func TestCounterInt64_TryUpdateIfStale_SkippedFreshAfterLock(t *testing.T) {
 	// Set updatedAtUnixMs to just barely stale initially
 	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
 
-	// After the poll lock is acquired, make the value fresh before execution.
-	origLock := connector.ExpectedCalls[0]
-	_ = origLock
-	// The simplest way: set updatedAt to "now" just before TryUpdateIfStale checks post-lock staleness.
-	// We override the Lock mock to also update the counter.
-	connector.ExpectedCalls = connector.ExpectedCalls[:0] // clear
+	// Lock mock simulates pubsub arriving while lock acquisition was in progress,
+	// making the value fresh before TryUpdateIfStale checks post-lock staleness.
 	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
 		Run(func(args mock.Arguments) {
-			// Simulate pubsub arriving while lock acquisition was in progress
 			counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
 		}).
 		Return(pollLock, nil)
