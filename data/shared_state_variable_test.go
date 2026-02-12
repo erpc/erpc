@@ -402,7 +402,9 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "stale local value same as remote unstales local value",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				// No remote I/O expected in the synchronous path (local-only).
+				pollLock := &MockLock{}
+				c.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil)
+				pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -415,6 +417,9 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "stale value updates successfully",
 			setupMocks: func(c *MockConnector, l *MockLock) {
+				pollLock := &MockLock{}
+				c.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil)
+				pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
@@ -433,6 +438,9 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "stale value with remote higher",
 			setupMocks: func(c *MockConnector, l *MockLock) {
+				pollLock := &MockLock{}
+				c.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil)
+				pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				remoteUpdatedAt := time.Now().UnixMilli() + 60_000
@@ -456,7 +464,9 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "update function returns error",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				// No remote I/O expected on error; we just mark as fresh to debounce retries.
+				pollLock := &MockLock{}
+				c.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil)
+				pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -773,6 +783,10 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
 
+	pollLock := &MockLock{}
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil).Maybe()
+	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "test",
@@ -807,6 +821,10 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
+
+	pollLock := &MockLock{}
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil).Maybe()
+	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,
