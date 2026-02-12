@@ -985,6 +985,10 @@ type RetryPolicyConfig struct {
 	// EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
 	// When set, empty result retries wait this long instead of using the normal error delay/backoff.
 	EmptyResultDelay Duration `yaml:"emptyResultDelay,omitempty" json:"emptyResultDelay" tstype:"Duration"`
+	// BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
+	// requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
+	// time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
+	BlockUnavailableDelay Duration `yaml:"blockUnavailableDelay,omitempty" json:"blockUnavailableDelay" tstype:"Duration"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {

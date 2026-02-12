@@ -2113,6 +2113,12 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		r.EmptyResultDelay = defaults.EmptyResultDelay
 	}
 
+	// BlockUnavailableDelay inherits from defaults if provided, no hardcoded fallback.
+	// When not set, block-unavailable retries use the normal delay/backoff.
+	if r.BlockUnavailableDelay == 0 && defaults != nil && defaults.BlockUnavailableDelay != 0 {
+		r.BlockUnavailableDelay = defaults.BlockUnavailableDelay
+	}
+
 	return nil
 }
 

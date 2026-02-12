@@ -189,7 +189,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//----------------------------------------------------------------
 
 		if IsMissingDataError(err) {
-			return common.NewErrEndpointMissingData(
+			return toBlockUnavailableOrMissingData(
+				nr, upstream,
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorMissingData,
@@ -197,7 +198,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
-				upstream,
 			)
 		}
 
@@ -376,7 +376,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				strings.Contains(msg, "Block") ||
 				strings.Contains(msg, "transaction") ||
 				strings.Contains(msg, "Transaction") {
-				return common.NewErrEndpointMissingData(
+				return toBlockUnavailableOrMissingData(
+					nr, upstream,
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
 						common.JsonRpcErrorMissingData,
@@ -384,7 +385,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						nil,
 						details,
 					),
-					upstream,
 				)
 			} else {
 				// by default, we retry this type of client-side exception, as the root cause
@@ -829,6 +829,54 @@ func ExtractGrpcError(st *status.Status, upstream common.Upstream) error {
 			0,
 		)
 	}
+}
+
+// toBlockUnavailableOrMissingData returns ErrUpstreamBlockUnavailable when the error
+// looks like the block or its state is not yet available and the request targets a
+// specific block number. Errors about specific data items (e.g. "transaction not found")
+// or permanent node limitations (e.g. "no historical rpc") stay as ErrEndpointMissingData
+// because retrying won't resolve them.
+//
+// The check is deliberately liberal: false positives (treating permanent missing data as
+// transient block unavailability) are acceptable because the blockUnavailableDelay retry
+// will just add a small delay and eventually give up, while false negatives would prevent
+// the retry from helping genuine tip-of-chain races.
+func toBlockUnavailableOrMissingData(nr *common.NormalizedResponse, upstream common.Upstream, cause error) error {
+	if nr != nil && cause != nil && !isDefinitelyNotBlockUnavailable(cause) {
+		if req := nr.Request(); req != nil {
+			if bn := req.EvmBlockNumber(); bn != nil {
+				if blockNum, ok := bn.(int64); ok && blockNum > 0 {
+					var latestBlock, finalizedBlock int64
+					upstreamId := ""
+					if upstream != nil {
+						upstreamId = upstream.Id()
+						if eu, ok := upstream.(common.EvmUpstream); ok {
+							if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+								latestBlock = sp.LatestBlock()
+								finalizedBlock = sp.FinalizedBlock()
+							}
+						}
+					}
+					return common.NewErrUpstreamBlockUnavailable(upstreamId, blockNum, latestBlock, finalizedBlock)
+				}
+			}
+		}
+	}
+	return common.NewErrEndpointMissingData(cause, upstream)
+}
+
+// isDefinitelyNotBlockUnavailable returns true when the error message clearly indicates
+// a specific data item is missing (e.g. a particular transaction) or a permanent node
+// limitation, rather than a transient block/state unavailability at the tip.
+func isDefinitelyNotBlockUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "transaction not found") ||
+		strings.Contains(msg, "cannot find transaction") ||
+		strings.Contains(msg, "genesis is not traceable") ||
+		strings.Contains(msg, "no historical rpc")
 }
 
 func getVendorSpecificErrorIfAny(
