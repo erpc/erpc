@@ -516,8 +516,8 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 	if err := mutex.LockContext(ctx); err != nil {
 		common.SetTraceSpanError(span, err)
 
-		// Check for definitive contention: redsync.ErrTaken means another instance holds the lock.
-		var errTaken redsync.ErrTaken
+		// Check for definitive contention: redsync returns *ErrTaken when the lock is held.
+		var errTaken *redsync.ErrTaken
 		if errors.As(err, &errTaken) {
 			r.logger.Debug().Err(err).Str("key", lockKey).Msg("lock held by another instance (contention)")
 			return nil, fmt.Errorf("failed to acquire lock for key '%s': %w", lockKey, ErrLockContention)
