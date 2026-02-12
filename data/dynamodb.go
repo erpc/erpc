@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -603,7 +604,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 		select {
 		case <-ctx.Done():
 			if lastFailWasContention {
-				err := fmt.Errorf("lock acquisition timed out for key '%s' (lock held by another instance): %w", key, ErrLockContention)
+				err := fmt.Errorf("lock acquisition timed out for key '%s' (lock held by another instance): %w", key, errors.Join(ErrLockContention, ctx.Err()))
 				common.SetTraceSpanError(span, err)
 				return nil, err
 			}
@@ -683,7 +684,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 				// Continue to the next iteration of the loop to retry
 			case <-ctx.Done(): // Parent context was cancelled/timed out while waiting
 				if lastFailWasContention {
-					wrappedErr := fmt.Errorf("lock acquisition timed out for key '%s' (lock held by another instance): %w", key, ErrLockContention)
+					wrappedErr := fmt.Errorf("lock acquisition timed out for key '%s' (lock held by another instance): %w", key, errors.Join(ErrLockContention, ctx.Err()))
 					common.SetTraceSpanError(span, wrappedErr)
 					return nil, wrappedErr
 				}

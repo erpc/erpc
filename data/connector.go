@@ -16,8 +16,9 @@ import (
 var ErrLockContention = errors.New("lock contention: held by another instance")
 
 // ErrLockExpired indicates that a lock expired before it could be released.
-// Connectors should return (wrap) this error from Unlock() when the lock TTL
-// elapsed before the unlock operation completed.
+// Currently only the Redis connector returns this (via redsync's ErrLockAlreadyExpired
+// or when UnlockContext returns ok=false). DynamoDB and PostgreSQL connectors do not
+// detect TTL expiry at unlock time — their unlock errors are reported generically.
 var ErrLockExpired = errors.New("lock expired before release")
 
 const (

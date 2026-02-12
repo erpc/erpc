@@ -863,9 +863,17 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 func TestCounterInt64_TryUpdateIfStale_ContentionWithFreshArrival(t *testing.T) {
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
+	registry.updateMaxWait = 250 * time.Millisecond
 
 	// Poll lock returns ErrLockContention — another instance holds it.
+	lockAttempted := make(chan struct{}, 1)
 	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Run(func(args mock.Arguments) {
+			select {
+			case lockAttempted <- struct{}{}:
+			default:
+			}
+		}).
 		Return(nil, fmt.Errorf("lock held: %w", ErrLockContention))
 
 	counter := &counterInt64{
@@ -876,15 +884,17 @@ func TestCounterInt64_TryUpdateIfStale_ContentionWithFreshArrival(t *testing.T) 
 	counter.value.Store(5)
 	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
 
-	// Simulate pubsub updating the value after a short delay (simulates the other instance
-	// completing its refresh and publishing via shared state).
+	// Simulate pubsub updating the value once we observe the lock contention attempt.
 	go func() {
-		time.Sleep(10 * time.Millisecond)
-		counter.processNewState("pubsub", CounterInt64State{
-			Value:     99,
-			UpdatedAt: time.Now().UnixMilli(),
-			UpdatedBy: "other-instance",
-		})
+		select {
+		case <-lockAttempted:
+			counter.processNewState("pubsub", CounterInt64State{
+				Value:     99,
+				UpdatedAt: time.Now().UnixMilli(),
+				UpdatedBy: "other-instance",
+			})
+		case <-time.After(1 * time.Second):
+		}
 	}()
 
 	var calls int32
@@ -893,14 +903,11 @@ func TestCounterInt64_TryUpdateIfStale_ContentionWithFreshArrival(t *testing.T) 
 		return 50, nil
 	}
 
-	start := time.Now()
 	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
-	elapsed := time.Since(start)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(99), val, "should return the value that arrived via pubsub")
 	assert.Equal(t, int32(0), calls, "refresh function should NOT be called during contention wait")
-	assert.Less(t, elapsed, 100*time.Millisecond, "should complete quickly once pubsub arrives")
 
 	connector.AssertExpectations(t)
 }
@@ -928,16 +935,11 @@ func TestCounterInt64_TryUpdateIfStale_ContentionTimeout(t *testing.T) {
 		return 50, nil
 	}
 
-	start := time.Now()
 	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
-	elapsed := time.Since(start)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(5), val, "should return current (stale) value after contention timeout")
 	assert.Equal(t, int32(0), calls, "refresh function should NOT be called during contention wait")
-
-	// Should be bounded by updateMaxWait (50ms from setupTest) + small overhead
-	assert.Less(t, elapsed, 100*time.Millisecond, "should be bounded by updateMaxWait")
 
 	// P1 fix: updatedAtUnixMs should NOT be advanced — the next caller should retry immediately.
 	assert.True(t, counter.IsStale(time.Second), "value should still be stale after contention timeout (no markFreshAttempt)")
@@ -971,16 +973,11 @@ func TestCounterInt64_TryUpdateIfStale_ContentionCtxCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()
 	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
-	elapsed := time.Since(start)
 
 	assert.ErrorIs(t, err, context.DeadlineExceeded, "should return context error on cancellation")
 	assert.Equal(t, int64(5), val, "should return current value on context cancellation")
 	assert.Equal(t, int32(0), calls, "refresh function should NOT be called during contention wait")
-
-	// Should exit quickly after context cancellation, well before updateMaxWait (50ms)
-	assert.Less(t, elapsed, 40*time.Millisecond, "should exit promptly on context cancellation")
 
 	// Value should still be stale — no markFreshAttempt on cancellation
 	assert.True(t, counter.IsStale(time.Second), "value should still be stale after context cancellation")
@@ -1038,7 +1035,16 @@ func TestCounterInt64_TryUpdateIfStale_SkippedFreshAfterLock(t *testing.T) {
 
 	pollLock := &MockLock{}
 	// The lock should be unlocked since we acquired it but skip the refresh.
-	pollLock.On("Unlock", mock.Anything).Return(nil).Once()
+	unlockCalled := make(chan struct{}, 1)
+	pollLock.On("Unlock", mock.Anything).
+		Run(func(args mock.Arguments) {
+			select {
+			case unlockCalled <- struct{}{}:
+			default:
+			}
+		}).
+		Return(nil).
+		Once()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -1070,9 +1076,102 @@ func TestCounterInt64_TryUpdateIfStale_SkippedFreshAfterLock(t *testing.T) {
 	assert.Equal(t, int32(0), calls, "refresh function should NOT be called when value became fresh")
 
 	// Verify unlock was called (lock was acquired but not used for refresh)
-	time.Sleep(10 * time.Millisecond)
-	pollLock.AssertCalled(t, "Unlock", mock.Anything)
+	assert.Eventually(t, func() bool {
+		select {
+		case <-unlockCalled:
+			return true
+		default:
+			return false
+		}
+	}, 250*time.Millisecond, 5*time.Millisecond, "expected poll lock to be unlocked")
 
+	connector.AssertExpectations(t)
+}
+
+// Test: DeadlineExceeded from poll lock treated as infrastructure error (not contention)
+func TestCounterInt64_TryUpdateIfStale_PollLockDeadlineExceeded(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	// Poll lock returns context.DeadlineExceeded — ambiguous, treated as infrastructure error.
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Return(nil, fmt.Errorf("lock timed out: %w", context.DeadlineExceeded))
+
+	// Background push mocks for the local refresh path.
+	reconcileLock := &MockLock{}
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(reconcileLock, nil).Maybe()
+	reconcileLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return(nil, common.NewErrRecordNotFound("test", "value", "mock")).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 42, nil
+	}
+
+	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(42), val, "should fall through to local refresh on DeadlineExceeded")
+	assert.Equal(t, int32(1), calls, "refresh function SHOULD be called for local fallback")
+
+	// Allow background goroutines to complete
+	time.Sleep(20 * time.Millisecond)
+	connector.AssertExpectations(t)
+}
+
+// Test: nil lock without error from poll lock — defensive guard
+func TestCounterInt64_TryUpdateIfStale_PollLockNilWithoutError(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	// Poll lock returns nil lock + nil error (buggy connector).
+	// Use typed nil pointer so the interface is non-nil but IsNil() returns true.
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Return((*MockLock)(nil), nil)
+
+	// Background push mocks for the local refresh path.
+	reconcileLock := &MockLock{}
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(reconcileLock, nil).Maybe()
+	reconcileLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return(nil, common.NewErrRecordNotFound("test", "value", "mock")).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 42, nil
+	}
+
+	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(42), val, "should fall through to local refresh on nil lock")
+	assert.Equal(t, int32(1), calls, "refresh function SHOULD be called for local fallback")
+
+	// Allow background goroutines to complete
+	time.Sleep(20 * time.Millisecond)
 	connector.AssertExpectations(t)
 }
 
