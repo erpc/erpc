@@ -838,10 +838,33 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			return err
 		}
 	}
+	if u.Grpc != nil {
+		if err := u.Grpc.Validate(); err != nil {
+			return err
+		}
+	}
 	if u.RateLimitBudget != "" {
 		if !c.HasRateLimiterBudget(u.RateLimitBudget) {
 			return fmt.Errorf("upstream.*.rateLimitBudget '%s' does not exist in config.rateLimiters", u.RateLimitBudget)
 		}
+	}
+	return nil
+}
+
+func (c *GrpcUpstreamConfig) Validate() error {
+	if c.LoadBalancing != nil {
+		if err := c.LoadBalancing.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *GrpcLoadBalancingConfig) Validate() error {
+	switch c.Policy {
+	case "round_robin", "pick_first":
+	default:
+		return fmt.Errorf("upstream.*.grpc.loadBalancing.policy must be 'round_robin' or 'pick_first', got '%s'", c.Policy)
 	}
 	return nil
 }

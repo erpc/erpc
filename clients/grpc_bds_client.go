@@ -141,10 +141,6 @@ func NewGrpcBdsClient(
 
 	// If load balancing is configured, include it in the service config
 	if loadBalancingCfg != nil {
-		policy := loadBalancingCfg.Policy
-		if policy == "" {
-			policy = "round_robin"
-		}
 		serviceConfig = fmt.Sprintf(`{
 			"loadBalancingConfig": [{"%s":{}}],
 			"methodConfig": [{
@@ -158,8 +154,8 @@ func NewGrpcBdsClient(
 					"retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED"]
 				}
 			}]
-		}`, policy)
-		logger.Debug().Str("policy", policy).Msg("gRPC client-side load balancing enabled")
+		}`, loadBalancingCfg.Policy)
+		logger.Debug().Str("policy", loadBalancingCfg.Policy).Msg("gRPC client-side load balancing enabled")
 	}
 
 	// Build dial options
