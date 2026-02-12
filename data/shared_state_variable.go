@@ -117,6 +117,8 @@ type counterInt64 struct {
 	bgPushRequested atomic.Bool
 }
 
+const pollKeySuffix = "/poll"
+
 func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
 }
@@ -430,7 +432,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// (e.g., EvmAssertBlockAvailability with forceFreshIfStale=true).
 	lockTimeout := c.registry.lockMaxWait
 	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining > 0 && remaining < lockTimeout {
+		remaining := time.Until(deadline)
+		if remaining > 0 && remaining < lockTimeout {
 			lockTimeout = remaining
 		}
 	}
@@ -576,10 +579,10 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 		c.markFreshAttempt()
 		return initialVal, r.err
 	}
-	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
-	if updated {
-		c.scheduleBackgroundPushCurrent()
-	}
+	_ = c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
+	// Always publish freshness on successful refresh, even if the value is unchanged.
+	// This is required for cross-instance contention waiters to observe a non-stale update.
+	c.scheduleBackgroundPushCurrent()
 	return c.value.Load(), nil
 }
 
@@ -633,7 +636,7 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 //   - (nil, true) → another instance holds the lock (contention) — caller should wait for pubsub result
 //   - (nil, false) → infrastructure error (shared state unavailable) — caller should fall through to local refresh
 func (c *counterInt64) tryAcquirePollLock(ctx context.Context) (func(), bool) {
-	pollKey := c.key + "/poll"
+	pollKey := c.key + pollKeySuffix
 	// 2x lockTtl: poll RPCs may be slower than reconciliation operations,
 	// and we want the lock to survive a slow but successful poll. If the poll
 	// exceeds this TTL, the lock expires harmlessly and the unlock logs at Debug level.

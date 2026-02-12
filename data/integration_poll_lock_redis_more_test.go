@@ -112,9 +112,7 @@ func forceStale(c *counterInt64) {
 
 func metricDelta(t *testing.T, outcome string, before float64) float64 {
 	t.Helper()
-	m, err := telemetry.MetricSharedStatePollLockTotal.GetMetricWithLabelValues(outcome)
-	require.NoError(t, err)
-	return promUtil.ToFloat64(m) - before
+	return metricValue(t, outcome) - before
 }
 
 func metricValue(t *testing.T, outcome string) float64 {
@@ -190,6 +188,64 @@ func TestIntegrationPollLock_ContentionWait_GetsFresh_Redis(t *testing.T) {
 
 	assert.GreaterOrEqual(t, metricDelta(t, "acquired", beforeAcquired), 1.0)
 	assert.GreaterOrEqual(t, metricDelta(t, "contention", beforeContention), 1.0)
+}
+
+func TestIntegrationPollLock_UnchangedValue_PublishesFreshness_Redis(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := newMiniredis(t)
+	defer s.Close()
+
+	ssrA := newRedisSSR(t, ctx, s.Addr(), "test-redis-a", 2*time.Second, 1*time.Second, 2*time.Second, 2*time.Second)
+	ssrB := newRedisSSR(t, ctx, s.Addr(), "test-redis-b", 2*time.Second, 1*time.Second, 2*time.Second, 2*time.Second)
+
+	counterA := ssrA.GetCounterInt64("poll-lock-unchanged", 1024).(*counterInt64)
+	counterB := ssrB.GetCounterInt64("poll-lock-unchanged", 1024).(*counterInt64)
+
+	// Handshake.
+	counterA.TryUpdate(ctx, 1)
+	require.Eventually(t, func() bool { return counterB.GetValue() == 1 }, 2*time.Second, 10*time.Millisecond)
+
+	forceStale(counterA)
+	forceStale(counterB)
+
+	var refreshCalls atomic.Int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		refreshCalls.Add(1)
+		time.Sleep(200 * time.Millisecond)
+		return 1, nil // unchanged
+	}
+
+	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer callCancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = counterA.TryUpdateIfStale(callCtx, 5*time.Second, refreshFn)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = counterB.TryUpdateIfStale(callCtx, 5*time.Second, refreshFn)
+	}()
+	wg.Wait()
+
+	require.Equal(t, int32(1), refreshCalls.Load(), "expected exactly one refresh across instances")
+
+	// If freshness was published, both should be non-stale and subsequent callers should not re-poll.
+	staleness := 5 * time.Second
+	require.Eventually(t, func() bool {
+		return !counterA.IsStale(staleness) && !counterB.IsStale(staleness)
+	}, 2*time.Second, 10*time.Millisecond, "expected counters to become fresh via shared state propagation")
+
+	_, err := counterB.TryUpdateIfStale(callCtx, staleness, func(ctx context.Context) (int64, error) {
+		refreshCalls.Add(1)
+		return 2, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, int32(1), refreshCalls.Load(), "expected no second refresh after unchanged freshness publish")
 }
 
 func TestIntegrationPollLock_ContentionWait_Timeout_Redis(t *testing.T) {

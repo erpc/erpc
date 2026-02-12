@@ -172,7 +172,7 @@ func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duratio
 			if tryLockFailed {
 				// TryLock has been failing → lock is held by another caller (contention).
 				// Preserve ctx.Err() semantics for cancellation/timeout handling.
-				return nil, fmt.Errorf("lock contention for in-memory lock: %w", errors.Join(ErrLockContention, ctx.Err()))
+					return nil, fmt.Errorf("in-memory lock contention: %w", errors.Join(ErrLockContention, ctx.Err()))
 			}
 			// Context cancelled before we observed contention — propagate the real cause.
 			return nil, ctx.Err()
