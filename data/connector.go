@@ -2,12 +2,23 @@ package data
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
+
+// ErrLockContention indicates that a distributed lock is held by another instance.
+// Connectors should return (wrap) this error from Lock() when they can definitively
+// determine that the lock is currently held, as opposed to infrastructure failures.
+var ErrLockContention = errors.New("lock contention: held by another instance")
+
+// ErrLockExpired indicates that a lock expired before it could be released.
+// Connectors should return (wrap) this error from Unlock() when the lock TTL
+// elapsed before the unlock operation completed.
+var ErrLockExpired = errors.New("lock expired before release")
 
 const (
 	ConnectorMainIndex    = "idx_main"

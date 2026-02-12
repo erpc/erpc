@@ -161,13 +161,13 @@ func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duratio
 	// Use TryLock when available; otherwise spin with backoff respecting ctx.
 	tryInterval := 2 * time.Millisecond
 	for {
-		// TryLock was added in recent Go versions; if unavailable at compile time, this line should be replaced
 		if mutex.TryLock() {
 			return &memoryLock{mutex: mutex}, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// TryLock has been failing → lock is held by another caller (contention).
+			return nil, fmt.Errorf("lock contention for in-memory lock: %w", ErrLockContention)
 		case <-time.After(tryInterval):
 			// Back off and retry until ctx deadline
 			if tryInterval < 20*time.Millisecond {

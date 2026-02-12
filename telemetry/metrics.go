@@ -556,8 +556,9 @@ var (
 
 	// Shared state poll coordination metrics.
 	// Tracks distributed lock outcomes when instances coordinate who performs the expensive RPC poll.
-	// Outcomes: "acquired" (this instance refreshes), "contention" (another instance refreshes, skipped),
-	// "unavailable" (infra error, fell through to local refresh), "skipped_fresh" (value arrived via pubsub while waiting).
+	// Outcomes: "acquired" (this instance refreshes), "contention" (another instance is refreshing, waiting for pubsub),
+	// "unavailable" (infra error, fell through to local refresh), "skipped_fresh" (value arrived via pubsub while waiting for lock).
+	// Label "key" cardinality is bounded by (configured_networks * counter_types), typically <100 series.
 	MetricSharedStatePollLockTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "shared_state_poll_lock_total",

@@ -859,6 +859,191 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	connector.AssertExpectations(t)
 }
 
+// Test: contention path — value arrives via pubsub during wait (Gap A from review)
+func TestCounterInt64_TryUpdateIfStale_ContentionWithFreshArrival(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	// Poll lock returns ErrLockContention — another instance holds it.
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Return(nil, fmt.Errorf("lock held: %w", ErrLockContention))
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
+
+	// Simulate pubsub updating the value after a short delay (simulates the other instance
+	// completing its refresh and publishing via shared state).
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		counter.processNewState("pubsub", CounterInt64State{
+			Value:     99,
+			UpdatedAt: time.Now().UnixMilli(),
+			UpdatedBy: "other-instance",
+		})
+	}()
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 50, nil
+	}
+
+	start := time.Now()
+	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(99), val, "should return the value that arrived via pubsub")
+	assert.Equal(t, int32(0), calls, "refresh function should NOT be called during contention wait")
+	assert.Less(t, elapsed, 100*time.Millisecond, "should complete quickly once pubsub arrives")
+
+	connector.AssertExpectations(t)
+}
+
+// Test: contention path — timeout, no fresh value arrives (Gap B from review)
+func TestCounterInt64_TryUpdateIfStale_ContentionTimeout(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	// Poll lock returns ErrLockContention.
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Return(nil, fmt.Errorf("lock held: %w", ErrLockContention))
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 50, nil
+	}
+
+	start := time.Now()
+	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(5), val, "should return current (stale) value after contention timeout")
+	assert.Equal(t, int32(0), calls, "refresh function should NOT be called during contention wait")
+
+	// Should be bounded by updateMaxWait (default 50ms from setupTest)
+	assert.Less(t, elapsed, 200*time.Millisecond, "should be bounded by updateMaxWait")
+
+	// P1 fix: updatedAtUnixMs should NOT be advanced — the next caller should retry immediately.
+	assert.True(t, counter.IsStale(time.Second), "value should still be stale after contention timeout (no markFreshAttempt)")
+
+	connector.AssertExpectations(t)
+}
+
+// Test: infrastructure error fallback — Lock returns non-contention error (Gap C from review)
+func TestCounterInt64_TryUpdateIfStale_InfraErrorFallback(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	// Poll lock returns a non-contention infrastructure error.
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Return(nil, fmt.Errorf("connection refused"))
+
+	// Background push mocks for the local refresh path.
+	reconcileLock := &MockLock{}
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(reconcileLock, nil).Maybe()
+	reconcileLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+		Return(nil, common.NewErrRecordNotFound("test", "value", "mock")).Maybe()
+	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(5)
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli()) // force stale
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 42, nil
+	}
+
+	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(42), val, "should fall through to local refresh on infra error")
+	assert.Equal(t, int32(1), calls, "refresh function SHOULD be called for local fallback")
+
+	// Allow background goroutines to complete
+	time.Sleep(20 * time.Millisecond)
+	connector.AssertExpectations(t)
+}
+
+// Test: skipped_fresh — value becomes fresh after lock acquisition (Gap D from review)
+func TestCounterInt64_TryUpdateIfStale_SkippedFreshAfterLock(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	pollLock := &MockLock{}
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Run(func(args mock.Arguments) {
+			// Simulate: while waiting for the lock, a pubsub update makes the value fresh.
+			// We directly update the counter's timestamp to simulate this.
+		}).
+		Return(pollLock, nil)
+	// The lock should be unlocked since we acquired it but skip the refresh.
+	pollLock.On("Unlock", mock.Anything).Return(nil).Once()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		ignoreRollbackOf: 1024,
+	}
+	counter.value.Store(5)
+	// Set updatedAtUnixMs to just barely stale initially
+	counter.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+
+	// After the poll lock is acquired, make the value fresh before execution.
+	origLock := connector.ExpectedCalls[0]
+	_ = origLock
+	// The simplest way: set updatedAt to "now" just before TryUpdateIfStale checks post-lock staleness.
+	// We override the Lock mock to also update the counter.
+	connector.ExpectedCalls = connector.ExpectedCalls[:0] // clear
+	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+		Run(func(args mock.Arguments) {
+			// Simulate pubsub arriving while lock acquisition was in progress
+			counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
+		}).
+		Return(pollLock, nil)
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 99, nil
+	}
+
+	val, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(5), val, "should return existing value without refresh")
+	assert.Equal(t, int32(0), calls, "refresh function should NOT be called when value became fresh")
+
+	// Verify unlock was called (lock was acquired but not used for refresh)
+	time.Sleep(10 * time.Millisecond)
+	pollLock.AssertCalled(t, "Unlock", mock.Anything)
+
+	connector.AssertExpectations(t)
+}
+
 func TestCounterInt64_ReaderStarvation(t *testing.T) {
 	t.Run("GetValue NOT blocked by long-running TryUpdateIfStale", func(t *testing.T) {
 		counter := &counterInt64{

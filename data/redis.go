@@ -515,11 +515,17 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 	// but will stop early if ctx's deadline is met or ctx is cancelled.
 	if err := mutex.LockContext(ctx); err != nil {
 		common.SetTraceSpanError(span, err)
+
+		// Check for definitive contention: redsync.ErrTaken means another instance holds the lock.
+		var errTaken redsync.ErrTaken
+		if errors.As(err, &errTaken) {
+			r.logger.Debug().Err(err).Str("key", lockKey).Msg("lock held by another instance (contention)")
+			return nil, fmt.Errorf("failed to acquire lock for key '%s': %w", lockKey, ErrLockContention)
+		}
+
 		// Check if the error is due to the parent context being done
 		if ctx.Err() != nil { // Parent context was cancelled or timed out
 			r.logger.Warn().Err(err).Str("key", lockKey).Msgf("failed to acquire lock; parent context cancelled or deadline exceeded: %v", ctx.Err())
-			// Return the parent context's error, as it's the root cause for stopping.
-			// Redsync's error (err) might be a generic "context done" or more specific.
 			return nil, fmt.Errorf("failed to acquire lock for key '%s': %w", lockKey, ctx.Err())
 		}
 		// If ctx.Err() is nil, but LockContext failed, it's another redsync error (e.g. Tries exhausted before context, connection issue)
@@ -621,10 +627,13 @@ func (l *redisLock) Unlock(ctx context.Context) error {
 	ok, err := l.mutex.UnlockContext(ctx)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
+		if errors.Is(err, redsync.ErrLockAlreadyExpired) {
+			return fmt.Errorf("error releasing lock: %w", ErrLockExpired)
+		}
 		return fmt.Errorf("error releasing lock: %w", err)
 	}
 	if !ok {
-		err := errors.New("failed to release lock")
+		err := ErrLockExpired
 		common.SetTraceSpanError(span, err)
 		return err
 	}
