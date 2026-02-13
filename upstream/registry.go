@@ -391,7 +391,6 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 		networkMu := u.getNetworkMutex(networkId)
 		networkMu.Lock()
 		defer networkMu.Unlock()
-		now := time.Now()
 
 		u.upstreamsMu.RLock()
 		upsList = u.sortedUpstreams[networkId]["*"]
