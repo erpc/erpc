@@ -3,12 +3,13 @@ package data
 import (
 	"context"
 	"errors"
-	"strings"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -116,6 +117,8 @@ type counterInt64 struct {
 	// This avoids dropping updates when scheduleBackgroundPushCurrent() is called while a push is in progress.
 	bgPushRequested atomic.Bool
 }
+
+const pollKeySuffix = "/poll"
 
 func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
@@ -405,7 +408,12 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	_, mutexSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.AcquireMutex")
 	c.updateMu.Lock()
 	mutexSpan.End()
-	defer c.updateMu.Unlock()
+	muLocked := true
+	defer func() {
+		if muLocked {
+			c.updateMu.Unlock()
+		}
+	}()
 
 	// Double-check staleness after acquiring mutex
 	if !c.IsStale(staleness) {
@@ -415,18 +423,121 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	initialVal := c.value.Load()
 	span.SetAttributes(attribute.Int64("initial_value", initialVal))
-	// IMPORTANT: Foreground path MUST be local-only and bounded by updateMaxWait.
-	// Do NOT acquire distributed locks or do any remote I/O here, otherwise degraded shared state
-	// (e.g. Redis lock acquisition) can block normal request flow.
-	span.SetAttributes(attribute.Bool("foreground_remote_io_disabled", true))
 
-	// Execute the refresh function (e.g., RPC call to get latest block) in background
+	// Try distributed poll lock to coordinate refresh across instances.
+	// Only one instance per variable should execute the expensive RPC call;
+	// others receive the result via shared state pubsub.
+	// Lock acquisition is bounded by the lesser of lockMaxWait and the caller's
+	// remaining context deadline. Primarily called from background polling goroutines,
+	// but can also be reached from request-handler paths
+	// (e.g., EvmAssertBlockAvailability with forceFreshIfStale=true).
+	lockTimeout := c.registry.lockMaxWait
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 0 && remaining < lockTimeout {
+			lockTimeout = remaining
+		}
+	}
+	lockCtx, lockCancel := context.WithTimeout(ctx, lockTimeout)
+	unlock, isContention := c.tryAcquirePollLock(lockCtx)
+	lockCancel()
+
+	if unlock == nil {
+		if isContention {
+			// Another instance is refreshing — release local mutex and wait briefly
+			// for the pubsub update rather than returning stale immediately.
+			// This matters on request-handler paths (forceFreshIfStale) where stale
+			// values cause wrong availability decisions.
+			// If no fresh value arrives within updateMaxWait, the current (potentially stale)
+			// value is returned without advancing the staleness timestamp, allowing
+			// immediate retry by the next caller.
+			c.updateMu.Unlock()
+			muLocked = false
+			span.SetAttributes(attribute.String("poll_lock", "contention"))
+			telemetry.MetricSharedStatePollLockTotal.WithLabelValues("contention").Inc()
+
+			waitTimer := time.NewTimer(c.registry.updateMaxWait)
+			defer waitTimer.Stop()
+			ticker := time.NewTicker(5 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					// Caller's context cancelled — return current value without advancing timestamp.
+					span.SetAttributes(attribute.String("contention_exit", "context_cancelled"))
+					return c.value.Load(), ctx.Err()
+				case <-waitTimer.C:
+					// Timed out waiting for pubsub update — return current value (may still be stale).
+					// Do NOT call markFreshAttempt(): we didn't actually refresh, so we should not
+					// advance updatedAtUnixMs. This allows the next caller to retry immediately
+					// and avoids suppressing pubsub updates that arrive slightly late.
+					span.SetAttributes(attribute.Bool("contention_got_fresh", false))
+					telemetry.MetricSharedStatePollLockTotal.WithLabelValues("contention_timeout").Inc()
+					c.registry.logger.Warn().
+						Str("key", c.key).
+						Dur("updateMaxWait", c.registry.updateMaxWait).
+						Msg("contention wait timed out, returning potentially stale value")
+					return c.value.Load(), nil
+				case <-ticker.C:
+					if !c.IsStale(staleness) {
+						span.SetAttributes(attribute.Bool("contention_got_fresh", true))
+						return c.value.Load(), nil
+					}
+				}
+			}
+		}
+		// Infrastructure error — fall through to local refresh (graceful degradation).
+		span.SetAttributes(attribute.String("poll_lock", "unavailable"))
+		telemetry.MetricSharedStatePollLockTotal.WithLabelValues("unavailable").Inc()
+	} else {
+		// Re-check staleness after acquiring distributed lock (third check: pre-mutex, post-mutex,
+		// post-lock) — pubsub update may have arrived while waiting for the lock.
+		if !c.IsStale(staleness) {
+			span.SetAttributes(attribute.String("poll_lock", "skipped_fresh"))
+			telemetry.MetricSharedStatePollLockTotal.WithLabelValues("skipped_fresh").Inc()
+			// Avoid synchronous remote unlock while holding updateMu.
+			c.updateMu.Unlock()
+			muLocked = false
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						c.registry.logger.Error().
+							Str("key", c.key+pollKeySuffix).
+							Interface("panic", r).
+							Msg("panic during poll lock unlock")
+					}
+				}()
+				unlock()
+			}()
+			return c.value.Load(), nil
+		}
+		span.SetAttributes(attribute.String("poll_lock", "acquired"))
+		telemetry.MetricSharedStatePollLockTotal.WithLabelValues("acquired").Inc()
+	}
+
+	// Execute the refresh function (e.g., RPC call to get latest block) in background.
+	// The poll lock (if acquired) is held until the RPC completes, preventing other
+	// instances from redundantly polling the same upstream.
+	// Pass unlock function to the goroutine so it can release the poll lock after the RPC completes.
+	unlockFn := unlock
 	resultCh := make(chan refreshResult, 1)
 	go func() {
+		if unlockFn != nil {
+			defer unlockFn()
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				c.registry.logger.Error().
+					Str("key", c.key).
+					Interface("panic", r).
+					Msg("panic during refresh execution")
+				resultCh <- refreshResult{err: fmt.Errorf("panic in refresh: %v", r)}
+			}
+		}()
+
 		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
 		defer fnCancel()
 
-		// Create a span for the actual RPC/refresh call - this is usually what takes time
 		_, fnSpan := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale.ExecuteRefresh",
 			trace.WithAttributes(
 				attribute.String("key", c.key),
@@ -446,7 +557,6 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	timer := time.NewTimer(c.registry.updateMaxWait)
 	defer timer.Stop()
-	span.SetAttributes(attribute.String("role", "local"))
 
 	select {
 	case r := <-resultCh:
@@ -454,8 +564,6 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			attribute.String("result_path", "got_result"),
 			attribute.Bool("async_refresh", false),
 		)
-		// Always behave like "follower" in the synchronous path: local update only,
-		// remote reconciliation/push happens asynchronously via scheduleBackgroundPushCurrent().
 		return c.applyRefreshResult(initialVal, r)
 	case <-timer.C:
 		span.SetAttributes(
@@ -494,10 +602,10 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 		c.markFreshAttempt()
 		return initialVal, r.err
 	}
-	updated := c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
-	if updated {
-		c.scheduleBackgroundPushCurrent()
-	}
+	_ = c.processNewValue(UpdateSourceTryUpdateIfStale, r.val)
+	// Always publish freshness on successful refresh, even if the value is unchanged.
+	// This is required for cross-instance contention waiters to observe a non-stale update.
+	c.scheduleBackgroundPushCurrent()
 	return c.value.Load(), nil
 }
 
@@ -517,8 +625,7 @@ func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult) {
 func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 	lock, err := c.registry.connector.Lock(ctx, c.key, c.registry.lockTtl)
 	if err != nil {
-		// Log differently based on error type
-		if strings.Contains(err.Error(), "lock already taken") {
+		if errors.Is(err, ErrLockContention) {
 			c.registry.logger.Debug().Err(err).Str("key", c.key).Msg("lock held by another instance, proceeding with local lock")
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("lock acquisition timed out waiting for other instance")
@@ -532,8 +639,7 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 			unlockCtx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.lockTtl)
 			defer cancel()
 			if err := lock.Unlock(unlockCtx); err != nil {
-				// "lock was already expired" is expected when operations take longer than anticipated
-				if strings.Contains(err.Error(), "lock was already expired") {
+				if errors.Is(err, ErrLockExpired) {
 					c.registry.logger.Debug().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).Msg("lock expired during operations (expected behavior)")
 				} else {
 					c.registry.logger.Debug().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).Msg("failed to unlock counter, so it will be expired after ttl")
@@ -544,6 +650,63 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 		}
 	}
 	return nil
+}
+
+// tryAcquirePollLock attempts to acquire a distributed lock for poll coordination.
+// Uses a separate key ("/poll" suffix) from the reconciliation lock to avoid contention.
+// Returns (unlockFn, isContention):
+//   - (fn, false) → lock acquired, caller must call fn() to release
+//   - (nil, true) → another instance holds the lock (contention) — caller should wait for pubsub result
+//   - (nil, false) → infrastructure error, unexpected nil lock, or ambiguous timeout — caller should fall through to local refresh
+func (c *counterInt64) tryAcquirePollLock(ctx context.Context) (func(), bool) {
+	pollKey := c.key + pollKeySuffix
+	// 2x lockTtl: poll RPCs may be slower than reconciliation operations,
+	// and we want the lock to survive a slow but successful poll. If the poll
+	// exceeds this TTL, the lock expires harmlessly and the unlock logs at Debug level.
+	pollTTL := 2 * c.registry.lockTtl
+
+	lock, err := c.registry.connector.Lock(ctx, pollKey, pollTTL)
+	if err != nil {
+		// ErrLockContention is a definitive signal that another instance holds the lock.
+		// Connector implementations return this sentinel for contention cases
+		// (e.g., Redis ErrTaken, DynamoDB ConditionalCheckFailed, Memory TryLock timeout).
+		// Note: gRPC connector does not support locking.
+		if errors.Is(err, ErrLockContention) {
+			c.registry.logger.Debug().Err(err).Str("key", pollKey).Msg("poll lock held by another instance, waiting for pubsub")
+			return nil, true
+		}
+		// DeadlineExceeded is ambiguous: could be slow/down infrastructure OR contention
+		// where the context expired before the connector could return ErrLockContention.
+		// For Redis, LockContext may return DeadlineExceeded between retries without
+		// ErrTaken, so genuine contention can be missed here.
+		// Fall through to local refresh for graceful degradation — this ensures forward
+		// progress when the shared state backend is genuinely unavailable.
+		if errors.Is(err, context.DeadlineExceeded) {
+			c.registry.logger.Warn().Err(err).Str("key", pollKey).Msg("poll lock timed out (ambiguous), falling through to local refresh")
+			telemetry.MetricSharedStatePollLockTotal.WithLabelValues("ambiguous_timeout").Inc()
+		} else {
+			c.registry.logger.Warn().Err(err).Str("key", pollKey).Msg("poll lock unavailable (infrastructure error), falling through to local refresh")
+		}
+		return nil, false
+	}
+	if lock == nil || lock.IsNil() {
+		c.registry.logger.Warn().Str("key", pollKey).Msg("connector returned nil lock without error, falling through to local refresh")
+		return nil, false
+	}
+
+	c.registry.logger.Debug().Str("key", pollKey).Msg("acquired poll lock for refresh coordination")
+	return func() {
+		// Unlock timeout uses base lockTtl (not pollTTL).
+		unlockCtx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.lockTtl)
+		defer cancel()
+		if err := lock.Unlock(unlockCtx); err != nil {
+			if errors.Is(err, ErrLockExpired) {
+				c.registry.logger.Debug().Err(err).Str("key", pollKey).Msg("poll lock expired during refresh (expected for slow RPCs)")
+			} else {
+				c.registry.logger.Warn().Err(err).Str("key", pollKey).Msg("failed to unlock poll lock, will be held until TTL expiry")
+			}
+		}
+	}, false
 }
 
 func (c *counterInt64) localState() CounterInt64State {
@@ -645,7 +808,10 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 			// Best-effort fast propagation (no distributed lock): publish the latest state so
 			// other instances can update their local counters quickly via WatchCounterInt64.
 			pubCtx, pubCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockMaxWait)
-			_ = c.registry.connector.PublishCounterInt64(pubCtx, c.key, local)
+			if err := c.registry.connector.PublishCounterInt64(pubCtx, c.key, local); err != nil {
+				c.registry.logger.Debug().Err(err).Str("key", c.key).
+					Msg("best-effort pubsub publish failed, relying on reconciliation")
+			}
 			pubCancel()
 
 			// Acquire distributed lock with a bounded wait budget.

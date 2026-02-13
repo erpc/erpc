@@ -201,7 +201,7 @@ func TestPostgreSQLDistributedLocking(t *testing.T) {
 		lock2, err := connector.Lock(ctx, lockKey, 5*time.Second)
 		require.Error(t, err, "lock2: should fail to acquire lock as it is already held")
 		require.Nil(t, lock2, "lock2: should be nil as acquisition failed")
-		require.Contains(t, err.Error(), "already locked", "error message should indicate lock is already held")
+		require.ErrorIs(t, err, ErrLockContention, "error should be ErrLockContention when lock is already held")
 
 		// Goroutine 1 releases the lock
 		err = lock1.Unlock(ctx)

@@ -62,6 +62,9 @@ func init() {
 }
 
 func TestConsensusPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping consensus integration test with background goroutines in short mode")
+	}
 	tests := []consensusTestCase{
 		{
 			name:        "only_block_head_leader_dispute_leader_error_returns_leader_error",

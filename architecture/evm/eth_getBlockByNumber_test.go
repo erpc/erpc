@@ -70,6 +70,10 @@ func (t *testNetwork) GetFinality(ctx context.Context, req *common.NormalizedReq
 	return common.DataFinalityStateFinalized
 }
 
+func (t *testNetwork) Cache() common.CacheDAL {
+	return nil
+}
+
 func TestAllPhantomTransactions(t *testing.T) {
 	t.Run("EmptySlice", func(t *testing.T) {
 		assert.True(t, allPhantomTransactions(nil))

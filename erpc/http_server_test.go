@@ -36,6 +36,9 @@ import (
 )
 
 func TestHttpServer_RaceTimeouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	t.Run("ConcurrentRequestsWithTimeouts", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -477,6 +480,9 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 }
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1241,6 +1247,9 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 }
 func TestHttpServer_SingleUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -2599,6 +2608,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	// })
 }
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -3078,6 +3090,9 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	})
 }
 func TestHttpServer_IntegrationTests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	t.Run("SuccessRequestWithNoParams", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -4489,6 +4504,9 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 }
 
 func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with external provider calls in short mode")
+	}
 	t.Run("SimpleCallExistingNetwork", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -5055,6 +5073,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 }
 
 func TestHttpServer_EvmGetLogs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -5493,6 +5514,9 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 }
 
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 

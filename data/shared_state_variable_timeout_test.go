@@ -82,6 +82,11 @@ func TestTryUpdateIfStale_UpdateFnBudgetExceeded(t *testing.T) {
 	// publish can happen multiple times (best-effort publish + publish-after-Set)
 	c.On("PublishCounterInt64", mock.Anything, "test/stale", mock.Anything).Return(nil).Maybe()
 
+	// Poll lock for refresh coordination
+	pollLock := &MockLock{}
+	c.On("Lock", mock.Anything, "test/stale/poll", mock.Anything).Return(pollLock, nil)
+	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+
 	ctr := &counterInt64{registry: r, key: "test/stale", ignoreRollbackOf: 1024}
 	ctr.value.Store(1)
 
@@ -178,6 +183,11 @@ func TestTryUpdateIfStale_SlowFn_BackgroundPush(t *testing.T) {
 	c.On("Set", mock.Anything, "test/slow", "value", mock.Anything, mock.Anything).Return(nil).Once()
 	// publish can happen multiple times (best-effort publish + publish-after-Set)
 	c.On("PublishCounterInt64", mock.Anything, "test/slow", mock.Anything).Return(nil).Maybe()
+
+	// Poll lock for refresh coordination
+	pollLock := &MockLock{}
+	c.On("Lock", mock.Anything, "test/slow/poll", mock.Anything).Return(pollLock, nil)
+	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
 
 	ctr := &counterInt64{registry: r, key: "test/slow", ignoreRollbackOf: 1024}
 	ctr.value.Store(1)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -593,11 +594,20 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 	// The 'ttl' parameter defines how long the lock will be held if acquired.
 	// The overall acquisition timeout is governed by the parent 'ctx'.
 
+	// Track whether the most recent failure was due to contention (lock held by another caller)
+	// vs infrastructure errors. Used to return the correct sentinel error on context timeout.
+	lastFailWasContention := false
+
 	for {
 		// Check if the parent context is already done (e.g., request cancelled or timed out)
 		// This check is done at the beginning of each attempt and before waiting for retry.
 		select {
 		case <-ctx.Done():
+			if lastFailWasContention {
+				err := fmt.Errorf("lock acquisition timed out for key '%s' (lock held by another instance): %w", key, errors.Join(ErrLockContention, ctx.Err()))
+				common.SetTraceSpanError(span, err)
+				return nil, err
+			}
 			err := fmt.Errorf("lock acquisition cancelled or timed out for key '%s': %w", key, ctx.Err())
 			common.SetTraceSpanError(span, err)
 			return nil, err
@@ -651,6 +661,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 				d.logger.Debug().Str("lockKey", lockKey).Dur("retryInterval", d.lockRetryInterval).
 					Msg("lock currently held or contention, will retry")
 				retryableError = true
+				lastFailWasContention = true
 			case dynamodb.ErrCodeProvisionedThroughputExceededException,
 				dynamodb.ErrCodeInternalServerError,    // Often retryable for DynamoDB
 				dynamodb.ErrCodeLimitExceededException: // Covers various limits, potentially including some throttling
@@ -658,6 +669,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 					Dur("retryInterval", d.lockRetryInterval).
 					Msg("DynamoDB capacity/limit/server error during lock acquisition, will retry")
 				retryableError = true
+				lastFailWasContention = false
 			default:
 				// Non-retryable AWS error for lock acquisition logic
 				d.logger.Error().Err(aerr).Str("lockKey", lockKey).Str("errorCode", aerr.Code()).
@@ -671,6 +683,11 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 			case <-time.After(d.lockRetryInterval):
 				// Continue to the next iteration of the loop to retry
 			case <-ctx.Done(): // Parent context was cancelled/timed out while waiting
+				if lastFailWasContention {
+					wrappedErr := fmt.Errorf("lock acquisition timed out for key '%s' (lock held by another instance): %w", key, errors.Join(ErrLockContention, ctx.Err()))
+					common.SetTraceSpanError(span, wrappedErr)
+					return nil, wrappedErr
+				}
 				wrappedErr := fmt.Errorf("lock acquisition timed out while waiting to retry for key '%s': %w", key, ctx.Err())
 				common.SetTraceSpanError(span, wrappedErr)
 				return nil, wrappedErr

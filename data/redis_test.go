@@ -516,15 +516,15 @@ func TestRedisDistributedLocking(t *testing.T) {
 		require.Nil(t, lock, "lock should be nil on failure")
 		t.Logf("Lock error: %v, Type: %T, Time spent: %v", err, err, timeSpent)
 
-		// The error could be either context deadline exceeded OR lock already taken
+		// The error could be either context deadline exceeded OR ErrLockContention
 		// depending on timing. Both are valid outcomes when lock is held and we timeout.
-		isDeadlineExceeded := errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), context.DeadlineExceeded.Error())
-		isLockTaken := strings.Contains(err.Error(), "lock already taken")
-		require.True(t, isDeadlineExceeded || isLockTaken, "error should be context.DeadlineExceeded or lock already taken, got: %v", err)
+		isDeadlineExceeded := errors.Is(err, context.DeadlineExceeded)
+		isLockContention := errors.Is(err, ErrLockContention)
+		require.True(t, isDeadlineExceeded || isLockContention, "error should be context.DeadlineExceeded or ErrLockContention, got: %v", err)
 
 		// If lock acquisition fails immediately (lock taken), time spent will be very short
 		// If it waits for context timeout, time spent will be close to attemptTimeout
-		if isLockTaken && !isDeadlineExceeded {
+		if isLockContention && !isDeadlineExceeded {
 			// Failed immediately, should be very fast
 			require.Less(t, timeSpent, 100*time.Millisecond, "immediate failure should be fast")
 		} else if isDeadlineExceeded {

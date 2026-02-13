@@ -54,13 +54,12 @@ func (m *MockConnector) List(ctx context.Context, index string, limit int, pagin
 	return args.Get(0).([]KeyValuePair), args.String(1), args.Error(2)
 }
 
-// Lock mocks the Lock method of the Connector interface
+// Lock mocks the Lock method of the Connector interface.
+// Tests must explicitly stub Lock expectations (use .Maybe() for best-effort paths).
 func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
 	args := m.Called(ctx, key, ttl)
-	var a0 DistributedLock = nil
-	a0, _ = args.Get(0).(DistributedLock)
-	a1 := args.Error(1)
-	return a0, a1
+	lock, _ := args.Get(0).(DistributedLock)
+	return lock, args.Error(1)
 }
 
 // WatchCounterInt64 mocks the WatchCounterInt64 method of the Connector interface
@@ -73,7 +72,8 @@ func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-ch
 	return a0, a1, a2
 }
 
-// PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface
+// PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface.
+// Tests must explicitly stub expectations (use .Maybe() for best-effort paths).
 func (m *MockConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
 	args := m.Called(ctx, key, value)
 	return args.Error(0)

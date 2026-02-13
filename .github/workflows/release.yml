@@ -13,6 +13,7 @@ on:
   push:
     branches:
       - main
+      - morpho-main
 
 permissions:
   attestations: write
@@ -121,14 +122,14 @@ jobs:
             - Generated release files
             - Generated checksums
           branch: "release/${{ github.event.inputs.version_tag }}"
-          base: main
+          base: morpho-main
           labels: release
 
   # Run on release PR merge
   release:
     if: |
       github.event_name == 'push' && 
-      github.ref == 'refs/heads/main' && 
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main') && 
       contains(github.event.head_commit.message, 'chore: release')
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     steps:
@@ -250,11 +251,13 @@ jobs:
   docker-build-amd64:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [prepare-release, release]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     timeout-minutes: 35
     outputs:
       digest_main: ${{ steps.build_main.outputs.digest }}
       digest_release: ${{ steps.build_release.outputs.digest }}
+      digest_main_validator: ${{ steps.build_main_validator.outputs.digest }}
+      digest_release_validator: ${{ steps.build_release_validator.outputs.digest }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
@@ -284,7 +287,10 @@ jobs:
         id: meta
         run: |
           REPO="${{ github.repository }}"
+          OWNER="${REPO%%/*}"
+          NAME="${REPO#*/}"
           echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+          echo "validator_repo=${OWNER@L}/${NAME@L}-validator" >> "$GITHUB_OUTPUT"
           echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Extract version (release commits only)
@@ -294,7 +300,7 @@ jobs:
           VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build+push by digest (main)
+      - name: Build+push by digest (branch)
         id: build_main
         if: github.event.inputs.version_tag == ''
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -302,7 +308,7 @@ jobs:
           context: .
           platforms: linux/amd64
           build-args: |
-            VERSION=main
+            VERSION=${{ github.ref_name }}
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
           sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
@@ -319,6 +325,34 @@ jobs:
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
           sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
+
+      - name: Build+push by digest (branch validator)
+        id: build_main_validator
+        if: github.event.inputs.version_tag == ''
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile.erpc-validator
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.validator_repo }},push-by-digest=true
+
+      - name: Build+push by digest (release validator)
+        id: build_release_validator
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile.erpc-validator
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.validator_repo }},push-by-digest=true
 
       - name: Attest build provenance (Docker Build)
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
@@ -328,14 +362,24 @@ jobs:
           subject-digest: "${{ contains(github.event.head_commit.message, 'chore: release') && steps.build_release.outputs.digest || steps.build_main.outputs.digest }}"
           push-to-registry: true
 
+      - name: Attest build provenance (Docker Build Validator)
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        if: steps.build_release_validator.outputs.digest != '' || steps.build_main_validator.outputs.digest != ''
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.validator_repo }}
+          subject-digest: "${{ contains(github.event.head_commit.message, 'chore: release') && steps.build_release_validator.outputs.digest || steps.build_main_validator.outputs.digest }}"
+          push-to-registry: true
+
   docker-build-arm64:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404-arm' || 'ubuntu-24.04-arm' }}"
     needs: [prepare-release, release]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     timeout-minutes: 35
     outputs:
       digest_main: ${{ steps.build_main.outputs.digest }}
       digest_release: ${{ steps.build_release.outputs.digest }}
+      digest_main_validator: ${{ steps.build_main_validator.outputs.digest }}
+      digest_release_validator: ${{ steps.build_release_validator.outputs.digest }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
@@ -365,7 +409,10 @@ jobs:
         id: meta
         run: |
           REPO="${{ github.repository }}"
+          OWNER="${REPO%%/*}"
+          NAME="${REPO#*/}"
           echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+          echo "validator_repo=${OWNER@L}/${NAME@L}-validator" >> "$GITHUB_OUTPUT"
           echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Extract version (release commits only)
@@ -375,7 +422,7 @@ jobs:
           VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Build+push by digest (main)
+      - name: Build+push by digest (branch)
         id: build_main
         if: github.event.inputs.version_tag == ''
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -383,7 +430,7 @@ jobs:
           context: .
           platforms: linux/arm64
           build-args: |
-            VERSION=main
+            VERSION=${{ github.ref_name }}
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
           sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
@@ -400,6 +447,34 @@ jobs:
             COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
           sbom: false # not supported on docker driver, maybe works with blacksmith?
           outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.repo }},push-by-digest=true
+
+      - name: Build+push by digest (branch validator)
+        id: build_main_validator
+        if: github.event.inputs.version_tag == ''
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile.erpc-validator
+          platforms: linux/arm64
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.validator_repo }},push-by-digest=true
+
+      - name: Build+push by digest (release validator)
+        id: build_release_validator
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile.erpc-validator
+          platforms: linux/arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT_SHA=${{ steps.meta.outputs.short_sha }}
+          sbom: false # not supported on docker driver, maybe works with blacksmith?
+          outputs: type=registry,name=ghcr.io/${{ steps.meta.outputs.validator_repo }},push-by-digest=true
       
       - name: Attest build provenance (Docker Build)
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
@@ -409,10 +484,18 @@ jobs:
           subject-digest: "${{ contains(github.event.head_commit.message, 'chore: release') && steps.build_release.outputs.digest || steps.build_main.outputs.digest }}"
           push-to-registry: true
 
+      - name: Attest build provenance (Docker Build Validator)
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        if: steps.build_release_validator.outputs.digest != '' || steps.build_main_validator.outputs.digest != ''
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.validator_repo }}
+          subject-digest: "${{ contains(github.event.head_commit.message, 'chore: release') && steps.build_release_validator.outputs.digest || steps.build_main_validator.outputs.digest }}"
+          push-to-registry: true
+
   docker-manifest:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [docker-build-amd64, docker-build-arm64]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
@@ -430,7 +513,10 @@ jobs:
         id: meta
         run: |
           REPO="${{ github.repository }}"
+          OWNER="${REPO%%/*}"
+          NAME="${REPO#*/}"
           echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+          echo "validator_repo=${OWNER@L}/${NAME@L}-validator" >> "$GITHUB_OUTPUT"
 
       - name: Extract version (release commits only)
         id: version
@@ -439,18 +525,31 @@ jobs:
           VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Create multi-arch manifest for main
+      - name: Create multi-arch manifest for branch
         id: main
         if: github.event.inputs.version_tag == ''
         run: |
           docker buildx imagetools create \
-            -t ghcr.io/${{ steps.meta.outputs.repo }}:main \
+            -t ghcr.io/${{ steps.meta.outputs.repo }}:${{ github.ref_name }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-amd64.outputs.digest_main }} \
             ghcr.io/${{ steps.meta.outputs.repo }}@${{ needs.docker-build-arm64.outputs.digest_main }}
 
-          docker pull ghcr.io/${{ steps.meta.outputs.repo }}:main
-          DIGEST_MAIN=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.repo }}:main)
+          docker pull ghcr.io/${{ steps.meta.outputs.repo }}:${{ github.ref_name }}
+          DIGEST_MAIN=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.repo }}:${{ github.ref_name }})
           echo "digest_main=${DIGEST_MAIN#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Create multi-arch validator manifest for branch
+        id: main_validator
+        if: github.event.inputs.version_tag == ''
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ steps.meta.outputs.validator_repo }}:${{ github.ref_name }} \
+            ghcr.io/${{ steps.meta.outputs.validator_repo }}@${{ needs.docker-build-amd64.outputs.digest_main_validator }} \
+            ghcr.io/${{ steps.meta.outputs.validator_repo }}@${{ needs.docker-build-arm64.outputs.digest_main_validator }}
+
+          docker pull ghcr.io/${{ steps.meta.outputs.validator_repo }}:${{ github.ref_name }}
+          DIGEST_MAIN_VALIDATOR=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.validator_repo }}:${{ github.ref_name }})
+          echo "digest_main_validator=${DIGEST_MAIN_VALIDATOR#*@}" >> "$GITHUB_OUTPUT"
 
       - name: Create multi-arch manifests for release
         id: release
@@ -473,12 +572,41 @@ jobs:
           echo "digest_release=${DIGEST_RELEASE#*@}" >> "$GITHUB_OUTPUT"
           echo "digest_latest=${DIGEST_LATEST#*@}" >> "$GITHUB_OUTPUT"
 
+      - name: Create multi-arch validator manifests for release
+        id: release_validator
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ steps.meta.outputs.validator_repo }}:${{ steps.version.outputs.VERSION }} \
+            ghcr.io/${{ steps.meta.outputs.validator_repo }}@${{ needs.docker-build-amd64.outputs.digest_release_validator }} \
+            ghcr.io/${{ steps.meta.outputs.validator_repo }}@${{ needs.docker-build-arm64.outputs.digest_release_validator }}
+
+          docker buildx imagetools create \
+            -t ghcr.io/${{ steps.meta.outputs.validator_repo }}:latest \
+            ghcr.io/${{ steps.meta.outputs.validator_repo }}@${{ needs.docker-build-amd64.outputs.digest_release_validator }} \
+            ghcr.io/${{ steps.meta.outputs.validator_repo }}@${{ needs.docker-build-arm64.outputs.digest_release_validator }}
+
+          docker pull ghcr.io/${{ steps.meta.outputs.validator_repo }}:${{ steps.version.outputs.VERSION }}
+          DIGEST_RELEASE_VALIDATOR=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.validator_repo }}:${{ steps.version.outputs.VERSION }})
+          docker pull ghcr.io/${{ steps.meta.outputs.validator_repo }}:latest
+          DIGEST_LATEST_VALIDATOR=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/${{ steps.meta.outputs.validator_repo }}:latest)
+          echo "digest_release_validator=${DIGEST_RELEASE_VALIDATOR#*@}" >> "$GITHUB_OUTPUT"
+          echo "digest_latest_validator=${DIGEST_LATEST_VALIDATOR#*@}" >> "$GITHUB_OUTPUT"
+
       - name: Attest build provenance (Docker Manifest Main)
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         if: github.event.inputs.version_tag == ''
         with:
           subject-name: ghcr.io/${{ steps.meta.outputs.repo }}
           subject-digest: "${{ steps.main.outputs.digest_main }}"
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Manifest Main Validator)
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        if: github.event.inputs.version_tag == ''
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.validator_repo }}
+          subject-digest: "${{ steps.main_validator.outputs.digest_main_validator }}"
           push-to-registry: true
 
       - name: Attest build provenance (Docker Manifest Release)
@@ -497,12 +625,28 @@ jobs:
           subject-digest: "${{ steps.release.outputs.digest_latest }}"
           push-to-registry: true
 
+      - name: Attest build provenance (Docker Manifest Release Validator)
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.validator_repo }}
+          subject-digest: "${{ steps.release_validator.outputs.digest_release_validator }}"
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Manifest Latest Validator)
+        if: "contains(github.event.head_commit.message, 'chore: release')"
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-name: ghcr.io/${{ steps.meta.outputs.validator_repo }}
+          subject-digest: "${{ steps.release_validator.outputs.digest_latest_validator }}"
+          push-to-registry: true
+
   # Cleanup sha256-* tags that are created when pushing by digest.
   # We keep only meaningful tags like "main", "latest" and semver releases.
   docker-cleanup-sha256-tags:
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [docker-manifest]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/morpho-main')
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
@@ -518,6 +662,7 @@ jobs:
           OWNER="${REPO%%/*}"
           NAME="${REPO#*/}"
           PACKAGE="${NAME,,}" # lower-case
+          VALIDATOR_PACKAGE="${PACKAGE}-validator"
 
           if [[ "${{ github.repository_owner }}" == "erpc" ]]; then
             SCOPE_PATH="orgs/$OWNER"
@@ -525,18 +670,24 @@ jobs:
             SCOPE_PATH="users/$OWNER"
           fi
 
-          echo "Scanning GHCR package '$PACKAGE' under $SCOPE_PATH for sha256-only versions to delete..."
+          cleanup_sha256_tags() {
+            local pkg="$1"
+            echo "Scanning GHCR package '$pkg' under $SCOPE_PATH for sha256-only versions to delete..."
 
-          gh api --paginate "/$SCOPE_PATH/packages/container/$PACKAGE/versions?per_page=100" \
-            -H "Accept: application/vnd.github+json" \
-          | jq -r '
-              .[] 
-              | select(.metadata.container.tags | length == 1)
-              | select((.metadata.container.tags | map(startswith("sha256-")) | all))
-              | .id
-            ' \
-          | while read -r VERSION_ID; do
-              echo "Deleting version ${VERSION_ID} (sha256-only tags)..."
-              gh api --method DELETE "/$SCOPE_PATH/packages/container/$PACKAGE/versions/${VERSION_ID}" \
-                -H "Accept: application/vnd.github+json" || true
-            done
+            gh api --paginate "/$SCOPE_PATH/packages/container/$pkg/versions?per_page=100" \
+              -H "Accept: application/vnd.github+json" \
+            | jq -r '
+                .[] 
+                | select(.metadata.container.tags | length == 1)
+                | select((.metadata.container.tags | map(startswith("sha256-")) | all))
+                | .id
+              ' \
+            | while read -r VERSION_ID; do
+                echo "Deleting $pkg version ${VERSION_ID} (sha256-only tags)..."
+                gh api --method DELETE "/$SCOPE_PATH/packages/container/$pkg/versions/${VERSION_ID}" \
+                  -H "Accept: application/vnd.github+json" || true
+              done
+          }
+
+          cleanup_sha256_tags "$PACKAGE"
+          cleanup_sha256_tags "$VALIDATOR_PACKAGE"

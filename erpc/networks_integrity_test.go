@@ -1054,6 +1054,9 @@ func TestNetworkIntegrity_EthGetBlockReceipts_ContractCreationWithAddress_NoErro
 
 // Test: Retry policy retries to next upstream when first returns invalid bloom data
 func TestNetworkIntegrity_Retry_ValidationError_FallbackToGoodUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1115,6 +1118,9 @@ func TestNetworkIntegrity_Retry_ValidationError_FallbackToGoodUpstream(t *testin
 
 // Test: All upstreams return invalid data - should fail with exhausted error
 func TestNetworkIntegrity_Retry_AllUpstreamsInvalid_ExhaustedError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1169,6 +1175,9 @@ func TestNetworkIntegrity_Retry_AllUpstreamsInvalid_ExhaustedError(t *testing.T)
 
 // Test: ReceiptsCountExact mismatch triggers retry to upstream with correct count
 func TestNetworkIntegrity_Retry_ReceiptsCountMismatch_FallbackToCorrectUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1221,6 +1230,9 @@ func TestNetworkIntegrity_Retry_ReceiptsCountMismatch_FallbackToCorrectUpstream(
 
 // Test: LogIndex strict increment violation triggers retry
 func TestNetworkIntegrity_Retry_LogIndexViolation_FallbackToValidUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1270,6 +1282,9 @@ func TestNetworkIntegrity_Retry_LogIndexViolation_FallbackToValidUpstream(t *tes
 
 // Test: Logs exist but bloom is zero - triggers retry to upstream with consistent data
 func TestNetworkIntegrity_Retry_LogsWithZeroBloom_FallbackToConsistentUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1319,6 +1334,9 @@ func TestNetworkIntegrity_Retry_LogsWithZeroBloom_FallbackToConsistentUpstream(t
 
 // Test: Multiple validation errors across upstreams - eventually finds valid one
 func TestNetworkIntegrity_Retry_MultipleValidationTypes_EventuallySucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1384,6 +1402,9 @@ func TestNetworkIntegrity_Retry_MultipleValidationTypes_EventuallySucceeds(t *te
 
 // Test: Validation disabled - accepts invalid data without retry
 func TestNetworkIntegrity_ValidationDisabled_AcceptsInvalidData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1444,6 +1465,9 @@ func TestNetworkIntegrity_ValidationDisabled_AcceptsInvalidData(t *testing.T) {
 
 // Test: Hedge spawns multiple requests, validation fails on some, consensus picks valid one
 func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1526,6 +1550,9 @@ func TestNetworkIntegrity_HedgeConsensus_ValidationFiltersInvalidUpstreams(t *te
 
 // Test: All hedged requests return invalid data, retry kicks in and eventually finds valid
 func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1593,6 +1620,9 @@ func TestNetworkIntegrity_HedgeRetry_AllHedgesInvalid_RetryFindsValid(t *testing
 
 // Test: Consensus with different validation errors - should pick the valid one
 func TestNetworkIntegrity_Consensus_DifferentValidationErrors_PicksValid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1670,6 +1700,9 @@ func TestNetworkIntegrity_Consensus_DifferentValidationErrors_PicksValid(t *test
 
 // Test: ReceiptsCountExact with consensus - only valid counts should participate
 func TestNetworkIntegrity_Consensus_ReceiptsCountExact_OnlyValidParticipate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1739,6 +1772,9 @@ func TestNetworkIntegrity_Consensus_ReceiptsCountExact_OnlyValidParticipate(t *t
 
 // Test: Production-like config with all policies combined
 func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegrity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1841,6 +1877,9 @@ func TestNetworkIntegrity_ProductionConfig_HedgeConsensusRetry_ValidationIntegri
 
 // Test: PreferLargerResponses should NOT pick a larger but invalid response
 func TestNetworkIntegrity_Consensus_PreferLargerResponses_ValidationFiltersLargerInvalid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -1923,6 +1962,9 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_ValidationFiltersLarge
 
 // Test: PreferLargerResponses picks largest VALID response when multiple valid exist
 func TestNetworkIntegrity_Consensus_PreferLargerResponses_PicksLargestValid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -2005,6 +2047,9 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_PicksLargestValid(t *t
 
 // Test: PreferLargerResponses with validation - all larger responses invalid, falls back to smaller valid
 func TestNetworkIntegrity_Consensus_PreferLargerResponses_AllLargerInvalid_FallsBackToSmaller(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 
@@ -2094,6 +2139,9 @@ func TestNetworkIntegrity_Consensus_PreferLargerResponses_AllLargerInvalid_Falls
 
 // Test: Hedge + PreferLargerResponses + Validation combo
 func TestNetworkIntegrity_HedgeConsensus_PreferLargerResponses_ValidationIntegrity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test with background goroutines in short mode")
+	}
 	util.ResetGock()
 	defer util.ResetGock()
 

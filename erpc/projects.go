@@ -137,6 +137,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 					cloneResp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrc)
 					cloneResp.SetUpstream(resp.Upstream())
 					cloneResp.SetFromCache(resp.FromCache())
+					cloneResp.SetCacheStoredAtUnix(resp.CacheStoredAtUnix())
 					cloneResp.SetAttempts(resp.Attempts())
 					cloneResp.SetRetries(resp.Retries())
 					cloneResp.SetHedges(resp.Hedges())
