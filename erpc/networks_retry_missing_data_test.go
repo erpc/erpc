@@ -158,9 +158,12 @@ func TestNetworkRetry_MissingDataError(t *testing.T) {
 		totalCalls := rpc1CallCount + rpc2CallCount
 		t.Logf("Total upstream calls: %d (rpc1: %d, rpc2: %d)", totalCalls, rpc1CallCount, rpc2CallCount)
 
-		assert.Equal(t, 2, totalCalls, "Both upstreams should be tried")
-		assert.Equal(t, 1, rpc1CallCount, "rpc1 should be called once")
-		assert.Equal(t, 1, rpc2CallCount, "rpc2 should be called once")
+		// "missing trie node" with a specific block number is reclassified as ErrUpstreamBlockUnavailable
+		// which is retryable toward both the upstream and the network, so network-level retry
+		// kicks in and both upstreams may be tried more than once.
+		assert.GreaterOrEqual(t, totalCalls, 2, "At least both upstreams should be tried")
+		assert.GreaterOrEqual(t, rpc1CallCount, 1, "rpc1 should be called at least once")
+		assert.GreaterOrEqual(t, rpc2CallCount, 1, "rpc2 should be called at least once")
 	})
 }
 

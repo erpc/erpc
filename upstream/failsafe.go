@@ -402,13 +402,29 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
-	// When emptyResultDelay is configured, override the delay for empty result retries.
-	// Returning -1 tells failsafe-go to fall back to the normally configured delay/backoff for non-empty retries.
+	// When emptyResultDelay or blockUnavailableDelay is configured, override the delay for those
+	// specific retry scenarios. Returning -1 tells failsafe-go to fall back to the normally
+	// configured delay/backoff for other retries.
+	var emptyResultDelayDuration, blockUnavailableDelayDuration time.Duration
 	if cfg.EmptyResultDelay > 0 {
-		emptyResultDelayDuration := cfg.EmptyResultDelay.Duration()
+		emptyResultDelayDuration = cfg.EmptyResultDelay.Duration()
+	}
+	if cfg.BlockUnavailableDelay > 0 {
+		blockUnavailableDelayDuration = cfg.BlockUnavailableDelay.Duration()
+	}
+	if emptyResultDelayDuration > 0 || blockUnavailableDelayDuration > 0 {
 		builder = builder.WithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
-			if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
-				return emptyResultDelayDuration
+			// Block-unavailable: all upstreams don't have the block yet, wait for propagation
+			if blockUnavailableDelayDuration > 0 {
+				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+					return blockUnavailableDelayDuration
+				}
+			}
+			// Empty result: custom delay for empty responses
+			if emptyResultDelayDuration > 0 {
+				if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
+					return emptyResultDelayDuration
+				}
 			}
 			return -1
 		})
