@@ -941,10 +941,10 @@ func TestUpstreamsRegistry_ZeroLatencyHandling(t *testing.T) {
 	assert.Len(t, sortedUpstreams, 3)
 
 	// Verify scores: working upstream should have higher score than failing one
-	registry.upstreamsMu.RLock()
-	workingScore := registry.upstreamScores["rpc1"][networkID][method]
-	failingScore := registry.upstreamScores["rpc2"][networkID][method]
-	registry.upstreamsMu.RUnlock()
+	workingScore, ok := getUpstreamScore(registry, "rpc1", networkID, method)
+	assert.True(t, ok)
+	failingScore, ok := getUpstreamScore(registry, "rpc2", networkID, method)
+	assert.True(t, ok)
 
 	assert.Greater(t, workingScore, failingScore, "Working upstream should have higher score than failing upstream")
 
@@ -1208,17 +1208,15 @@ func TestUpstreamsRegistry_EMAFromZero_IncreasesOnSecondRefresh(t *testing.T) {
 	// First refresh → first smoothed score with prev==0
 	err := registry.RefreshUpstreamNetworkMethodScores()
 	assert.NoError(t, err)
-	registry.upstreamsMu.RLock()
-	s1 := registry.upstreamScores[faster.Id()][networkID][method]
-	registry.upstreamsMu.RUnlock()
+	s1, ok := getUpstreamScore(registry, faster.Id(), networkID, method)
+	assert.True(t, ok)
 	assert.Greater(t, s1, 0.0, "first score should be > 0 for faster upstream")
 
 	// Second refresh (same metrics) → EMA should increase compared to first
 	err = registry.RefreshUpstreamNetworkMethodScores()
 	assert.NoError(t, err)
-	registry.upstreamsMu.RLock()
-	s2 := registry.upstreamScores[faster.Id()][networkID][method]
-	registry.upstreamsMu.RUnlock()
+	s2, ok := getUpstreamScore(registry, faster.Id(), networkID, method)
+	assert.True(t, ok)
 	assert.Greater(t, s2, s1, "EMA should increase on the second refresh with identical metrics (prev==0 applied)")
 }
 
@@ -1341,6 +1339,11 @@ func simulateFailedRequests(tracker *health.Tracker, upstream common.Upstream, m
 func getSortedUpstreamsEventually(ctx context.Context, registry *UpstreamsRegistry, networkID, method string, timeout time.Duration) ([]common.Upstream, error) {
 	deadline := time.Now().Add(timeout)
 	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		ups, err := registry.GetSortedUpstreams(ctx, networkID, method)
 		if err == nil {
 			return ups, nil
@@ -1352,16 +1355,57 @@ func getSortedUpstreamsEventually(ctx context.Context, registry *UpstreamsRegist
 	}
 }
 
+func getUpstreamScore(registry *UpstreamsRegistry, upstreamID, networkID, method string) (float64, bool) {
+	registry.RLockUpstreams()
+	defer registry.RUnlockUpstreams()
+	networkScores, ok := registry.upstreamScores[upstreamID]
+	if !ok {
+		return 0, false
+	}
+	methodScores, ok := networkScores[networkID]
+	if !ok {
+		return 0, false
+	}
+	score, ok := methodScores[method]
+	return score, ok
+}
+
+func hasUpstreamScore(registry *UpstreamsRegistry, upstreamID, networkID, method string) bool {
+	_, ok := getUpstreamScore(registry, upstreamID, networkID, method)
+	return ok
+}
+
+func snapshotUpstreamScores(registry *UpstreamsRegistry) map[string]map[string]map[string]float64 {
+	registry.RLockUpstreams()
+	defer registry.RUnlockUpstreams()
+	snapshot := make(map[string]map[string]map[string]float64, len(registry.upstreamScores))
+	for upsID, networkScores := range registry.upstreamScores {
+		nwSnapshot := make(map[string]map[string]float64, len(networkScores))
+		for networkID, methodScores := range networkScores {
+			methodSnapshot := make(map[string]float64, len(methodScores))
+			for method, score := range methodScores {
+				methodSnapshot[method] = score
+			}
+			nwSnapshot[networkID] = methodSnapshot
+		}
+		snapshot[upsID] = nwSnapshot
+	}
+	return snapshot
+}
+
 func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkID, method string, expectedOrder []string) {
 	registry.RefreshUpstreamNetworkMethodScores()
-	scores := registry.upstreamScores
 
 	for i, ups := range expectedOrder {
 		if i+1 < len(expectedOrder) {
+			score, ok := getUpstreamScore(registry, ups, networkID, method)
+			assert.True(t, ok)
+			nextScore, ok := getUpstreamScore(registry, expectedOrder[i+1], networkID, method)
+			assert.True(t, ok)
 			assert.Greater(
 				t,
-				scores[ups][networkID][method],
-				scores[expectedOrder[i+1]][networkID][method],
+				score,
+				nextScore,
 				"Upstream %s should have a higher score than %s",
 				ups,
 				expectedOrder[i+1],
@@ -1408,7 +1452,7 @@ func TestUpstreamsRegistry_RefreshPrunesStaleMethodCaches(t *testing.T) {
 	assert.Contains(t, registry.sortedUpstreams[defaultNetworkMethod], methodActive)
 	assert.Contains(t, registry.sortedUpstreams[defaultNetworkMethod], methodEvicted)
 	registry.RUnlockUpstreams()
-	assert.NotNil(t, registry.upstreamScores["rpc1"][networkID][methodEvicted])
+	assert.True(t, hasUpstreamScore(registry, "rpc1", networkID, methodEvicted))
 
 	// Mark the evicted method as stale and keep the active method warm.
 	staleUsage := time.Now().Add(-2 * sortedMethodUsageTTL)
@@ -1444,11 +1488,10 @@ func TestUpstreamsRegistry_RefreshPrunesStaleMethodCaches(t *testing.T) {
 	assert.False(t, evictedInWildcard)
 
 	// stale method scores should be removed for both wildcard and per-network scopes
-	if _, ok := registry.upstreamScores["rpc1"][networkID][methodEvicted]; ok {
+	if hasUpstreamScore(registry, "rpc1", networkID, methodEvicted) {
 		t.Fatalf("stale network-scoped method score should be pruned")
 	}
-	_, wildcardPruned := registry.upstreamScores["rpc1"][defaultNetworkMethod][methodEvicted]
-	assert.False(t, wildcardPruned, "stale wildcard-scoped method score should be pruned")
+	assert.False(t, hasUpstreamScore(registry, "rpc1", defaultNetworkMethod, methodEvicted), "stale wildcard-scoped method score should be pruned")
 }
 
 func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
@@ -1520,6 +1563,72 @@ func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
 	assert.True(t, newestKept, "most recently used method should remain under cap")
 	assert.False(t, oldestWildcardPruned, "oldest wildcard method should be pruned by LRU overflow policy")
 	assert.True(t, newestWildcardKept, "most recently used wildcard method should remain under cap")
+
+	for _, upstreamID := range []string{"rpc1", "rpc2", "rpc3"} {
+		assert.False(t, hasUpstreamScore(registry, upstreamID, networkID, methods[0]))
+		assert.False(t, hasUpstreamScore(registry, upstreamID, defaultNetworkMethod, methods[0]))
+		assert.True(t, hasUpstreamScore(registry, upstreamID, networkID, methods[len(methods)-1]))
+		assert.True(t, hasUpstreamScore(registry, upstreamID, defaultNetworkMethod, methods[len(methods)-1]))
+	}
+}
+
+func TestUpstreamsRegistry_RefreshPrunesMethodCachesWithoutUsageRecord(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, time.Minute)
+	networkID := "evm:123"
+	methodWithUsage := "eth_stale_with_usage"
+	methodWithoutUsage := "eth_no_usage_record"
+
+	_, err := getSortedUpstreamsEventually(ctx, registry, networkID, methodWithUsage, 5*time.Second)
+	assert.NoError(t, err)
+	_, err = getSortedUpstreamsEventually(ctx, registry, networkID, methodWithoutUsage, 5*time.Second)
+	assert.NoError(t, err)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	staleUsage := time.Now().Add(-2 * sortedMethodUsageTTL)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: networkID,
+		method:  methodWithUsage,
+	}, staleUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: defaultNetworkMethod,
+		method:  methodWithUsage,
+	}, staleUsage)
+	registry.sortedUpstreamsMethodUsage.Delete(methodUsageKey{
+		network: networkID,
+		method:  methodWithoutUsage,
+	})
+	registry.sortedUpstreamsMethodUsage.Delete(methodUsageKey{
+		network: defaultNetworkMethod,
+		method:  methodWithoutUsage,
+	})
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	registry.RLockUpstreams()
+	networkMethods := registry.sortedUpstreams[networkID]
+	wildcardMethods := registry.sortedUpstreams[defaultNetworkMethod]
+	_, inNetworkWithUsage := networkMethods[methodWithUsage]
+	_, inWildcardWithUsage := wildcardMethods[methodWithUsage]
+	_, inNetworkWithoutUsage := networkMethods[methodWithoutUsage]
+	_, inWildcardWithoutUsage := wildcardMethods[methodWithoutUsage]
+	registry.RUnlockUpstreams()
+
+	assert.False(t, inNetworkWithUsage, "stale method should be pruned when usage is present and stale")
+	assert.False(t, inWildcardWithUsage, "stale wildcard scope should be pruned when usage is present and stale")
+	assert.True(t, inNetworkWithoutUsage, "method without usage should stay via fallback-to-now path")
+	assert.True(t, inWildcardWithoutUsage, "wildcard method without usage should stay via fallback-to-now path")
 }
 
 func TestUpstreamsRegistry_RefreshPrunesOnlyStaleNetworkScopedMethod(t *testing.T) {
@@ -1593,16 +1702,16 @@ func TestUpstreamsRegistry_RefreshPrunesOnlyStaleNetworkScopedMethod(t *testing.
 
 	// stale network scoped method score should be removed for all upstream IDs
 	for _, upstreamID := range []string{"rpc1", "rpc2", "rpc3"} {
-		if _, ok := registry.upstreamScores[upstreamID][networkID][methodScoped]; ok {
+		if hasUpstreamScore(registry, upstreamID, networkID, methodScoped) {
 			t.Fatalf("method %s should be pruned from stale network-scoped scores", methodScoped)
 		}
-		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodScoped]; !ok {
+		if !hasUpstreamScore(registry, upstreamID, defaultNetworkMethod, methodScoped) {
 			t.Fatalf("method %s should stay in wildcard scope", methodScoped)
 		}
-		if _, ok := registry.upstreamScores[upstreamID][networkID][methodWildcard]; !ok {
+		if !hasUpstreamScore(registry, upstreamID, networkID, methodWildcard) {
 			t.Fatalf("method %s should stay in network scope", methodWildcard)
 		}
-		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodWildcard]; !ok {
+		if !hasUpstreamScore(registry, upstreamID, defaultNetworkMethod, methodWildcard) {
 			t.Fatalf("method %s should stay in wildcard scope", methodWildcard)
 		}
 	}
@@ -1677,16 +1786,16 @@ func TestUpstreamsRegistry_RefreshPrunesOnlyStaleWildcardMethodScope(t *testing.
 	assert.False(t, prunedInWildcard, "stale wildcard scope should remove method")
 
 	for _, upstreamID := range []string{"rpc1", "rpc2", "rpc3"} {
-		if _, ok := registry.upstreamScores[upstreamID][networkID][methodScoped]; !ok {
+		if !hasUpstreamScore(registry, upstreamID, networkID, methodScoped) {
 			t.Fatalf("method %s should stay in fresh network-scoped scores", methodScoped)
 		}
-		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodScoped]; !ok {
+		if !hasUpstreamScore(registry, upstreamID, defaultNetworkMethod, methodScoped) {
 			t.Fatalf("method %s should stay in fresh wildcard scores", methodScoped)
 		}
-		if _, ok := registry.upstreamScores[upstreamID][networkID][methodWildcard]; ok {
+		if hasUpstreamScore(registry, upstreamID, networkID, methodWildcard) {
 			t.Fatalf("method %s should be pruned from stale network-scoped scores", methodWildcard)
 		}
-		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodWildcard]; ok {
+		if hasUpstreamScore(registry, upstreamID, defaultNetworkMethod, methodWildcard) {
 			t.Fatalf("method %s should be pruned from stale wildcard scores", methodWildcard)
 		}
 	}
@@ -1726,10 +1835,10 @@ func TestUpstreamsRegistry_RefreshPrunesStaleMethodScoresForAllUpstreams(t *test
 	assert.NoError(t, err)
 
 	for _, upstreamID := range []string{"rpc1", "rpc2", "rpc3"} {
-		if _, ok := registry.upstreamScores[upstreamID][networkID][methodEvicted]; ok {
+		if hasUpstreamScore(registry, upstreamID, networkID, methodEvicted) {
 			t.Fatalf("method %s should be pruned from all upstream network scores", methodEvicted)
 		}
-		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodEvicted]; ok {
+		if hasUpstreamScore(registry, upstreamID, defaultNetworkMethod, methodEvicted) {
 			t.Fatalf("method %s should be pruned from all upstream wildcard scores", methodEvicted)
 		}
 	}
@@ -1773,7 +1882,7 @@ func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Verify no scores are NaN after refresh
-		for upsID, networkScores := range registry.upstreamScores {
+		for upsID, networkScores := range snapshotUpstreamScores(registry) {
 			for netID, methodScores := range networkScores {
 				for meth, score := range methodScores {
 					assert.False(t, math.IsNaN(score),
@@ -1797,12 +1906,14 @@ func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
 	assert.Len(t, ordered, 3, "Should have 3 upstreams in sorted order")
 
 	// Verify scores are in descending order (higher score = higher priority)
-	scores := registry.upstreamScores
+	scores := snapshotUpstreamScores(registry)
 	for i := 0; i < len(ordered)-1; i++ {
 		curr := ordered[i]
 		next := ordered[i+1]
-		currScore := scores[curr.Id()][networkID][method]
-		nextScore := scores[next.Id()][networkID][method]
+		currScore, ok := scores[curr.Id()][networkID][method]
+		assert.True(t, ok)
+		nextScore, ok := scores[next.Id()][networkID][method]
+		assert.True(t, ok)
 		assert.GreaterOrEqual(t, currScore, nextScore,
 			"Upstream %s (score %.4f) should have >= score than %s (score %.4f)",
 			curr.Id(), currScore, next.Id(), nextScore)
@@ -2016,12 +2127,14 @@ func TestUpstreamsRegistry_EMANaNInjection(t *testing.T) {
 
 	// Inject NaN into the scores map to simulate corrupted previous scores
 	// This tests the guard at the EMA smoothing level
+	registry.upstreamsMu.Lock()
 	for upsID := range registry.upstreamScores {
 		if registry.upstreamScores[upsID][networkID] == nil {
 			registry.upstreamScores[upsID][networkID] = make(map[string]float64)
 		}
 		registry.upstreamScores[upsID][networkID][method] = math.NaN()
 	}
+	registry.upstreamsMu.Unlock()
 
 	// Add more requests so calculateScore produces valid instant scores
 	simulateRequestsWithLatency(metricsTracker, u1, method, 5, 0.040)
@@ -2033,7 +2146,7 @@ func TestUpstreamsRegistry_EMANaNInjection(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify all scores are now valid (not NaN/Inf)
-	for upsID, networkScores := range registry.upstreamScores {
+	for upsID, networkScores := range snapshotUpstreamScores(registry) {
 		for netID, methodScores := range networkScores {
 			for meth, score := range methodScores {
 				assert.False(t, math.IsNaN(score),
@@ -2091,6 +2204,7 @@ func TestUpstreamsRegistry_EMAInfInjection(t *testing.T) {
 
 	// Inject positive and negative Inf into the scores map
 	i := 0
+	registry.upstreamsMu.Lock()
 	for upsID := range registry.upstreamScores {
 		if registry.upstreamScores[upsID][networkID] == nil {
 			registry.upstreamScores[upsID][networkID] = make(map[string]float64)
@@ -2102,6 +2216,7 @@ func TestUpstreamsRegistry_EMAInfInjection(t *testing.T) {
 		}
 		i++
 	}
+	registry.upstreamsMu.Unlock()
 
 	// Add more requests
 	simulateRequestsWithLatency(metricsTracker, u1, method, 5, 0.040)
@@ -2113,7 +2228,7 @@ func TestUpstreamsRegistry_EMAInfInjection(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify all scores are now valid (not NaN/Inf)
-	for upsID, networkScores := range registry.upstreamScores {
+	for upsID, networkScores := range snapshotUpstreamScores(registry) {
 		for netID, methodScores := range networkScores {
 			for meth, score := range methodScores {
 				assert.False(t, math.IsNaN(score),

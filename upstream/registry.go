@@ -35,6 +35,8 @@ const (
 	sortedMethodUsageTTL = 10 * time.Minute
 	// Cap to bound memory if request method cardinality spikes.
 	sortedMethodMaxPerNetwork = 4096
+	// Warn when writes to sorted upstream bookkeeping exceed this duration.
+	sortedMethodLockWarnDuration = 100 * time.Millisecond
 )
 
 type methodUsageKey struct {
@@ -480,9 +482,17 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	// Snapshot current workset under lock after pruning stale entries and cap enforcement.
 	now := time.Now()
 	u.upstreamsMu.Lock()
+	lockStarted := time.Now()
 	u.pruneStaleMethodCachesLocked(now)
 	if len(u.allUpstreams) == 0 {
 		u.upstreamsMu.Unlock()
+		if elapsed := time.Since(lockStarted); elapsed > sortedMethodLockWarnDuration {
+			telemetry.MetricUpstreamSortedMethodCacheLockWarningTotal.WithLabelValues(u.prjId).Inc()
+			u.logger.Warn().
+				Str("projectId", u.prjId).
+				Dur("duration", elapsed).
+				Msg("upstreams write lock held longer than threshold while refreshing method caches")
+		}
 		u.logger.Trace().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
 		return nil
 	}
@@ -532,6 +542,13 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 		}
 	}
 	u.upstreamsMu.Unlock()
+	if elapsed := time.Since(lockStarted); elapsed > sortedMethodLockWarnDuration {
+		telemetry.MetricUpstreamSortedMethodCacheLockWarningTotal.WithLabelValues(u.prjId).Inc()
+		u.logger.Warn().
+			Str("projectId", u.prjId).
+			Dur("duration", elapsed).
+			Msg("upstreams write lock held longer than threshold while refreshing method caches")
+	}
 
 	// Compute scores and ordering outside the lock
 	type pairResult struct {
@@ -774,8 +791,21 @@ func (u *UpstreamsRegistry) pruneStaleMethodCachesLocked(now time.Time) {
 
 		candidates := make([]methodUsageState, 0, len(methods))
 		for method := range methods {
+			if method == defaultNetworkMethod {
+				continue
+			}
 			lastUsed, ok := u.methodLastUsed(networkId, method)
 			if ok && lastUsed.Before(cutoff) {
+				u.logger.Debug().
+					Str("projectId", u.prjId).
+					Str("networkId", networkId).
+					Str("method", method).
+					Msg("pruned stale sorted upstream method cache")
+				telemetry.MetricUpstreamSortedMethodCachePrunedTotal.WithLabelValues(
+					u.prjId,
+					networkId,
+					"stale",
+				).Inc()
 				u.pruneMethodEntriesLocked(networkId, method)
 				continue
 			}
@@ -792,6 +822,12 @@ func (u *UpstreamsRegistry) pruneStaleMethodCachesLocked(now time.Time) {
 		if len(methods) > sortedMethodMaxPerNetwork {
 			overflow := len(methods) - sortedMethodMaxPerNetwork
 			if overflow > 0 {
+				u.logger.Info().
+					Str("projectId", u.prjId).
+					Str("networkId", networkId).
+					Int("overflow", overflow).
+					Int("methodCount", len(methods)).
+					Msg("pruning sorted upstream methods due to per-network cap")
 				sort.Slice(candidates, func(i, j int) bool {
 					if candidates[i].lastUsed.Equal(candidates[j].lastUsed) {
 						return candidates[i].method < candidates[j].method
@@ -799,6 +835,16 @@ func (u *UpstreamsRegistry) pruneStaleMethodCachesLocked(now time.Time) {
 					return candidates[i].lastUsed.Before(candidates[j].lastUsed)
 				})
 				for i := 0; i < overflow && i < len(candidates); i++ {
+					u.logger.Debug().
+						Str("projectId", u.prjId).
+						Str("networkId", networkId).
+						Str("method", candidates[i].method).
+						Msg("pruned sorted upstream method cache due to per-network cap")
+					telemetry.MetricUpstreamSortedMethodCachePrunedTotal.WithLabelValues(
+						u.prjId,
+						networkId,
+						"cap_overflow",
+					).Inc()
 					u.pruneMethodEntriesLocked(networkId, candidates[i].method)
 				}
 			}

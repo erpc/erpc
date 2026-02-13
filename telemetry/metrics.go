@@ -148,6 +148,18 @@ var (
 		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	MetricUpstreamSortedMethodCachePrunedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_sorted_method_cache_pruned_total",
+		Help:      "Total number of sorted upstream method cache entries pruned during refresh housekeeping.",
+	}, []string{"project", "network", "reason"})
+
+	MetricUpstreamSortedMethodCacheLockWarningTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_sorted_method_cache_lock_warning_total",
+		Help:      "Total number of refresh operations where write lock duration exceeded threshold.",
+	}, []string{"project"})
+
 	MetricUpstreamWrongEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_wrong_empty_response_total",
