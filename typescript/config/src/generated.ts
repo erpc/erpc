@@ -233,6 +233,13 @@ export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   compression?: CompressionConfig;
+  /**
+   * Envelope enables wrapping cached values with a metadata header (magic + version + timestamp).
+   * The header is required for cache-max-age staleness checks.
+   * Default: false (disabled) for safe rolling deploys. Old binaries cannot parse
+   * the envelope prefix, so enable only after all pods are on the new version.
+   */
+  envelope?: boolean;
 }
 export interface CompressionConfig {
   enabled?: boolean;
@@ -549,6 +556,11 @@ export interface RetryPolicyConfig {
    * EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
    */
   emptyResultMaxAttempts?: number /* int */;
+  /**
+   * EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
+   * When set, empty result retries wait this long instead of using the normal error delay/backoff.
+   */
+  emptyResultDelay?: Duration;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
@@ -724,6 +736,7 @@ export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
   skipCacheRead?: boolean;
+  cacheMaxAgeSeconds?: number /* int64 */;
   useUpstream?: string;
   skipInterpolation?: boolean;
   /**
@@ -783,6 +796,7 @@ export interface EvmNetworkConfig {
   getLogsMaxAllowedTopics?: number /* int64 */;
   getLogsSplitOnError?: boolean;
   getLogsSplitConcurrency?: number /* int */;
+  getLogsCacheChunkSize?: number /* int64 */;
   /**
    * EnforceBlockAvailability controls whether the network should enforce per-upstream
    * block availability bounds (upper/lower) for methods by default. Method-level config may override.
@@ -813,6 +827,90 @@ export interface EvmNetworkConfig {
    * Set to false to disable this behavior and return raw upstream errors.
    */
   idempotentTransactionBroadcast?: boolean;
+  /**
+   * Multicall3Aggregation configures aggregating eth_call requests into Multicall3.
+   * Accepts either a boolean (backward compat) or a full config object.
+   * Default: disabled; must be explicitly enabled.
+   */
+  multicall3Aggregation?: Multicall3AggregationConfig;
+}
+/**
+ * Multicall3AggregationConfig configures network-level batching of eth_call requests
+ * into Multicall3 aggregate calls. This batches requests across all entrypoints
+ * (HTTP single, HTTP batch, gRPC) rather than just JSON-RPC batch requests.
+ */
+export interface Multicall3AggregationConfig {
+  /**
+   * Enabled enables/disables Multicall3 aggregation. Default: false
+   */
+  enabled: boolean;
+  /**
+   * WindowMs is the maximum time (milliseconds) to wait for a batch to fill.
+   * Default: 25ms
+   */
+  windowMs?: number /* int */;
+  /**
+   * MinWaitMs is the minimum time (milliseconds) to wait for additional requests
+   * to join a batch. Default: 2ms
+   */
+  minWaitMs?: number /* int */;
+  /**
+   * SafetyMarginMs is subtracted from request deadlines when computing flush time.
+   * Default: min(2, MinWaitMs)
+   */
+  safetyMarginMs?: number /* int */;
+  /**
+   * OnlyIfPending: if true, don't add latency unless a batch is already open.
+   * Default: false
+   */
+  onlyIfPending?: boolean;
+  /**
+   * MaxCalls is the maximum number of calls per batch. Default: 20
+   */
+  maxCalls?: number /* int */;
+  /**
+   * MaxCalldataBytes is the maximum total calldata size per batch. Default: 64000
+   */
+  maxCalldataBytes?: number /* int */;
+  /**
+   * MaxQueueSize is the maximum total enqueued requests across all batches.
+   * Default: 1000
+   */
+  maxQueueSize?: number /* int */;
+  /**
+   * MaxPendingBatches is the maximum number of distinct batch keys.
+   * Default: 200
+   */
+  maxPendingBatches?: number /* int */;
+  /**
+   * CachePerCall enables per-call cache writes after successful Multicall3.
+   * Default: true
+   */
+  cachePerCall?: boolean;
+  /**
+   * AllowCrossUserBatching: if true, requests from different users can share a batch.
+   * Default: true
+   */
+  allowCrossUserBatching?: boolean;
+  /**
+   * AllowPendingTagBatching: if true, allow batching calls with "pending" block tag.
+   * Default: false
+   */
+  allowPendingTagBatching?: boolean;
+  /**
+   * AutoDetectBypass: if true, automatically detect contracts that revert when called
+   * via Multicall3 (e.g., contracts checking msg.sender code size). When a call reverts
+   * in a batch but succeeds individually, the contract is added to a runtime bypass cache.
+   * Default: false
+   */
+  autoDetectBypass?: boolean;
+  /**
+   * BypassContracts is a list of contract addresses that should NOT be batched via Multicall3.
+   * Use this for contracts that check if msg.sender has code (e.g., Chronicle Oracle feeds)
+   * and revert when called from a contract. Addresses are case-insensitive.
+   * Example: ["0x057f30e63A69175C69A4Af5656b8C9EE647De3D0"]
+   */
+  bypassContracts?: string[];
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
