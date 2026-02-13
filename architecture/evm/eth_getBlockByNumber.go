@@ -435,13 +435,12 @@ func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Netw
 		return rs, re
 	}
 
-	// Get directives - if nil, no validation needed
+	// Only run validation when directives are set (avoids JSON parsing overhead otherwise).
+	// Always-on integrity checks piggyback on the same parse as directive-gated checks.
 	dirs := rq.Directives()
 	if dirs == nil {
 		return rs, re
 	}
-
-	// Run directive-based validation
 	if err := validateBlock(ctx, u, dirs, rs); err != nil {
 		return rs, err
 	}
@@ -452,10 +451,20 @@ func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Netw
 // blockValidationTxLite is a minimal transaction model for block validation
 type blockValidationTxLite struct {
 	Hash             string `json:"hash"`
+	From             string `json:"from"`
+	Gas              string `json:"gas"`
 	BlockHash        string `json:"blockHash"`
 	BlockNumber      string `json:"blockNumber"`
 	TransactionIndex string `json:"transactionIndex"`
 }
+
+// emptyTrieRoot is the keccak256 of the RLP-encoded empty trie.
+// Blocks with zero transactions have this as their transactionsRoot.
+const emptyTrieRoot = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+
+// zeroHash32 is the 32-byte all-zeros hash. Some non-standard chains (e.g. ZKSync Era)
+// use this instead of the canonical empty trie root for blocks with zero transactions.
+const zeroHash32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
 
 // blockValidationBlockLite is a minimal block model for validation
 type blockValidationBlockLite struct {
@@ -469,7 +478,9 @@ type blockValidationBlockLite struct {
 	Transactions     []any  `json:"transactions"` // Can be []string (hashes) or []blockValidationTxLite (full txs)
 }
 
-// validateBlock validates eth_getBlockByNumber/Hash responses based on request directives.
+// validateBlock validates eth_getBlockByNumber/Hash responses.
+// It runs always-on integrity checks first (fundamental Ethereum invariants),
+// then directive-gated checks. Callers must ensure dirs is non-nil.
 func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rs *common.NormalizedResponse) error {
 	jrr, err := rs.JsonRpcResponse(ctx)
 	if err != nil {
@@ -481,14 +492,45 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid JSON result for block validation: %w", err), u)
 	}
 
-	// 1. Header Field Length Validation
+	// ── Directive-gated checks (opt-in via config/library) ───────────────
+
+	// 1. TransactionsRoot vs Transaction Count (default: enabled)
+	// The transactionsRoot is a Merkle trie root over the block's transactions.
+	// The canonical empty trie root is a universal constant for blocks with zero transactions.
+	// Some chains (e.g. ZKSync Era) use the all-zeros hash instead.
+	// If they disagree, the upstream returned truncated/incomplete data.
+	// Disable via validateTransactionsRoot: false for non-standard chains.
+	//
+	// Special case: some chains (e.g. Polygon PoS) inject "phantom" system transactions
+	// (from=0x0, gas=0x0) that do NOT participate in the transactions trie. These blocks
+	// legitimately have an empty trie root while containing transaction objects.
+	if dirs.ValidateTransactionsRoot && block.TransactionsRoot != "" {
+		txRootLower := strings.ToLower(block.TransactionsRoot)
+		isEmptyRoot := txRootLower == emptyTrieRoot || txRootLower == zeroHash32
+		txCount := len(block.Transactions)
+
+		if !isEmptyRoot && txCount == 0 {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("transactionsRoot is %s (non-empty) but block contains 0 transactions; upstream returned incomplete block data", block.TransactionsRoot),
+				u,
+			)
+		}
+		if isEmptyRoot && txCount > 0 && !allPhantomTransactions(block.Transactions) {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("transactionsRoot is empty trie root but block contains %d non-phantom transactions; inconsistent block data", txCount),
+				u,
+			)
+		}
+	}
+
+	// 2. Header Field Length Validation
 	if dirs.ValidateHeaderFieldLengths {
 		if err := validateHeaderFieldLengths(u, &block); err != nil {
 			return err
 		}
 	}
 
-	// 2. Transaction Validation (only if we have full transactions)
+	// 3. Transaction Validation (only if we have full transactions)
 	if len(block.Transactions) > 0 {
 		// Check if transactions are full objects or just hashes
 		var fullTxs []blockValidationTxLite
@@ -519,6 +561,47 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 	}
 
 	return nil
+}
+
+// allPhantomTransactions returns true when every transaction in the slice is a
+// "phantom" system transaction that does not participate in the transactions
+// trie. Some chains (Polygon PoS, BSC) inject these for internal bookkeeping;
+// they have from=0x0 and gas=0x0. When a block contains only phantoms the
+// empty trie root is expected even though the transactions array is non-empty.
+func allPhantomTransactions(txs []any) bool {
+	for _, tx := range txs {
+		switch t := tx.(type) {
+		case map[string]interface{}:
+			from, _ := t["from"].(string)
+			gas, _ := t["gas"].(string)
+			if !isZeroishHex(gas) || !isZeroishHex(from) {
+				// At least one real transaction — not all phantoms.
+				return false
+			}
+		case string:
+			// Hash-only response — we can't inspect the tx, so we must
+			// assume it is a real transaction (conservative).
+			return false
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isZeroishHex returns true if h is a hex string representing zero or empty
+// (e.g. "0x", "0x0", "0x00", "0x0000").
+func isZeroishHex(h string) bool {
+	if h == "" {
+		return false
+	}
+	h = strings.TrimPrefix(h, "0x")
+	for _, c := range h {
+		if c != '0' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateHeaderFieldLengths(u common.Upstream, block *blockValidationBlockLite) error {

@@ -1499,6 +1499,10 @@ type DirectiveDefaultsConfig struct {
 	EnforceGetLogsBlockRange   *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
 	EnforceNonNullTaggedBlocks *bool `yaml:"enforceNonNullTaggedBlocks,omitempty" json:"enforceNonNullTaggedBlocks"`
 
+	// ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
+	// Defaults to true. Disable for non-standard chains that use unusual trie roots.
+	ValidateTransactionsRoot *bool `yaml:"validateTransactionsRoot,omitempty" json:"validateTransactionsRoot"`
+
 	// Validation: Header Field Lengths
 	ValidateHeaderFieldLengths *bool `yaml:"validateHeaderFieldLengths,omitempty" json:"validateHeaderFieldLengths"`
 

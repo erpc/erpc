@@ -49,6 +49,7 @@ const (
 	headerDirectiveReceiptsCountAtLeast       = "X-ERPC-Receipts-Count-At-Least"
 	headerDirectiveValidationBlockHash        = "X-ERPC-Validation-Expected-Block-Hash"
 	headerDirectiveValidationBlockNumber      = "X-ERPC-Validation-Expected-Block-Number"
+	headerDirectiveValidateTransactionsRoot   = "X-ERPC-Validate-Transactions-Root"
 	headerDirectiveValidateHeaderFieldLengths = "X-ERPC-Validate-Header-Field-Lengths"
 	headerDirectiveValidateTxFields           = "X-ERPC-Validate-Transaction-Fields"
 	headerDirectiveValidateTxBlockInfo        = "X-ERPC-Validate-Transaction-Block-Info"
@@ -74,6 +75,7 @@ const (
 	queryDirectiveReceiptsCountAtLeast       = "receipts-count-at-least"
 	queryDirectiveValidationBlockHash        = "validation-expected-block-hash"
 	queryDirectiveValidationBlockNumber      = "validation-expected-block-number"
+	queryDirectiveValidateTransactionsRoot   = "validate-transactions-root"
 	queryDirectiveValidateHeaderFieldLengths = "validate-header-field-lengths"
 	queryDirectiveValidateTxFields           = "validate-transaction-fields"
 	queryDirectiveValidateTxBlockInfo        = "validate-transaction-block-info"
@@ -99,6 +101,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveReceiptsCountAtLeast, query: queryDirectiveReceiptsCountAtLeast},
 	{header: headerDirectiveValidationBlockHash, query: queryDirectiveValidationBlockHash},
 	{header: headerDirectiveValidationBlockNumber, query: queryDirectiveValidationBlockNumber},
+	{header: headerDirectiveValidateTransactionsRoot, query: queryDirectiveValidateTransactionsRoot},
 	{header: headerDirectiveValidateHeaderFieldLengths, query: queryDirectiveValidateHeaderFieldLengths},
 	{header: headerDirectiveValidateTxFields, query: queryDirectiveValidateTxFields},
 	{header: headerDirectiveValidateTxBlockInfo, query: queryDirectiveValidateTxBlockInfo},
@@ -150,6 +153,10 @@ type RequestDirectives struct {
 	EnforceHighestBlock        bool `json:"enforceHighestBlock,omitempty"`
 	EnforceGetLogsBlockRange   bool `json:"enforceGetLogsBlockRange,omitempty"`
 	EnforceNonNullTaggedBlocks bool `json:"enforceNonNullTaggedBlocks,omitempty"`
+
+	// ValidateTransactionsRoot: when true (default), checks that the transactionsRoot is consistent
+	// with the transaction count. Disable for non-standard chains that use unusual trie roots.
+	ValidateTransactionsRoot bool `json:"validateTransactionsRoot,omitempty"`
 
 	// Validation: Header Field Lengths (only via config/library, not HTTP headers)
 	ValidateHeaderFieldLengths bool `json:"validateHeaderFieldLengths,omitempty"`
@@ -231,6 +238,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		EnforceHighestBlock:             d.EnforceHighestBlock,
 		EnforceGetLogsBlockRange:        d.EnforceGetLogsBlockRange,
 		EnforceNonNullTaggedBlocks:      d.EnforceNonNullTaggedBlocks,
+		ValidateTransactionsRoot:        d.ValidateTransactionsRoot,
 		ValidateHeaderFieldLengths:      d.ValidateHeaderFieldLengths,
 		ValidateTransactionFields:       d.ValidateTransactionFields,
 		ValidateTransactionBlockInfo:    d.ValidateTransactionBlockInfo,
@@ -551,6 +559,11 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 		r.directives.EnforceNonNullTaggedBlocks = *directiveDefaults.EnforceNonNullTaggedBlocks
 	}
 
+	// Validation: TransactionsRoot
+	if directiveDefaults.ValidateTransactionsRoot != nil {
+		r.directives.ValidateTransactionsRoot = *directiveDefaults.ValidateTransactionsRoot
+	}
+
 	// Validation: Header Field Lengths
 	if directiveDefaults.ValidateHeaderFieldLengths != nil {
 		r.directives.ValidateHeaderFieldLengths = *directiveDefaults.ValidateHeaderFieldLengths
@@ -734,6 +747,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 			r.directives.ValidationExpectedBlockNumber = &v
 		}
 	}
+	if hv := headers.Get(headerDirectiveValidateTransactionsRoot); hv != "" {
+		r.directives.ValidateTransactionsRoot = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
 	if hv := headers.Get(headerDirectiveValidateHeaderFieldLengths); hv != "" {
 		r.directives.ValidateHeaderFieldLengths = strings.ToLower(hv) == "true"
 	}
@@ -817,6 +833,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			r.directives.ValidationExpectedBlockNumber = &n
 		}
+	}
+	if v := queryArgs.Get(queryDirectiveValidateTransactionsRoot); v != "" {
+		r.directives.ValidateTransactionsRoot = strings.ToLower(strings.TrimSpace(v)) == "true"
 	}
 	if v := queryArgs.Get(queryDirectiveValidateHeaderFieldLengths); v != "" {
 		r.directives.ValidateHeaderFieldLengths = strings.ToLower(strings.TrimSpace(v)) == "true"
