@@ -802,6 +802,9 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 	registry, connector, _ := setupTest("my-dev")
 
 	setupPollLockMaybe(connector, "test")
+	// Background push stubs for scheduleBackgroundPushCurrent (runs async after successful refresh).
+	connector.On("PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(nil, ErrLockContention).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -839,6 +842,9 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 
 	setupPollLockMaybe(connector, "test")
+	// Background push stubs (error path doesn't trigger publish, but be safe).
+	connector.On("PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(nil, ErrLockContention).Maybe()
 
 	counter := &counterInt64{
 		registry:         registry,

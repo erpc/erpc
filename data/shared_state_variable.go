@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -426,8 +427,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// Try distributed poll lock to coordinate refresh across instances.
 	// Only one instance per variable should execute the expensive RPC call;
 	// others receive the result via shared state pubsub.
-	// Lock acquisition is bounded by lockMaxWait (the context timeout for the
-	// connector.Lock call). Primarily called from background polling goroutines,
+	// Lock acquisition is bounded by the lesser of lockMaxWait and the caller's
+	// remaining context deadline. Primarily called from background polling goroutines,
 	// but can also be reached from request-handler paths
 	// (e.g., EvmAssertBlockAvailability with forceFreshIfStale=true).
 	lockTimeout := c.registry.lockMaxWait
@@ -472,6 +473,10 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 					// and avoids suppressing pubsub updates that arrive slightly late.
 					span.SetAttributes(attribute.Bool("contention_got_fresh", false))
 					telemetry.MetricSharedStatePollLockTotal.WithLabelValues("contention_timeout").Inc()
+					c.registry.logger.Warn().
+						Str("key", c.key).
+						Dur("updateMaxWait", c.registry.updateMaxWait).
+						Msg("contention wait timed out, returning potentially stale value")
 					return c.value.Load(), nil
 				case <-ticker.C:
 					if !c.IsStale(staleness) {
@@ -493,7 +498,17 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			// Avoid synchronous remote unlock while holding updateMu.
 			c.updateMu.Unlock()
 			muLocked = false
-			go unlock()
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						c.registry.logger.Error().
+							Str("key", c.key+pollKeySuffix).
+							Interface("panic", r).
+							Msg("panic during poll lock unlock")
+					}
+				}()
+				unlock()
+			}()
 			return c.value.Load(), nil
 		}
 		span.SetAttributes(attribute.String("poll_lock", "acquired"))
@@ -503,14 +518,22 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// Execute the refresh function (e.g., RPC call to get latest block) in background.
 	// The poll lock (if acquired) is held until the RPC completes, preventing other
 	// instances from redundantly polling the same upstream.
-	// Snapshot unlock into a local so the goroutine captures the current value,
-	// not a reference that could theoretically be reassigned.
+	// Pass unlock function to the goroutine so it can release the poll lock after the RPC completes.
 	unlockFn := unlock
 	resultCh := make(chan refreshResult, 1)
 	go func() {
 		if unlockFn != nil {
 			defer unlockFn()
 		}
+		defer func() {
+			if r := recover(); r != nil {
+				c.registry.logger.Error().
+					Str("key", c.key).
+					Interface("panic", r).
+					Msg("panic during refresh execution")
+				resultCh <- refreshResult{err: fmt.Errorf("panic in refresh: %v", r)}
+			}
+		}()
 
 		fnCtx, fnCancel := context.WithTimeout(c.registry.appCtx, c.registry.fallbackTimeout)
 		defer fnCancel()
@@ -634,7 +657,7 @@ func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
 // Returns (unlockFn, isContention):
 //   - (fn, false) → lock acquired, caller must call fn() to release
 //   - (nil, true) → another instance holds the lock (contention) — caller should wait for pubsub result
-//   - (nil, false) → infrastructure error (shared state unavailable) — caller should fall through to local refresh
+//   - (nil, false) → infrastructure error, unexpected nil lock, or ambiguous timeout — caller should fall through to local refresh
 func (c *counterInt64) tryAcquirePollLock(ctx context.Context) (func(), bool) {
 	pollKey := c.key + pollKeySuffix
 	// 2x lockTtl: poll RPCs may be slower than reconciliation operations,
@@ -645,24 +668,22 @@ func (c *counterInt64) tryAcquirePollLock(ctx context.Context) (func(), bool) {
 	lock, err := c.registry.connector.Lock(ctx, pollKey, pollTTL)
 	if err != nil {
 		// ErrLockContention is a definitive signal that another instance holds the lock.
-		// Production connector implementations return this sentinel for contention cases:
-		// Redis via redsync ErrTaken detection, DynamoDB on context timeout after
-		// ConditionalCheckFailed retries, PostgreSQL via pg_try_advisory_xact_lock
-		// returning false, Memory via TryLock spin timeout.
+		// Connector implementations return this sentinel for contention cases
+		// (e.g., Redis ErrTaken, DynamoDB ConditionalCheckFailed, Memory TryLock timeout).
+		// Note: gRPC connector does not support locking.
 		if errors.Is(err, ErrLockContention) {
 			c.registry.logger.Debug().Err(err).Str("key", pollKey).Msg("poll lock held by another instance, waiting for pubsub")
 			return nil, true
 		}
 		// DeadlineExceeded is ambiguous: could be slow/down infrastructure OR contention
 		// where the context expired before the connector could return ErrLockContention.
-		// Note: DynamoDB disambiguates this internally — if the last retry failure was
-		// contention, it wraps ErrLockContention in the timeout error (handled above).
 		// For Redis, LockContext may return DeadlineExceeded between retries without
 		// ErrTaken, so genuine contention can be missed here.
 		// Fall through to local refresh for graceful degradation — this ensures forward
 		// progress when the shared state backend is genuinely unavailable.
 		if errors.Is(err, context.DeadlineExceeded) {
 			c.registry.logger.Warn().Err(err).Str("key", pollKey).Msg("poll lock timed out (ambiguous), falling through to local refresh")
+			telemetry.MetricSharedStatePollLockTotal.WithLabelValues("ambiguous_timeout").Inc()
 		} else {
 			c.registry.logger.Warn().Err(err).Str("key", pollKey).Msg("poll lock unavailable (infrastructure error), falling through to local refresh")
 		}
@@ -787,7 +808,10 @@ func (c *counterInt64) scheduleBackgroundPushCurrent() {
 			// Best-effort fast propagation (no distributed lock): publish the latest state so
 			// other instances can update their local counters quickly via WatchCounterInt64.
 			pubCtx, pubCancel := context.WithTimeout(c.registry.appCtx, c.registry.lockMaxWait)
-			_ = c.registry.connector.PublishCounterInt64(pubCtx, c.key, local)
+			if err := c.registry.connector.PublishCounterInt64(pubCtx, c.key, local); err != nil {
+				c.registry.logger.Debug().Err(err).Str("key", c.key).
+					Msg("best-effort pubsub publish failed, relying on reconciliation")
+			}
 			pubCancel()
 
 			// Acquire distributed lock with a bounded wait budget.

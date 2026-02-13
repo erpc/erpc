@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"math/rand"
-	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -55,25 +54,12 @@ func (m *MockConnector) List(ctx context.Context, index string, limit int, pagin
 	return args.Get(0).([]KeyValuePair), args.String(1), args.Error(2)
 }
 
-// Lock mocks the Lock method of the Connector interface
-func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration) (lock DistributedLock, err error) {
-	// Lock is frequently best-effort (background paths). If a test didn't stub the exact key,
-	// avoid crashing the whole suite; treat as contention.
-	defer func() {
-		if r := recover(); r != nil {
-			if s, ok := r.(string); ok && strings.Contains(s, "mock: Unexpected Method Call") {
-				lock = nil
-				err = ErrLockContention
-				return
-			}
-			panic(r)
-		}
-	}()
-
+// Lock mocks the Lock method of the Connector interface.
+// Tests must explicitly stub Lock expectations (use .Maybe() for best-effort paths).
+func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
 	args := m.Called(ctx, key, ttl)
-	lock, _ = args.Get(0).(DistributedLock)
-	err = args.Error(1)
-	return lock, err
+	lock, _ := args.Get(0).(DistributedLock)
+	return lock, args.Error(1)
 }
 
 // WatchCounterInt64 mocks the WatchCounterInt64 method of the Connector interface
@@ -86,17 +72,11 @@ func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-ch
 	return a0, a1, a2
 }
 
-// PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface
+// PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface.
+// Tests must explicitly stub expectations (use .Maybe() for best-effort paths).
 func (m *MockConnector) PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error {
-	// Publish is best-effort in most call sites (e.g., background propagation).
-	// If a test doesn't care about publish behavior, avoid panicking on an unstubbed call.
-	for _, c := range m.ExpectedCalls {
-		if c.Method == "PublishCounterInt64" {
-			args := m.Called(ctx, key, value)
-			return args.Error(0)
-		}
-	}
-	return nil
+	args := m.Called(ctx, key, value)
+	return args.Error(0)
 }
 
 // NewMockConnector creates a new instance of MockConnector
