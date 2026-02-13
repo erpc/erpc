@@ -31,7 +31,23 @@ const (
 	scoreEMAPreviousWeight = 0.7
 	// Neutral fallback latency (seconds) when no peers have valid samples; chosen conservatively
 	scoreNeutralLatencySeconds = 0.2
+	// Stale sorted method cache entries are pruned if not used within this window.
+	sortedMethodUsageTTL = 10 * time.Minute
+	// Cap to bound memory if request method cardinality spikes.
+	sortedMethodMaxPerNetwork = 4096
 )
+
+type methodUsageKey struct {
+	network string
+	method  string
+}
+
+type methodUsageState struct {
+	method   string
+	lastUsed time.Time
+}
+
+const defaultNetworkMethod = "*"
 
 type UpstreamsRegistry struct {
 	appCtx               context.Context
@@ -60,6 +76,8 @@ type UpstreamsRegistry struct {
 	networkUpstreamsAtomic sync.Map
 	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
+	// method -> last access time for sortedUpstreams cleanup and cap pruning
+	sortedUpstreamsMethodUsage sync.Map
 	// map of upstream -> network (or *) -> method (or *) => score
 	upstreamScores map[string]map[string]map[string]float64
 
@@ -367,6 +385,7 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 	u.upstreamsMu.RUnlock()
 
 	if upsList == nil {
+		now := time.Now()
 		networkMu := u.getNetworkMutex(networkId)
 		networkMu.Lock()
 		defer networkMu.Unlock()
@@ -429,8 +448,15 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 		}
 		u.upstreamsMu.Unlock()
 
+		u.touchMethodUsage(now, networkId, method)
+		u.touchMethodUsage(now, defaultNetworkMethod, method)
+
 		return castToCommonUpstreams(methodUpsList), nil
 	}
+
+	now := time.Now()
+	u.touchMethodUsage(now, networkId, method)
+	u.touchMethodUsage(now, defaultNetworkMethod, method)
 
 	return castToCommonUpstreams(upsList), nil
 }
@@ -451,10 +477,12 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	_, span := common.StartDetailSpan(u.appCtx, "UpstreamsRegistry.RefreshUpstreamNetworkMethodScores")
 	defer span.End()
 
-	// Snapshot current workset under read lock
-	u.upstreamsMu.RLock()
+	// Snapshot current workset under lock after pruning stale entries and cap enforcement.
+	now := time.Now()
+	u.upstreamsMu.Lock()
+	u.pruneStaleMethodCachesLocked(now)
 	if len(u.allUpstreams) == 0 {
-		u.upstreamsMu.RUnlock()
+		u.upstreamsMu.Unlock()
 		u.logger.Trace().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
 		return nil
 	}
@@ -503,7 +531,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 			}
 		}
 	}
-	u.upstreamsMu.RUnlock()
+	u.upstreamsMu.Unlock()
 
 	// Compute scores and ordering outside the lock
 	type pairResult struct {
@@ -712,6 +740,102 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	u.upstreamsMu.Unlock()
 
 	return nil
+}
+
+func (u *UpstreamsRegistry) touchMethodUsage(now time.Time, networkId, method string) {
+	if method == "" {
+		return
+	}
+	u.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: networkId,
+		method:  method,
+	}, now)
+}
+
+func (u *UpstreamsRegistry) methodLastUsed(networkId, method string) (time.Time, bool) {
+	value, ok := u.sortedUpstreamsMethodUsage.Load(methodUsageKey{
+		network: networkId,
+		method:  method,
+	})
+	if !ok {
+		return time.Time{}, false
+	}
+	lastUsed, ok := value.(time.Time)
+	return lastUsed, ok
+}
+
+func (u *UpstreamsRegistry) pruneStaleMethodCachesLocked(now time.Time) {
+	cutoff := now.Add(-sortedMethodUsageTTL)
+	for networkId, methods := range u.sortedUpstreams {
+		if len(methods) == 0 {
+			delete(u.sortedUpstreams, networkId)
+			continue
+		}
+
+		candidates := make([]methodUsageState, 0, len(methods))
+		for method := range methods {
+			lastUsed, ok := u.methodLastUsed(networkId, method)
+			if ok && lastUsed.Before(cutoff) {
+				u.pruneMethodEntriesLocked(networkId, method)
+				continue
+			}
+			if !ok {
+				lastUsed = now
+			}
+			candidates = append(candidates, methodUsageState{
+				method:   method,
+				lastUsed: lastUsed,
+			})
+		}
+
+		// Enforce per-network method cap on active entries using LRU order.
+		if len(methods) > sortedMethodMaxPerNetwork {
+			overflow := len(methods) - sortedMethodMaxPerNetwork
+			if overflow > 0 {
+				sort.Slice(candidates, func(i, j int) bool {
+					if candidates[i].lastUsed.Equal(candidates[j].lastUsed) {
+						return candidates[i].method < candidates[j].method
+					}
+					return candidates[i].lastUsed.Before(candidates[j].lastUsed)
+				})
+				for i := 0; i < overflow && i < len(candidates); i++ {
+					u.pruneMethodEntriesLocked(networkId, candidates[i].method)
+				}
+			}
+		}
+
+		if len(methods) == 0 {
+			delete(u.sortedUpstreams, networkId)
+		}
+	}
+}
+
+func (u *UpstreamsRegistry) pruneMethodEntriesLocked(networkId, method string) {
+	if methodMap, ok := u.sortedUpstreams[networkId]; ok {
+		delete(methodMap, method)
+	}
+	u.sortedUpstreamsMethodUsage.Delete(methodUsageKey{
+		network: networkId,
+		method:  method,
+	})
+
+	for _, ups := range u.allUpstreams {
+		networkScores, ok := u.upstreamScores[ups.Id()]
+		if !ok {
+			continue
+		}
+		methodScores, ok := networkScores[networkId]
+		if !ok {
+			continue
+		}
+		delete(methodScores, method)
+		if len(methodScores) == 0 {
+			delete(networkScores, networkId)
+		}
+		if len(networkScores) == 0 {
+			delete(u.upstreamScores, ups.Id())
+		}
+	}
 }
 
 func (u *UpstreamsRegistry) registerUpstreams(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {

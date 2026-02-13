@@ -1350,6 +1350,73 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 	registry.RUnlockUpstreams()
 }
 
+func TestUpstreamsRegistry_RefreshPrunesStaleMethodCaches(t *testing.T) {
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, time.Minute)
+
+	networkID := "evm:123"
+	methodActive := "eth_getBalance"
+	methodEvicted := "eth_customUnknownMethod"
+
+	_, err := registry.GetSortedUpstreams(ctx, networkID, methodActive)
+	assert.NoError(t, err)
+	_, err = registry.GetSortedUpstreams(ctx, networkID, methodEvicted)
+	assert.NoError(t, err)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	registry.RLockUpstreams()
+	assert.Contains(t, registry.sortedUpstreams[networkID], methodActive)
+	assert.Contains(t, registry.sortedUpstreams[networkID], methodEvicted)
+	assert.Contains(t, registry.sortedUpstreams[defaultNetworkMethod], methodActive)
+	assert.Contains(t, registry.sortedUpstreams[defaultNetworkMethod], methodEvicted)
+	registry.RUnlockUpstreams()
+	assert.NotNil(t, registry.upstreamScores["rpc1"][networkID][methodEvicted])
+
+	// Mark the evicted method as stale and keep the active method warm.
+	staleUsage := time.Now().Add(-2 * sortedMethodUsageTTL)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{network: networkID, method: methodEvicted}, staleUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{network: defaultNetworkMethod, method: methodEvicted}, staleUsage)
+
+	keepUsage := time.Now()
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{network: networkID, method: methodActive}, keepUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{network: defaultNetworkMethod, method: methodActive}, keepUsage)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+	registry.RLockUpstreams()
+	networkMethods := registry.sortedUpstreams[networkID]
+	wildcardMethods := registry.sortedUpstreams[defaultNetworkMethod]
+	activeInNetwork := false
+	evictedInNetwork := false
+	activeInWildcard := false
+	evictedInWildcard := false
+	if networkMethods != nil {
+		_, activeInNetwork = networkMethods[methodActive]
+		_, evictedInNetwork = networkMethods[methodEvicted]
+	}
+	if wildcardMethods != nil {
+		_, activeInWildcard = wildcardMethods[methodActive]
+		_, evictedInWildcard = wildcardMethods[methodEvicted]
+	}
+	registry.RUnlockUpstreams()
+
+	assert.True(t, activeInNetwork)
+	assert.True(t, activeInWildcard)
+	assert.False(t, evictedInNetwork)
+	assert.False(t, evictedInWildcard)
+
+	// stale method scores should be removed for both wildcard and per-network scopes
+	if _, ok := registry.upstreamScores["rpc1"][networkID][methodEvicted]; ok {
+		t.Fatalf("stale network-scoped method score should be pruned")
+	}
+	_, wildcardPruned := registry.upstreamScores["rpc1"][defaultNetworkMethod][methodEvicted]
+	assert.False(t, wildcardPruned, "stale wildcard-scoped method score should be pruned")
+}
+
 func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
 	// This test verifies that NaN values in scores don't propagate through
 	// EMA smoothing and don't get emitted to Prometheus metrics.
