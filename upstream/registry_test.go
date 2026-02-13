@@ -1393,6 +1393,7 @@ func snapshotUpstreamScores(registry *UpstreamsRegistry) map[string]map[string]m
 	return snapshot
 }
 
+
 func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkID, method string, expectedOrder []string) {
 	registry.RefreshUpstreamNetworkMethodScores()
 
@@ -1843,6 +1844,7 @@ func TestUpstreamsRegistry_RefreshPrunesStaleMethodScoresForAllUpstreams(t *test
 		}
 	}
 }
+
 
 func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
 	// This test verifies that NaN values in scores don't propagate through

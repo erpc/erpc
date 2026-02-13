@@ -391,6 +391,7 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 		networkMu := u.getNetworkMutex(networkId)
 		networkMu.Lock()
 		defer networkMu.Unlock()
+		now := time.Now()
 
 		u.upstreamsMu.RLock()
 		upsList = u.sortedUpstreams[networkId]["*"]
@@ -448,6 +449,8 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 				u.upstreamScores[upid]["*"][method] = 0
 			}
 		}
+		u.touchMethodUsage(now, networkId, method)
+		u.touchMethodUsage(now, defaultNetworkMethod, method)
 		u.upstreamsMu.Unlock()
 
 		u.touchMethodUsage(now, networkId, method)
