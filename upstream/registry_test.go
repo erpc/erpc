@@ -1223,14 +1223,17 @@ func TestUpstreamsRegistry_EMAFromZero_IncreasesOnSecondRefresh(t *testing.T) {
 }
 
 func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
-	metricsTracker := health.NewTracker(logger, projectID, windowSize)
-	metricsTracker.Bootstrap(ctx)
-
 	upstreamConfigs := []*common.UpstreamConfig{
 		{Id: "rpc1", Endpoint: "http://rpc1.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		{Id: "rpc2", Endpoint: "http://rpc2.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		{Id: "rpc3", Endpoint: "http://rpc3.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	}
+	return createTestRegistryWithUpstreams(ctx, projectID, logger, windowSize, upstreamConfigs)
+}
+
+func createTestRegistryWithUpstreams(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration, upstreamConfigs []*common.UpstreamConfig) (*UpstreamsRegistry, *health.Tracker) {
+	metricsTracker := health.NewTracker(logger, projectID, windowSize)
+	metricsTracker.Bootstrap(ctx)
 
 	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(
@@ -1269,11 +1272,23 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 	)
 
 	registry.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-
-	err = registry.PrepareUpstreamsForNetwork(ctx, "evm:123")
-	if err != nil {
-		panic(err)
+	networkIDs := map[string]struct{}{}
+	for _, cfg := range upstreamConfigs {
+		if cfg == nil || cfg.Evm == nil {
+			continue
+		}
+		networkIDs[fmt.Sprintf("evm:%d", cfg.Evm.ChainId)] = struct{}{}
+	}
+	if len(networkIDs) == 0 {
+		networkIDs["evm:123"] = struct{}{}
+	}
+	for networkID := range networkIDs {
+		prepareCtx, prepareCancel := context.WithTimeout(ctx, 10*time.Second)
+		err = registry.PrepareUpstreamsForNetwork(prepareCtx, networkID)
+		prepareCancel()
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	return registry, metricsTracker
@@ -1323,6 +1338,20 @@ func simulateFailedRequests(tracker *health.Tracker, upstream common.Upstream, m
 	}
 }
 
+func getSortedUpstreamsEventually(ctx context.Context, registry *UpstreamsRegistry, networkID, method string, timeout time.Duration) ([]common.Upstream, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		ups, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		if err == nil {
+			return ups, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkID, method string, expectedOrder []string) {
 	registry.RefreshUpstreamNetworkMethodScores()
 	scores := registry.upstreamScores
@@ -1351,6 +1380,11 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 }
 
 func TestUpstreamsRegistry_RefreshPrunesStaleMethodCaches(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1361,9 +1395,9 @@ func TestUpstreamsRegistry_RefreshPrunesStaleMethodCaches(t *testing.T) {
 	methodActive := "eth_getBalance"
 	methodEvicted := "eth_customUnknownMethod"
 
-	_, err := registry.GetSortedUpstreams(ctx, networkID, methodActive)
+	_, err := getSortedUpstreamsEventually(ctx, registry, networkID, methodActive, 5*time.Second)
 	assert.NoError(t, err)
-	_, err = registry.GetSortedUpstreams(ctx, networkID, methodEvicted)
+	_, err = getSortedUpstreamsEventually(ctx, registry, networkID, methodEvicted, 5*time.Second)
 	assert.NoError(t, err)
 
 	err = registry.RefreshUpstreamNetworkMethodScores()
@@ -1418,6 +1452,11 @@ func TestUpstreamsRegistry_RefreshPrunesStaleMethodCaches(t *testing.T) {
 }
 
 func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1431,7 +1470,7 @@ func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
 	for i := 0; i < methodCount; i++ {
 		method := fmt.Sprintf("eth_cap_method_%d", i)
 		methods = append(methods, method)
-		_, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		_, err := getSortedUpstreamsEventually(ctx, registry, networkID, method, 5*time.Second)
 		assert.NoError(t, err)
 	}
 
@@ -1441,8 +1480,8 @@ func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
 	registry.RLockUpstreams()
 	networkMethods := registry.sortedUpstreams[networkID]
 	wildcardMethods := registry.sortedUpstreams[defaultNetworkMethod]
-	assert.Equal(t, methodCount, len(networkMethods))
-	assert.Equal(t, methodCount, len(wildcardMethods))
+	assert.Equal(t, sortedMethodMaxPerNetwork, len(networkMethods))
+	assert.Equal(t, sortedMethodMaxPerNetwork, len(wildcardMethods))
 	registry.RUnlockUpstreams()
 
 	now := time.Now()
@@ -1467,8 +1506,8 @@ func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
 	var newestWildcardKept bool
 
 	registry.RLockUpstreams()
-	networkMethods := registry.sortedUpstreams[networkID]
-	wildcardMethods := registry.sortedUpstreams[defaultNetworkMethod]
+	networkMethods = registry.sortedUpstreams[networkID]
+	wildcardMethods = registry.sortedUpstreams[defaultNetworkMethod]
 	assert.Equal(t, sortedMethodMaxPerNetwork, len(networkMethods))
 	assert.Equal(t, sortedMethodMaxPerNetwork, len(wildcardMethods))
 	_, oldestPruned = networkMethods[methods[0]]
@@ -1481,6 +1520,219 @@ func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
 	assert.True(t, newestKept, "most recently used method should remain under cap")
 	assert.False(t, oldestWildcardPruned, "oldest wildcard method should be pruned by LRU overflow policy")
 	assert.True(t, newestWildcardKept, "most recently used wildcard method should remain under cap")
+}
+
+func TestUpstreamsRegistry_RefreshPrunesOnlyStaleNetworkScopedMethod(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, time.Minute)
+	networkID := "evm:123"
+	methodScoped := "eth_network_scope_only"
+	methodWildcard := "eth_wildcard_scope_kept"
+
+	_, err := getSortedUpstreamsEventually(ctx, registry, networkID, methodScoped, 5*time.Second)
+	assert.NoError(t, err)
+	_, err = getSortedUpstreamsEventually(ctx, registry, networkID, methodWildcard, 5*time.Second)
+	assert.NoError(t, err)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	registry.RLockUpstreams()
+	_, inNetworkScoped := registry.sortedUpstreams[networkID][methodScoped]
+	_, inNetworkWildcard := registry.sortedUpstreams[networkID][methodWildcard]
+	_, inWildcardScoped := registry.sortedUpstreams[defaultNetworkMethod][methodScoped]
+	_, inWildcardFresh := registry.sortedUpstreams[defaultNetworkMethod][methodWildcard]
+	registry.RUnlockUpstreams()
+	assert.True(t, inNetworkScoped)
+	assert.True(t, inNetworkWildcard)
+	assert.True(t, inWildcardScoped)
+	assert.True(t, inWildcardFresh)
+
+	// Mark only the scoped method as stale for network scope and keep it fresh in wildcard scope.
+	staleUsage := time.Now().Add(-2 * sortedMethodUsageTTL)
+	keepUsage := time.Now()
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: networkID,
+		method:  methodScoped,
+	}, staleUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: defaultNetworkMethod,
+		method:  methodScoped,
+	}, keepUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: networkID,
+		method:  methodWildcard,
+	}, keepUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: defaultNetworkMethod,
+		method:  methodWildcard,
+	}, keepUsage)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	registry.RLockUpstreams()
+	_, prunedFromNetworkScoped := registry.sortedUpstreams[networkID][methodScoped]
+	_, keptInNetworkWildcard := registry.sortedUpstreams[networkID][methodWildcard]
+	_, keptInWildcardScope := registry.sortedUpstreams[defaultNetworkMethod][methodScoped]
+	_, keptInWildcardFresh := registry.sortedUpstreams[defaultNetworkMethod][methodWildcard]
+	registry.RUnlockUpstreams()
+
+	assert.False(t, prunedFromNetworkScoped, "stale per-network scope should be removed")
+	assert.True(t, keptInNetworkWildcard, "fresh scoped-by-method should stay in network scope")
+	assert.True(t, keptInWildcardScope, "fresh wildcard scope should keep stale-network method")
+	assert.True(t, keptInWildcardFresh, "fresh wildcard method should stay in wildcard scope")
+
+	// stale network scoped method score should be removed for all upstream IDs
+	for _, upstreamID := range []string{"rpc1", "rpc2", "rpc3"} {
+		if _, ok := registry.upstreamScores[upstreamID][networkID][methodScoped]; ok {
+			t.Fatalf("method %s should be pruned from stale network-scoped scores", methodScoped)
+		}
+		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodScoped]; !ok {
+			t.Fatalf("method %s should stay in wildcard scope", methodScoped)
+		}
+		if _, ok := registry.upstreamScores[upstreamID][networkID][methodWildcard]; !ok {
+			t.Fatalf("method %s should stay in network scope", methodWildcard)
+		}
+		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodWildcard]; !ok {
+			t.Fatalf("method %s should stay in wildcard scope", methodWildcard)
+		}
+	}
+}
+
+func TestUpstreamsRegistry_RefreshPrunesOnlyStaleWildcardMethodScope(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, time.Minute)
+	networkID := "evm:123"
+	methodScoped := "eth_network_scope_kept"
+	methodWildcard := "eth_wildcard_scope_only"
+
+	_, err := getSortedUpstreamsEventually(ctx, registry, networkID, methodScoped, 5*time.Second)
+	assert.NoError(t, err)
+	_, err = getSortedUpstreamsEventually(ctx, registry, networkID, methodWildcard, 5*time.Second)
+	assert.NoError(t, err)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	registry.RLockUpstreams()
+	_, inNetworkScoped := registry.sortedUpstreams[networkID][methodScoped]
+	_, inNetworkWildcard := registry.sortedUpstreams[networkID][methodWildcard]
+	_, inWildcardScoped := registry.sortedUpstreams[defaultNetworkMethod][methodScoped]
+	_, inWildcardOnly := registry.sortedUpstreams[defaultNetworkMethod][methodWildcard]
+	registry.RUnlockUpstreams()
+	assert.True(t, inNetworkScoped)
+	assert.True(t, inNetworkWildcard)
+	assert.True(t, inWildcardScoped)
+	assert.True(t, inWildcardOnly)
+
+	staleUsage := time.Now().Add(-2 * sortedMethodUsageTTL)
+	keepUsage := time.Now()
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: networkID,
+		method:  methodScoped,
+	}, keepUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: defaultNetworkMethod,
+		method:  methodScoped,
+	}, keepUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: networkID,
+		method:  methodWildcard,
+	}, staleUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: defaultNetworkMethod,
+		method:  methodWildcard,
+	}, staleUsage)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	registry.RLockUpstreams()
+	_, keptInNetworkScoped := registry.sortedUpstreams[networkID][methodScoped]
+	_, prunedFromNetworkWildcard := registry.sortedUpstreams[networkID][methodWildcard]
+	_, keptInWildcardScoped := registry.sortedUpstreams[defaultNetworkMethod][methodScoped]
+	_, prunedInWildcard := registry.sortedUpstreams[defaultNetworkMethod][methodWildcard]
+	registry.RUnlockUpstreams()
+
+	assert.True(t, keptInNetworkScoped, "fresh network scope should keep method")
+	assert.True(t, keptInWildcardScoped, "fresh wildcard scope should keep method")
+	assert.False(t, prunedFromNetworkWildcard, "stale network scope should remove method")
+	assert.False(t, prunedInWildcard, "stale wildcard scope should remove method")
+
+	for _, upstreamID := range []string{"rpc1", "rpc2", "rpc3"} {
+		if _, ok := registry.upstreamScores[upstreamID][networkID][methodScoped]; !ok {
+			t.Fatalf("method %s should stay in fresh network-scoped scores", methodScoped)
+		}
+		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodScoped]; !ok {
+			t.Fatalf("method %s should stay in fresh wildcard scores", methodScoped)
+		}
+		if _, ok := registry.upstreamScores[upstreamID][networkID][methodWildcard]; ok {
+			t.Fatalf("method %s should be pruned from stale network-scoped scores", methodWildcard)
+		}
+		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodWildcard]; ok {
+			t.Fatalf("method %s should be pruned from stale wildcard scores", methodWildcard)
+		}
+	}
+}
+
+func TestUpstreamsRegistry_RefreshPrunesStaleMethodScoresForAllUpstreams(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, time.Minute)
+	networkID := "evm:123"
+	methodEvicted := "eth_stale_prune"
+
+	_, err := getSortedUpstreamsEventually(ctx, registry, networkID, methodEvicted, 5*time.Second)
+	assert.NoError(t, err)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	staleUsage := time.Now().Add(-2 * sortedMethodUsageTTL)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: networkID,
+		method:  methodEvicted,
+	}, staleUsage)
+	registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+		network: defaultNetworkMethod,
+		method:  methodEvicted,
+	}, staleUsage)
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	for _, upstreamID := range []string{"rpc1", "rpc2", "rpc3"} {
+		if _, ok := registry.upstreamScores[upstreamID][networkID][methodEvicted]; ok {
+			t.Fatalf("method %s should be pruned from all upstream network scores", methodEvicted)
+		}
+		if _, ok := registry.upstreamScores[upstreamID][defaultNetworkMethod][methodEvicted]; ok {
+			t.Fatalf("method %s should be pruned from all upstream wildcard scores", methodEvicted)
+		}
+	}
 }
 
 func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
