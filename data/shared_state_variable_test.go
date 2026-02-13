@@ -20,6 +20,20 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
+func setupPollLockStrict(c *MockConnector, key string) *MockLock {
+	pollLock := &MockLock{}
+	c.On("Lock", mock.Anything, key+pollKeySuffix, mock.Anything).Return(pollLock, nil)
+	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	return pollLock
+}
+
+func setupPollLockMaybe(c *MockConnector, key string) *MockLock {
+	pollLock := &MockLock{}
+	c.On("Lock", mock.Anything, key+pollKeySuffix, mock.Anything).Return(pollLock, nil).Maybe()
+	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	return pollLock
+}
+
 func TestSharedVariable(t *testing.T) {
 	t.Run("basic remote sync updates local value", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -378,13 +392,6 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 }
 
 func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
-	setupPollLock := func(c *MockConnector) *MockLock {
-		pollLock := &MockLock{}
-		c.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).Return(pollLock, nil)
-		pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
-		return pollLock
-	}
-
 	tests := []struct {
 		name          string
 		setupMocks    func(*MockConnector, *MockLock)
@@ -411,14 +418,14 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			expectedError: nil,
 			expectedCalls: 0,
 		},
-		{
-			name: "stale local value same as remote unstales local value",
-			setupMocks: func(c *MockConnector, l *MockLock) {
-				setupPollLock(c)
-				// Successful refresh always schedules background publish/push (even if value unchanged).
-				c.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
-				c.On("Lock", mock.Anything, "test", mock.Anything).Return(nil, ErrLockContention).Maybe()
-			},
+			{
+				name: "stale local value same as remote unstales local value",
+				setupMocks: func(c *MockConnector, l *MockLock) {
+					setupPollLockStrict(c, "test")
+					// Successful refresh always schedules background publish/push (even if value unchanged).
+					c.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
+					c.On("Lock", mock.Anything, "test", mock.Anything).Return(nil, ErrLockContention).Maybe()
+				},
 			initialValue:  5,
 			staleness:     time.Second,
 			updateValue:   5,
@@ -427,14 +434,14 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			expectedError: nil,
 			expectedCalls: 1,
 		},
-		{
-			name: "stale value updates successfully",
-			setupMocks: func(c *MockConnector, l *MockLock) {
-				setupPollLock(c)
-				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
-				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
-					Return([]byte(`{"v":4,"t":1,"b":"test"}`), nil)
+			{
+				name: "stale value updates successfully",
+				setupMocks: func(c *MockConnector, l *MockLock) {
+					setupPollLockStrict(c, "test")
+					c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
+					l.On("Unlock", mock.Anything).Return(nil)
+					c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+						Return([]byte(`{"v":4,"t":1,"b":"test"}`), nil)
 				c.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Maybe()
 				c.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
 			},
@@ -446,14 +453,14 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			expectedError: nil,
 			expectedCalls: 1,
 		},
-		{
-			name: "stale value with remote higher",
-			setupMocks: func(c *MockConnector, l *MockLock) {
-				setupPollLock(c)
-				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
-				l.On("Unlock", mock.Anything).Return(nil)
-				remoteUpdatedAt := time.Now().UnixMilli() + 60_000
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
+			{
+				name: "stale value with remote higher",
+				setupMocks: func(c *MockConnector, l *MockLock) {
+					setupPollLockStrict(c, "test")
+					c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
+					l.On("Unlock", mock.Anything).Return(nil)
+					remoteUpdatedAt := time.Now().UnixMilli() + 60_000
+					c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value", nil).
 					Return([]byte(fmt.Sprintf(`{"v":15,"t":%d,"b":"test"}`, remoteUpdatedAt)), nil)
 				// Background push publishes local snapshot best-effort.
 				c.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Maybe()
@@ -470,14 +477,14 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			expectedError: nil,
 			expectedCalls: 1,
 		},
-		{
-			name: "update function returns error",
-			setupMocks: func(c *MockConnector, l *MockLock) {
-				setupPollLock(c)
-			},
-			initialValue:  5,
-			staleness:     time.Second,
-			updateValue:   0, // Will return error
+			{
+				name: "update function returns error",
+				setupMocks: func(c *MockConnector, l *MockLock) {
+					setupPollLockStrict(c, "test")
+				},
+				initialValue:  5,
+				staleness:     time.Second,
+				updateValue:   0, // Will return error
 			lastProcessed: time.Now().Add(-2 * time.Second),
 			expectedValue: 5,
 			expectedError: errors.New("update failed"),
@@ -794,9 +801,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
 
-	pollLock := &MockLock{}
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil).Maybe()
-	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	setupPollLockMaybe(connector, "test")
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -833,9 +838,7 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	ctx := context.Background()
 	registry, connector, _ := setupTest("my-dev")
 
-	pollLock := &MockLock{}
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).Return(pollLock, nil).Maybe()
-	pollLock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	setupPollLockMaybe(connector, "test")
 
 	counter := &counterInt64{
 		registry:         registry,
@@ -878,7 +881,7 @@ func TestCounterInt64_TryUpdateIfStale_ContentionWithFreshArrival(t *testing.T) 
 
 	// Poll lock returns ErrLockContention — another instance holds it.
 	lockAttempted := make(chan struct{}, 1)
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+	connector.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).
 		Run(func(args mock.Arguments) {
 			select {
 			case lockAttempted <- struct{}{}:
@@ -929,7 +932,7 @@ func TestCounterInt64_TryUpdateIfStale_ContentionTimeout(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 
 	// Poll lock returns ErrLockContention.
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+	connector.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).
 		Return(nil, fmt.Errorf("lock held: %w", ErrLockContention))
 
 	counter := &counterInt64{
@@ -963,7 +966,7 @@ func TestCounterInt64_TryUpdateIfStale_ContentionCtxCancellation(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 
 	// Poll lock returns ErrLockContention.
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+	connector.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).
 		Return(nil, fmt.Errorf("lock held: %w", ErrLockContention))
 
 	counter := &counterInt64{
@@ -1002,7 +1005,7 @@ func TestCounterInt64_TryUpdateIfStale_InfraErrorFallback(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 
 	// Poll lock returns a non-contention infrastructure error.
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+	connector.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).
 		Return(nil, fmt.Errorf("connection refused"))
 
 	// Background push mocks for the local refresh path.
@@ -1068,7 +1071,7 @@ func TestCounterInt64_TryUpdateIfStale_SkippedFreshAfterLock(t *testing.T) {
 
 	// Lock mock simulates pubsub arriving while lock acquisition was in progress,
 	// making the value fresh before TryUpdateIfStale checks post-lock staleness.
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+	connector.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).
 		Run(func(args mock.Arguments) {
 			counter.updatedAtUnixMs.Store(time.Now().UnixMilli())
 		}).
@@ -1105,7 +1108,7 @@ func TestCounterInt64_TryUpdateIfStale_PollLockDeadlineExceeded(t *testing.T) {
 	registry, connector, _ := setupTest("my-dev")
 
 	// Poll lock returns context.DeadlineExceeded — ambiguous, treated as infrastructure error.
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+	connector.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).
 		Return(nil, fmt.Errorf("lock timed out: %w", context.DeadlineExceeded))
 
 	// Background push mocks for the local refresh path.
@@ -1149,7 +1152,7 @@ func TestCounterInt64_TryUpdateIfStale_PollLockNilWithoutError(t *testing.T) {
 
 	// Poll lock returns nil lock + nil error (buggy connector).
 	// Use typed nil pointer so the interface is non-nil but IsNil() returns true.
-	connector.On("Lock", mock.Anything, "test/poll", mock.Anything).
+	connector.On("Lock", mock.Anything, "test"+pollKeySuffix, mock.Anything).
 		Return((*MockLock)(nil), nil)
 
 	// Background push mocks for the local refresh path.
