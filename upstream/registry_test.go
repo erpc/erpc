@@ -1417,6 +1417,72 @@ func TestUpstreamsRegistry_RefreshPrunesStaleMethodCaches(t *testing.T) {
 	assert.False(t, wildcardPruned, "stale wildcard-scoped method score should be pruned")
 }
 
+func TestUpstreamsRegistry_RefreshPrunesMethodCachesToCap(t *testing.T) {
+	logger := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, time.Minute)
+	networkID := "evm:123"
+
+	methodCount := sortedMethodMaxPerNetwork + 3
+	methods := make([]string, 0, methodCount)
+
+	for i := 0; i < methodCount; i++ {
+		method := fmt.Sprintf("eth_cap_method_%d", i)
+		methods = append(methods, method)
+		_, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		assert.NoError(t, err)
+	}
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	registry.RLockUpstreams()
+	networkMethods := registry.sortedUpstreams[networkID]
+	wildcardMethods := registry.sortedUpstreams[defaultNetworkMethod]
+	assert.Equal(t, methodCount, len(networkMethods))
+	assert.Equal(t, methodCount, len(wildcardMethods))
+	registry.RUnlockUpstreams()
+
+	now := time.Now()
+	for i, method := range methods {
+		usage := now.Add(time.Duration(i) * time.Millisecond)
+		registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+			network: networkID,
+			method:  method,
+		}, usage)
+		registry.sortedUpstreamsMethodUsage.Store(methodUsageKey{
+			network: defaultNetworkMethod,
+			method:  method,
+		}, usage)
+	}
+
+	err = registry.RefreshUpstreamNetworkMethodScores()
+	assert.NoError(t, err)
+
+	var oldestPruned bool
+	var newestKept bool
+	var oldestWildcardPruned bool
+	var newestWildcardKept bool
+
+	registry.RLockUpstreams()
+	networkMethods := registry.sortedUpstreams[networkID]
+	wildcardMethods := registry.sortedUpstreams[defaultNetworkMethod]
+	assert.Equal(t, sortedMethodMaxPerNetwork, len(networkMethods))
+	assert.Equal(t, sortedMethodMaxPerNetwork, len(wildcardMethods))
+	_, oldestPruned = networkMethods[methods[0]]
+	_, newestKept = networkMethods[methods[len(methods)-1]]
+	_, oldestWildcardPruned = wildcardMethods[methods[0]]
+	_, newestWildcardKept = wildcardMethods[methods[len(methods)-1]]
+	registry.RUnlockUpstreams()
+
+	assert.False(t, oldestPruned, "oldest method should be pruned by LRU overflow policy")
+	assert.True(t, newestKept, "most recently used method should remain under cap")
+	assert.False(t, oldestWildcardPruned, "oldest wildcard method should be pruned by LRU overflow policy")
+	assert.True(t, newestWildcardKept, "most recently used wildcard method should remain under cap")
+}
+
 func TestUpstreamsRegistry_NaNGuardsPreventPropagation(t *testing.T) {
 	// This test verifies that NaN values in scores don't propagate through
 	// EMA smoothing and don't get emitted to Prometheus metrics.
