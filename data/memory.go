@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -157,17 +158,16 @@ func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duratio
 	value, _ := m.locks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
 
-	// Honor context deadline/cancellation for best-effort locking in tests
-	// Use TryLock when available; otherwise spin with backoff respecting ctx.
+	// Spin with TryLock and backoff, respecting context deadline.
 	tryInterval := 2 * time.Millisecond
 	for {
-		// TryLock was added in recent Go versions; if unavailable at compile time, this line should be replaced
 		if mutex.TryLock() {
 			return &memoryLock{mutex: mutex}, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// TryLock failed at least once → lock is held by another caller (contention).
+			return nil, fmt.Errorf("in-memory lock contention: %w", errors.Join(ErrLockContention, ctx.Err()))
 		case <-time.After(tryInterval):
 			// Back off and retry until ctx deadline
 			if tryInterval < 20*time.Millisecond {

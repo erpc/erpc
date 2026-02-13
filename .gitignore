@@ -12,7 +12,10 @@ vendor/
 coverage.txt
 .DS_Store
 erpc.yaml
+erpc-*.yaml
 erpc.ts
+dist/
+sqd-simplify/
 .generated-go-semantic-release-changelog.md
 .semrel/
 __debug*

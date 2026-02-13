@@ -565,6 +565,18 @@ var (
 		Name:      "multicall3_batch_percall_cache_set_total",
 		Help:      "Total number of per-call cache writes during multicall3 batch response processing.",
 	}, []string{"project", "network", "user"})
+
+	// Shared state poll coordination metrics.
+	// Tracks distributed lock outcomes when instances coordinate who performs the expensive RPC poll.
+	// Outcomes: "acquired" (this instance refreshes), "contention" (another instance is refreshing, waiting for pubsub),
+	// "contention_timeout" (waited for pubsub but timed out), "unavailable" (infra error, fell through to local refresh),
+	// "skipped_fresh" (value arrived via pubsub while waiting for lock),
+	// "ambiguous_timeout" (DeadlineExceeded — could be infra or contention, fell through to local refresh).
+	MetricSharedStatePollLockTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "shared_state_poll_lock_total",
+		Help:      "Outcomes of distributed poll lock attempts for cross-instance polling coordination.",
+	}, []string{"outcome"})
 )
 
 var DefaultHistogramBuckets = []float64{

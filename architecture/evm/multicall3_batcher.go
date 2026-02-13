@@ -496,7 +496,10 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 		ctx, cancel = context.WithDeadline(baseCtx, earliestDeadline)
 		defer cancel()
 	} else {
-		ctx = baseCtx
+		// No entry has a deadline. Apply a ceiling to prevent indefinite blocking
+		// if the upstream hangs (which would also block Shutdown via wg.Wait).
+		ctx, cancel = context.WithTimeout(baseCtx, 60*time.Second)
+		defer cancel()
 	}
 
 	// Forward the multicall request
@@ -576,21 +579,25 @@ func (b *Batcher) flush(keyStr string, batch *Batch) {
 
 				// Write to cache once per unique call (not once per duplicate entry)
 				if cachePerCall && !cachedOnce {
-					// Use background context for cache write to avoid request deadline issues
-					cacheCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					if err := b.forwarder.SetCache(cacheCtx, entry.Request, resp); err != nil {
-						// Cache write failures are non-critical but we track them for observability
-						telemetry.MetricMulticall3CacheWriteErrorsTotal.WithLabelValues(projectId, networkId).Inc()
-						if b.logger != nil {
-							b.logger.Warn().
-								Err(err).
-								Str("projectId", projectId).
-								Str("networkId", networkId).
-								Str("callKey", uc.callKey).
-								Msg("multicall3 per-call cache write failed")
+					// Fire async cache write to avoid blocking batch result delivery.
+					cacheReq := entry.Request
+					cacheResp := resp
+					cacheCallKey := uc.callKey
+					go func() {
+						cacheCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+						if err := b.forwarder.SetCache(cacheCtx, cacheReq, cacheResp); err != nil {
+							telemetry.MetricMulticall3CacheWriteErrorsTotal.WithLabelValues(projectId, networkId).Inc()
+							if b.logger != nil {
+								b.logger.Warn().
+									Err(err).
+									Str("projectId", projectId).
+									Str("networkId", networkId).
+									Str("callKey", cacheCallKey).
+									Msg("multicall3 per-call cache write failed")
+							}
 						}
-					}
-					cancel()
+					}()
 					cachedOnce = true
 				}
 

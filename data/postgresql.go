@@ -422,7 +422,7 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 
 	if !acquired {
 		go tx.Rollback(context.Background())
-		err := fmt.Errorf("failed to acquire lock: already locked")
+		err := fmt.Errorf("failed to acquire lock for key '%s': %w", key, ErrLockContention)
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
