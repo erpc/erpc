@@ -339,6 +339,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 		subRequests []ethGetLogsSubRequest
 		mockSetup   func(*mockNetwork, *mockEvmUpstream)
 		expectError bool
+		expectCache bool
 	}{
 		{
 			name: "successful execution",
@@ -366,6 +367,34 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test").Maybe()
 			},
+		},
+		{
+			name: "successful execution with cache",
+			subRequests: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 2},
+				{fromBlock: 3, toBlock: 4},
+			},
+			mockSetup: func(n *mockNetwork, u *mockEvmUpstream) {
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 200}}).Maybe()
+				n.On("ProjectId").Return("test")
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
+					).SetFromCache(true),
+					nil,
+				).Once()
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
+					).SetFromCache(true),
+					nil,
+				).Once()
+				u.On("Id").Return("rpc1").Maybe()
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
+				u.On("VendorName").Return("test").Maybe()
+			},
+			expectCache: true,
 		},
 		{
 			name: "partial failure",
@@ -408,7 +437,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 			ctx := context.Background()
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","address":"0x123","topics":["0xabc"]}],"id":1}`))
 
-			result, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, false)
+			result, fromCache, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, false)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -417,6 +446,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
+			assert.Equal(t, tt.expectCache, fromCache)
 
 			mockNetwork.AssertExpectations(t)
 			mockUpstream.AssertExpectations(t)
@@ -1006,7 +1036,7 @@ func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
 		{fromBlock: 0x2, toBlock: 0x2},
 		{fromBlock: 0x3, toBlock: 0x3},
 	}
-	jrr, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, false)
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, false)
 	assert.NoError(t, err)
 	var buf bytes.Buffer
 	_, _ = jrr.WriteTo(&buf)
@@ -1067,7 +1097,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 			var subJrr *common.JsonRpcResponse
 			switch {
 			case fromBlock == "0x1" && toBlock == "0x4":
-				subJrr, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
+				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x1, toBlock: 0x2, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x3, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 				}, false)
@@ -1075,7 +1105,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 					return nil, err
 				}
 			case fromBlock == "0x5" && toBlock == "0x8":
-				subJrr, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
+				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x5, toBlock: 0x6, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x7, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 				}, false)
@@ -1100,7 +1130,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	).Times(6)
 
 	// Execute the request
-	jrr, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
 		{fromBlock: 0x1, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 		{fromBlock: 0x5, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 	}, false)

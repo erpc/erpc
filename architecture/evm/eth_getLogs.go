@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,7 +217,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	}
 
 	// Compute effective auto-splitting threshold (min across upstreams)
-	effectiveThreshold := int64(5000)
+	effectiveThreshold := int64(0)
 	foundPositive := false
 	for _, cu := range ups {
 		if cu == nil || cu.Config() == nil || cu.Config().Evm == nil {
@@ -256,12 +257,12 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		if dirs := nrq.Directives(); dirs != nil {
 			skipCache = dirs.SkipCacheRead
 		}
-		mergedResponse, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache)
+		mergedResponse, fromCache, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache)
 		if err != nil {
 			return true, nil, err
 		}
 
-		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse).SetFromCache(fromCache)
 		nrq.SetLastValidResponse(ctx, nrs)
 		return true, nrs, nil
 	}
@@ -416,14 +417,14 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	if dirs := rq.Directives(); dirs != nil {
 		skipCacheRead = dirs.SkipCacheRead
 	}
-	merged, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
+	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
 	if err != nil {
 		return rs, re
 	}
 	if rs != nil {
 		rs.Release()
 	}
-	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged), nil
+	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
 }
 
 type GetLogsMultiResponseWriter struct {
@@ -662,12 +663,13 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
-func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, bool, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
 	// Preserve sub-request order for deterministic merged output
 	responses := make([]*common.JsonRpcResponse, len(subRequests))
+	fromCacheSr := make([]bool, len(subRequests))
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
@@ -788,6 +790,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 				return
 			}
 			responses[i] = jrrc
+			fromCacheSr[i] = rs.FromCache()
 			mu.Unlock()
 			rs.Release()
 		}(sr, idx)
@@ -795,17 +798,17 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 	wg.Wait()
 
 	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		return nil, false, errors.Join(errs...)
 	}
 
 	mergedResponse := mergeEthGetLogsResults(responses)
 	jrq, _ := r.JsonRpcRequest()
 	err := mergedResponse.SetID(jrq.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	return mergedResponse, nil
+	return mergedResponse, !slices.Contains(fromCacheSr, false), nil
 }
 
 func mergeEthGetLogsResults(responses []*common.JsonRpcResponse) *common.JsonRpcResponse {
