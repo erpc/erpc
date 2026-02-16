@@ -402,13 +402,29 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
-	// When emptyResultDelay is configured, override the delay for empty result retries.
-	// Returning -1 tells failsafe-go to fall back to the normally configured delay/backoff for non-empty retries.
+	// When emptyResultDelay or blockUnavailableDelay is configured, override the delay for those
+	// specific retry scenarios. Returning -1 tells failsafe-go to fall back to the normally
+	// configured delay/backoff for other retries.
+	var emptyResultDelayDuration, blockUnavailableDelayDuration time.Duration
 	if cfg.EmptyResultDelay > 0 {
-		emptyResultDelayDuration := cfg.EmptyResultDelay.Duration()
+		emptyResultDelayDuration = cfg.EmptyResultDelay.Duration()
+	}
+	if cfg.BlockUnavailableDelay > 0 {
+		blockUnavailableDelayDuration = cfg.BlockUnavailableDelay.Duration()
+	}
+	if emptyResultDelayDuration > 0 || blockUnavailableDelayDuration > 0 {
 		builder = builder.WithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
-			if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
-				return emptyResultDelayDuration
+			// Block-unavailable: all upstreams don't have the block yet, wait for propagation
+			if blockUnavailableDelayDuration > 0 {
+				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+					return blockUnavailableDelayDuration
+				}
+			}
+			// Empty result: custom delay for empty responses
+			if emptyResultDelayDuration > 0 {
+				if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
+					return emptyResultDelayDuration
+				}
 			}
 			return -1
 		})
@@ -436,9 +452,9 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		emptyResultConfidence = common.AvailbilityConfidenceFinalized
 	}
 
-	emptyResultIgnore := cfg.EmptyResultIgnore
-	if emptyResultIgnore == nil {
-		emptyResultIgnore = []string{"eth_getLogs", "eth_call"}
+	emptyResultAccept := cfg.EmptyResultAccept
+	if emptyResultAccept == nil {
+		emptyResultAccept = []string{"eth_getLogs", "eth_call"}
 	}
 
 	builder = builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
@@ -522,18 +538,18 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						}
 					}
 					// If RetryEmpty is enabled but the error is MissingData (produced by hooks for empty results),
-					// respect the emptyResultIgnore list and do NOT retry for ignored methods.
+					// respect the emptyResultAccept list and do NOT retry for accepted methods.
 					if rds := req.Directives(); rds != nil && rds.RetryEmpty {
 						if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 							method, _ := req.Method()
 							span.SetAttributes(
 								attribute.String("method", method),
-								attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
+								attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
 							)
-							if slices.Contains(emptyResultIgnore, method) {
+							if slices.Contains(emptyResultAccept, method) {
 								span.SetAttributes(
 									attribute.Bool("retry", false),
-									attribute.String("reason", "missing_data_method_in_empty_ignore_list"),
+									attribute.String("reason", "missing_data_method_in_empty_accept_list"),
 								)
 								return false
 							}
@@ -596,13 +612,13 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 					method, _ := req.Method()
 					span.SetAttributes(
 						attribute.String("method", method),
-						attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
+						attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
 					)
-					// Check if method is in ignore list - if so, do NOT retry
-					if slices.Contains(emptyResultIgnore, method) {
+					// Check if method is in accept list - if so, empty is valid, do NOT retry
+					if slices.Contains(emptyResultAccept, method) {
 						span.SetAttributes(
 							attribute.Bool("retry", false),
-							attribute.String("reason", "method_in_empty_ignore_list"),
+							attribute.String("reason", "method_in_empty_accept_list"),
 						)
 						return false
 					}

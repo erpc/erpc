@@ -2095,9 +2095,17 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	if r.EmptyResultConfidence == 0 && defaults != nil && defaults.EmptyResultConfidence != 0 {
 		r.EmptyResultConfidence = defaults.EmptyResultConfidence
 	}
-	// Only set EmptyResultIgnore if provided through defaults
-	if r.EmptyResultIgnore == nil && defaults != nil && defaults.EmptyResultIgnore != nil {
-		r.EmptyResultIgnore = defaults.EmptyResultIgnore
+	// Backward compat: migrate deprecated EmptyResultIgnore → EmptyResultAccept
+	if r.EmptyResultAccept == nil && r.EmptyResultIgnore != nil {
+		r.EmptyResultAccept = r.EmptyResultIgnore
+	}
+	// Inherit from defaults
+	if r.EmptyResultAccept == nil && defaults != nil {
+		if defaults.EmptyResultAccept != nil {
+			r.EmptyResultAccept = defaults.EmptyResultAccept
+		} else if defaults.EmptyResultIgnore != nil {
+			r.EmptyResultAccept = defaults.EmptyResultIgnore
+		}
 	}
 
 	// Default EmptyResultMaxAttempts to MaxAttempts if not set
@@ -2111,6 +2119,12 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	// When not set, the regular delay settings are used for empty result retries.
 	if r.EmptyResultDelay == 0 && defaults != nil && defaults.EmptyResultDelay != 0 {
 		r.EmptyResultDelay = defaults.EmptyResultDelay
+	}
+
+	// BlockUnavailableDelay inherits from defaults if provided, no hardcoded fallback.
+	// When not set, block-unavailable retries use the normal delay/backoff.
+	if r.BlockUnavailableDelay == 0 && defaults != nil && defaults.BlockUnavailableDelay != 0 {
+		r.BlockUnavailableDelay = defaults.BlockUnavailableDelay
 	}
 
 	return nil

@@ -979,12 +979,20 @@ type RetryPolicyConfig struct {
 	BackoffFactor         float32               `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
 	Jitter                Duration              `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence"`
-	EmptyResultIgnore     []string              `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
+	// EmptyResultAccept lists methods for which an empty/null result is considered valid
+	// and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
+	EmptyResultAccept []string `yaml:"emptyResultAccept,omitempty" json:"emptyResultAccept"`
+	// @deprecated: use EmptyResultAccept instead.
+	EmptyResultIgnore []string `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
 	// EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
 	EmptyResultMaxAttempts int `yaml:"emptyResultMaxAttempts,omitempty" json:"emptyResultMaxAttempts"`
 	// EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
 	// When set, empty result retries wait this long instead of using the normal error delay/backoff.
 	EmptyResultDelay Duration `yaml:"emptyResultDelay,omitempty" json:"emptyResultDelay" tstype:"Duration"`
+	// BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
+	// requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
+	// time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
+	BlockUnavailableDelay Duration `yaml:"blockUnavailableDelay,omitempty" json:"blockUnavailableDelay" tstype:"Duration"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {

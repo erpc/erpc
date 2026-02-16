@@ -225,7 +225,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			},
 			&common.RetryPolicyConfig{
 				MaxAttempts:       3,
-				EmptyResultIgnore: []string{"eth_getLogs", "eth_call"}, // eth_getTransactionByHash not in list
+				EmptyResultAccept: []string{"eth_getLogs", "eth_call"}, // eth_getTransactionByHash not in list
 			},
 		)
 
@@ -304,7 +304,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
 			&common.RetryPolicyConfig{
 				MaxAttempts:       3,
-				EmptyResultIgnore: []string{"eth_getTransactionReceipt"},
+				EmptyResultAccept: []string{"eth_getTransactionReceipt"},
 			},
 		)
 

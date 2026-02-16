@@ -402,6 +402,12 @@ export interface NetworkDefaults {
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -437,6 +443,12 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   ignoreFields?: { [key: string]: string[]};
@@ -543,11 +555,30 @@ export interface RetryPolicyConfig {
   backoffFactor?: number /* float32 */;
   jitter?: Duration;
   emptyResultConfidence?: AvailbilityConfidence;
+  /**
+   * EmptyResultAccept lists methods for which an empty/null result is considered valid
+   * and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
+   */
+  emptyResultAccept?: string[];
+  /**
+   * @deprecated: use EmptyResultAccept instead.
+   */
   emptyResultIgnore?: string[];
   /**
    * EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
    */
   emptyResultMaxAttempts?: number /* int */;
+  /**
+   * EmptyResultDelay is the fixed delay between retry attempts triggered by empty results.
+   * When set, empty result retries wait this long instead of using the normal error delay/backoff.
+   */
+  emptyResultDelay?: Duration;
+  /**
+   * BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
+   * requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
+   * time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
+   */
+  blockUnavailableDelay?: Duration;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
@@ -719,6 +750,12 @@ export interface NetworkConfig {
   alias?: string;
   methods?: MethodsConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
@@ -731,6 +768,11 @@ export interface DirectiveDefaultsConfig {
   enforceHighestBlock?: boolean;
   enforceGetLogsBlockRange?: boolean;
   enforceNonNullTaggedBlocks?: boolean;
+  /**
+   * ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
+   * Defaults to true. Disable for non-standard chains that use unusual trie roots.
+   */
+  validateTransactionsRoot?: boolean;
   /**
    * Validation: Header Field Lengths
    */

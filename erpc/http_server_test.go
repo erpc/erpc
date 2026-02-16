@@ -7836,7 +7836,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 								MatchFinality: []common.DataFinalityState{common.DataFinalityStateUnfinalized},
 								Timeout:       &common.TimeoutPolicyConfig{Duration: common.Duration(10 * time.Second)},
 								Hedge:         &common.HedgePolicyConfig{Quantile: 0.95, MaxCount: 1, MinDelay: common.Duration(100 * time.Millisecond), MaxDelay: common.Duration(10 * time.Second)},
-								Retry:         &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultConfidence: common.AvailbilityConfidenceBlockHead, EmptyResultIgnore: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
+								Retry:         &common.RetryPolicyConfig{MaxAttempts: 4, Delay: 0, EmptyResultConfidence: common.AvailbilityConfidenceBlockHead, EmptyResultAccept: []string{"eth_getLogs"}, EmptyResultMaxAttempts: 1},
 								Consensus: &common.ConsensusPolicyConfig{
 									AgreementThreshold:      2,
 									MaxParticipants:         4,

@@ -626,7 +626,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultIgnore: []string{"eth_getBalance"}}}
+		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultAccept: []string{"eth_getBalance"}}}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
@@ -684,7 +684,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1 when method in EmptyResultIgnore, got %d", resp.Attempts())
+			t.Errorf("expected attempts=1 when method in EmptyResultAccept, got %d", resp.Attempts())
 		}
 	})
 
