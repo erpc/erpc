@@ -30,6 +30,10 @@ func (f DataFinalityState) String() string {
 	return []string{"finalized", "unfinalized", "realtime", "unknown"}[f]
 }
 
+func (f DataFinalityState) MarshalYAML() (interface{}, error) {
+	return f.String(), nil
+}
+
 func (f DataFinalityState) MarshalJSON() ([]byte, error) {
 	return SonicCfg.Marshal(f.String())
 }
@@ -70,6 +74,10 @@ func (b CacheEmptyBehavior) String() string {
 	return []string{"ignore", "allow", "only"}[b]
 }
 
+func (b CacheEmptyBehavior) MarshalYAML() (interface{}, error) {
+	return b.String(), nil
+}
+
 func (b *CacheEmptyBehavior) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var s string
 	if err := unmarshal(&s); err != nil {
@@ -104,6 +112,10 @@ func (a CachePolicyAppliesTo) String() string {
 		return string(CachePolicyAppliesToBoth)
 	}
 	return string(a)
+}
+
+func (a CachePolicyAppliesTo) MarshalYAML() (interface{}, error) {
+	return a.String(), nil
 }
 
 func (a CachePolicyAppliesTo) MarshalJSON() ([]byte, error) {
