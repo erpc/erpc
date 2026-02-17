@@ -32,3 +32,15 @@ go tool pprof -top "${PROFILE_DIR}/<ref-a-sanitized>/cpu.pprof"
 go tool pprof -top "${PROFILE_DIR}/<ref-b-sanitized>/cpu.pprof"
 ```
 
+## Spike Compare (Local, e2e)
+
+Runs two refs against a local mock upstream that returns oversized `eth_getLogs` bodies and measures:
+- client success/failure + latency percentiles (via `scripts/spike_getlogs_upstream.py`)
+- max RSS for the eRPC process
+- heap pprof snapshots (before/after)
+
+```bash
+# Defaults: ref-a=4ca935a ref-b=HEAD
+REQUESTS=20 CONCURRENCY=5 OVERSIZE_MB=80 OK_RANGE=1000 \
+./scripts/bench/spike-compare.sh 4ca935a HEAD
+```
