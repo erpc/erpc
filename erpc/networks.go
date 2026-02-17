@@ -512,38 +512,43 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				defer cancelFn()
 			}
 
-			var err error
+			// Try all upstreams in a single execution before returning to failsafe.
+			// This ensures delays (emptyResultDelay, blockUnavailableDelay) only
+			// fire after a full round of upstream attempts.
+			//
+			// MarkUpstreamCompleted releases empty-result and error upstreams from
+			// ConsumedUpstreams, so they're available for the next retry round.
+			// The loop cap (maxLoopIterations) prevents re-picking within the same
+			// execution since UpstreamIdx advances monotonically.
+			var bestResp *common.NormalizedResponse
 			maxLoopIterations := effectiveReq.UpstreamsCount()
+
 			for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
 				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
 				if ctxErr := loopCtx.Err(); ctxErr != nil {
 					cause := context.Cause(loopCtx)
-					if cause != nil {
-						common.SetTraceSpanError(loopSpan, cause)
-						loopSpan.End()
-						return nil, cause
-					} else {
-						common.SetTraceSpanError(loopSpan, ctxErr)
-						loopSpan.End()
-						return nil, ctxErr
+					if cause == nil {
+						cause = ctxErr
 					}
+					common.SetTraceSpanError(loopSpan, cause)
+					loopSpan.End()
+					if bestResp != nil {
+						bestResp.Release()
+					}
+					return nil, cause
 				}
 
-				// Get next available upstream
-				u, err := effectiveReq.NextUpstream()
-				if err != nil {
-					// No more available upstreams
+				u, selErr := effectiveReq.NextUpstream()
+				if selErr != nil {
 					loopSpan.SetAttributes(
 						attribute.Bool("upstreams_exhausted", true),
-						attribute.String("error", err.Error()),
+						attribute.String("error", selErr.Error()),
 					)
 					loopSpan.End()
 					break
 				}
 
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
-
-				// Add upstream EVM state poller values if available
 				if eu, ok := u.(common.EvmUpstream); ok {
 					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 						loopSpan.SetAttributes(
@@ -560,41 +565,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					Str("selectedUpstream", u.Id()).
 					Msg("selected upstream from list")
 
-				// Network-level per-upstream gating based on block availability (after block tag interpolation)
+				// Pre-forward: block availability gating → skip to next upstream
 				if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
-					ulg.Debug().Err(skipErr).Bool("retryable", isRetryable).Msg("skipping upstream due to block availability gating")
-					loopSpan.SetAttributes(
-						attribute.Bool("skipped", true),
-						attribute.String("skip_reason", skipErr.Error()),
-						attribute.Bool("skip_retryable", isRetryable),
-					)
-
-					// Track block unavailability in metrics so it's visible on charts
-					finality := effectiveReq.Finality(loopCtx)
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(
-						n.projectId,
-						u.VendorName(),
-						n.Label(),
-						u.Id(),
-						method,
-						common.ErrorFingerprint(skipErr),
-						string(common.SeverityInfo),
-						effectiveReq.CompositeType(),
-						finality.String(),
-						effectiveReq.UserId(),
-						effectiveReq.AgentName(),
-					).Inc()
-
-					// Mark upstream completed with the skip error.
-					// MarkUpstreamCompleted stores the error and keeps upstream in ConsumedUpstreams,
-					// preventing re-selection in the same round. On exhaustion, retryable errors
-					// are cleared so the upstream can be tried again after others.
-					errToStore := skipErr
-					if !isRetryable {
-						// Wrap as non-retryable skip - upstream is too far behind
-						errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
-					}
-					effectiveReq.MarkUpstreamCompleted(loopCtx, u, nil, errToStore)
+					n.recordBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
 					loopSpan.End()
 					continue
 				}
@@ -604,85 +577,93 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if hedges > 0 {
 					finality := effectiveReq.Finality(loopCtx)
 					telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
-						n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
+						n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges),
+						finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
 					).Inc()
 				}
 
-				var r *common.NormalizedResponse
-				r, err = tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, exec.Retries())
-
+				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, exec.Retries())
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
 				}
-
 				effectiveReq.MarkUpstreamCompleted(loopCtx, u, r, err)
 
-				isClientErr := common.IsClientError(err)
+				// Hedge cancelled → this execution lost the race, bail out
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
-					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-					finality := effectiveReq.Finality(loopCtx)
-					telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardsTotal,
-						n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges), finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
-					).Inc()
-					// Release any response associated with the discarded hedge to avoid retaining buffers
+					n.recordHedgeDiscard(loopCtx, loopSpan, &ulg, u, effectiveReq, method, err, attempts, hedges)
 					if r != nil {
 						r.Release()
-						r = nil
 					}
-					err := common.NewErrUpstreamHedgeCancelled(u.Id(), err)
-					common.SetTraceSpanError(loopSpan, err)
-					return nil, err
-				}
-
-				if err != nil {
-					loopSpan.SetAttributes(
-						attribute.Bool("error.is_client", isClientErr),
-					)
+					loopSpan.End()
+					if bestResp != nil {
+						bestResp.Release()
+					}
+					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 				}
 
 				if r != nil {
 					r.SetUpstream(u)
+					r.WithRequest(effectiveReq)
 				}
 
-				if !common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
-					if err == nil {
-						loopSpan.SetStatus(codes.Ok, "")
-					} else {
-						common.SetTraceSpanError(loopSpan, err)
+				// Happy path: non-empty success → return immediately
+				if err == nil && r != nil && !r.IsObjectNull() && !r.IsResultEmptyish() {
+					r.SetAttempts(exec.Attempts())
+					r.SetRetries(exec.Retries())
+					r.SetHedges(exec.Hedges())
+					loopSpan.SetStatus(codes.Ok, "")
+					loopSpan.End()
+					if bestResp != nil {
+						bestResp.Release()
 					}
+					return r, nil
+				}
+
+				// Deterministic errors: client faults and execution reverts are the
+				// same on every upstream — no point trying others.
+				if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+					common.SetTraceSpanError(loopSpan, err)
 					if r != nil {
-						if err == nil {
-							// Store execution metadata only for winning attempts
-							r.SetAttempts(exec.Attempts())
-							r.SetRetries(exec.Retries())
-							r.SetHedges(exec.Hedges())
-						} else {
-							// On error, release non-winning responses
-							r.Release()
-							r = nil
-						}
+						r.Release()
 					}
 					loopSpan.End()
-					return r, err
+					if bestResp != nil {
+						bestResp.Release()
+					}
+					return nil, err
 				}
 
-				// For skipped requests, add skip reason to span and continue
-				loopSpan.SetAttributes(
-					attribute.Bool("skipped", true),
-					attribute.String("skip_reason", err.Error()),
-				)
-
-				// For skipped requests, ensure any response is not retained before continuing
-				if r != nil {
-					r.Release()
-					r = nil
+				// Track best result and continue to next upstream.
+				if err != nil {
+					if r != nil {
+						r.Release()
+					}
+					common.SetTraceSpanError(loopSpan, err)
+				} else if r != nil {
+					if bestResp != nil {
+						bestResp.Release()
+					}
+					bestResp = r
+					loopSpan.SetStatus(codes.Ok, "")
 				}
-
 				loopSpan.End()
 			}
 
-			err = common.NewErrUpstreamsExhausted(
+			// All upstreams tried. Return the best result for failsafe to evaluate
+			// delays and retries. Prefer a valid response over an error so the
+			// delay function can detect empty results and apply emptyResultDelay.
+			if bestResp != nil {
+				bestResp.SetAttempts(exec.Attempts())
+				bestResp.SetRetries(exec.Retries())
+				bestResp.SetHedges(exec.Hedges())
+				return bestResp, nil
+			}
+
+			// Wrap all errors as ErrUpstreamsExhausted. The delay function
+			// uses HasErrorCode which traverses child errors, so it can still
+			// detect blockUnavailable / missingData inside the wrapper.
+			exhaustedErr := common.NewErrUpstreamsExhausted(
 				effectiveReq,
 				&effectiveReq.ErrorsByUpstream,
 				n.projectId,
@@ -694,8 +675,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				exec.Hedges(),
 				len(upsList),
 			)
-			common.SetTraceSpanError(execSpan, err)
-			return nil, err
+			common.SetTraceSpanError(execSpan, exhaustedErr)
+			return nil, exhaustedErr
 		})
 
 	req.RLockWithTrace(ctx)
@@ -790,7 +771,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		n.enrichStatePoller(ctx, method, req, resp)
 
 		// If response is not empty, but at least one upstream responded empty we track in a metric.
-		req.EmptyResponses.Range(func(key, value any) bool {
+		// Derived from ErrorsByUpstream entries with ErrEndpointMissingData code.
+		req.ErrorsByUpstream.Range(func(key, value any) bool {
+			upstreamErr, ok := value.(error)
+			if !ok || !common.HasErrorCode(upstreamErr, common.ErrCodeEndpointMissingData) {
+				return true
+			}
 			upstream := key.(*upstream.Upstream)
 			finality := req.Finality(ctx)
 			telemetry.MetricUpstreamWrongEmptyResponseTotal.WithLabelValues(
@@ -805,13 +791,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			).Inc()
 			if upstream != nil {
 				if mt := upstream.MetricsTracker(); mt != nil {
-					// We would like to penalize the upstream if another upstream responded with data,
-					// but this upstream responded empty.
-					if r, ok := value.(error); ok {
-						mt.RecordUpstreamFailure(upstream, method, r)
-					} else {
-						mt.RecordUpstreamFailure(upstream, method, common.NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish"), upstream))
-					}
+					mt.RecordUpstreamFailure(upstream, method, upstreamErr)
 				}
 			}
 			return true
@@ -1007,6 +987,59 @@ func (n *Network) resolveEnforceBlockAvailability(method string) bool {
 	}
 	// Fallback default: enabled
 	return true
+}
+
+// recordBlockSkip handles telemetry and state when a block availability check causes an upstream to be skipped.
+func (n *Network) recordBlockSkip(
+	ctx context.Context,
+	span trace.Span,
+	ulg *zerolog.Logger,
+	u common.Upstream,
+	req *common.NormalizedRequest,
+	method string,
+	skipErr error,
+	isRetryable bool,
+) {
+	ulg.Debug().Err(skipErr).Bool("retryable", isRetryable).Msg("skipping upstream due to block availability gating")
+	span.SetAttributes(
+		attribute.Bool("skipped", true),
+		attribute.String("skip_reason", skipErr.Error()),
+		attribute.Bool("skip_retryable", isRetryable),
+	)
+	finality := req.Finality(ctx)
+	telemetry.MetricUpstreamErrorTotal.WithLabelValues(
+		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
+		common.ErrorFingerprint(skipErr), string(common.SeverityInfo),
+		req.CompositeType(), finality.String(),
+		req.UserId(), req.AgentName(),
+	).Inc()
+	errToStore := skipErr
+	if !isRetryable {
+		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
+	}
+	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
+}
+
+// recordHedgeDiscard handles telemetry when a hedged request is discarded because another hedge won.
+func (n *Network) recordHedgeDiscard(
+	ctx context.Context,
+	span trace.Span,
+	ulg *zerolog.Logger,
+	u common.Upstream,
+	req *common.NormalizedRequest,
+	method string,
+	err error,
+	attempts int,
+	hedges int,
+) {
+	ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
+	finality := req.Finality(ctx)
+	telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardsTotal,
+		n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", attempts),
+		fmt.Sprintf("%d", hedges), finality.String(),
+		req.UserId(), req.AgentName(),
+	).Inc()
+	common.SetTraceSpanError(span, common.NewErrUpstreamHedgeCancelled(u.Id(), err))
 }
 
 // checkUpstreamBlockAvailability performs per-upstream gating for the request based on block availability.

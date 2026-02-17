@@ -252,9 +252,11 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "0x123", result)
 
-		// Verify a retry occurred
-		assert.Equal(t, 1, resp.Retries())
-		assert.Equal(t, 2, resp.Attempts())
+		// With the try-all-upstreams-before-returning behavior, rpc2 is found
+		// within the same execution round (no retry delay needed). This is more
+		// efficient than the old behavior which required a full retry round.
+		assert.Equal(t, 0, resp.Retries())
+		assert.Equal(t, 1, resp.Attempts())
 	})
 
 	t.Run("RetryEmptyTrue_IgnoreIncludesReceipt_NoRetry", func(t *testing.T) {

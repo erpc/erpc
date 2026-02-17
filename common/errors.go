@@ -1155,10 +1155,12 @@ var NewErrNoUpstreamsLeftToSelect = func(r *NormalizedRequest, reason string) er
 	}
 	for _, u := range r.upstreamList {
 		state := "unknown"
-		if _, ok := r.ErrorsByUpstream.Load(u); ok {
-			state = "errored"
-		} else if _, ok := r.EmptyResponses.Load(u); ok {
-			state = "empty_response"
+		if errVal, ok := r.ErrorsByUpstream.Load(u); ok {
+			if err, isErr := errVal.(error); isErr && HasErrorCode(err, ErrCodeEndpointMissingData) {
+				state = "empty_response"
+			} else {
+				state = "errored"
+			}
 		} else if _, ok := r.ConsumedUpstreams.Load(u); ok {
 			state = "consumed"
 		} else {
@@ -2357,9 +2359,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 
 	if HasErrorCode(
 		err,
-
-		// Missing data errors -> No Retry
-		ErrCodeEndpointMissingData,
 
 		// Circuit breaker is open -> No Retry
 		ErrCodeFailsafeCircuitBreakerOpen,
