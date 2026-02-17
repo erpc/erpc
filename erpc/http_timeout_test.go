@@ -142,6 +142,30 @@ func TestTimeoutHandler_SuccessfulResponse(t *testing.T) {
 	})
 }
 
+func TestTimeoutHandler_LargeResponseSwitchesToPassthrough(t *testing.T) {
+	prev := maxBufferedResponseBytes
+	maxBufferedResponseBytes = 8 << 10 // 8KiB
+	t.Cleanup(func() { maxBufferedResponseBytes = prev })
+
+	largeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Write far beyond the buffer limit.
+		_, _ = w.Write([]byte(strings.Repeat("x", 64<<10)))
+	})
+
+	handler := TimeoutHandler(&log.Logger, largeHandler, 10*time.Second)
+
+	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getLogs","id":1}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	// Should preserve feature behavior: serve the large response without returning
+	// a synthetic "response too large" JSON-RPC error.
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, strings.Repeat("x", 64<<10), rec.Body.String())
+}
+
 func TestTimeoutHandler_PanicRecovery(t *testing.T) {
 	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("test panic")
