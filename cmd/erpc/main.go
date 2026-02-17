@@ -140,6 +140,11 @@ func main() {
 				Usage: "Output format: yaml|json",
 				Value: "yaml",
 			},
+			&cli.BoolFlag{
+				Name:  "defaults",
+				Usage: "Apply eRPC defaults to the config before dumping (shows final resolved config)",
+				Value: false,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			zerolog.SetGlobalLevel(zerolog.Disabled)
@@ -160,6 +165,14 @@ func main() {
 				fmt.Fprintf(os.Stderr, "error: failed to load config: %v\n", err)
 				util.OsExit(1)
 				return nil
+			}
+
+			if cmd.Bool("defaults") {
+				if err := cfg.SetDefaults(&common.DefaultOptions{}); err != nil {
+					fmt.Fprintf(os.Stderr, "error: failed to apply defaults: %v\n", err)
+					util.OsExit(1)
+					return nil
+				}
 			}
 
 			format := cmd.String("format")
