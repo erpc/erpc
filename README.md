@@ -77,6 +77,36 @@ This setup is ideal for development and testing purposes. For production environ
 
 ---
 
+### CLI Commands
+
+eRPC provides several CLI commands beyond the default server start:
+
+#### `erpc validate <config-file>`
+
+Validate a configuration file (TS, JS, or YAML) and report any errors, warnings, or notices. Useful in CI pipelines to catch misconfigurations before deployment.
+
+```bash
+erpc validate erpc.yaml
+erpc validate erpc.ts
+```
+
+#### `erpc dump <config-file>`
+
+Parse a configuration file and output the fully resolved configuration with all eRPC defaults applied. Supports YAML and JSON output. This is useful for inspecting what your final config looks like after eRPC fills in all default values (retry policies, timeouts, selection policies, etc.).
+
+```bash
+# Output as YAML (default)
+erpc dump erpc.yaml
+
+# Output as JSON
+erpc dump --format json erpc.ts
+
+# Compare two configs (e.g. before/after a migration)
+diff <(erpc dump old-config.yaml) <(erpc dump new-config.yaml)
+```
+
+---
+
 ### Local Development
 
 1. **Clone this repository:**
