@@ -726,6 +726,19 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			maxBytes = 64 * 1024 * 1024
 		}
 
+		// Fast path: if upstream provides Content-Length for an uncompressed response, avoid
+		// reading up to maxBytes just to discover it's too large. This keeps split-on-error
+		// responsive under heavy getLogs spikes.
+		if resp.ContentLength > 0 &&
+			resp.ContentLength > maxBytes &&
+			resp.Header.Get("Content-Encoding") != "gzip" {
+			_ = resp.Body.Close()
+			return nil, common.NewErrEndpointRequestTooLarge(
+				fmt.Errorf("response content-length=%d exceeds limit=%d", resp.ContentLength, maxBytes),
+				common.EvmResponseTooLarge,
+			)
+		}
+
 		bodyBytes, cleanup, rerr := c.readResponseBodyMax(resp, int(resp.ContentLength), maxBytes)
 		if cleanup != nil {
 			defer cleanup()
