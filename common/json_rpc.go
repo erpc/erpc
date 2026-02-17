@@ -809,7 +809,18 @@ func (r *JsonRpcResponse) CloneShallow() *JsonRpcResponse {
 	// affecting others.
 	clone.errBytes = r.errBytes
 	clone.result = r.result
-	clone.resultWriter = r.resultWriter
+
+	// Never share resultWriter: it has stateful release semantics
+	// (e.g. GetLogsMultiResponseWriter frees sub-responses on Release).
+	// If both original and clone call Free(), the writer gets double-
+	// released. Instead, materialize the writer's content when result
+	// bytes aren't available.
+	if clone.result == nil && r.resultWriter != nil {
+		var buf bytes.Buffer
+		if _, err := r.resultWriter.WriteTo(&buf, false); err == nil {
+			clone.result = buf.Bytes()
+		}
+	}
 
 	// Copy canonical hash if available
 	if cached, ok := r.canonicalHashWithIgnored.Load(defaultCanonicalHashPlaceholder); ok {
