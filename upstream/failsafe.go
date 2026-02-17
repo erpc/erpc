@@ -526,28 +526,44 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		// If RetryEmpty is disabled, don't retry MissingData at all.
 		// If RetryEmpty is enabled but the method is in emptyResultAccept, don't retry.
 		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			// Resolve the request: prefer result.Request(), fallback to ErrUpstreamsExhausted.Request()
+			// (when Forward returns nil response + error, the request is embedded in the error).
+			var req *common.NormalizedRequest
 			if result != nil {
-				if req := result.Request(); req != nil {
-					if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+				req = result.Request()
+			}
+			if req == nil {
+				if exh, ok := err.(*common.ErrUpstreamsExhausted); ok {
+					req = exh.Request()
+				} else {
+					// Try to unwrap from failsafe wrapper
+					var exhErr *common.ErrUpstreamsExhausted
+					if errors.As(err, &exhErr) {
+						req = exhErr.Request()
+					}
+				}
+			}
+
+			if req != nil {
+				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+					span.SetAttributes(
+						attribute.Bool("retry", false),
+						attribute.String("reason", "missing_data_but_retry_empty_disabled"),
+					)
+					return false
+				}
+				if rds := req.Directives(); rds != nil && rds.RetryEmpty {
+					method, _ := req.Method()
+					span.SetAttributes(
+						attribute.String("method", method),
+						attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
+					)
+					if slices.Contains(emptyResultAccept, method) {
 						span.SetAttributes(
 							attribute.Bool("retry", false),
-							attribute.String("reason", "missing_data_but_retry_empty_disabled"),
+							attribute.String("reason", "missing_data_method_in_empty_accept_list"),
 						)
 						return false
-					}
-					if rds := req.Directives(); rds != nil && rds.RetryEmpty {
-						method, _ := req.Method()
-						span.SetAttributes(
-							attribute.String("method", method),
-							attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
-						)
-						if slices.Contains(emptyResultAccept, method) {
-							span.SetAttributes(
-								attribute.Bool("retry", false),
-								attribute.String("reason", "missing_data_method_in_empty_accept_list"),
-							)
-							return false
-						}
 					}
 				}
 			}
