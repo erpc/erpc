@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -216,6 +217,61 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return true, nil, common.NewErrGetLogsExceededMaxAllowedTopics(topicCount, maxTopics)
 	}
 
+	skipCacheRead := false
+	if dirs := nrq.Directives(); dirs != nil {
+		skipCacheRead = dirs.SkipCacheRead
+	}
+
+	// Cache-aware chunking: split into deterministic ranges to maximize cache hits.
+	//
+	// Note: we apply chunking even when SkipCacheRead=true. That directive only means
+	// "don't read from cache" (force upstream). Chunking still provides deterministic
+	// keys and caps per-upstream response sizes / latencies.
+	if cacheDal := n.Cache(); cacheDal != nil && !cacheDal.IsObjectNull() {
+		chunkSize := int64(0)
+		if ncfg.Evm.GetLogsCacheChunkSize != nil {
+			chunkSize = *ncfg.Evm.GetLogsCacheChunkSize
+		}
+		if requestRange > 0 && chunkSize > 0 && requestRange > chunkSize {
+			subRequests := make([]ethGetLogsSubRequest, 0)
+			// Align first chunk start to chunkSize boundary for deterministic cache keys
+			// e.g. with chunkSize=1000, fromBlock=1500 -> first chunk starts at 1500, ends at 1999
+			sb := fromBlock
+			for sb <= toBlock {
+				// Compute aligned chunk end: next boundary - 1, clamped to toBlock
+				alignedEnd := sb - (sb % chunkSize) + chunkSize - 1
+				eb := min(alignedEnd, toBlock)
+				subRequests = append(subRequests, ethGetLogsSubRequest{
+					fromBlock: sb,
+					toBlock:   eb,
+					address:   filter["address"],
+					topics:    filter["topics"],
+				})
+				sb = eb + 1
+			}
+
+			nrq.SetCompositeType(common.CompositeTypeLogsCacheChunk)
+			chunkConc := 0
+			if ncfg.Evm != nil {
+				chunkConc = ncfg.Evm.GetLogsCacheChunkConcurrency
+			}
+			mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead, chunkConc)
+			if err != nil {
+				return true, nil, err
+			}
+
+			nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+			if meta != nil && meta.allFromCache {
+				nrs.SetFromCache(true)
+				if meta.oldestCacheAt > 0 {
+					nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
+				}
+			}
+			nrq.SetLastValidResponse(ctx, nrs)
+			return true, nrs, nil
+		}
+	}
+
 	// Compute effective auto-splitting threshold (min across upstreams)
 	effectiveThreshold := int64(0)
 	foundPositive := false
@@ -253,16 +309,22 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 
 		nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-		skipCache := false
-		if dirs := nrq.Directives(); dirs != nil {
-			skipCache = dirs.SkipCacheRead
+		splitConc := 0
+		if ncfg.Evm != nil {
+			splitConc = ncfg.Evm.GetLogsSplitConcurrency
 		}
-		mergedResponse, fromCache, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache)
+		mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead, splitConc)
 		if err != nil {
 			return true, nil, err
 		}
 
-		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse).SetFromCache(fromCache)
+		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+		if meta != nil && meta.allFromCache {
+			nrs.SetFromCache(true)
+			if meta.oldestCacheAt > 0 {
+				nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
+			}
+		}
 		nrq.SetLastValidResponse(ctx, nrs)
 		return true, nrs, nil
 	}
@@ -386,23 +448,35 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	if ncfg == nil || ncfg.Evm == nil || ncfg.Evm.GetLogsSplitOnError == nil || !*ncfg.Evm.GetLogsSplitOnError {
 		return rs, re
 	}
-	if rq.ParentRequestId() != nil || rq.IsCompositeRequest() {
+	// Allow recursive splitting for derived sub-requests (ParentRequestId != nil).
+	// This is required when an initial split (by range) still returns responses that are too large or time out.
+	// Only block re-entrancy on already-composite requests.
+	if rq.IsCompositeRequest() {
 		return rs, re
 	}
 
 	// Only if upstream complained about large requests, split
 	// e.g. if our own eth_getLogs hook complained about large range, do NOT try to split
-	isTooLarge := common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge)
-	if !isTooLarge {
+	splitWorthy := false
+	// "Too large" (413-like).
+	if common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
+		splitWorthy = true
+	} else {
 		// Also accept JsonRpcExceptionInternal with normalized code EvmLargeRange (-32012)
 		var jre *common.ErrJsonRpcExceptionInternal
-		if errors.As(re, &jre) {
-			if jre.NormalizedCode() == common.JsonRpcErrorEvmLargeRange {
-				isTooLarge = true
-			}
+		if errors.As(re, &jre) && jre.NormalizedCode() == common.JsonRpcErrorEvmLargeRange {
+			splitWorthy = true
 		}
 	}
-	if !isTooLarge {
+	// Timeout: observed as client-side viem timeouts, or upstream endpoint timeouts.
+	// Splitting helps reduce per-call latency and response sizes.
+	if !splitWorthy && common.HasErrorCode(re, common.ErrCodeEndpointRequestTimeout, common.ErrCodeNetworkRequestTimeout, common.ErrCodeFailsafeTimeoutExceeded) {
+		splitWorthy = true
+	}
+	if !splitWorthy && errors.Is(re, context.DeadlineExceeded) {
+		splitWorthy = true
+	}
+	if !splitWorthy {
 		return rs, re
 	}
 
@@ -417,25 +491,38 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	if dirs := rq.Directives(); dirs != nil {
 		skipCacheRead = dirs.SkipCacheRead
 	}
-	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
+	splitConc := 0
+	if ncfg != nil && ncfg.Evm != nil {
+		splitConc = ncfg.Evm.GetLogsSplitConcurrency
+	}
+	merged, meta, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead, splitConc)
 	if err != nil {
 		return rs, re
 	}
 	if rs != nil {
 		rs.Release()
 	}
-	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
+	nrs := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged)
+	if meta != nil && meta.allFromCache {
+		nrs.SetFromCache(true)
+		if meta.oldestCacheAt > 0 {
+			nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
+		}
+	}
+	return nrs, nil
 }
 
 type GetLogsMultiResponseWriter struct {
 	mu        sync.RWMutex
 	responses []*common.JsonRpcResponse
+	holders   []*common.NormalizedResponse
 	released  bool
 }
 
-func NewGetLogsMultiResponseWriter(responses []*common.JsonRpcResponse) *GetLogsMultiResponseWriter {
+func NewGetLogsMultiResponseWriter(responses []*common.JsonRpcResponse, holders []*common.NormalizedResponse) *GetLogsMultiResponseWriter {
 	return &GetLogsMultiResponseWriter{
 		responses: responses,
+		holders:   holders,
 	}
 }
 
@@ -539,7 +626,13 @@ func (g *GetLogsMultiResponseWriter) Release() {
 			r.Free()
 		}
 	}
+	for _, h := range g.holders {
+		if h != nil {
+			h.Release()
+		}
+	}
 	g.responses = nil
+	g.holders = nil
 	g.released = true
 }
 
@@ -548,6 +641,73 @@ type ethGetLogsSubRequest struct {
 	toBlock   int64
 	address   interface{}
 	topics    interface{}
+}
+
+func shouldSplitEthGetLogsOnError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// "Too large" (413-like).
+	if common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge) {
+		return true
+	}
+
+	// Normalized JSON-RPC large-range.
+	var jre *common.ErrJsonRpcExceptionInternal
+	if errors.As(err, &jre) && jre.NormalizedCode() == common.JsonRpcErrorEvmLargeRange {
+		return true
+	}
+
+	// Timeouts: upstream endpoint, network, failsafe.
+	if common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout, common.ErrCodeNetworkRequestTimeout, common.ErrCodeFailsafeTimeoutExceeded) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	return false
+}
+
+func splitEthGetLogsSubRequest(sr ethGetLogsSubRequest) []ethGetLogsSubRequest {
+	// First try splitting by block range
+	blockRange := sr.toBlock - sr.fromBlock + 1
+	if blockRange > 1 {
+		mid := sr.fromBlock + (blockRange / 2)
+		return []ethGetLogsSubRequest{
+			{fromBlock: sr.fromBlock, toBlock: mid - 1, address: sr.address, topics: sr.topics},
+			{fromBlock: mid, toBlock: sr.toBlock, address: sr.address, topics: sr.topics},
+		}
+	}
+
+	// If single block, try splitting by address
+	if addresses, ok := sr.address.([]interface{}); ok && len(addresses) > 1 {
+		mid := len(addresses) / 2
+		return []ethGetLogsSubRequest{
+			{fromBlock: sr.fromBlock, toBlock: sr.toBlock, address: addresses[:mid], topics: sr.topics},
+			{fromBlock: sr.fromBlock, toBlock: sr.toBlock, address: addresses[mid:], topics: sr.topics},
+		}
+	}
+
+	// If single block and single address, try splitting topics[0] if it's an array
+	if topics, ok := sr.topics.([]interface{}); ok && len(topics) > 0 {
+		if t0arr, ok := topics[0].([]interface{}); ok && len(t0arr) > 1 {
+			mid := len(t0arr) / 2
+			leftTopics := make([]interface{}, len(topics))
+			rightTopics := make([]interface{}, len(topics))
+			copy(leftTopics, topics)
+			copy(rightTopics, topics)
+			leftTopics[0] = append([]interface{}(nil), t0arr[:mid]...)
+			rightTopics[0] = append([]interface{}(nil), t0arr[mid:]...)
+			return []ethGetLogsSubRequest{
+				{fromBlock: sr.fromBlock, toBlock: sr.toBlock, address: sr.address, topics: leftTopics},
+				{fromBlock: sr.fromBlock, toBlock: sr.toBlock, address: sr.address, topics: rightTopics},
+			}
+		}
+	}
+
+	return nil
 }
 
 func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest, error) {
@@ -663,26 +823,53 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
-func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, bool, error) {
+// getLogsMergeMeta captures cache metadata for merged eth_getLogs results.
+type getLogsMergeMeta struct {
+	allFromCache  bool
+	oldestCacheAt int64
+}
+
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool, concurrency int) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
+	return executeGetLogsSubRequestsInternal(ctx, n, r, subRequests, skipCacheRead, concurrency, 0)
+}
+
+func executeGetLogsSubRequestsInternal(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool, concurrency int, depth int) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
 	// Preserve sub-request order for deterministic merged output
 	responses := make([]*common.JsonRpcResponse, len(subRequests))
-	fromCacheSr := make([]bool, len(subRequests))
+	holders := make([]*common.NormalizedResponse, len(subRequests))
+	fromCacheFlags := make([]bool, len(subRequests))
+	cacheAts := make([]int64, len(subRequests))
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
-	// Use network-level concurrency configuration for split sub-requests
-	concurrency := 10
-	if cfg := n.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsSplitConcurrency > 0 {
-		concurrency = cfg.Evm.GetLogsSplitConcurrency
+	// Concurrency is passed by caller (cache chunking vs split-on-error differ).
+	if concurrency <= 0 {
+		concurrency = 10
+	}
+	if concurrency > len(subRequests) {
+		concurrency = len(subRequests)
+	}
+	if concurrency < 1 {
+		concurrency = 1
 	}
 	semaphore := make(chan struct{}, concurrency)
+	loopCtxErr := error(nil)
+	const maxSplitDepth = 16
+loop:
 	for idx, sr := range subRequests {
 		wg.Add(1)
 		// Acquire semaphore token (blocks if at capacity)
-		semaphore <- struct{}{}
+		select {
+		case semaphore <- struct{}{}:
+		case <-ctx.Done():
+			wg.Done()
+			loopCtxErr = ctx.Err()
+			break loop
+		}
+
 		go func(req ethGetLogsSubRequest, i int) {
 			defer wg.Done()
 			defer func() {
@@ -719,8 +906,40 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
 			sbnrq.CopyHttpContextFrom(r)
 
-			rs, re := n.Forward(ctx, sbnrq)
+			// Bound per-sub-request wall time so slow upstream getLogs calls trigger split-and-retry
+			// rather than letting the top-level client timeout.
+			subTimeout := 10 * time.Second
+			if dl, ok := ctx.Deadline(); ok {
+				rem := time.Until(dl)
+				if rem > 0 && rem < subTimeout {
+					subTimeout = rem
+				}
+			}
+			subCtx, cancel := context.WithTimeout(ctx, subTimeout)
+			rs, re := n.Forward(subCtx, sbnrq)
+			cancel()
 			if re != nil {
+				// If a sub-request timed out or was too large, try splitting it further.
+				// This prevents a single slow/huge chunk from failing the entire merge.
+				if depth < maxSplitDepth && shouldSplitEthGetLogsOnError(re) {
+					subSubs := splitEthGetLogsSubRequest(req)
+					if len(subSubs) > 0 {
+						subJrr, subMeta, subErr := executeGetLogsSubRequestsInternal(ctx, n, r, subSubs, skipCacheRead, concurrency, depth+1)
+						if subErr == nil {
+							responses[i] = subJrr
+							holders[i] = nil
+							if subMeta != nil {
+								fromCacheFlags[i] = subMeta.allFromCache
+								cacheAts[i] = subMeta.oldestCacheAt
+							} else {
+								fromCacheFlags[i] = false
+								cacheAts[i] = 0
+							}
+							return
+						}
+						re = subErr
+					}
+				}
 				mu.Lock()
 				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
@@ -728,7 +947,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 					r.UserId(),
 					r.AgentName(),
 				).Inc()
-				errs = append(errs, re)
+				errs = append(errs, fmt.Errorf("sub-request [%d-%d] forward failed: %w", req.fromBlock, req.toBlock, re))
 				mu.Unlock()
 				return
 			}
@@ -763,6 +982,37 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			}
 
 			if jrr.Error != nil {
+				// If the upstream returned a split-worthy JSON-RPC error, try splitting and retrying.
+				if depth < maxSplitDepth && shouldSplitEthGetLogsOnError(jrr.Error) {
+					subSubs := splitEthGetLogsSubRequest(req)
+					if len(subSubs) > 0 {
+						rs.Release() // no longer needed; we'll return a merged sub-response
+						subJrr, subMeta, subErr := executeGetLogsSubRequestsInternal(ctx, n, r, subSubs, skipCacheRead, concurrency, depth+1)
+						if subErr == nil {
+							responses[i] = subJrr
+							holders[i] = nil
+							if subMeta != nil {
+								fromCacheFlags[i] = subMeta.allFromCache
+								cacheAts[i] = subMeta.oldestCacheAt
+							} else {
+								fromCacheFlags[i] = false
+								cacheAts[i] = 0
+							}
+							return
+						}
+						// If split execution failed, record the split failure and stop.
+						mu.Lock()
+						telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
+							n.ProjectId(),
+							n.Label(),
+							r.UserId(),
+							r.AgentName(),
+						).Inc()
+						errs = append(errs, subErr)
+						mu.Unlock()
+						return
+					}
+				}
 				mu.Lock()
 				telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
 					n.ProjectId(),
@@ -776,43 +1026,65 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 				return
 			}
 
-			mu.Lock()
 			telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitSuccess,
 				n.ProjectId(),
 				n.Label(),
 				r.UserId(),
 				r.AgentName(),
 			).Inc()
-			jrrc, err := jrr.Clone()
-			if err != nil {
-				errs = append(errs, err)
-				mu.Unlock()
-				return
-			}
-			responses[i] = jrrc
-			fromCacheSr[i] = rs.FromCache()
-			mu.Unlock()
-			rs.Release()
+			// Avoid deep clone amplification: JsonRpcResponse already copies parsed fields
+			// out of the pooled parse buffer. Keep the sub-response alive until the merged
+			// response is released, then free it via GetLogsMultiResponseWriter.Release.
+			responses[i] = jrr
+			holders[i] = rs
+			fromCacheFlags[i] = rs.FromCache()
+			cacheAts[i] = rs.CacheStoredAtUnix()
 		}(sr, idx)
 	}
 	wg.Wait()
 
+	if loopCtxErr != nil {
+		mu.Lock()
+		errs = append(errs, loopCtxErr)
+		mu.Unlock()
+	}
 	if len(errs) > 0 {
-		return nil, false, errors.Join(errs...)
+		// Ensure we don't leak retained sub-responses if we fail mid-merge.
+		for i := range holders {
+			if holders[i] != nil {
+				holders[i].Release()
+				holders[i] = nil
+			}
+			if responses[i] != nil {
+				responses[i].Free()
+				responses[i] = nil
+			}
+		}
+		return nil, nil, errors.Join(errs...)
 	}
 
-	mergedResponse := mergeEthGetLogsResults(responses)
+	mergedResponse := mergeEthGetLogsResults(responses, holders)
 	jrq, _ := r.JsonRpcRequest()
 	err := mergedResponse.SetID(jrq.ID)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
 
-	return mergedResponse, !slices.Contains(fromCacheSr, false), nil
+	meta := &getLogsMergeMeta{allFromCache: true, oldestCacheAt: 0}
+	for i := range fromCacheFlags {
+		if !fromCacheFlags[i] {
+			meta.allFromCache = false
+		}
+		if cacheAts[i] > 0 && (meta.oldestCacheAt == 0 || cacheAts[i] < meta.oldestCacheAt) {
+			meta.oldestCacheAt = cacheAts[i]
+		}
+	}
+
+	return mergedResponse, meta, nil
 }
 
-func mergeEthGetLogsResults(responses []*common.JsonRpcResponse) *common.JsonRpcResponse {
-	writer := NewGetLogsMultiResponseWriter(responses)
+func mergeEthGetLogsResults(responses []*common.JsonRpcResponse, holders []*common.NormalizedResponse) *common.JsonRpcResponse {
+	writer := NewGetLogsMultiResponseWriter(responses, holders)
 	jrr := &common.JsonRpcResponse{}
 	jrr.SetResultWriter(writer)
 	return jrr

@@ -19,10 +19,13 @@ type NormalizedResponse struct {
 	expectedSize int
 
 	fromCache atomic.Bool
-	attempts  atomic.Value
-	retries   atomic.Value
-	hedges    atomic.Value
-	upstream  atomic.Value
+	// cacheStoredAtUnix is a best-effort unix timestamp (seconds) for when the response
+	// was served from cache. Used for composite responses (e.g., eth_getLogs chunking).
+	cacheStoredAtUnix atomic.Int64
+	attempts          atomic.Value
+	retries           atomic.Value
+	hedges            atomic.Value
+	upstream          atomic.Value
 
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
 	evmBlockNumber  atomic.Value
@@ -101,6 +104,21 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 		return r
 	}
 	r.fromCache.Store(fromCache)
+	return r
+}
+
+func (r *NormalizedResponse) CacheStoredAtUnix() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.cacheStoredAtUnix.Load()
+}
+
+func (r *NormalizedResponse) SetCacheStoredAtUnix(ts int64) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.cacheStoredAtUnix.Store(ts)
 	return r
 }
 
@@ -590,6 +608,7 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	r.WithRequest(req)
 	r.SetUpstream(resp.Upstream())
 	r.SetFromCache(resp.FromCache())
+	r.SetCacheStoredAtUnix(resp.CacheStoredAtUnix())
 	r.SetAttempts(resp.Attempts())
 	r.SetRetries(resp.Retries())
 	r.SetHedges(resp.Hedges())
@@ -616,7 +635,7 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 
 	// Use request ID because the multiplexed upstream call may carry a
 	// different ID.
-	jrr, err := ejrr.Clone()
+	jrr, err := ejrr.CloneShallow()
 	if err != nil {
 		return nil, err
 	}

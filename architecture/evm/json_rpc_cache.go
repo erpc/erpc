@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -840,16 +839,21 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 
 	// Check if it's compressed data
 	if c.compressionEnabled && c.isCompressed(resultBytes) {
-		decompressed, err := c.decompressValueBytes(resultBytes)
+		// Stream decompression directly to the client to avoid materializing large results in memory.
+		w, _, _, err := c.newCacheResultWriterFromCompressed(resultBytes)
 		if err != nil {
-			c.logger.Error().Err(err).Msg("failed to decompress cached value")
-			return nil, fmt.Errorf("failed to decompress cached value: %w", err)
+			c.logger.Error().Err(err).Msg("failed to build cache result stream writer")
+			return nil, fmt.Errorf("failed to build cache result stream writer: %w", err)
 		}
-		c.logger.Debug().
-			Int("compressedSize", len(resultBytes)).
-			Int("decompressedSize", len(decompressed)).
-			Msg("decompressed cache value")
-		resultBytes = decompressed
+
+		jrr, err := common.NewJsonRpcResponseFromBytes(nil, nil, nil)
+		if err != nil {
+			w.Release()
+			return nil, err
+		}
+		jrr.SetResultWriter(w)
+		_ = jrr.SetID(rpcReq.ID)
+		return jrr, nil
 	}
 
 	jrr, err := common.NewJsonRpcResponseFromBytes(nil, resultBytes, nil)
@@ -956,33 +960,4 @@ func (c *EvmJsonRpcCache) isCompressed(data []byte) bool {
 		data[1] == 0xB5 &&
 		data[2] == 0x2F &&
 		data[3] == 0xFD
-}
-
-// decompressValueBytes decompresses zstd-compressed byte data
-func (c *EvmJsonRpcCache) decompressValueBytes(compressedData []byte) ([]byte, error) {
-	if !c.isCompressed(compressedData) {
-		// Not compressed, return as-is
-		return compressedData, nil
-	}
-
-	// Get decoder from pool
-	decoderInterface := c.decoderPool.Get()
-	if decoderInterface == nil {
-		return nil, fmt.Errorf("failed to get decoder from pool")
-	}
-	decoder := decoderInterface.(*zstd.Decoder)
-	defer c.decoderPool.Put(decoder)
-
-	// Reset decoder with the compressed data
-	if err := decoder.Reset(bytes.NewReader(compressedData)); err != nil {
-		return nil, fmt.Errorf("failed to reset zstd decoder: %w", err)
-	}
-
-	// Read all decompressed data
-	decompressed, err := io.ReadAll(decoder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress value: %w", err)
-	}
-
-	return decompressed, nil
 }

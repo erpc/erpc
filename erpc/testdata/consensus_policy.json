@@ -23,7 +23,7 @@
     },
     {
       "nl": "accept_most_common_by_count_regardless_of_size:_two_smaller_non_empty_agree_vs_one_larger_different_non_empty_expect_smaller_value",
-      "dsl": "MXP:3 ATSH:2 DBAMC U1:RS50A U2:RS50A U3:RS200B =\u003e RS50A"
+      "dsl": "MXP:3 ATSH:2 DBAMC U1:RS50A U2:RS50A U3:!RS200B =\u003e RS50A"
     },
     {
       "nl": "accept_most_common_on_dispute_when_two_match_and_one_differs_expect_the_matching_value",

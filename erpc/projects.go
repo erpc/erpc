@@ -130,7 +130,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 					lg.Error().Msgf("failed to parse response for shadow requests: nil jsonRpcResponse")
 				}
 			} else {
-				jrc, cerr := jrr.Clone()
+				jrc, cerr := jrr.CloneShallow()
 				if cerr != nil {
 					lg.Error().Err(cerr).Msgf("failed to clone json-rpc response for shadow requests")
 				} else {

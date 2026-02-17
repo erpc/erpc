@@ -69,10 +69,10 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 	if err != nil {
 		panic(err)
 	}
-	upsReg := upstream.NewUpstreamsRegistry(
-		ctx,
-		&log.Logger,
-		"benchProject",
+		upsReg := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"benchProject",
 		[]*common.UpstreamConfig{upConfig},
 		ssr,
 		rlr,
@@ -299,16 +299,28 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		mt,
 		1*time.Second,
 		nil,
-	)
-	upsReg.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-	if err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-		b.Fatal(err)
-	}
+		)
+		upsReg.Bootstrap(ctx)
+		// PrepareUpstreamsForNetwork can transiently return ErrNetworkInitializing while
+		// providers/bootstrap are warming up; retry a few times for stable benchmarks.
+		prepareStart := time.Now()
+		for {
+			err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err == nil {
+				break
+			}
+			if !common.HasErrorCode(err, common.ErrCodeNetworkInitializing) {
+				b.Fatal(err)
+			}
+			if time.Since(prepareStart) > 30*time.Second {
+				b.Fatal(err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 
-	ntw, err := NewNetwork(
-		ctx,
-		&log.Logger,
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
 		"benchProject",
 		&common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
@@ -340,19 +352,8 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 
 func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) {
 	util.ConfigureTestLogger()
-	util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
 	defer util.ResetGock()
-
-	gock.New("http://rpc1.localhost").
-		Persist().
-		Post("").
-		Filter(func(request *http.Request) bool {
-			body := util.SafeReadBody(request)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
-		}).
-		Reply(200).
-		Delay(100 * time.Millisecond).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x21118000"}}`))
 
 	gock.New("http://rpc1.localhost").
 		Persist().
@@ -376,15 +377,16 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 	}
 
 	mt := health.NewTracker(&log.Logger, "benchProject", 2*time.Second)
-	upConfig := &common.UpstreamConfig{
-		Type:     common.UpstreamTypeEvm,
-		Id:       "rpc1",
-		Endpoint: "http://rpc1.localhost",
-		Evm: &common.EvmUpstreamConfig{
-			ChainId:             123,
-			StatePollerDebounce: common.Duration(10 * time.Second),
-		},
-	}
+		upConfig := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				// Benchmark: avoid long bootstrap debounce that can keep the network in "initializing".
+				StatePollerDebounce: common.Duration(10 * time.Millisecond),
+			},
+		}
 
 	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -414,13 +416,23 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		nil,
 		mt,
 		10*time.Second,
-		nil,
-	)
-	upsReg.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
-	if err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
-		b.Fatal(err)
-	}
+			nil,
+		)
+		upsReg.Bootstrap(ctx)
+		prepareStart := time.Now()
+		for {
+			err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+			if err == nil {
+				break
+			}
+			if !common.HasErrorCode(err, common.ErrCodeNetworkInitializing) {
+				b.Fatal(err)
+			}
+			if time.Since(prepareStart) > 10*time.Second {
+				b.Fatal(err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 
 	ntw, err := NewNetwork(
 		ctx,
@@ -459,8 +471,12 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 	b.RunParallel(func(pb *testing.PB) {
 		local := rand.New(rand.NewSource(time.Now().UnixNano()))
 		for pb.Next() {
-			fromBlock := 0x11118001 + uint64(local.Intn(1000000))
+			// Keep requests within [finalized, latest] so we measure success-path behavior.
+			fromBlock := 0x11117000 + uint64(local.Intn(0x1000))
 			toBlock := fromBlock + 0x50
+			if toBlock > 0x11118000 {
+				toBlock = 0x11118000
+			}
 			requestBytes := []byte(`{
 				"jsonrpc": "2.0",
 				"method": "eth_getLogs",
@@ -471,11 +487,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 				"id": 1
 			}`)
 			fakeReq := common.NewNormalizedRequest(requestBytes)
-			_, err := ntw.Forward(ctx, fakeReq)
-			if err != nil {
-				// Not failing the test, but we can log if we want
-				b.Logf("Error in Forward: %v", err)
-			}
+			_, _ = ntw.Forward(ctx, fakeReq)
 		}
 	})
 }
