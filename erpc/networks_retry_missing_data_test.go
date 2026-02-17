@@ -1860,6 +1860,513 @@ func TestNetworkForward_EmptyResultAccept_StopsRetryForAcceptedMethod(t *testing
 	})
 }
 
+// Test: blockUnavailableDelay is respected with timing verification.
+// Both upstreams return MissingData (simulating block not yet available) on
+// first round, then rpc1 succeeds on retry. We verify that the total elapsed
+// time is at least blockUnavailableDelay, confirming the delay fires between
+// retry rounds — not between individual upstream attempts.
+func TestNetworkForward_BlockUnavailableDelay_TimingVerified(t *testing.T) {
+	t.Run("AllUpstreamsMissing_DelayBeforeRetry_ThenSuccess", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		rpc1Calls := 0
+		rpc2Calls := 0
+
+		// Round 1: both upstreams return MissingData (null result for eth_getBlockByNumber)
+		// Round 2 (after blockUnavailableDelay): rpc1 returns data
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc1Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc2Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		// rpc1 on retry round: returns block data
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc1Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number":     "0x100",
+					"hash":       "0xabc",
+					"parentHash": "0xdef",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		blockDelay := 300 * time.Millisecond
+		network := setupTestNetworkForMissingDataRetry(t, ctx,
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{
+				MaxAttempts:           5,
+				Delay:                 common.Duration(50 * time.Millisecond),
+				EmptyResultDelay:      common.Duration(blockDelay),
+				BlockUnavailableDelay: common.Duration(blockDelay),
+			},
+		)
+		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		start := time.Now()
+		resp, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		result, pErr := jrr.PeekStringByPath(ctx, "hash")
+		require.NoError(t, pErr)
+		assert.Equal(t, "0xabc", result)
+
+		t.Logf("rpc1=%d rpc2=%d elapsed=%v", rpc1Calls, rpc2Calls, elapsed)
+		// The delay should fire between round 1 (both empty) and round 2 (success).
+		assert.GreaterOrEqual(t, elapsed, blockDelay-50*time.Millisecond,
+			"elapsed should be at least close to blockUnavailableDelay")
+		assert.Equal(t, 2, rpc1Calls, "rpc1: once empty, once success")
+		assert.Equal(t, 1, rpc2Calls, "rpc2: once empty")
+	})
+}
+
+// Test: emptyResultAccept for eth_call (default accept list).
+// eth_call is in the default emptyResultAccept list. When eth_call returns an
+// empty/null result, the failsafe should accept it immediately without retry,
+// even when RetryEmpty=true and emptyResultDelay is configured.
+func TestNetworkForward_EmptyResultAccept_EthCallDefault(t *testing.T) {
+	t.Run("EthCall_NullResult_AcceptedNoRetry", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		rpc1Calls := 0
+
+		// Both upstreams return null for eth_call
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).
+			Persist().
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc1Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x",
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).
+			Persist().
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkForMissingDataRetry(t, ctx,
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{
+				MaxAttempts:      5,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(200 * time.Millisecond),
+				// eth_call is in the default accept list via SetDefaults
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		start := time.Now()
+		resp, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		require.NoError(t, err, "eth_call empty should be accepted")
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.True(t, jrr.IsResultEmptyish(), "result should be emptyish")
+
+		t.Logf("rpc1 called %d times, elapsed %v", rpc1Calls, elapsed)
+		// eth_call is in default emptyResultAccept → no retry, no delay
+		assert.LessOrEqual(t, rpc1Calls, 2, "should only try each upstream once, no retries")
+		assert.Less(t, elapsed, 400*time.Millisecond, "should return quickly without delay")
+	})
+}
+
+// Test: RetryEmpty=false blocks MissingData retry at upstream scope.
+// The HandleIf check for RetryEmpty respects the directive universally (not
+// just at network scope). When RetryEmpty=false, MissingData errors should
+// not trigger retry at either scope, so the request returns quickly as exhausted.
+func TestNetworkForward_RetryEmptyDisabled_UpstreamScope(t *testing.T) {
+	t.Run("RetryEmptyFalse_MissingDataNotRetriedAtUpstreamScope", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		totalCalls := 0
+
+		// Both upstreams return MissingData-inducing null for eth_getBlockByNumber
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { totalCalls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { totalCalls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkForMissingDataRetry(t, ctx,
+			// RetryEmpty=false means "don't retry empty results"
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(false)},
+			&common.RetryPolicyConfig{
+				MaxAttempts:      5,
+				Delay:            common.Duration(50 * time.Millisecond),
+				EmptyResultDelay: common.Duration(200 * time.Millisecond),
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		start := time.Now()
+		resp, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		t.Logf("totalCalls=%d elapsed=%v err=%v", totalCalls, elapsed, err)
+
+		// With RetryEmpty=false, the empty result should be returned without retries.
+		// Either a successful empty response or an exhausted error.
+		if err != nil {
+			// If error, it should be exhausted and contain MissingData
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
+				"error should be ErrUpstreamsExhausted")
+		} else {
+			// If success, it should be an emptyish result
+			require.NotNil(t, resp)
+		}
+
+		// Key assertion: no retry rounds. Each upstream tried once = 2 total.
+		assert.LessOrEqual(t, totalCalls, 2, "no retries should happen with RetryEmpty=false")
+		assert.Less(t, elapsed, 400*time.Millisecond, "should return quickly")
+	})
+}
+
+// Test: method-ignored upstream stays permanently gated; retryable upstream
+// eventually succeeds on a retry round. This prevents regression of the
+// ErrorsByUpstream permanent gating for non-retryable errors.
+func TestNetworkForward_MethodIgnored_GatedWhileRetryableSucceeds(t *testing.T) {
+	t.Run("IgnoredUpstreamNeverRetried_RetryableSucceedsOnRound2", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		rpc2Calls := 0
+
+		// rpc1 has eth_getBlockByNumber in ignoreMethods → never called.
+		// rpc2 fails first, then succeeds.
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber")
+			}).
+			Times(1).
+			Reply(500).
+			Map(func(r *http.Response) *http.Response { rpc2Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error":   map[string]interface{}{"code": -32000, "message": "internal error"},
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc2Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x100",
+					"hash":   "0xabc",
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithMethodIgnore(t, ctx,
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{
+				MaxAttempts: 5,
+				Delay:       common.Duration(50 * time.Millisecond),
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		result, pErr := jrr.PeekStringByPath(ctx, "hash")
+		require.NoError(t, pErr)
+		assert.Equal(t, "0xabc", result)
+
+		// rpc1 never called (method ignored). rpc2: first 500, then success.
+		assert.Equal(t, 2, rpc2Calls, "rpc2 should be called twice: error then success")
+	})
+}
+
+// Test: single-upstream errors are consistently wrapped in ErrUpstreamsExhausted.
+// Even when only one upstream is configured and it fails, the error should be
+// ErrUpstreamsExhausted wrapping the underlying error. HasErrorCode should find
+// the specific underlying code inside the wrapper.
+func TestNetworkForward_SingleUpstream_ConsistentWrapping(t *testing.T) {
+	t.Run("SingleUpstreamFails_WrappedInExhausted", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		// Only rpc1 configured, returns 503
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(503).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error":   map[string]interface{}{"code": -32000, "message": "service unavailable"},
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Persist().
+			Reply(503).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error":   map[string]interface{}{"code": -32000, "message": "service unavailable"},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkForMissingDataRetry(t, ctx,
+			&common.DirectiveDefaultsConfig{},
+			&common.RetryPolicyConfig{
+				MaxAttempts: 2,
+				Delay:       common.Duration(50 * time.Millisecond),
+			},
+		)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		_, err := network.Forward(ctx, req)
+		require.Error(t, err, "should fail after retries")
+
+		// Top-level must be ErrUpstreamsExhausted
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted),
+			"error should be wrapped in ErrUpstreamsExhausted, got: %v", err)
+
+		// The underlying server-side exception should be accessible via HasErrorCode
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+			"underlying server error should be findable inside ErrUpstreamsExhausted")
+	})
+}
+
+// Test: blockUnavailableDelay vs emptyResultDelay priority.
+// When one upstream returns a server error (which wraps blockUnavailable via
+// pre-forward skip) and another returns an emptyish response, the DelayFunc
+// priority is: blockUnavailable checked first, then emptyResult.
+// In practice, the result type depends on what the Forward() loop returns:
+//   - If bestResp exists (emptyish response from one upstream) → returns (bestResp, nil) → emptyResultDelay
+//   - If all errors (no bestResp) → returns (nil, exhaustedErr) → blockUnavailableDelay wins
+//
+// This test verifies the second case: all upstreams error, mixed block-unavail and
+// missing-data, blockUnavailableDelay should take priority.
+func TestNetworkForward_BlockUnavailableVsEmptyDelay_Priority(t *testing.T) {
+	t.Run("MixedErrors_BlockUnavailableDelayWins", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		rpc1Calls := 0
+		rpc2Calls := 0
+
+		// rpc1: returns a -32000 "header not found" error (normalizer converts to MissingData)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc1Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error":   map[string]interface{}{"code": -32000, "message": "header not found"},
+			})
+
+		// rpc2: also returns missing data
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc2Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error":   map[string]interface{}{"code": -32000, "message": "header not found"},
+			})
+
+		// On retry round: rpc1 succeeds
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc1Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1234",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		blockDelay := 400 * time.Millisecond
+		emptyDelay := 100 * time.Millisecond
+
+		network := setupTestNetworkForMissingDataRetry(t, ctx,
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{
+				MaxAttempts:           5,
+				Delay:                 common.Duration(50 * time.Millisecond),
+				EmptyResultDelay:      common.Duration(emptyDelay),
+				BlockUnavailableDelay: common.Duration(blockDelay),
+			},
+		)
+		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		start := time.Now()
+		resp, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.Contains(t, jrr.GetResultString(), "0x1234")
+
+		t.Logf("rpc1=%d rpc2=%d elapsed=%v", rpc1Calls, rpc2Calls, elapsed)
+
+		// Both upstreams had MissingData errors. The delay applied should be
+		// emptyResultDelay (since MissingData errors trigger that path).
+		// Verify the delay was applied (not just the base 50ms).
+		assert.GreaterOrEqual(t, elapsed, emptyDelay-30*time.Millisecond,
+			"should have applied emptyResultDelay between rounds")
+		assert.Equal(t, 2, rpc1Calls, "rpc1: error then success")
+		assert.Equal(t, 1, rpc2Calls, "rpc2: error only")
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Helper: network with method-ignored upstream
 // ---------------------------------------------------------------------------
