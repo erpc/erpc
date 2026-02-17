@@ -2,7 +2,8 @@
 import argparse
 import json
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def _hex_to_int(s: str) -> int:
@@ -121,6 +122,19 @@ class Handler(BaseHTTPRequestHandler):
         target_bytes = int(self.server.oversize_target_bytes)
         items = max(1, (target_bytes // max(1, item_len)) + 1)
 
+        throttle_bps = float(getattr(self.server, "throttle_bytes_per_s", 0.0) or 0.0)
+        t_start = time.time()
+        written = 0
+
+        def _throttle():
+            nonlocal written
+            if throttle_bps <= 0:
+                return
+            want = written / throttle_bps
+            have = time.time() - t_start
+            if have < want:
+                time.sleep(want - have)
+
         self.send_response(200)
         self.send_header("content-type", "application/json")
         # Help clients avoid downloading maxBytes just to discover it is too large.
@@ -134,16 +148,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
         # Start object + array
-        self.wfile.write(b'{"jsonrpc":"2.0","id":')
-        self.wfile.write(id_bytes)
-        self.wfile.write(b',"result":[')
-        for i in range(items):
-            if i:
-                self.wfile.write(b",")
-            self.wfile.write(item_prefix)
-            self.wfile.write(data_chunk)
-            self.wfile.write(item_suffix)
-        self.wfile.write(b"]}")
+        pre = b'{"jsonrpc":"2.0","id":' + id_bytes + b',"result":['
+        try:
+            self.wfile.write(pre)
+            written += len(pre)
+            _throttle()
+            for i in range(items):
+                if i:
+                    self.wfile.write(b",")
+                    written += 1
+                self.wfile.write(item_prefix)
+                written += len(item_prefix)
+                self.wfile.write(data_chunk)
+                written += len(data_chunk)
+                _throttle()
+                self.wfile.write(item_suffix)
+                written += len(item_suffix)
+            self.wfile.write(b"]}")
+            written += 2
+            _throttle()
+        except (BrokenPipeError, ConnectionResetError):
+            return
         return
 
 
@@ -156,14 +181,21 @@ def main() -> int:
     ap.add_argument("--ok-range", type=int, default=25)
     ap.add_argument("--oversize-mb", type=int, default=17, help="Target response size when oversizing (MiB).")
     ap.add_argument("--data-hex-len", type=int, default=2048, help="Hex chars per log.data payload (excludes 0x).")
+    ap.add_argument(
+        "--throttle-mibps",
+        type=float,
+        default=0.0,
+        help="Throttle streamed response throughput (MiB/s). 0 disables throttling.",
+    )
     args = ap.parse_args()
 
-    srv = HTTPServer((args.host, args.port), Handler)
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.chain_id_hex = hex(int(args.chain_id))
     srv.latest_block_hex = str(args.latest_block)
     srv.ok_range = int(args.ok_range)
     srv.oversize_target_bytes = int(args.oversize_mb) * 1024 * 1024
     srv.data_hex_len = int(args.data_hex_len)
+    srv.throttle_bytes_per_s = float(args.throttle_mibps) * 1024.0 * 1024.0
 
     print(f"listening http://{args.host}:{args.port} chain_id={args.chain_id} ok_range={args.ok_range} oversize_mib={args.oversize_mb}", file=sys.stderr)
     srv.serve_forever()
