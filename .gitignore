@@ -21,3 +21,7 @@ node_modules
 .env
 bin/**
 temp/**
+
+# Python (repo tooling)
+__pycache__/
+*.pyc
