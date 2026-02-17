@@ -1648,15 +1648,24 @@ func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
 	evf := ""
 	if c.evalFunctionOriginal != "" {
 		evf = c.evalFunctionOriginal
+	} else if c.EvalFunction != nil {
+		evf = "<function>"
 	}
-	return map[string]interface{}{
-		"evalInterval":     c.EvalInterval,
+	m := map[string]interface{}{
 		"evalPerMethod":    c.EvalPerMethod,
-		"evalFunction":     evf,
-		"resampleInterval": c.ResampleInterval,
-		"resampleCount":    c.ResampleCount,
 		"resampleExcluded": c.ResampleExcluded,
-	}, nil
+		"resampleCount":    c.ResampleCount,
+	}
+	if c.EvalInterval != 0 {
+		m["evalInterval"] = c.EvalInterval
+	}
+	if c.ResampleInterval != 0 {
+		m["resampleInterval"] = c.ResampleInterval
+	}
+	if evf != "" {
+		m["evalFunction"] = evf
+	}
+	return m, nil
 }
 
 func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
