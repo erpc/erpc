@@ -70,8 +70,8 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 }
 
 // LoadConfigRaw loads the configuration from the specified file without
-// applying defaults or running validation. Useful for dumping the parsed
-// config as-is.
+// applying defaults or running validation. Callers (e.g. the dump command)
+// should call cfg.SetDefaults() afterwards if they need the fully resolved config.
 func LoadConfigRaw(fs afero.Fs, filename string) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
 	if err != nil {
