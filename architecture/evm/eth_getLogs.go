@@ -481,6 +481,33 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	// Split by range/addresses/topics
 	subs, err := splitEthGetLogsRequest(rq)
 	if err != nil || len(subs) == 0 {
+		// Single-block deterministic too-large: fall back to eth_getBlockReceipts-based filtering.
+		jrq, jerr := rq.JsonRpcRequest(ctx)
+		if jerr == nil && jrq != nil {
+			jrq.RLock()
+			var filter map[string]interface{}
+			if len(jrq.Params) > 0 {
+				filter, _ = jrq.Params[0].(map[string]interface{})
+			}
+			jrq.RUnlock()
+			if filter != nil {
+				fb, tb, berr := extractBlockRange(filter)
+				if berr == nil && fb == tb && shouldFallbackEthGetLogsToBlockReceipts(re) {
+					skipCacheRead := false
+					if dirs := rq.Directives(); dirs != nil {
+						skipCacheRead = dirs.SkipCacheRead
+					}
+					out, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, rq, fb, filter["address"], filter["topics"], skipCacheRead, rq.ID())
+					if ferr == nil && out != nil {
+						if rs != nil {
+							rs.Release()
+						}
+						nrs := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(out)
+						return nrs, nil
+					}
+				}
+			}
+		}
 		return rs, re
 	}
 
@@ -855,10 +882,10 @@ func pickGetLogsSubRequestError(errs []error) error {
 }
 
 func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool, concurrency int) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
-	return executeGetLogsSubRequestsInternal(ctx, n, r, subRequests, skipCacheRead, concurrency, 0)
+	return executeGetLogsSubRequestsInternal(ctx, n, r, subRequests, skipCacheRead, concurrency, 0, nil)
 }
 
-func executeGetLogsSubRequestsInternal(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool, concurrency int, depth int) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
+func executeGetLogsSubRequestsInternal(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool, concurrency int, depth int, semaphore chan struct{}) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
@@ -871,16 +898,19 @@ func executeGetLogsSubRequestsInternal(ctx context.Context, n common.Network, r 
 	mu := sync.Mutex{}
 
 	// Concurrency is passed by caller (cache chunking vs split-on-error differ).
-	if concurrency <= 0 {
-		concurrency = 10
+	// Use a shared semaphore across recursive splits to bound total in-flight sub-requests.
+	if semaphore == nil {
+		if concurrency <= 0 {
+			concurrency = 10
+		}
+		if concurrency > len(subRequests) {
+			concurrency = len(subRequests)
+		}
+		if concurrency < 1 {
+			concurrency = 1
+		}
+		semaphore = make(chan struct{}, concurrency)
 	}
-	if concurrency > len(subRequests) {
-		concurrency = len(subRequests)
-	}
-	if concurrency < 1 {
-		concurrency = 1
-	}
-	semaphore := make(chan struct{}, concurrency)
 	loopCtxErr := error(nil)
 	const maxSplitDepth = 16
 loop:
@@ -896,11 +926,16 @@ loop:
 		}
 
 		go func(req ethGetLogsSubRequest, i int) {
-			defer wg.Done()
-			defer func() {
-				// Release semaphore token when done
+			released := false
+			releaseToken := func() {
+				if released {
+					return
+				}
 				<-semaphore
-			}()
+				released = true
+			}
+			defer wg.Done()
+			defer releaseToken()
 
 			srq, err := BuildGetLogsRequest(req.fromBlock, req.toBlock, req.address, req.topics)
 			logger.Debug().
@@ -936,9 +971,20 @@ loop:
 			subTimeout := 10 * time.Second
 			if dl, ok := ctx.Deadline(); ok {
 				rem := time.Until(dl)
-				if rem > 0 && rem < subTimeout {
-					subTimeout = rem
+				// Prefer to use most of the remaining request budget (bounded), so slow but
+				// legitimate getLogs calls can still succeed under load.
+				if rem > 0 {
+					target := time.Duration(float64(rem) * 0.75)
+					if target > subTimeout {
+						subTimeout = target
+					}
 				}
+			}
+			if subTimeout < 3*time.Second {
+				subTimeout = 3 * time.Second
+			}
+			if subTimeout > 25*time.Second {
+				subTimeout = 25 * time.Second
 			}
 			subCtx, cancel := context.WithTimeout(ctx, subTimeout)
 			rs, re := n.Forward(subCtx, sbnrq)
@@ -949,7 +995,9 @@ loop:
 				if depth < maxSplitDepth && shouldSplitEthGetLogsOnError(re) {
 					subSubs := splitEthGetLogsSubRequest(req)
 					if len(subSubs) > 0 {
-						subJrr, subMeta, subErr := executeGetLogsSubRequestsInternal(ctx, n, r, subSubs, skipCacheRead, concurrency, depth+1)
+						// Release token before recursing to avoid deadlocks with shared semaphore.
+						releaseToken()
+						subJrr, subMeta, subErr := executeGetLogsSubRequestsInternal(ctx, n, r, subSubs, skipCacheRead, concurrency, depth+1, semaphore)
 						if subErr == nil {
 							responses[i] = subJrr
 							holders[i] = nil
@@ -963,6 +1011,23 @@ loop:
 							return
 						}
 						re = subErr
+					} else if req.fromBlock == req.toBlock && shouldFallbackEthGetLogsToBlockReceipts(re) {
+						releaseToken()
+						fjrr, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, r, req.fromBlock, req.address, req.topics, skipCacheRead, util.RandomID())
+						if ferr == nil && fjrr != nil {
+							responses[i] = fjrr
+							holders[i] = nil
+							fromCacheFlags[i] = false
+							cacheAts[i] = 0
+							telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitSuccess,
+								n.ProjectId(),
+								n.Label(),
+								r.UserId(),
+								r.AgentName(),
+							).Inc()
+							return
+						}
+						re = ferr
 					}
 				}
 				mu.Lock()
@@ -1012,7 +1077,8 @@ loop:
 					subSubs := splitEthGetLogsSubRequest(req)
 					if len(subSubs) > 0 {
 						rs.Release() // no longer needed; we'll return a merged sub-response
-						subJrr, subMeta, subErr := executeGetLogsSubRequestsInternal(ctx, n, r, subSubs, skipCacheRead, concurrency, depth+1)
+						releaseToken()
+						subJrr, subMeta, subErr := executeGetLogsSubRequestsInternal(ctx, n, r, subSubs, skipCacheRead, concurrency, depth+1, semaphore)
 						if subErr == nil {
 							responses[i] = subJrr
 							holders[i] = nil
@@ -1034,6 +1100,35 @@ loop:
 							r.AgentName(),
 						).Inc()
 						errs = append(errs, subErr)
+						mu.Unlock()
+						return
+					}
+					if req.fromBlock == req.toBlock && shouldFallbackEthGetLogsToBlockReceipts(jrr.Error) {
+						// Release the failing response; we will compute logs via receipts.
+						rs.Release()
+						releaseToken()
+						fjrr, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, r, req.fromBlock, req.address, req.topics, skipCacheRead, util.RandomID())
+						if ferr == nil && fjrr != nil {
+							responses[i] = fjrr
+							holders[i] = nil
+							fromCacheFlags[i] = false
+							cacheAts[i] = 0
+							telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitSuccess,
+								n.ProjectId(),
+								n.Label(),
+								r.UserId(),
+								r.AgentName(),
+							).Inc()
+							return
+						}
+						mu.Lock()
+						telemetry.CounterHandle(telemetry.MetricNetworkEvmGetLogsSplitFailure,
+							n.ProjectId(),
+							n.Label(),
+							r.UserId(),
+							r.AgentName(),
+						).Inc()
+						errs = append(errs, ferr)
 						mu.Unlock()
 						return
 					}
