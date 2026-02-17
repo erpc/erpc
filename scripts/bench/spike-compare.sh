@@ -328,10 +328,10 @@ run_one_ref() {
   local cfg="${out_dir}/erpc.yaml"
   local supports_envelope=0
   local supports_shared_state=0
-  if rg -q --no-messages 'yaml:"envelope"' "${workdir}"; then
+  if rg -q --no-messages --glob '*.go' 'yaml:"envelope"' "${workdir}"; then
     supports_envelope=1
   fi
-  if rg -q --no-messages 'yaml:"sharedState"' "${workdir}"; then
+  if rg -q --no-messages --glob '*.go' 'yaml:"sharedState"' "${workdir}"; then
     supports_shared_state=1
   fi
   write_config "${cfg}" "${supports_envelope}" "${supports_shared_state}"
