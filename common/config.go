@@ -48,8 +48,8 @@ type Config struct {
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
 }
 
-// LoadConfig loads the configuration from the specified file, applies defaults,
-// and validates. It supports YAML, TypeScript (.ts), and JavaScript (.js) files.
+// LoadConfig loads the configuration from the specified file.
+// It supports both YAML and TypeScript (.ts) files.
 func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
 	if err != nil {
