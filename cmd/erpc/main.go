@@ -133,12 +133,17 @@ func main() {
 	// Define the dump command
 	dumpCmd := &cli.Command{
 		Name:  "dump",
-		Usage: "Parse a config file (TS, JS, or YAML) and dump the fully resolved configuration with all defaults applied",
+		Usage: "Parse a config file (TS, JS, or YAML) and dump the configuration",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "format",
 				Usage: "Output format: yaml|json",
 				Value: "yaml",
+			},
+			&cli.BoolFlag{
+				Name:  "with-defaults",
+				Usage: "Apply default values to the configuration",
+				Value: false,
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -162,10 +167,12 @@ func main() {
 				return nil
 			}
 
-			if err := cfg.SetDefaults(&common.DefaultOptions{}); err != nil {
-				fmt.Fprintf(os.Stderr, "error: failed to apply defaults: %v\n", err)
-				util.OsExit(1)
-				return nil
+			if cmd.Bool("with-defaults") {
+				if err := cfg.SetDefaults(&common.DefaultOptions{}); err != nil {
+					fmt.Fprintf(os.Stderr, "error: failed to apply defaults: %v\n", err)
+					util.OsExit(1)
+					return nil
+				}
 			}
 
 			format := cmd.String("format")
