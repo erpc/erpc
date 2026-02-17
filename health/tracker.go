@@ -177,6 +177,24 @@ type Tracker struct {
 	rollbackGaugeCache            sync.Map // map[ubKey]prometheus.Gauge
 }
 
+// ForceReset resets all currently-known upstream/network metric buckets immediately.
+// Useful for deterministic tests; production resets are typically driven by the
+// window ticker in resetMetricsLoop.
+func (t *Tracker) ForceReset() {
+	t.upsMetrics.Range(func(_ any, value any) bool {
+		if tm, ok := value.(*TrackedMetrics); ok {
+			tm.Reset()
+		}
+		return true
+	})
+	t.ntwMetrics.Range(func(_ any, value any) bool {
+		if tm, ok := value.(*TrackedMetrics); ok {
+			tm.Reset()
+		}
+		return true
+	})
+}
+
 // urdoKey uniquely identifies a MetricUpstreamRequestDuration time series.
 type urdoKey struct {
 	project   string

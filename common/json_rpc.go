@@ -58,6 +58,8 @@ type JsonRpcResponse struct {
 	canonicalHashWithIgnored sync.Map
 }
 
+var errCloneShallowResultWriter = errors.New("cannot shallow-clone JsonRpcResponse with resultWriter")
+
 func (r *JsonRpcResponse) SetResult(result []byte) {
 	r.resultMu.Lock()
 	defer r.resultMu.Unlock()
@@ -267,6 +269,8 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		defer span.End()
 	}
 
+	const noCopyBufThreshold = 64 << 10 // match util.maxBufCap; avoid copies for non-pooled buffers
+
 	data, returnBuf, err := util.ReadAll(reader, expectedSize)
 	if err != nil {
 		return err
@@ -285,11 +289,17 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 
 	// Use Sonic's Unmarshal which works directly with bytes
 	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
-		// Must copy data before storing since we're returning the buffer
-		dataCopy := make([]byte, len(data))
-		copy(dataCopy, data)
+		// If the underlying buffer won't be pooled (large), avoid an extra full copy and
+		// keep the bytes directly. For small pooled buffers, we must copy because the
+		// pool can reuse/overwrite the backing array.
 		r.resultMu.Lock()
-		r.result = dataCopy
+		if len(data) > noCopyBufThreshold {
+			r.result = data
+		} else {
+			dataCopy := make([]byte, len(data))
+			copy(dataCopy, data)
+			r.result = dataCopy
+		}
 		r.resultMu.Unlock()
 		return err
 	}
@@ -304,10 +314,84 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 	}
 
 	if len(temp.Result) > 0 {
-		resultCopy := make([]byte, len(temp.Result))
-		copy(resultCopy, temp.Result)
 		r.resultMu.Lock()
-		r.result = resultCopy
+		if len(temp.Result) > noCopyBufThreshold {
+			r.result = temp.Result
+		} else {
+			resultCopy := make([]byte, len(temp.Result))
+			copy(resultCopy, temp.Result)
+			r.result = resultCopy
+		}
+		r.resultMu.Unlock()
+	}
+
+	if len(temp.Error) > 0 {
+		if err := r.ParseError(string(temp.Error)); err != nil {
+			return err
+		}
+	}
+
+	// Parse ID if needed
+	if len(r.idBytes) > 0 {
+		if err := r.parseID(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *JsonRpcResponse) ParseFromBytes(ctx context.Context, data []byte) error {
+	if ctx != nil {
+		_, span := StartDetailSpan(ctx, "JsonRpcResponse.ParseFromBytes")
+		defer span.End()
+	}
+
+	const noCopyBufThreshold = 64 << 10 // match util.maxBufCap; avoid copies for non-pooled buffers
+
+	// Parse into a temporary struct to extract fields without string conversion
+	var temp struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+
+	// Use Sonic's Unmarshal which works directly with bytes
+	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
+		// Keep raw bytes for debugging; treat as result payload.
+		r.resultMu.Lock()
+		if len(data) > noCopyBufThreshold {
+			r.result = data
+		} else {
+			dataCopy := make([]byte, len(data))
+			copy(dataCopy, data)
+			r.result = dataCopy
+		}
+		r.resultWriter = nil
+		r.cachedNode = nil
+		r.resultMu.Unlock()
+		return err
+	}
+
+	if len(temp.ID) > 0 {
+		idCopy := make([]byte, len(temp.ID))
+		copy(idCopy, temp.ID)
+		r.idMu.Lock()
+		r.idBytes = idCopy
+		r.idMu.Unlock()
+	}
+
+	if len(temp.Result) > 0 {
+		r.resultMu.Lock()
+		if len(temp.Result) > noCopyBufThreshold {
+			r.result = temp.Result
+		} else {
+			resultCopy := make([]byte, len(temp.Result))
+			copy(resultCopy, temp.Result)
+			r.result = resultCopy
+		}
+		r.resultWriter = nil
+		r.cachedNode = nil
 		r.resultMu.Unlock()
 	}
 
@@ -734,6 +818,52 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 	if clone.result == nil && r.resultWriter != nil {
 		clone.resultWriter = r.resultWriter
 	}
+
+	return clone, nil
+}
+
+// CloneShallow returns a copy suitable for multiplexing fan-out:
+// - shares the underlying result bytes (no deep copy)
+// - does not materialize resultWriter (errors instead)
+// - does not copy cached AST node (rebuilt lazily)
+//
+// This avoids OOM when cloning very large eth_getLogs responses.
+func (r *JsonRpcResponse) CloneShallow() (*JsonRpcResponse, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	r.idMu.RLock()
+	defer r.idMu.RUnlock()
+	r.errMu.RLock()
+	defer r.errMu.RUnlock()
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
+	if len(r.result) == 0 && r.resultWriter != nil {
+		return nil, errCloneShallowResultWriter
+	}
+
+	clone := &JsonRpcResponse{
+		id:         r.id,
+		Error:      r.Error,
+		cachedNode: nil,
+		// canonicalHashWithIgnored intentionally not copied
+	}
+
+	// idBytes and errBytes are tiny; copy to keep clones independent of lazy marshaling.
+	if r.idBytes != nil {
+		clone.idBytes = make([]byte, len(r.idBytes))
+		copy(clone.idBytes, r.idBytes)
+	}
+	if r.errBytes != nil {
+		clone.errBytes = make([]byte, len(r.errBytes))
+		copy(clone.errBytes, r.errBytes)
+	}
+
+	// Share the result backing array to avoid multi-GB copies.
+	clone.result = r.result
+	clone.resultWriter = nil
 
 	return clone, nil
 }

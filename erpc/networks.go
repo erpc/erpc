@@ -1294,10 +1294,10 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 
 	// After Wait(), no followers are accessing the response.
 	mlx.mu.Lock()
-	if mlx.resp != nil {
-		mlx.resp.Release()
-		mlx.resp = nil
-	}
+	// Do NOT call Release() here: the leader returns mlx.resp to the caller, and the
+	// caller will release it after writing the response. Releasing here would
+	// clear the JsonRpcResponse and break the leader response path.
+	mlx.resp = nil
 	mlx.mu.Unlock()
 }
 

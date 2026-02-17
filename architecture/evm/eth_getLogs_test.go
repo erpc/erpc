@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,7 +17,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -52,19 +53,6 @@ func (m *mockNetwork) Label() string {
 func (m *mockNetwork) Id() string {
 	args := m.Called()
 	return args.Get(0).(string)
-}
-
-func (m *mockNetwork) Cache() common.CacheDAL {
-	for _, c := range m.ExpectedCalls {
-		if c.Method == "Cache" {
-			args := m.Called()
-			if cache, ok := args.Get(0).(common.CacheDAL); ok {
-				return cache
-			}
-			break
-		}
-	}
-	return nil
 }
 
 func (m *mockNetwork) Forward(
@@ -353,6 +341,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 		subRequests []ethGetLogsSubRequest
 		mockSetup   func(*mockNetwork, *mockEvmUpstream)
 		expectError bool
+		expectCache bool
 	}{
 		{
 			name: "successful execution",
@@ -380,6 +369,34 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				u.On("NetworkLabel").Return("evm:123").Maybe()
 				u.On("VendorName").Return("test").Maybe()
 			},
+		},
+		{
+			name: "successful execution with cache",
+			subRequests: []ethGetLogsSubRequest{
+				{fromBlock: 1, toBlock: 2},
+				{fromBlock: 3, toBlock: 4},
+			},
+			mockSetup: func(n *mockNetwork, u *mockEvmUpstream) {
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 200}}).Maybe()
+				n.On("ProjectId").Return("test")
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
+					).SetFromCache(true),
+					nil,
+				).Once()
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
+					).SetFromCache(true),
+					nil,
+				).Once()
+				u.On("Id").Return("rpc1").Maybe()
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
+				u.On("VendorName").Return("test").Maybe()
+			},
+			expectCache: true,
 		},
 		{
 			name: "partial failure",
@@ -422,7 +439,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 			ctx := context.Background()
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","address":"0x123","topics":["0xabc"]}],"id":1}`))
 
-			result, _, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, false)
+			result, meta, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, false, 10)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -431,6 +448,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
+			assert.Equal(t, tt.expectCache, meta != nil && meta.allFromCache)
 
 			mockNetwork.AssertExpectations(t)
 			mockUpstream.AssertExpectations(t)
@@ -715,6 +733,44 @@ func TestNetworkPostForward_eth_getLogs(t *testing.T) {
 			expectSplit: true,
 		},
 		{
+			name: "auto_split_request_too_large_error_recursive_subrequest",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x2",
+				})
+				// Simulate derived sub-request: splitting must still be allowed.
+				r.SetParentRequestId("parent")
+
+				n.On("Id").Return("evm:123").Maybe()
+				n.On("ProjectId").Return("test")
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
+					),
+					nil,
+				).Times(1)
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
+					),
+					nil,
+				).Times(1)
+
+				u.On("Id").Return("rpc1").Maybe()
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
+				u.On("VendorName").Return("test").Maybe()
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitOnError: util.BoolPtr(true)}}).Maybe()
+
+				return n, u, r
+			},
+			inputError:  common.NewErrEndpointRequestTooLarge(errors.New("too large"), common.EvmResponseTooLarge),
+			expectSplit: true,
+		},
+		{
 			name: "not_splitting_request_too_large_error",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
@@ -731,6 +787,44 @@ func TestNetworkPostForward_eth_getLogs(t *testing.T) {
 			},
 			inputError:  common.NewErrEndpointRequestTooLarge(errors.New("too large"), common.EvmBlockRangeTooLarge),
 			expectSplit: false,
+		},
+		{
+			name: "splitting_on_endpoint_timeout",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x2",
+				})
+
+				n.On("Id").Return("evm:123").Maybe()
+				n.On("ProjectId").Return("test").Maybe()
+				n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitOnError: util.BoolPtr(true)}}).Maybe()
+
+				// Two split sub-requests (range=2 -> two single-block calls).
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log1"]`), nil),
+					),
+					nil,
+				).Times(1)
+				n.On("Forward", mock.Anything, mock.Anything).Return(
+					common.NewNormalizedResponse().WithJsonRpcResponse(
+						common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`["log2"]`), nil),
+					),
+					nil,
+				).Times(1)
+
+				u.On("Id").Return("rpc1").Maybe()
+				u.On("NetworkId").Return("evm:123").Maybe()
+				u.On("NetworkLabel").Return("evm:123").Maybe()
+				u.On("VendorName").Return("test").Maybe()
+
+				return n, u, r
+			},
+			inputError:  common.NewErrEndpointRequestTimeout(time.Second, errors.New("timeout")),
+			expectSplit: true,
 		},
 	}
 
@@ -770,7 +864,7 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 		// Create the multi-response writer with both responses.
 		ne1, _ := nonEmpty.Clone()
 		er1, _ := emptyResp.Clone()
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{ne1, er1})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{ne1, er1}, nil)
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -798,7 +892,7 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 		// Create the multi-response writer with both responses.
 		er2, _ := emptyResp.Clone()
 		ne2, _ := nonEmpty.Clone()
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er2, ne2})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er2, ne2}, nil)
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -826,7 +920,7 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 		// Create the multi-response writer with both responses.
 		er3, _ := emptyResp.Clone()
 		ne3, _ := nonEmpty.Clone()
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er3, ne3})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{er3, ne3}, nil)
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -858,7 +952,7 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 		nu2, _ := nullResp.Clone()
 		er5, _ := emptyResp.Clone()
 		ne5, _ := nonEmpty.Clone()
-		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{nu1, ne4, er4, nu2, er5, ne5})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{nu1, ne4, er4, nu2, er5, ne5}, nil)
 
 		var buf bytes.Buffer
 		writtenBytes, err := writer.WriteTo(&buf, false)
@@ -887,7 +981,7 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing.T) {
 	r1 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[1]`), nil)
 	r2 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[2,3]`), nil)
-	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{r1, r2})
+	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{r1, r2}, nil)
 	sz1, err := writer.Size()
 	assert.NoError(t, err)
 	assert.Greater(t, sz1, 0)
@@ -898,13 +992,33 @@ func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing
 	assert.Equal(t, 0, sz2)
 }
 
+type countingReadCloser struct {
+	closed atomic.Int32
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) { return 0, io.EOF }
+func (c *countingReadCloser) Close() error {
+	c.closed.Add(1)
+	return nil
+}
+
+func TestGetLogsMultiResponseWriter_ReleaseAlsoReleasesHolders(t *testing.T) {
+	rc := &countingReadCloser{}
+	holder := common.NewNormalizedResponse().WithBody(rc)
+
+	writer := NewGetLogsMultiResponseWriter(nil, []*common.NormalizedResponse{holder})
+	writer.Release()
+
+	require.Equal(t, int32(1), rc.closed.Load())
+}
+
 // race-prone scenario: concurrently writing a merged result while subresponses are freed.
 // This emulates HTTP server writing to client while cleanup kicks in.
 func TestGetLogsMultiResponseWriter_ConcurrentWriteAndFree_NoParseBodyPanic(t *testing.T) {
 	// Prepare two non-empty JsonRpcResponses
 	r1 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[1]`), nil)
 	r2 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[2]`), nil)
-	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{r1, r2})
+	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{r1, r2}, nil)
 
 	// Wrap into a parent response to exercise WriteTo path that uses writer.WriteTo
 	parent := &common.JsonRpcResponse{}
@@ -946,7 +1060,7 @@ func TestGetLogsMultiResponseWriter_SubResponseFreedDuringWrite_NoPanic(t *testi
 	// Use real JsonRpcResponses only
 	ne := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[9]`), nil)
 	fr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x2"`), []byte(`[1,2,3]`), nil)
-	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{ne, fr})
+	writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{ne, fr}, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -1020,7 +1134,7 @@ func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
 		{fromBlock: 0x2, toBlock: 0x2},
 		{fromBlock: 0x3, toBlock: 0x3},
 	}
-	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, false)
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, false, 10)
 	assert.NoError(t, err)
 	var buf bytes.Buffer
 	_, _ = jrr.WriteTo(&buf)
@@ -1031,6 +1145,44 @@ func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
 
 	mockNetwork.AssertExpectations(t)
 	mockUpstream.AssertExpectations(t)
+}
+
+func TestExecuteGetLogsSubRequests_SplitsOnTimeout(t *testing.T) {
+	mockNetwork := new(mockNetwork)
+	mockNetwork.On("ProjectId").Return("test").Maybe()
+	mockNetwork.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsSplitConcurrency: 10}}).Maybe()
+
+	// First call (range > 1) times out; split calls (single block) succeed.
+	mockNetwork.On("Forward", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			jreq, _ := r.JsonRpcRequest()
+			filter := jreq.Params[0].(map[string]interface{})
+			fb := filter["fromBlock"].(string)
+			tb := filter["toBlock"].(string)
+			if fb == "0x1" && tb == "0x2" {
+				return nil, common.NewErrEndpointRequestTimeout(time.Second, errors.New("timeout"))
+			}
+			body := []byte(fmt.Sprintf(`["log-%s"]`, fb))
+			return common.NewNormalizedResponse().WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), body, nil)), nil
+		},
+		nil,
+	).Times(3)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2"}],"id":1}`))
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
+		{fromBlock: 0x1, toBlock: 0x2},
+	}, false, 10)
+	assert.NoError(t, err)
+	assert.NotNil(t, jrr)
+
+	var buf bytes.Buffer
+	_, _ = jrr.WriteTo(&buf)
+	var out map[string]interface{}
+	_ = json.Unmarshal(buf.Bytes(), &out)
+	arr := out["result"].([]interface{})
+	assert.Equal(t, []interface{}{"log-0x1", "log-0x2"}, arr)
+
+	mockNetwork.AssertExpectations(t)
 }
 
 func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
@@ -1084,7 +1236,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x1, toBlock: 0x2, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x3, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, false)
+				}, false, 200)
 				if err != nil {
 					return nil, err
 				}
@@ -1092,7 +1244,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x5, toBlock: 0x6, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x7, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, false)
+				}, false, 200)
 				if err != nil {
 					return nil, err
 				}
@@ -1117,7 +1269,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
 		{fromBlock: 0x1, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 		{fromBlock: 0x5, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-	}, false)
+	}, false, 200)
 
 	// Verify results
 	assert.NoError(t, err)
@@ -1300,6 +1452,28 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		u.AssertExpectations(t)
 	})
 
+	t.Run("configured_threshold_above_default_does_not_force_proactive_split", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}})
+		u := new(mockEvmUpstream)
+		// Provider override in prod can set this very high (e.g. 100000).
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 100000}})
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x1f41", // 8001
+		})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u}, r)
+		// No proactive split when requestRange <= threshold.
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+
+		n.AssertExpectations(t)
+		u.AssertExpectations(t)
+	})
+
 	// Tests for block tag resolution before validation (fixes bypass when using "latest", "finalized", etc.)
 	t.Run("latest_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
 		n := new(mockNetwork)
@@ -1450,6 +1624,44 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		require.NotNil(t, resp)
 		assert.False(t, resp.FromCache())
 		assert.Equal(t, int64(0), resp.CacheStoredAtUnix())
+		assert.Equal(t, common.CompositeTypeLogsCacheChunk, r.CompositeType())
+
+		n.AssertExpectations(t)
+	})
+
+	t.Run("cache_chunking_applies_when_skip_cache_read", func(t *testing.T) {
+		chunkSize := int64(2)
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Cache").Return(&common.MockCacheDal{}).Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				GetLogsCacheChunkSize:   &chunkSize,
+				GetLogsSplitConcurrency: 2,
+			},
+		}).Maybe()
+
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				// Sub-requests should preserve the directive: skip cache read (force upstream).
+				require.True(t, r.SkipCacheRead())
+				jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil)
+				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x3",
+		})
+		r.SetDirectives(&common.RequestDirectives{SkipCacheRead: true})
+
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		require.NoError(t, err)
+		require.True(t, handled)
+		require.NotNil(t, resp)
 		assert.Equal(t, common.CompositeTypeLogsCacheChunk, r.CompositeType())
 
 		n.AssertExpectations(t)
@@ -1623,7 +1835,7 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 				jrrErr := common.MustNewJsonRpcResponseFromBytes(
 					[]byte(`"0x1"`),
 					nil,
-					[]byte(`{"code":-32000,"message":"query returned more than 10000 results"}`),
+					[]byte(`{\"code\":-32000,\"message\":\"query returned more than 10000 results\"}`),
 				)
 				resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrrErr)
 				return resp, nil

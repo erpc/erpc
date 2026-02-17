@@ -19,16 +19,18 @@ type NormalizedResponse struct {
 	expectedSize int
 
 	fromCache atomic.Bool
-	attempts  atomic.Value
-	retries   atomic.Value
-	hedges    atomic.Value
-	upstream  atomic.Value
-
-	jsonRpcResponse   atomic.Pointer[JsonRpcResponse]
-	evmBlockNumber    atomic.Value
-	evmBlockRef       atomic.Value
+	// cacheStoredAtUnix is a best-effort unix timestamp (seconds) for when the response
+	// was served from cache. Used for composite responses (e.g., eth_getLogs chunking).
 	cacheStoredAtUnix atomic.Int64
-	finality          atomic.Value // Cached finality state
+	attempts          atomic.Value
+	retries           atomic.Value
+	hedges            atomic.Value
+	upstream          atomic.Value
+
+	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
+	evmBlockNumber  atomic.Value
+	evmBlockRef     atomic.Value
+	finality        atomic.Value // Cached finality state
 
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
@@ -112,26 +114,12 @@ func (r *NormalizedResponse) CacheStoredAtUnix() int64 {
 	return r.cacheStoredAtUnix.Load()
 }
 
-func (r *NormalizedResponse) SetCacheStoredAtUnix(ts int64) {
-	if r == nil || ts <= 0 {
-		return
+func (r *NormalizedResponse) SetCacheStoredAtUnix(ts int64) *NormalizedResponse {
+	if r == nil {
+		return r
 	}
 	r.cacheStoredAtUnix.Store(ts)
-}
-
-func (r *NormalizedResponse) CacheAgeSeconds() (int64, bool) {
-	if r == nil {
-		return 0, false
-	}
-	ts := r.cacheStoredAtUnix.Load()
-	if ts <= 0 {
-		return 0, false
-	}
-	age := time.Now().Unix() - ts
-	if age < 0 {
-		age = 0
-	}
-	return age, true
+	return r
 }
 
 func (r *NormalizedResponse) EvmBlockRef() interface{} {
@@ -647,7 +635,7 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 
 	// Use request ID because the multiplexed upstream call may carry a
 	// different ID.
-	jrr, err := ejrr.Clone()
+	jrr, err := ejrr.CloneShallow()
 	if err != nil {
 		return nil, err
 	}
