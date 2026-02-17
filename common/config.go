@@ -48,31 +48,9 @@ type Config struct {
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
 }
 
-// LoadConfig loads the configuration from the specified file.
-// It supports both YAML and TypeScript (.ts) files.
+// LoadConfig loads the configuration from the specified file, applies defaults,
+// and validates. It supports YAML, TypeScript (.ts), and JavaScript (.js) files.
 func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, error) {
-	cfg, err := LoadConfigRaw(fs, filename)
-	if err != nil {
-		return nil, err
-	}
-
-	err = cfg.SetDefaults(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	err = cfg.Validate()
-	if err != nil {
-		return nil, err
-	}
-
-	return cfg, nil
-}
-
-// LoadConfigRaw loads the configuration from the specified file without
-// applying defaults or running validation. Callers (e.g. the dump command)
-// should call cfg.SetDefaults() afterwards if they need the fully resolved config.
-func LoadConfigRaw(fs afero.Fs, filename string) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
 	if err != nil {
 		return nil, err
@@ -94,6 +72,14 @@ func LoadConfigRaw(fs afero.Fs, filename string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if err := cfg.SetDefaults(opts); err != nil {
+		return nil, err
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
 	return &cfg, nil
