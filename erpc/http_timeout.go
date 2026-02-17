@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"runtime/debug"
@@ -27,16 +28,33 @@ func TimeoutHandler(logger *zerolog.Logger, h http.Handler, dt time.Duration) ht
 
 var ErrHandlerTimeout = errors.New("http request handling timeout")
 
+// maxBufferedResponseBytes bounds per-request buffering in the timeout wrapper.
+// This handler intentionally buffers to provide deterministic timeout/cancel JSON bodies.
+// Without a hard cap, large JSON-RPC results (e.g. eth_getLogs) can OOM the pod.
+//
+// var (not const) so tests can lower it.
+var maxBufferedResponseBytes = 32 << 20 // 32MiB
+
 type timeoutHandler struct {
 	logger  *zerolog.Logger
 	handler http.Handler
 	dt      time.Duration
 }
 
+func writeJsonRpcErrorBody(w http.ResponseWriter, msg string, code int) {
+	// Minimal JSON-RPC error response; id is unknown here.
+	_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":null,"error":{"code":`)
+	_, _ = io.WriteString(w, fmt.Sprint(code))
+	_, _ = io.WriteString(w, `,"message":"`)
+	_, _ = io.WriteString(w, msg)
+	_, _ = io.WriteString(w, `"}}`)
+}
+
 func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx, cancelCtx := context.WithTimeoutCause(r.Context(), h.dt, ErrHandlerTimeout)
+	ctxTimeout, cancelTimeout := context.WithTimeoutCause(r.Context(), h.dt, ErrHandlerTimeout)
+	ctx, cancelCause := context.WithCancelCause(ctxTimeout)
 	defer func() {
-		cancelCtx()
+		cancelTimeout()
 	}()
 	r = r.WithContext(ctx)
 	done := make(chan struct{})
@@ -46,6 +64,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h:      make(http.Header),
 		req:    r,
 		wbuf:   util.BorrowBuf(),
+		cancel: cancelCause,
 	}
 	panicChan := make(chan any, 1)
 	go func() {
@@ -74,8 +93,19 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer tw.mu.Unlock()
 		if err := ctx.Err(); err != nil {
 			h.logger.Debug().Err(err).Msg("context canceled before writing response")
-			util.ReturnBuf(tw.wbuf)
-			tw.wbuf = nil
+			if tw.wbuf != nil {
+				util.ReturnBuf(tw.wbuf)
+				tw.wbuf = nil
+			}
+			return
+		}
+		// If we've already switched to streaming mode, the handler has written
+		// directly to the underlying writer; don't write again.
+		if tw.passthrough {
+			if tw.wbuf != nil {
+				util.ReturnBuf(tw.wbuf)
+				tw.wbuf = nil
+			}
 			return
 		}
 		dst := w.Header()
@@ -86,9 +116,12 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			tw.code = http.StatusOK
 		}
 		w.WriteHeader(tw.code)
-		_, err := w.Write(tw.wbuf.Bytes())
-		util.ReturnBuf(tw.wbuf)
-		tw.wbuf = nil
+		var err error
+		if tw.wbuf != nil {
+			_, err = w.Write(tw.wbuf.Bytes())
+			util.ReturnBuf(tw.wbuf)
+			tw.wbuf = nil
+		}
 		if err != nil {
 			if common.IsClientDisconnect(err) {
 				h.logger.Debug().Err(err).Msg("client disconnected while writing response")
@@ -105,6 +138,14 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		switch err {
 		case context.DeadlineExceeded, ErrHandlerTimeout:
+			if tw.passthrough {
+				tw.err = ErrHandlerTimeout
+				if tw.wbuf != nil {
+					util.ReturnBuf(tw.wbuf)
+					tw.wbuf = nil
+				}
+				return
+			}
 			code := http.StatusGatewayTimeout
 			// JSON-RPC (POST) should keep transport 200 and return error in body
 			if r.Method == http.MethodPost {
@@ -118,9 +159,19 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			tw.err = ErrHandlerTimeout
 			// Drop any buffered response data to avoid retaining large allocations
-			util.ReturnBuf(tw.wbuf)
-			tw.wbuf = nil
+			if tw.wbuf != nil {
+				util.ReturnBuf(tw.wbuf)
+				tw.wbuf = nil
+			}
 		default:
+			if tw.passthrough {
+				tw.err = err
+				if tw.wbuf != nil {
+					util.ReturnBuf(tw.wbuf)
+					tw.wbuf = nil
+				}
+				return
+			}
 			code := http.StatusServiceUnavailable
 			// JSON-RPC (POST) should keep transport 200 and return error in body
 			if r.Method == http.MethodPost {
@@ -136,8 +187,10 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			tw.err = err
 			// Drop any buffered response data to avoid retaining large allocations
-			util.ReturnBuf(tw.wbuf)
-			tw.wbuf = nil
+			if tw.wbuf != nil {
+				util.ReturnBuf(tw.wbuf)
+				tw.wbuf = nil
+			}
 		}
 	}
 }
@@ -148,11 +201,17 @@ type timeoutWriter struct {
 	h      http.Header
 	wbuf   *bytes.Buffer
 	req    *http.Request
+	cancel context.CancelCauseFunc
 
 	mu          sync.Mutex
 	err         error
 	wroteHeader bool
 	code        int
+	passthrough bool
+
+	// headerFlushed indicates we've copied headers and status to the underlying writer.
+	// Needed when switching to passthrough to avoid double WriteHeader/body writes.
+	headerFlushed bool
 }
 
 var _ http.Pusher = (*timeoutWriter)(nil)
@@ -167,6 +226,21 @@ func (tw *timeoutWriter) Push(target string, opts *http.PushOptions) error {
 
 func (tw *timeoutWriter) Header() http.Header { return tw.h }
 
+func (tw *timeoutWriter) flushHeaderLocked() {
+	if tw.headerFlushed {
+		return
+	}
+	dst := tw.w.Header()
+	for k, vv := range tw.h {
+		dst[k] = vv
+	}
+	if !tw.wroteHeader {
+		tw.code = http.StatusOK
+	}
+	tw.w.WriteHeader(tw.code)
+	tw.headerFlushed = true
+}
+
 func (tw *timeoutWriter) Write(p []byte) (int, error) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
@@ -175,6 +249,50 @@ func (tw *timeoutWriter) Write(p []byte) (int, error) {
 	}
 	if !tw.wroteHeader {
 		tw.writeHeaderLocked(http.StatusOK)
+	}
+
+	if tw.passthrough {
+		tw.flushHeaderLocked()
+		n, err := tw.w.Write(p)
+		if err != nil {
+			tw.err = err
+		}
+		return n, err
+	}
+
+	if tw.wbuf == nil {
+		// Defensive: no buffer available; stream directly.
+		tw.passthrough = true
+		tw.flushHeaderLocked()
+		n, err := tw.w.Write(p)
+		if err != nil {
+			tw.err = err
+		}
+		return n, err
+	}
+
+	if maxBufferedResponseBytes > 0 && tw.wbuf.Len()+len(p) > maxBufferedResponseBytes {
+		// Switch to passthrough to avoid unbounded buffering (OOM risk), while
+		// preserving the ability to serve large responses.
+		tw.passthrough = true
+		tw.flushHeaderLocked()
+
+		if tw.wbuf.Len() > 0 {
+			if _, err := tw.w.Write(tw.wbuf.Bytes()); err != nil {
+				tw.err = err
+				util.ReturnBuf(tw.wbuf)
+				tw.wbuf = nil
+				return 0, err
+			}
+		}
+		util.ReturnBuf(tw.wbuf)
+		tw.wbuf = nil
+
+		n, err := tw.w.Write(p)
+		if err != nil {
+			tw.err = err
+		}
+		return n, err
 	}
 	return tw.wbuf.Write(p)
 }

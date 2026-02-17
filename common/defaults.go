@@ -1945,6 +1945,11 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.GetLogsMaxAllowedRange == 0 {
 		e.GetLogsMaxAllowedRange = 30_000
 	}
+	if e.GetLogsMaxResponseBytes == 0 {
+		// Guardrail: eth_getLogs responses can be extremely large; cap decompressed upstream body size
+		// to avoid single-request OOM. When exceeded, we treat it as TooLarge and split.
+		e.GetLogsMaxResponseBytes = 64 * 1024 * 1024 // 64 MiB
+	}
 	if e.GetLogsSplitOnError == nil {
 		e.GetLogsSplitOnError = util.BoolPtr(true)
 	}
@@ -1954,6 +1959,9 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.GetLogsCacheChunkSize == nil {
 		v := int64(1000)
 		e.GetLogsCacheChunkSize = &v
+	}
+	if e.GetLogsCacheChunkConcurrency == 0 {
+		e.GetLogsCacheChunkConcurrency = 10
 	}
 
 	// Default methods for marking empty results as errors

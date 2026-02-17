@@ -23,5 +23,11 @@ func ReturnBuf(buf *bytes.Buffer) {
 	if buf == nil {
 		return
 	}
+	// Critical: don't pool huge buffers. Otherwise a single large response can
+	// pin multi-GB allocations in the pool and cause sustained RSS growth.
+	if buf.Cap() > maxBufCap {
+		return
+	}
+	buf.Reset()
 	byteBufPool.Put(buf)
 }

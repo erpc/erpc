@@ -1543,9 +1543,17 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedRange      int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
 	GetLogsMaxAllowedAddresses  int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
+	// GetLogsMaxResponseBytes caps the decompressed upstream response size for eth_getLogs.
+	// When exceeded, the request is treated as "too large" and split/retried with smaller sub-requests.
+	// Default is set in SetDefaults(). Set to 0 to disable (not recommended in production).
+	GetLogsMaxResponseBytes int64 `yaml:"getLogsMaxResponseBytes,omitempty" json:"getLogsMaxResponseBytes,omitempty"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 	GetLogsCacheChunkSize       *int64              `yaml:"getLogsCacheChunkSize,omitempty" json:"getLogsCacheChunkSize"`
+	// GetLogsCacheChunkConcurrency controls concurrency for cache-chunked eth_getLogs sub-requests.
+	// This is intentionally separate from GetLogsSplitConcurrency: cache chunking is the common path,
+	// and higher concurrency reduces tail latency without enabling "split storm" behavior on retries.
+	GetLogsCacheChunkConcurrency int `yaml:"getLogsCacheChunkConcurrency,omitempty" json:"getLogsCacheChunkConcurrency"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.
