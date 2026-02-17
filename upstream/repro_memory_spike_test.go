@@ -1,3 +1,6 @@
+//go:build repro
+// +build repro
+
 package upstream
 
 import (

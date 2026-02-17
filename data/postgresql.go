@@ -287,19 +287,24 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey st
 
 	var err error
 	if expiresAt != nil {
+		// TTL write: always upsert because expiry semantics can change.
 		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %s (partition_key, range_key, value, expires_at)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (partition_key, range_key) DO UPDATE
-			SET value = $3, expires_at = $4
+			SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at
 		`, p.table), partitionKey, rangeKey, value, expiresAt)
 	} else {
+		// Non-TTL write (ttl unset / <= 0) typically used for finalized, immutable responses.
+		// Avoid repeated large updates on hot keys: only update when we need to clear expires_at
+		// or the stored value is actually different.
 		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %s (partition_key, range_key, value)
-			VALUES ($1, $2, $3)
+			INSERT INTO %s (partition_key, range_key, value, expires_at)
+			VALUES ($1, $2, $3, NULL)
 			ON CONFLICT (partition_key, range_key) DO UPDATE
-			SET value = $3
-		`, p.table), partitionKey, rangeKey, value)
+			SET value = EXCLUDED.value, expires_at = NULL
+			WHERE %s.expires_at IS NOT NULL OR %s.value IS DISTINCT FROM EXCLUDED.value
+		`, p.table, p.table, p.table), partitionKey, rangeKey, value)
 	}
 
 	if err != nil {

@@ -109,10 +109,11 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	jrq.RUnlock()
 
 	// Resolve block tags to numbers for metrics (hex or tags like "latest", "finalized")
-	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
-	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+	fbHex, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
+	tbHex, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
 
-	if fromBlock > 0 && toBlock >= fromBlock {
+	// Only observe when both ends are numeric/resolved (including block 0).
+	if fbHex != "" && tbHex != "" && toBlock >= fromBlock {
 		rangeSize := float64(toBlock - fromBlock + 1)
 		finalityStr := nq.Finality(ctx).String()
 		telemetry.MetricNetworkEvmGetLogsRangeRequested.
@@ -185,11 +186,11 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
 	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
 	// pass through to upstream without block range validation.
-	_, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
-	_, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
+	fbHex, fromBlock := resolveBlockTagForGetLogs(ctx, n, fbStr)
+	tbHex, toBlock := resolveBlockTagForGetLogs(ctx, n, tbStr)
 
 	// If either block couldn't be resolved to a number, skip validation and pass to upstream
-	if fromBlock == 0 || toBlock == 0 {
+	if fbHex == "" || tbHex == "" {
 		return false, nil, nil
 	}
 
