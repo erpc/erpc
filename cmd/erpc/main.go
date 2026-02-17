@@ -172,7 +172,7 @@ func main() {
 					return nil
 				}
 				fmt.Println(string(out))
-			default:
+			case "yaml", "yml":
 				out, err := yaml.Marshal(cfg)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "error: failed to marshal config to YAML: %v\n", err)
@@ -180,6 +180,10 @@ func main() {
 					return nil
 				}
 				fmt.Print(string(out))
+			default:
+				fmt.Fprintf(os.Stderr, "error: unsupported format %q (use yaml or json)\n", format)
+				util.OsExit(1)
+				return nil
 			}
 
 			return nil
