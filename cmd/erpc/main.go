@@ -141,7 +141,7 @@ func main() {
 				Value: "yaml",
 			},
 			&cli.BoolFlag{
-				Name:  "defaults",
+				Name:  "with-defaults",
 				Usage: "Apply eRPC defaults to the config before dumping (shows final resolved config)",
 				Value: false,
 			},
@@ -167,7 +167,7 @@ func main() {
 				return nil
 			}
 
-			if cmd.Bool("defaults") {
+			if cmd.Bool("with-defaults") {
 				if err := cfg.SetDefaults(&common.DefaultOptions{}); err != nil {
 					fmt.Fprintf(os.Stderr, "error: failed to apply defaults: %v\n", err)
 					util.OsExit(1)
