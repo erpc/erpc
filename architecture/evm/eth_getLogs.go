@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,49 +226,47 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	// Note: we apply chunking even when SkipCacheRead=true. That directive only means
 	// "don't read from cache" (force upstream). Chunking still provides deterministic
 	// keys and caps per-upstream response sizes / latencies.
-	if cacheDal := n.Cache(); cacheDal != nil && !cacheDal.IsObjectNull() {
-		chunkSize := int64(0)
-		if ncfg.Evm.GetLogsCacheChunkSize != nil {
-			chunkSize = *ncfg.Evm.GetLogsCacheChunkSize
+	chunkSize := int64(0)
+	if ncfg.Evm.GetLogsCacheChunkSize != nil {
+		chunkSize = *ncfg.Evm.GetLogsCacheChunkSize
+	}
+	if requestRange > 0 && chunkSize > 0 && requestRange > chunkSize {
+		subRequests := make([]ethGetLogsSubRequest, 0)
+		// Align first chunk start to chunkSize boundary for deterministic cache keys
+		// e.g. with chunkSize=1000, fromBlock=1500 -> first chunk starts at 1500, ends at 1999
+		sb := fromBlock
+		for sb <= toBlock {
+			// Compute aligned chunk end: next boundary - 1, clamped to toBlock
+			alignedEnd := sb - (sb % chunkSize) + chunkSize - 1
+			eb := min(alignedEnd, toBlock)
+			subRequests = append(subRequests, ethGetLogsSubRequest{
+				fromBlock: sb,
+				toBlock:   eb,
+				address:   filter["address"],
+				topics:    filter["topics"],
+			})
+			sb = eb + 1
 		}
-		if requestRange > 0 && chunkSize > 0 && requestRange > chunkSize {
-			subRequests := make([]ethGetLogsSubRequest, 0)
-			// Align first chunk start to chunkSize boundary for deterministic cache keys
-			// e.g. with chunkSize=1000, fromBlock=1500 -> first chunk starts at 1500, ends at 1999
-			sb := fromBlock
-			for sb <= toBlock {
-				// Compute aligned chunk end: next boundary - 1, clamped to toBlock
-				alignedEnd := sb - (sb % chunkSize) + chunkSize - 1
-				eb := min(alignedEnd, toBlock)
-				subRequests = append(subRequests, ethGetLogsSubRequest{
-					fromBlock: sb,
-					toBlock:   eb,
-					address:   filter["address"],
-					topics:    filter["topics"],
-				})
-				sb = eb + 1
-			}
 
-			nrq.SetCompositeType(common.CompositeTypeLogsCacheChunk)
-			chunkConc := 0
-			if ncfg.Evm != nil {
-				chunkConc = ncfg.Evm.GetLogsCacheChunkConcurrency
-			}
-			mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead, chunkConc)
-			if err != nil {
-				return true, nil, err
-			}
-
-			nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
-			if meta != nil && meta.allFromCache {
-				nrs.SetFromCache(true)
-				if meta.oldestCacheAt > 0 {
-					nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
-				}
-			}
-			nrq.SetLastValidResponse(ctx, nrs)
-			return true, nrs, nil
+		nrq.SetCompositeType(common.CompositeTypeLogsCacheChunk)
+		chunkConc := 0
+		if ncfg.Evm != nil {
+			chunkConc = ncfg.Evm.GetLogsCacheChunkConcurrency
 		}
+		mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead, chunkConc)
+		if err != nil {
+			return true, nil, err
+		}
+
+		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+		if meta != nil && meta.allFromCache {
+			nrs.SetFromCache(true)
+			if meta.oldestCacheAt > 0 {
+				nrs.SetCacheStoredAtUnix(meta.oldestCacheAt)
+			}
+		}
+		nrq.SetLastValidResponse(ctx, nrs)
+		return true, nrs, nil
 	}
 
 	// Compute effective auto-splitting threshold (min across upstreams)
@@ -829,6 +826,33 @@ type getLogsMergeMeta struct {
 	oldestCacheAt int64
 }
 
+func pickGetLogsSubRequestError(errs []error) error {
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		jre := &common.ErrJsonRpcExceptionExternal{}
+		if errors.As(err, &jre) {
+			return jre
+		}
+	}
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		var se common.StandardError
+		if errors.As(err, &se) {
+			return se
+		}
+	}
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("unknown getLogs sub-request error")
+}
+
 func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool, concurrency int) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
 	return executeGetLogsSubRequestsInternal(ctx, n, r, subRequests, skipCacheRead, concurrency, 0)
 }
@@ -1060,7 +1084,7 @@ loop:
 				responses[i] = nil
 			}
 		}
-		return nil, nil, errors.Join(errs...)
+		return nil, nil, pickGetLogsSubRequestError(errs)
 	}
 
 	mergedResponse := mergeEthGetLogsResults(responses, holders)

@@ -18,6 +18,7 @@ const (
 	CompositeTypeNone               = "none"
 	CompositeTypeLogsSplitOnError   = "logs-split-on-error"
 	CompositeTypeLogsSplitProactive = "logs-split-proactive"
+	CompositeTypeLogsCacheChunk     = "logs-cache-chunk"
 )
 
 const RequestContextKey ContextKey = "rq"
