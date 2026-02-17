@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/urfave/cli/v3"
 	"google.golang.org/grpc/grpclog"
+	yaml "gopkg.in/yaml.v3"
 )
 
 func init() {
@@ -128,6 +130,75 @@ func main() {
 		},
 	}
 
+	// Define the dump command
+	dumpCmd := &cli.Command{
+		Name:  "dump",
+		Usage: "Parse a config file (TS, JS, or YAML) and dump the resolved configuration",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "format",
+				Usage: "Output format: yaml|json",
+				Value: "yaml",
+			},
+			&cli.BoolFlag{
+				Name:  "with-defaults",
+				Usage: "Apply default values before dumping (shows what eRPC actually uses at runtime)",
+				Value: false,
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			zerolog.SetGlobalLevel(zerolog.Disabled)
+
+			fs := afero.NewOsFs()
+			configPath := cmd.String("config")
+			if configPath == "" && len(cmd.Args().Slice()) > 0 {
+				configPath = cmd.Args().First()
+			}
+			if configPath == "" {
+				fmt.Fprintln(os.Stderr, "error: config file is required: erpc dump <config-file>")
+				util.OsExit(1)
+				return nil
+			}
+
+			cfg, err := common.LoadConfigRaw(fs, configPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: failed to load config: %v\n", err)
+				util.OsExit(1)
+				return nil
+			}
+
+			if cmd.Bool("with-defaults") {
+				if err := cfg.SetDefaults(&common.DefaultOptions{}); err != nil {
+					fmt.Fprintf(os.Stderr, "error: failed to apply defaults: %v\n", err)
+					util.OsExit(1)
+					return nil
+				}
+			}
+
+			format := cmd.String("format")
+			switch format {
+			case "json":
+				out, err := json.MarshalIndent(cfg, "", "  ")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: failed to marshal config to JSON: %v\n", err)
+					util.OsExit(1)
+					return nil
+				}
+				fmt.Println(string(out))
+			default:
+				out, err := yaml.Marshal(cfg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: failed to marshal config to YAML: %v\n", err)
+					util.OsExit(1)
+					return nil
+				}
+				fmt.Print(string(out))
+			}
+
+			return nil
+		},
+	}
+
 	// Define the start command
 	startCmd := &cli.Command{
 		Name:  "start",
@@ -166,10 +237,11 @@ func main() {
 				logger,
 			)
 		}),
-		// sub command for start / validation
+		// sub command for start / validation / dump
 		Commands: []*cli.Command{
 			startCmd,
 			validateCmd,
+			dumpCmd,
 		},
 	}
 	if err := cmd.Run(ctx, os.Args); err != nil {

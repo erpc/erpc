@@ -45,6 +45,10 @@ func (c AvailbilityConfidence) String() string {
 	}
 }
 
+func (c AvailbilityConfidence) MarshalYAML() (interface{}, error) {
+	return c.String(), nil
+}
+
 func (c AvailbilityConfidence) MarshalJSON() ([]byte, error) {
 	return SonicCfg.Marshal(c.String())
 }
