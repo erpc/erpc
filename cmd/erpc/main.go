@@ -155,15 +155,9 @@ func main() {
 				return nil
 			}
 
-			cfg, err := common.LoadConfigRaw(fs, configPath)
+			cfg, err := common.LoadConfig(fs, configPath, &common.DefaultOptions{})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: failed to load config: %v\n", err)
-				util.OsExit(1)
-				return nil
-			}
-
-			if err := cfg.SetDefaults(&common.DefaultOptions{}); err != nil {
-				fmt.Fprintf(os.Stderr, "error: failed to apply defaults: %v\n", err)
 				util.OsExit(1)
 				return nil
 			}
