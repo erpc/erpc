@@ -46,7 +46,8 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 		// Large responses (notably eth_getLogs) can be hundreds of MBs and cloning
 		// the result bytes will OOM the pod.
 		if resp != nil {
-			if _, parseErr := resp.JsonRpcResponse(ctx); parseErr != nil {
+			jrr, parseErr := resp.JsonRpcResponse(ctx)
+			if parseErr != nil {
 				if req := resp.Request(); req != nil {
 					if nw := req.Network(); nw != nil {
 						nw.Logger().Warn().Err(parseErr).Str("multiplexerHash", m.hash).Object("response", resp).Msg("failed to parse response before storing in multiplexer")
@@ -57,6 +58,16 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					err = parseErr
 				}
 				resp = nil // Don't store a response that can't be parsed
+			} else if jrr != nil {
+				// Ensure the stored response is shallow-cloneable for followers. Some resultWriters are
+				// one-shot streamers and cannot be safely cloned/shared; in those cases, disable
+				// multiplex fan-out by not storing the response.
+				clone, cerr := jrr.CloneShallow()
+				if cerr != nil {
+					resp = nil
+				} else if clone != nil {
+					clone.Free() // drop our temporary ref; cloneability check only
+				}
 			}
 		}
 

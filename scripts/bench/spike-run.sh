@@ -409,8 +409,8 @@ stop_pid "${docker_mon_pid}"
 stop_pid "${mon_pid}"
 stop_pid "${erpc_pid}"
 
-sum_line="$(rg -n \"^summary \" -m 1 \"${spike_err}\" | sed -E 's/^.*summary /summary /' || true)"
-max_rss="$(awk '{if ($2>m) m=$2} END{print m+0}' \"${rss_log}\" 2>/dev/null || echo 0)"
+sum_line="$(rg -n "^summary " -m 1 "${spike_err}" | sed -E 's/^.*summary /summary /' || true)"
+max_rss="$(awk '{if ($2>m) m=$2} END{print m+0}' "${rss_log}" 2>/dev/null || echo 0)"
 
 echo "ref=${ref}"
 echo "getlogs_split_conc=${getlogs_split_conc}"
@@ -418,4 +418,3 @@ echo "getlogs_chunk_conc=${getlogs_chunk_conc}"
 echo "max_rss_kib=${max_rss}"
 echo "${sum_line}"
 echo "artifacts=${tmp_root}"
-
