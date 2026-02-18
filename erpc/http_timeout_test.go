@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,16 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
+
+type closeAwareRecorder struct {
+	*httptest.ResponseRecorder
+	closed atomic.Bool
+}
+
+func (r *closeAwareRecorder) Close() error {
+	r.closed.Store(true)
+	return nil
+}
 
 func init() {
 	util.ConfigureTestLogger()
@@ -164,6 +175,29 @@ func TestTimeoutHandler_LargeResponseSwitchesToPassthrough(t *testing.T) {
 	// a synthetic "response too large" JSON-RPC error.
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, strings.Repeat("x", 64<<10), rec.Body.String())
+}
+
+func TestTimeoutHandler_TimeoutInPassthroughAbortsResponse(t *testing.T) {
+	prev := maxBufferedResponseBytes
+	maxBufferedResponseBytes = 8 << 10 // 8KiB
+	t.Cleanup(func() { maxBufferedResponseBytes = prev })
+
+	slowLargeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Exceed buffer limit immediately (switches to passthrough), then stall
+		// long enough to hit handler timeout.
+		_, _ = w.Write([]byte(strings.Repeat("x", 16<<10)))
+		time.Sleep(80 * time.Millisecond)
+	})
+
+	handler := TimeoutHandler(&log.Logger, slowLargeHandler, 20*time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getLogs","id":1}`))
+	rec := &closeAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	handler.ServeHTTP(rec, req)
+
+	assert.True(t, rec.closed.Load(), "passthrough timeout should abort/close response writer")
 }
 
 func TestTimeoutHandler_PanicRecovery(t *testing.T) {

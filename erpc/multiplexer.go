@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/erpc/erpc/common"
@@ -65,6 +66,9 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 				clone, cerr := jrr.CloneShallow()
 				if cerr != nil {
 					resp = nil
+					if err == nil {
+						err = fmt.Errorf("response not shareable across multiplexer: %w", cerr)
+					}
 				} else if clone != nil {
 					clone.Free() // drop our temporary ref; cloneability check only
 				}

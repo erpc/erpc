@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync"
 	"sync/atomic"
 )
 
@@ -33,6 +34,7 @@ type ShallowCloneSafeByteWriter interface {
 }
 
 type sharedWriterState struct {
+	mu   sync.Mutex
 	w    ShallowCloneSafeByteWriter
 	refs atomic.Int64
 }
@@ -63,24 +65,42 @@ func (w *SharedReleasableByteWriter) Clone() *SharedReleasableByteWriter {
 func (w *SharedReleasableByteWriter) ShallowCloneSafe() {}
 
 func (w *SharedReleasableByteWriter) WriteTo(out io.Writer, trimSides bool) (n int64, err error) {
-	if w == nil || w.st == nil || w.st.w == nil {
+	if w == nil || w.st == nil {
 		return 0, nil
 	}
-	return w.st.w.WriteTo(out, trimSides)
+	w.st.mu.Lock()
+	inner := w.st.w
+	w.st.mu.Unlock()
+	if inner == nil {
+		return 0, nil
+	}
+	return inner.WriteTo(out, trimSides)
 }
 
 func (w *SharedReleasableByteWriter) IsResultEmptyish() bool {
-	if w == nil || w.st == nil || w.st.w == nil {
+	if w == nil || w.st == nil {
 		return true
 	}
-	return w.st.w.IsResultEmptyish()
+	w.st.mu.Lock()
+	inner := w.st.w
+	w.st.mu.Unlock()
+	if inner == nil {
+		return true
+	}
+	return inner.IsResultEmptyish()
 }
 
 func (w *SharedReleasableByteWriter) Size(ctx ...context.Context) (int, error) {
-	if w == nil || w.st == nil || w.st.w == nil {
+	if w == nil || w.st == nil {
 		return 0, nil
 	}
-	return w.st.w.Size(ctx...)
+	w.st.mu.Lock()
+	inner := w.st.w
+	w.st.mu.Unlock()
+	if inner == nil {
+		return 0, nil
+	}
+	return inner.Size(ctx...)
 }
 
 func (w *SharedReleasableByteWriter) Release() {
@@ -90,24 +110,28 @@ func (w *SharedReleasableByteWriter) Release() {
 	if w.st.refs.Add(-1) != 0 {
 		return
 	}
-	if w.st.w != nil {
-		w.st.w.Release()
-		w.st.w = nil
+	w.st.mu.Lock()
+	inner := w.st.w
+	w.st.w = nil
+	w.st.mu.Unlock()
+	if inner != nil {
+		inner.Release()
 	}
-	w.st = nil
 }
 
+// IsBytesEmptyish reports whether b represents a semantically empty JSON-RPC result value.
+// It returns true for: empty bytes, "0", "0x"/"0X", "0x0000..." (any number of zeros),
+// quoted variants ("0x", "0x000..."), null, empty string (""), empty array ([]), and empty object ({}).
 func IsBytesEmptyish(b []byte) bool {
 	lnr := len(b)
 	if lnr > 2 {
 		if b[0] == '0' && (b[1] == 'x' || b[1] == 'X') {
 			// Skip the 0x prefix and trim all leading zeros from the hex value
 			remaining := bytes.TrimLeft(b[2:], "0")
-			// If nothing remains or only the closing quote remains for quoted hex, it's empty
+			// If nothing remains after stripping leading zeros, the hex value is zero-valued
 			if len(remaining) == 0 {
 				return true
 			}
-			// Update b to check remaining content
 			b = remaining
 		} else if lnr > 4 && b[0] == '"' && b[1] == '0' && (b[2] == 'x' || b[2] == 'X') {
 			b = bytes.TrimLeft(b[3:], "0")

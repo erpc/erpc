@@ -101,41 +101,31 @@ func copyTrimSides(out io.Writer, r io.Reader) (n int64, err error) {
 	}
 
 	var buf [32 * 1024]byte
-	var last [1]byte
+	var last byte
 	haveLast := false
 
 	for {
 		nn, rerr := r.Read(buf[:])
 		if nn > 0 {
 			chunk := buf[:nn]
-			if !haveLast {
-				if len(chunk) == 1 {
-					last[0] = chunk[0]
-					haveLast = true
-				} else {
-					wn, werr := out.Write(chunk[:len(chunk)-1])
-					n += int64(wn)
-					if werr != nil {
-						return n, werr
-					}
-					last[0] = chunk[len(chunk)-1]
-					haveLast = true
-				}
-			} else {
-				wn, werr := out.Write(last[:])
+			// Flush the previously held-back byte before processing the new chunk.
+			if haveLast {
+				wn, werr := out.Write([]byte{last})
 				n += int64(wn)
 				if werr != nil {
 					return n, werr
 				}
-				if len(chunk) > 1 {
-					wn, werr = out.Write(chunk[:len(chunk)-1])
-					n += int64(wn)
-					if werr != nil {
-						return n, werr
-					}
-				}
-				last[0] = chunk[len(chunk)-1]
 			}
+			// Write everything except the last byte of this chunk.
+			if len(chunk) > 1 {
+				wn, werr := out.Write(chunk[:len(chunk)-1])
+				n += int64(wn)
+				if werr != nil {
+					return n, werr
+				}
+			}
+			last = chunk[len(chunk)-1]
+			haveLast = true
 		}
 
 		if rerr != nil {
@@ -216,7 +206,7 @@ func (c *EvmJsonRpcCache) newCacheResultWriterFromCompressed(compressedData []by
 		}, 0, false, nil
 	}
 
-	// Read a tiny payload prefix for emptyish detection and to avoid a "first Read" syscall later.
+	// Read a tiny payload prefix for emptyish detection and to warm the reader for downstream consumers.
 	var peek [8]byte
 	pn, perr := decoder.Read(peek[:])
 	if perr != nil && perr != io.EOF {

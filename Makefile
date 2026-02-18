@@ -110,7 +110,7 @@ docker-build-both:
 
 .PHONY: docker-push-both
 docker-push-both:
-	$(eval repo ?= morphoorg)
+	$(eval repo ?= ghcr.io/erpc)
 	$(eval tag ?= 0.0.0-dev-$$(date -u +%Y%m%d%H%M)-g$$(git rev-parse --short HEAD))
 	$(eval platforms ?= linux/amd64,linux/arm64)
 	@REPO=$(repo) TAG=$(tag) PLATFORMS=$(platforms) PUSH=true ./scripts/docker/build-push-images.sh

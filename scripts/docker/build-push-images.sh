@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${REPO:-morphoorg}"
+repo="${REPO:-ghcr.io/erpc}"
 tag="${TAG:-0.0.0-dev-$(date -u +%Y%m%d%H%M)-g$(git rev-parse --short HEAD)}"
 platforms="${PLATFORMS:-linux/amd64,linux/arm64}"
 push="${PUSH:-true}"

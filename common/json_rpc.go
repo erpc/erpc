@@ -275,9 +275,14 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 	if err != nil {
 		return err
 	}
-	// Return buffer after we're done parsing and copying what we need
+	// Return buffer after we're done parsing and copying what we need.
+	// If we alias result bytes, we must keep ownership and skip returning.
 	if returnBuf != nil {
-		defer returnBuf()
+		defer func() {
+			if returnBuf != nil {
+				returnBuf()
+			}
+		}()
 	}
 
 	// Parse into a temporary struct to extract fields without string conversion
@@ -295,6 +300,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		r.resultMu.Lock()
 		if len(data) > noCopyBufThreshold {
 			r.result = data
+			returnBuf = nil
 		} else {
 			dataCopy := make([]byte, len(data))
 			copy(dataCopy, data)
@@ -317,6 +323,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		r.resultMu.Lock()
 		if len(temp.Result) > noCopyBufThreshold {
 			r.result = temp.Result
+			returnBuf = nil
 		} else {
 			resultCopy := make([]byte, len(temp.Result))
 			copy(resultCopy, temp.Result)

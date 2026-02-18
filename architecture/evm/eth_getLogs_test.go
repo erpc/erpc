@@ -1934,6 +1934,32 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		assert.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable))
 	})
+
+	t.Run("validates_genesis_block_zero_range", func(t *testing.T) {
+		n := makeNetwork(i64ptr(128))
+		u := new(mockEvmUpstream)
+		poller := &fixedPoller{latest: 100, finalized: 100}
+
+		u.On("Id").Return("u1").Maybe()
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
+		u.On("EvmStatePoller").Return(poller).Maybe()
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(0)).
+			Return(true, nil).
+			Once()
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(0)).
+			Return(true, nil).
+			Once()
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x0",
+		})
+
+		handled, resp, err := upstreamPreForward_eth_getLogs(ctx, n, u, r)
+		assert.False(t, handled)
+		assert.Nil(t, resp)
+		assert.NoError(t, err)
+	})
 }
 
 type fixedPoller struct {

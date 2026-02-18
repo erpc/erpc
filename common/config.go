@@ -1548,9 +1548,9 @@ type EvmNetworkConfig struct {
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 	GetLogsCacheChunkSize       *int64              `yaml:"getLogsCacheChunkSize,omitempty" json:"getLogsCacheChunkSize"`
-	// GetLogsCacheChunkConcurrency controls concurrency for cache-chunked eth_getLogs sub-requests.
-	// This is intentionally separate from GetLogsSplitConcurrency: cache chunking is the common path,
-	// and higher concurrency reduces tail latency without enabling "split storm" behavior on retries.
+	// GetLogsCacheChunkConcurrency controls the base concurrency for cache-chunked eth_getLogs sub-requests.
+	// The effective concurrency is max(GetLogsCacheChunkConcurrency, GetLogsSplitConcurrency) to ensure
+	// recursive splits within cache chunks are not throttled below the split concurrency.
 	GetLogsCacheChunkConcurrency int `yaml:"getLogsCacheChunkConcurrency,omitempty" json:"getLogsCacheChunkConcurrency"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.

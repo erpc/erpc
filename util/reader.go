@@ -20,9 +20,9 @@ func (e *ReadLimitExceededError) Error() string {
 
 func (e *ReadLimitExceededError) Unwrap() error { return ErrReadLimitExceeded }
 
-// ReadAll reads all from r and returns the data plus a function to return the buffer.
-// Callers SHOULD call the return function when done with the data to enable buffer reuse.
-// If returnFunc is nil, no cleanup is needed.
+// ReadAll reads all from r into a pooled buffer and returns the data plus a cleanup function.
+// On success, callers MUST call returnFunc when done with data to return the buffer to the pool.
+// On error, returnFunc is nil (the buffer is already freed internally).
 func ReadAll(r io.Reader, expected int) (data []byte, returnFunc func(), err error) {
 	buf := BorrowBuf()
 

@@ -18,7 +18,8 @@ type getLogsFilter struct {
 	addrSet map[string]struct{}
 
 	// topics[i] is:
-	// - nil: wildcard
+	// - nil: wildcard (any topic matches)
+	// - len==0: impossible (no log can match this position)
 	// - len>0: OR list of accepted topic values (lowercased)
 	topics [][]string
 }
