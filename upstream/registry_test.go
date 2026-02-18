@@ -1266,6 +1266,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		metricsTracker,
 		1*time.Second,
 		nil,
+		nil,
 	)
 
 	registry.Bootstrap(ctx)

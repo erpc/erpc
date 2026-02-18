@@ -1013,6 +1013,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		metricsTracker,
 		1*time.Second,
 		nil,
+		nil,
 	)
 
 	network, err := NewNetwork(

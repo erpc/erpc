@@ -267,6 +267,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 
 		// Bootstrap upstreams
@@ -446,6 +447,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 

@@ -1136,6 +1136,24 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
 	}
+	if strings.TrimSpace(p.RoutingStrategy) == "" {
+		p.RoutingStrategy = "score-based"
+	}
+	if strings.TrimSpace(p.ScoreGranularity) == "" {
+		p.ScoreGranularity = "upstream"
+	}
+	if p.ScorePenaltyDecayRate == 0 {
+		p.ScorePenaltyDecayRate = 0.85
+	}
+	if p.ScoreSwitchThreshold == 0 {
+		p.ScoreSwitchThreshold = 3.0
+	}
+	if p.ScoreSwitchRatio == 0 {
+		p.ScoreSwitchRatio = 0.3
+	}
+	if p.ScoreMinSwitchInterval == 0 {
+		p.ScoreMinSwitchInterval = Duration(2 * time.Minute)
+	}
 	// Default score metrics mode to compact when not provided
 	if strings.TrimSpace(p.ScoreMetricsMode) == "" {
 		p.ScoreMetricsMode = "compact"

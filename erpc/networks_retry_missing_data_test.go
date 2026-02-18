@@ -2443,6 +2443,7 @@ func setupTestNetworkWithMethodIgnore(
 		metricsTracker,
 		time.Second,
 		nil,
+		nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)

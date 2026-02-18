@@ -82,6 +82,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		mt,
 		1*time.Second,
 		nil,
+		nil,
 	)
 
 	upsReg.Bootstrap(ctx)
@@ -186,6 +187,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 		nil,
 	)
 
@@ -298,6 +300,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 		nil,
 	)
 	upsReg.Bootstrap(ctx)
@@ -414,6 +417,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		nil,
 		mt,
 		10*time.Second,
+		nil,
 		nil,
 	)
 	upsReg.Bootstrap(ctx)

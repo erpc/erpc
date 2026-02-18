@@ -371,6 +371,35 @@ export interface ProjectConfig {
   scoreMetricsWindowSize?: Duration;
   scoreRefreshInterval?: Duration;
   /**
+   * RoutingStrategy selects the upstream ordering algorithm.
+   * "score-based" (default): penalty-based sticky routing.
+   * "round-robin": time-rotating equal distribution across upstreams.
+   */
+  routingStrategy?: string;
+  /**
+   * ScoreGranularity controls whether penalties are computed per-upstream or per-method.
+   * "upstream" (default): one penalty across all methods using aggregate metrics.
+   * "method": separate penalty per (upstream, method) pair.
+   */
+  scoreGranularity?: string;
+  /**
+   * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
+   * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+   */
+  scorePenaltyDecayRate?: number /* float64 */;
+  /**
+   * ScoreSwitchThreshold is the minimum penalty for the primary upstream to lose its position.
+   */
+  scoreSwitchThreshold?: number /* float64 */;
+  /**
+   * ScoreSwitchRatio: challenger must have penalty < primary*ratio to take over (0..1).
+   */
+  scoreSwitchRatio?: number /* float64 */;
+  /**
+   * ScoreMinSwitchInterval is the cooldown between primary upstream switches.
+   */
+  scoreMinSwitchInterval?: Duration;
+  /**
    * ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
    * Allowed values:
    * - "compact": emit compact series by setting upstream and category labels to 'n/a'

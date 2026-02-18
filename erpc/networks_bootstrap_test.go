@@ -68,6 +68,7 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 		mt,
 		1*time.Second,
 		nil,
+		nil,
 	)
 
 	// Network config without static upstreams to force provider path
