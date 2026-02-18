@@ -833,37 +833,64 @@ func (r *JsonRpcResponse) CloneShallow() (*JsonRpcResponse, error) {
 		return nil, nil
 	}
 
+	// Copy ID/error state (small) under read locks.
 	r.idMu.RLock()
-	defer r.idMu.RUnlock()
-	r.errMu.RLock()
-	defer r.errMu.RUnlock()
-	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
-
-	if len(r.result) == 0 && r.resultWriter != nil {
-		return nil, errCloneShallowResultWriter
+	id := r.id
+	errObj := r.Error
+	var idBytes []byte
+	if r.idBytes != nil {
+		idBytes = make([]byte, len(r.idBytes))
+		copy(idBytes, r.idBytes)
 	}
+	r.idMu.RUnlock()
+
+	r.errMu.RLock()
+	var errBytes []byte
+	if r.errBytes != nil {
+		errBytes = make([]byte, len(r.errBytes))
+		copy(errBytes, r.errBytes)
+	}
+	r.errMu.RUnlock()
 
 	clone := &JsonRpcResponse{
-		id:         r.id,
-		Error:      r.Error,
+		id:         id,
+		idBytes:    idBytes,
+		Error:      errObj,
+		errBytes:   errBytes,
 		cachedNode: nil,
 		// canonicalHashWithIgnored intentionally not copied
 	}
 
-	// idBytes and errBytes are tiny; copy to keep clones independent of lazy marshaling.
-	if r.idBytes != nil {
-		clone.idBytes = make([]byte, len(r.idBytes))
-		copy(clone.idBytes, r.idBytes)
-	}
-	if r.errBytes != nil {
-		clone.errBytes = make([]byte, len(r.errBytes))
-		copy(clone.errBytes, r.errBytes)
+	// Handle result / resultWriter under exclusive lock so we can safely upgrade to a
+	// reference-counted shared writer when supported.
+	r.resultMu.Lock()
+	if len(r.result) > 0 {
+		// Share the result backing array to avoid multi-GB copies.
+		clone.result = r.result
+		clone.resultWriter = nil
+		r.resultMu.Unlock()
+		return clone, nil
 	}
 
-	// Share the result backing array to avoid multi-GB copies.
-	clone.result = r.result
-	clone.resultWriter = nil
+	if r.resultWriter != nil {
+		// If the writer is safe to share, wrap it in a ref-counted handle so that
+		// clones can't Release() the underlying data out from under other writers.
+		if safe, ok := r.resultWriter.(util.ShallowCloneSafeByteWriter); ok {
+			if shared, ok := r.resultWriter.(*util.SharedReleasableByteWriter); ok {
+				clone.resultWriter = shared.Clone()
+				r.resultMu.Unlock()
+				return clone, nil
+			}
+			shared := util.NewSharedReleasableByteWriter(safe)
+			r.resultWriter = shared
+			clone.resultWriter = shared.Clone()
+			r.resultMu.Unlock()
+			return clone, nil
+		}
+		r.resultMu.Unlock()
+		return nil, errCloneShallowResultWriter
+	}
+	r.resultMu.Unlock()
 
 	return clone, nil
 }

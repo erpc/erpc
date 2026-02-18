@@ -557,6 +557,8 @@ func NewGetLogsMultiResponseWriter(responses []*common.JsonRpcResponse, holders 
 	}
 }
 
+func (g *GetLogsMultiResponseWriter) ShallowCloneSafe() {}
+
 func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer, trimSides bool) (n int64, err error) {
 	g.mu.RLock()
 	responses := g.responses

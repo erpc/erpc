@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync/atomic"
 )
 
 type ByteWriter interface {
@@ -17,6 +18,83 @@ type ByteWriter interface {
 type ReleasableByteWriter interface {
 	ByteWriter
 	Release()
+}
+
+// ShallowCloneSafeByteWriter marks writers that are safe to share between shallow-cloned
+// JsonRpcResponses (multiplexing/shadow fan-out) as long as their lifetime is reference-counted.
+//
+// Requirements:
+// - WriteTo/IsResultEmptyish/Size must be safe to call concurrently.
+// - Writer must be repeatable (not one-shot stream consumption), OR callers must ensure single-use.
+//   (eRPC only marks repeatable writers as ShallowCloneSafeByteWriter.)
+type ShallowCloneSafeByteWriter interface {
+	ReleasableByteWriter
+	ShallowCloneSafe()
+}
+
+type sharedWriterState struct {
+	w    ShallowCloneSafeByteWriter
+	refs atomic.Int64
+}
+
+// SharedReleasableByteWriter wraps a ShallowCloneSafeByteWriter with reference-counted Release(),
+// preventing premature cleanup when the same writer is shared across shallow clones.
+type SharedReleasableByteWriter struct {
+	st *sharedWriterState
+}
+
+func NewSharedReleasableByteWriter(w ShallowCloneSafeByteWriter) *SharedReleasableByteWriter {
+	if w == nil {
+		return &SharedReleasableByteWriter{st: nil}
+	}
+	st := &sharedWriterState{w: w}
+	st.refs.Store(1)
+	return &SharedReleasableByteWriter{st: st}
+}
+
+func (w *SharedReleasableByteWriter) Clone() *SharedReleasableByteWriter {
+	if w == nil || w.st == nil {
+		return &SharedReleasableByteWriter{st: nil}
+	}
+	w.st.refs.Add(1)
+	return &SharedReleasableByteWriter{st: w.st}
+}
+
+func (w *SharedReleasableByteWriter) ShallowCloneSafe() {}
+
+func (w *SharedReleasableByteWriter) WriteTo(out io.Writer, trimSides bool) (n int64, err error) {
+	if w == nil || w.st == nil || w.st.w == nil {
+		return 0, nil
+	}
+	return w.st.w.WriteTo(out, trimSides)
+}
+
+func (w *SharedReleasableByteWriter) IsResultEmptyish() bool {
+	if w == nil || w.st == nil || w.st.w == nil {
+		return true
+	}
+	return w.st.w.IsResultEmptyish()
+}
+
+func (w *SharedReleasableByteWriter) Size(ctx ...context.Context) (int, error) {
+	if w == nil || w.st == nil || w.st.w == nil {
+		return 0, nil
+	}
+	return w.st.w.Size(ctx...)
+}
+
+func (w *SharedReleasableByteWriter) Release() {
+	if w == nil || w.st == nil {
+		return
+	}
+	if w.st.refs.Add(-1) != 0 {
+		return
+	}
+	if w.st.w != nil {
+		w.st.w.Release()
+		w.st.w = nil
+	}
+	w.st = nil
 }
 
 func IsBytesEmptyish(b []byte) bool {

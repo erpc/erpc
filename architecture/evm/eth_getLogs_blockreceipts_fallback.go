@@ -182,6 +182,8 @@ func newGetLogsFromBlockReceiptsWriter(holder *common.NormalizedResponse, jrr *c
 	}
 }
 
+func (w *getLogsFromBlockReceiptsWriter) ShallowCloneSafe() {}
+
 func (w *getLogsFromBlockReceiptsWriter) Release() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
