@@ -461,7 +461,17 @@ func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
 		return 0, fmt.Errorf("unexpected nil response when calling NormalizedResponse.WriteTo")
 	}
 
-	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+	jrr := r.jsonRpcResponse.Load()
+	if jrr == nil {
+		// Ensure body-backed responses can still be written even if they were not
+		// explicitly parsed earlier in the request flow.
+		jrr, err = r.JsonRpcResponse()
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	if jrr != nil {
 		return jrr.WriteTo(w)
 	}
 
