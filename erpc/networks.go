@@ -517,9 +517,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// fire after a full round of upstream attempts.
 			//
 			// MarkUpstreamCompleted releases empty-result and error upstreams from
-			// ConsumedUpstreams, so they're available for the next retry round.
-			// The loop cap (maxLoopIterations) prevents re-picking within the same
-			// execution since UpstreamIdx advances monotonically.
+			// ConsumedUpstreams, so they're available for the next failsafe retry.
+			// Because UpstreamIdx wraps via modular arithmetic, NextUpstream can
+			// re-select freed upstreams within the same execution. The `attempted`
+			// set below detects this and breaks the loop, ensuring each upstream
+			// is called at most once per execution.
 			//
 			// Exception: consensus requires each execution to represent exactly one
 			// upstream's response so the policy can compare N independent results.
@@ -532,6 +534,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if failsafeExecutor.consensusPolicyEnabled {
 				maxLoopIterations = 1
 			}
+			attempted := make(map[string]struct{}, maxLoopIterations)
 
 			for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
 				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
@@ -557,6 +560,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					loopSpan.End()
 					break
 				}
+
+				if _, seen := attempted[u.Id()]; seen {
+					// Already tried in this execution — MarkUpstreamCompleted freed
+					// it from ConsumedUpstreams (retryable error or empty result) and
+					// UpstreamIdx wrapped around. Release the reservation so the
+					// upstream is available for the next failsafe retry round.
+					effectiveReq.ConsumedUpstreams.Delete(u)
+					loopSpan.SetAttributes(attribute.Bool("duplicate_selection", true))
+					loopSpan.End()
+					break
+				}
+				attempted[u.Id()] = struct{}{}
 
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
 				if eu, ok := u.(common.EvmUpstream); ok {
@@ -617,7 +632,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.WithRequest(effectiveReq)
 				}
 
-				// Happy path: non-empty success → return immediately
+				// Happy path: non-empty success → return immediately.
+				// Emptyish results continue to the next upstream so that all
+				// upstreams are tried within a single execution round before
+				// failsafe applies emptyResultDelay between rounds.
 				if err == nil && r != nil && !r.IsObjectNull() && !r.IsResultEmptyish() {
 					r.SetAttempts(exec.Attempts())
 					r.SetRetries(exec.Retries())
@@ -652,6 +670,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
+					// Emptyish success: keep as best candidate and try more upstreams.
 					if bestResp != nil {
 						bestResp.Release()
 					}

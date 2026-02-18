@@ -560,16 +560,15 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		// Hedge concurrency makes exact mock consumption non-deterministic
+		// (primary and hedge goroutines share UpstreamIdx). Use Persist()
+		// and assert functional behavior instead.
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
-		// Set up all mocks BEFORE creating network
-		// Both upstreams fail with server errors. Times(2) covers both
-		// primary and hedge executions trying each upstream.
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Times(2).
+			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, "eth_getBalance")
@@ -587,7 +586,7 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Times(2).
+			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, "eth_getBalance")
@@ -614,11 +613,21 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
 
-		// Should get error since all requests failed
 		require.Error(t, err)
 		require.Nil(t, resp)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
 			"expected server-side exception in error chain, got: %v", err)
+
+		// Both upstreams must have been attempted (at least once across primary+hedge)
+		attemptedUpstreams := make(map[string]bool)
+		req.ErrorsByUpstream.Range(func(key, _ interface{}) bool {
+			if u, ok := key.(common.Upstream); ok {
+				attemptedUpstreams[u.Id()] = true
+			}
+			return true
+		})
+		assert.True(t, attemptedUpstreams["rpc1"], "rpc1 should have been attempted")
+		assert.True(t, attemptedUpstreams["rpc2"], "rpc2 should have been attempted")
 	})
 
 	t.Run("HedgePolicy_ContextCancellationDuringHedge", func(t *testing.T) {
