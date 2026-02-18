@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -2735,10 +2736,14 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, cachedResp)
 
-		jrr, err := cachedResp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), largeData)
-	})
+			jrr, err := cachedResp.JsonRpcResponse()
+			require.NoError(t, err)
+			// Cached responses may use a streaming resultWriter; don't rely on GetResultString().
+			var buf bytes.Buffer
+			_, err = jrr.WriteResultTo(&buf, false)
+			require.NoError(t, err)
+			assert.Contains(t, buf.String(), largeData)
+		})
 
 	t.Run("CompressionThreshold_BelowThreshold", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

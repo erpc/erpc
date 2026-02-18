@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/erpc/erpc/common"
@@ -40,9 +41,14 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
-		// Process the response if provided
+		// Process the response if provided.
+		//
+		// IMPORTANT: do not deep-clone the JsonRpcResponse here.
+		// Large responses (notably eth_getLogs) can be hundreds of MBs and cloning
+		// the result bytes will OOM the pod.
 		if resp != nil {
-			if jrr, parseErr := resp.JsonRpcResponse(ctx); parseErr != nil {
+			jrr, parseErr := resp.JsonRpcResponse(ctx)
+			if parseErr != nil {
 				if req := resp.Request(); req != nil {
 					if nw := req.Network(); nw != nil {
 						nw.Logger().Warn().Err(parseErr).Str("multiplexerHash", m.hash).Object("response", resp).Msg("failed to parse response before storing in multiplexer")
@@ -53,25 +59,18 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					err = parseErr
 				}
 				resp = nil // Don't store a response that can't be parsed
-			} else {
-				// Create a deep clone of the JsonRpcResponse so that upstream buffers can be released
-				// on the original without affecting the multiplexer copy.
-				cloned, cerr := jrr.Clone()
+			} else if jrr != nil {
+				// Ensure the stored response is shallow-cloneable for followers. Some resultWriters are
+				// one-shot streamers and cannot be safely cloned/shared; in those cases, disable
+				// multiplex fan-out by not storing the response.
+				clone, cerr := jrr.CloneShallow()
 				if cerr != nil {
 					resp = nil
-					err = cerr
-				} else {
-					multiplexerResp := common.NewNormalizedResponse()
-					multiplexerResp.SetUpstream(resp.Upstream())
-					multiplexerResp.SetFromCache(resp.FromCache())
-					multiplexerResp.SetCacheStoredAtUnix(resp.CacheStoredAtUnix())
-					multiplexerResp.SetAttempts(resp.Attempts())
-					multiplexerResp.SetRetries(resp.Retries())
-					multiplexerResp.SetHedges(resp.Hedges())
-					multiplexerResp.SetEvmBlockRef(resp.EvmBlockRef())
-					multiplexerResp.SetEvmBlockNumber(resp.EvmBlockNumber())
-					multiplexerResp.WithJsonRpcResponse(cloned)
-					resp = multiplexerResp
+					if err == nil {
+						err = fmt.Errorf("response not shareable across multiplexer: %w", cerr)
+					}
+				} else if clone != nil {
+					clone.Free() // drop our temporary ref; cloneability check only
 				}
 			}
 		}

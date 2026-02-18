@@ -214,14 +214,12 @@ type SharedStateConfig struct {
 }
 
 type CacheConfig struct {
+	// Envelope wraps cached values with a small header containing magic+version+cached-at timestamp.
+	// Used for cache observability and safer evolution of cached payload formats.
+	Envelope    *bool                `yaml:"envelope,omitempty" json:"envelope,omitempty"`
 	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
-	// Envelope enables wrapping cached values with a metadata header (magic + version + timestamp).
-	// The header is required for cache-max-age staleness checks.
-	// Default: false (disabled) for safe rolling deploys. Old binaries cannot parse
-	// the envelope prefix, so enable only after all pods are on the new version.
-	Envelope *bool `yaml:"envelope,omitempty" json:"envelope"`
 }
 
 type CompressionConfig struct {
@@ -1543,9 +1541,17 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedRange      int64               `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
 	GetLogsMaxAllowedAddresses  int64               `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
+	// GetLogsMaxResponseBytes caps the decompressed upstream response size for eth_getLogs.
+	// When exceeded, the request is treated as "too large" and split/retried with smaller sub-requests.
+	// Default is set in SetDefaults(). Set to 0 to disable (not recommended in production).
+	GetLogsMaxResponseBytes int64 `yaml:"getLogsMaxResponseBytes,omitempty" json:"getLogsMaxResponseBytes,omitempty"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
 	GetLogsCacheChunkSize       *int64              `yaml:"getLogsCacheChunkSize,omitempty" json:"getLogsCacheChunkSize"`
+	// GetLogsCacheChunkConcurrency controls the base concurrency for cache-chunked eth_getLogs sub-requests.
+	// The effective concurrency is max(GetLogsCacheChunkConcurrency, GetLogsSplitConcurrency) to ensure
+	// recursive splits within cache chunks are not throttled below the split concurrency.
+	GetLogsCacheChunkConcurrency int `yaml:"getLogsCacheChunkConcurrency,omitempty" json:"getLogsCacheChunkConcurrency"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.

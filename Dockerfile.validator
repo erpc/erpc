@@ -1,0 +1,37 @@
+# syntax = docker/dockerfile:1.4
+
+# eRPC validator image.
+# - Builds erpc binary from current source/revision.
+# - Packages binary with kubectl for k8s-side config validation jobs.
+
+FROM golang:1.25-alpine@sha256:98e6cffc31ccc44c7c15d83df1d69891efee8115a5bb7ede2bf30a38af3e3c92 AS go-builder
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION
+ARG COMMIT_SHA
+
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    LDFLAGS="-w -s -X github.com/erpc/erpc/common.ErpcVersion=${VERSION} -X github.com/erpc/erpc/common.ErpcCommitSha=${COMMIT_SHA}"
+
+RUN mkdir -p /out && go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o /out/erpc ./cmd/erpc/main.go
+
+# trivy:ignore:DS-0026 Batch image; no long-running healthcheck.
+FROM alpine/k8s:1.34.1
+
+COPY --from=go-builder /out/erpc /usr/local/bin/erpc
+
+RUN chmod +x /usr/local/bin/erpc && test -x /usr/local/bin/erpc
+RUN kubectl version --client
+
+RUN addgroup -S erpc && adduser -S erpc -G erpc
+
+USER erpc
+
+CMD ["/bin/sh"]

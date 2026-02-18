@@ -19,16 +19,18 @@ type NormalizedResponse struct {
 	expectedSize int
 
 	fromCache atomic.Bool
-	attempts  atomic.Value
-	retries   atomic.Value
-	hedges    atomic.Value
-	upstream  atomic.Value
-
-	jsonRpcResponse   atomic.Pointer[JsonRpcResponse]
-	evmBlockNumber    atomic.Value
-	evmBlockRef       atomic.Value
+	// cacheStoredAtUnix is a best-effort unix timestamp (seconds) for when the response
+	// was served from cache. Used for composite responses (e.g., eth_getLogs chunking).
 	cacheStoredAtUnix atomic.Int64
-	finality          atomic.Value // Cached finality state
+	attempts          atomic.Value
+	retries           atomic.Value
+	hedges            atomic.Value
+	upstream          atomic.Value
+
+	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
+	evmBlockNumber  atomic.Value
+	evmBlockRef     atomic.Value
+	finality        atomic.Value // Cached finality state
 
 	// parseOnce ensures JsonRpcResponse is parsed only once
 	parseOnce sync.Once
@@ -112,11 +114,15 @@ func (r *NormalizedResponse) CacheStoredAtUnix() int64 {
 	return r.cacheStoredAtUnix.Load()
 }
 
-func (r *NormalizedResponse) SetCacheStoredAtUnix(ts int64) {
-	if r == nil || ts <= 0 {
-		return
+func (r *NormalizedResponse) SetCacheStoredAtUnix(ts int64) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	if ts <= 0 {
+		return r
 	}
 	r.cacheStoredAtUnix.Store(ts)
+	return r
 }
 
 func (r *NormalizedResponse) CacheAgeSeconds() (int64, bool) {
@@ -473,7 +479,17 @@ func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
 		return 0, fmt.Errorf("unexpected nil response when calling NormalizedResponse.WriteTo")
 	}
 
-	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+	jrr := r.jsonRpcResponse.Load()
+	if jrr == nil {
+		// Ensure body-backed responses can still be written even if they were not
+		// explicitly parsed earlier in the request flow.
+		jrr, err = r.JsonRpcResponse()
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	if jrr != nil {
 		return jrr.WriteTo(w)
 	}
 
@@ -647,7 +663,7 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 
 	// Use request ID because the multiplexed upstream call may carry a
 	// different ID.
-	jrr, err := ejrr.Clone()
+	jrr, err := ejrr.CloneShallow()
 	if err != nil {
 		return nil, err
 	}

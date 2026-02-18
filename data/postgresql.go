@@ -186,9 +186,12 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		return fmt.Errorf("failed to add expires_at column: %w", err)
 	}
 
-	// Create index for reverse lookups (range_key first to support queries that filter by range_key)
+	// Create index for reverse lookups (range_key first to support queries that filter by range_key).
+	// NOTE: Older deployments created/used an `idx_reverse` index name. That name may also exist
+	// with a different definition (or duplicate the PK). Use a distinct name to avoid collisions,
+	// and migrate/downgrade the old index separately.
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (range_key, partition_key)
+		CREATE INDEX IF NOT EXISTS idx_range_partition ON %s (range_key, partition_key)
 	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create reverse index: %w", err)
@@ -284,19 +287,24 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey st
 
 	var err error
 	if expiresAt != nil {
+		// TTL write: always upsert because expiry semantics can change.
 		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %s (partition_key, range_key, value, expires_at)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (partition_key, range_key) DO UPDATE
-			SET value = $3, expires_at = $4
+			SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at
 		`, p.table), partitionKey, rangeKey, value, expiresAt)
 	} else {
+		// Non-TTL write (ttl unset / <= 0) typically used for finalized, immutable responses.
+		// Avoid repeated large updates on hot keys: only update when we need to clear expires_at
+		// or the stored value is actually different.
 		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %s (partition_key, range_key, value)
-			VALUES ($1, $2, $3)
+			INSERT INTO %s (partition_key, range_key, value, expires_at)
+			VALUES ($1, $2, $3, NULL)
 			ON CONFLICT (partition_key, range_key) DO UPDATE
-			SET value = $3
-		`, p.table), partitionKey, rangeKey, value)
+			SET value = EXCLUDED.value, expires_at = NULL
+			WHERE %s.expires_at IS NOT NULL OR %s.value IS DISTINCT FROM EXCLUDED.value
+		`, p.table, p.table, p.table), partitionKey, rangeKey, value)
 	}
 
 	if err != nil {

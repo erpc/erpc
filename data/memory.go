@@ -27,8 +27,11 @@ type MemoryConnector struct {
 	id          string
 	logger      *zerolog.Logger
 	cache       *ristretto.Cache[string, []byte]
+	cacheMu     sync.RWMutex
 	locks       sync.Map // map[string]*sync.Mutex
 	emitMetrics bool
+	closeOnce   sync.Once
+	closed      bool
 
 	// Previous metric values for calculating deltas
 	prevMetrics struct {
@@ -93,6 +96,12 @@ func NewMemoryConnector(
 		emitMetrics: enableMetrics,
 	}
 
+	// Ensure connector resources are released when the owning app context is canceled.
+	go func() {
+		<-ctx.Done()
+		_ = c.Close()
+	}()
+
 	// Start metrics collection goroutine if enabled
 	if enableMetrics {
 		metricsCtx, cancel := context.WithCancel(ctx)
@@ -112,6 +121,11 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing to memory (ristretto)")
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+	if m.closed || m.cache == nil {
+		return nil
+	}
 
 	if ttl != nil && *ttl > 0 {
 		m.cache.SetWithTTL(key, value, 0, *ttl)
@@ -134,6 +148,12 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string
 }
 
 func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+	if m.closed || m.cache == nil {
+		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
+	}
+
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
 		fullKey, found := m.cache.Get(memoryReverseIndexPrefix + "#" + partitionKey + "#" + rangeKey)
 		// Replace wildcard partitionKey with the resolved concrete value if found
@@ -229,9 +249,16 @@ func (m *MemoryConnector) metricsCollectionLoop(ctx context.Context) {
 // collectAndEmitMetrics reads the current Ristretto metrics, calculates deltas
 // from previous values, and emits them to Prometheus.
 func (m *MemoryConnector) collectAndEmitMetrics() {
-	if !m.emitMetrics || m.cache == nil || m.cache.Metrics == nil {
+	if !m.emitMetrics {
 		return
 	}
+
+	m.cacheMu.RLock()
+	if m.closed || m.cache == nil || m.cache.Metrics == nil {
+		m.cacheMu.RUnlock()
+		return
+	}
+	defer m.cacheMu.RUnlock()
 
 	m.metricsMutex.Lock()
 	defer m.metricsMutex.Unlock()
@@ -296,6 +323,11 @@ func (m *MemoryConnector) collectAndEmitMetrics() {
 func (m *MemoryConnector) Delete(ctx context.Context, partitionKey, rangeKey string) error {
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("deleting from memory (ristretto)")
+	m.cacheMu.RLock()
+	defer m.cacheMu.RUnlock()
+	if m.closed || m.cache == nil {
+		return nil
+	}
 
 	// Delete main entry
 	m.cache.Del(key)
@@ -323,11 +355,17 @@ func (m *MemoryConnector) List(ctx context.Context, index string, limit int, pag
 
 // Close cleans up resources including stopping the metrics collection goroutine
 func (m *MemoryConnector) Close() error {
-	if m.stopMetrics != nil {
-		m.stopMetrics()
-	}
-	if m.cache != nil {
-		m.cache.Close()
-	}
+	m.closeOnce.Do(func() {
+		if m.stopMetrics != nil {
+			m.stopMetrics()
+		}
+		m.cacheMu.Lock()
+		defer m.cacheMu.Unlock()
+		m.closed = true
+		if m.cache != nil {
+			m.cache.Close()
+			m.cache = nil
+		}
+	})
 	return nil
 }

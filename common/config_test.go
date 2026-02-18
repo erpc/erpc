@@ -49,6 +49,25 @@ logLevel: DEBUG
 	}
 }
 
+func TestLoadConfig_CacheEnvelopeAccepted(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WriteString(`
+logLevel: DEBUG
+database:
+  evmJsonRpcCache:
+    envelope: true
+`)
+
+	_, err = LoadConfig(fs, cfg.Name(), &DefaultOptions{})
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestFailsafeConfigBackwardCompatibility(t *testing.T) {
 	t.Run("NetworkDefaults old format with empty MatchMethod", func(t *testing.T) {
 		yamlData := `

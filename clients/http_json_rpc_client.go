@@ -713,6 +713,76 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 	// DO NOT close resp.Body here - it will be closed by NormalizedResponse after reading
 
+	// Special case: eth_getLogs responses can be arbitrarily large (especially when gzipped),
+	// which can cause OOM if we fully buffer the response. Enforce a network-level cap and
+	// convert overflow into a TooLarge error so callers can split and retry.
+	if jrReq.Method == "eth_getLogs" {
+		maxBytes := int64(0)
+		if n := req.Network(); n != nil && n.Config() != nil && n.Config().Evm != nil {
+			maxBytes = n.Config().Evm.GetLogsMaxResponseBytes
+		}
+		if maxBytes <= 0 {
+			// Default should be set via config defaults, but keep a safe fallback.
+			maxBytes = 64 * 1024 * 1024
+		}
+
+		// Fast path: if upstream provides Content-Length for an uncompressed response, avoid
+		// reading up to maxBytes just to discover it's too large. This keeps split-on-error
+		// responsive under heavy getLogs spikes.
+		if resp.ContentLength > 0 &&
+			resp.ContentLength > maxBytes &&
+			resp.Header.Get("Content-Encoding") != "gzip" {
+			_ = resp.Body.Close()
+			return nil, common.NewErrEndpointRequestTooLarge(
+				fmt.Errorf("response content-length=%d exceeds limit=%d", resp.ContentLength, maxBytes),
+				common.EvmResponseTooLarge,
+			)
+		}
+
+		bodyBytes, cleanup, rerr := c.readResponseBodyMax(resp, int(resp.ContentLength), maxBytes)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if rerr != nil {
+			// Treat as TooLarge so network-level eth_getLogs hook can split.
+			if errors.Is(rerr, util.ErrReadLimitExceeded) {
+				return nil, common.NewErrEndpointRequestTooLarge(rerr, common.EvmResponseTooLarge)
+			}
+			// Preserve timeout semantics (split-on-error supports timeouts).
+			if errors.Is(rerr, context.DeadlineExceeded) || errors.Is(rerr, context.Canceled) {
+				return nil, rerr
+			}
+			return nil, common.NewErrEndpointTransportFailure(c.Url, rerr)
+		}
+
+		jrr := &common.JsonRpcResponse{}
+		if err := jrr.ParseFromBytes(ctx, bodyBytes); err != nil {
+			// Parsing failed for a bounded-size payload; treat as upstream parse error.
+			return nil, common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorParseException,
+				"could not parse json rpc response from upstream",
+				err,
+				map[string]interface{}{
+					"upstreamId": c.upstream.Id(),
+					"statusCode": resp.StatusCode,
+					"headers":    resp.Header,
+				},
+			)
+		}
+
+		nr := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithJsonRpcResponse(jrr).
+			WithExpectedSize(len(bodyBytes))
+
+		nerr := c.normalizeJsonRpcError(resp, nr)
+		if nerr != nil {
+			common.SetTraceSpanError(span, nerr)
+		}
+		return nr, nerr
+	}
+
 	var bodyReader io.ReadCloser = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzReader, err := c.gzipPool.GetReset(resp.Body)
@@ -817,6 +887,23 @@ func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expecte
 	}
 
 	return util.ReadAll(reader, expectedSize)
+}
+
+func (c *GenericHttpJsonRpcClient) readResponseBodyMax(resp *http.Response, expectedSize int, maxBytes int64) ([]byte, func(), error) {
+	var reader io.ReadCloser = resp.Body
+	defer resp.Body.Close()
+
+	// Check if response is gzipped
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gr, err := c.gzipPool.GetReset(resp.Body)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error creating gzip reader: %w", err)
+		}
+		defer c.gzipPool.Put(gr)
+		reader = gr
+	}
+
+	return util.ReadAllMax(reader, expectedSize, maxBytes)
 }
 
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {

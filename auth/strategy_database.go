@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgraph-io/ristretto/v2"
@@ -24,6 +25,7 @@ type DatabaseStrategy struct {
 	negCache  *ristretto.Cache[string, struct{}]
 	negTTL    time.Duration
 	sf        singleflight.Group
+	closeOnce sync.Once
 }
 
 var _ AuthStrategy = &DatabaseStrategy{}
@@ -66,6 +68,9 @@ func NewDatabaseStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *co
 		}
 		negCache, err = ristretto.NewCache(negCacheConfig)
 		if err != nil {
+			if cache != nil {
+				cache.Close()
+			}
 			return nil, fmt.Errorf("failed to create negative cache: %w", err)
 		}
 
@@ -78,14 +83,33 @@ func NewDatabaseStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *co
 			Msg("initialized API key cache for database authentication strategy")
 	}
 
-	return &DatabaseStrategy{
+	strategy := &DatabaseStrategy{
 		logger:    logger,
 		cfg:       cfg,
 		connector: connector,
 		cache:     cache,
 		negCache:  negCache,
 		negTTL:    negTTL,
-	}, nil
+	}
+
+	// Prevent leaking cache goroutines across short-lived test app contexts.
+	go func() {
+		<-appCtx.Done()
+		strategy.closeCaches()
+	}()
+
+	return strategy, nil
+}
+
+func (s *DatabaseStrategy) closeCaches() {
+	s.closeOnce.Do(func() {
+		if s.cache != nil {
+			s.cache.Close()
+		}
+		if s.negCache != nil {
+			s.negCache.Close()
+		}
+	})
 }
 
 func (s *DatabaseStrategy) Supports(ap *AuthPayload) bool {

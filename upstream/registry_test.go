@@ -153,29 +153,31 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
-	t.Run("CorrectOrderForErrorRateOverTime", func(t *testing.T) {
-		windowSize := 100 * time.Millisecond
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
-		upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+			t.Run("CorrectOrderForErrorRateOverTime", func(t *testing.T) {
+				// Deterministic: manual reset between phases. Avoid relying on the
+				// tracker's reset ticker firing on busy CI.
+				windowSize := 10 * time.Minute
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
+				l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+				upsList := getUpsByID(l, "rpc1", "rpc2", "rpc3")
 
 		// Initial phase
 		simulateRequests(metricsTracker, upsList[0], method, 100, 30)
 		simulateRequests(metricsTracker, upsList[1], method, 100, 80)
 		simulateRequests(metricsTracker, upsList[2], method, 100, 10)
 
-		expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
-		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
+			expectedOrder := []string{"rpc3", "rpc1", "rpc2"}
+				checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 
-		// Simulate time passing and metrics reset
-		time.Sleep(windowSize + 10*time.Millisecond)
+				// Reset metrics for a clean window.
+				metricsTracker.ForceReset()
 
-		// Second phase
-		simulateRequests(metricsTracker, upsList[0], method, 100, 30)
-		simulateRequests(metricsTracker, upsList[1], method, 100, 10)
-		simulateRequests(metricsTracker, upsList[2], method, 100, 80)
+			// Second phase
+			simulateRequests(metricsTracker, upsList[0], method, 100, 30)
+			simulateRequests(metricsTracker, upsList[1], method, 100, 10)
+			simulateRequests(metricsTracker, upsList[2], method, 100, 80)
 
 		expectedOrder = []string{"rpc2", "rpc1", "rpc3"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)

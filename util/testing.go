@@ -353,7 +353,7 @@ func SetupMocksForUpstream(host string, details map[string]interface{}) int {
 }
 
 func ResetGock() {
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	gock.OffAll()
 	gock.Clean()
@@ -367,7 +367,7 @@ func ResetGock() {
 		return shouldMakeRealCall
 	})
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 }
 
 func SafeReadBody(request *http.Request) string {
