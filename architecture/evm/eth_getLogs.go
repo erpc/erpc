@@ -247,17 +247,23 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 				topics:    filter["topics"],
 			})
 			sb = eb + 1
-		}
+			}
 
-		nrq.SetCompositeType(common.CompositeTypeLogsCacheChunk)
-		chunkConc := 0
-		if ncfg.Evm != nil {
-			chunkConc = ncfg.Evm.GetLogsCacheChunkConcurrency
-		}
-		mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead, chunkConc)
-		if err != nil {
-			return true, nil, err
-		}
+			nrq.SetCompositeType(common.CompositeTypeLogsCacheChunk)
+			chunkConc := 0
+			if ncfg.Evm != nil {
+				chunkConc = ncfg.Evm.GetLogsCacheChunkConcurrency
+				// Cache chunking is the common path, but chunks can still be split further on
+				// TooLarge/timeouts. Ensure we don't accidentally cap recursive split parallelism
+				// to the (often lower) chunk concurrency.
+				if ncfg.Evm.GetLogsSplitConcurrency > chunkConc {
+					chunkConc = ncfg.Evm.GetLogsSplitConcurrency
+				}
+			}
+			mergedResponse, meta, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCacheRead, chunkConc)
+			if err != nil {
+				return true, nil, err
+			}
 
 		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
 		if meta != nil && meta.allFromCache {
