@@ -666,7 +666,13 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 	n += int64(nn)
 
 	// Write ID
-	nn, err = w.Write(r.idBytes)
+	idBytes := r.idBytes
+	if len(idBytes) == 0 {
+		// JSON-RPC responses must include a JSON value for "id".
+		// If id bytes are absent, emit `null` rather than producing invalid JSON.
+		idBytes = []byte("null")
+	}
+	nn, err = w.Write(idBytes)
 	if err != nil {
 		return n + int64(nn), err
 	}
