@@ -565,9 +565,11 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
 
 		// Set up all mocks BEFORE creating network
-		// Primary fails
+		// Both upstreams fail with server errors. Times(2) covers both
+		// primary and hedge executions trying each upstream.
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Times(2).
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, "eth_getBalance")
@@ -583,9 +585,9 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 				},
 			})
 
-		// Hedge also fails
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Times(2).
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, "eth_getBalance")
@@ -615,7 +617,8 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		// Should get error since all requests failed
 		require.Error(t, err)
 		require.Nil(t, resp)
-		assert.Contains(t, err.Error(), "ErrEndpointServerSideException")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+			"expected server-side exception in error chain, got: %v", err)
 	})
 
 	t.Run("HedgePolicy_ContextCancellationDuringHedge", func(t *testing.T) {

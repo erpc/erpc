@@ -2962,7 +2962,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		defer util.AssertNoPendingMocks(t, 0)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{

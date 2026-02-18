@@ -520,8 +520,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// ConsumedUpstreams, so they're available for the next retry round.
 			// The loop cap (maxLoopIterations) prevents re-picking within the same
 			// execution since UpstreamIdx advances monotonically.
+			//
+			// Exception: consensus requires each execution to represent exactly one
+			// upstream's response so the policy can compare N independent results.
+			// Without this cap, one fast execution could consume multiple upstreams
+			// (reserve → try → release empty → reserve next) before other consensus
+			// goroutines get their first upstream, skewing the vote.
 			var bestResp *common.NormalizedResponse
+			var lastErr error
 			maxLoopIterations := effectiveReq.UpstreamsCount()
+			if failsafeExecutor.consensusPolicyEnabled {
+				maxLoopIterations = 1
+			}
 
 			for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
 				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
@@ -636,6 +646,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				// Track best result and continue to next upstream.
 				if err != nil {
+					lastErr = err
 					if r != nil {
 						r.Release()
 					}
@@ -650,6 +661,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				loopSpan.End()
 			}
 
+			// Check context after the loop — handles single-upstream case where
+			// the loop cap is reached before a new iteration can check ctx.
+			if ctxErr := execSpanCtx.Err(); ctxErr != nil {
+				cause := context.Cause(execSpanCtx)
+				if cause == nil {
+					cause = ctxErr
+				}
+				if bestResp != nil {
+					bestResp.Release()
+				}
+				return nil, cause
+			}
+
 			// All upstreams tried. Return the best result for failsafe to evaluate
 			// delays and retries. Prefer a valid response over an error so the
 			// delay function can detect empty results and apply emptyResultDelay.
@@ -658,6 +682,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				bestResp.SetRetries(exec.Retries())
 				bestResp.SetHedges(exec.Hedges())
 				return bestResp, nil
+			}
+
+			// For consensus, return the raw upstream error so the consensus
+			// policy receives the actual error type (e.g. server error, missing
+			// data) rather than a wrapped ErrUpstreamsExhausted. The retry
+			// policy around consensus can then evaluate the raw error directly.
+			if failsafeExecutor.consensusPolicyEnabled && lastErr != nil {
+				return nil, lastErr
 			}
 
 			// Wrap all errors as ErrUpstreamsExhausted. The delay function

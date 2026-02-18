@@ -526,8 +526,9 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		// If RetryEmpty is disabled, don't retry MissingData at all.
 		// If RetryEmpty is enabled but the method is in emptyResultAccept, don't retry.
 		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-			// Resolve the request: prefer result.Request(), fallback to ErrUpstreamsExhausted.Request()
-			// (when Forward returns nil response + error, the request is embedded in the error).
+			// Resolve the request: prefer result.Request(), fallback to
+			// ErrUpstreamsExhausted.Request() (network scope), fallback to
+			// execution context (upstream scope where result is nil).
 			var req *common.NormalizedRequest
 			if result != nil {
 				req = result.Request()
@@ -536,10 +537,16 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				if exh, ok := err.(*common.ErrUpstreamsExhausted); ok {
 					req = exh.Request()
 				} else {
-					// Try to unwrap from failsafe wrapper
 					var exhErr *common.ErrUpstreamsExhausted
 					if errors.As(err, &exhErr) {
 						req = exhErr.Request()
+					}
+				}
+			}
+			if req == nil {
+				if or := ctx.Value(common.RequestContextKey); or != nil {
+					if r, ok := or.(*common.NormalizedRequest); ok {
+						req = r
 					}
 				}
 			}

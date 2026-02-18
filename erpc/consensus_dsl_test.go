@@ -325,6 +325,15 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 		}
 	}
 
+	// Consensus may short-circuit once agreementThreshold is reached,
+	// cancelling remaining participants before their HTTP calls execute.
+	// The exact number of skipped upstreams is non-deterministic (depends
+	// on goroutine scheduling), so use -1 to signal "skip pending check".
+	pendingMocks := 0
+	if atsh < mxp {
+		pendingMocks = -1
+	}
+
 	// Parse expected outcome
 	expResult, expError := parseExpectedOutcomeFromSpec(t, rhs, upstreamSpecs)
 
@@ -382,15 +391,16 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 	}
 
 	return consensusTestCase{
-		name:            util.SanitizeTestName(spec),
-		description:     spec,
-		upstreams:       upstreams,
-		consensusConfig: cfg,
-		mockResponses:   mocks,
-		expectedCalls:   calls,
-		expectedResult:  expResult,
-		expectedError:   expError,
-		setupFn:         setupFn,
+		name:                 util.SanitizeTestName(spec),
+		description:          spec,
+		upstreams:            upstreams,
+		consensusConfig:      cfg,
+		mockResponses:        mocks,
+		expectedCalls:        calls,
+		expectedResult:       expResult,
+		expectedError:        expError,
+		expectedPendingMocks: pendingMocks,
+		setupFn:              setupFn,
 	}
 }
 

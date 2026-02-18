@@ -116,12 +116,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("PrimaryFailsBeforeHedgeStarts", func(t *testing.T) {
-		// When primary fails BEFORE hedge delay, should return immediately
-		// This enables quick retry without waiting for hedge delay
+		// With try-all-upstreams, loop continues past rpc1's failure
+		// to rpc2 (503) then rpc3 (success). All mocks are consumed.
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 2) // rpc2 and rpc3 never called
+		defer util.AssertNoPendingMocks(t, 0)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -199,14 +199,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"error": "internal server error",
 			})
 
-		// rpc2 and rpc3: Never called because primary fails before hedge starts
+		// rpc2: 503 error, rpc3: success — with try-all-upstreams, the loop
+		// continues past rpc1's failure to rpc2 (fails) then rpc3 (succeeds).
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
-			Persist(). // Keep it pending
 			Reply(503).
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
@@ -218,7 +218,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
-			Persist(). // Keep it pending
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -235,9 +234,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should fail immediately but transport stays 200 per JSON-RPC over HTTP
+		// With try-all-upstreams, rpc1 fails → rpc2 fails → rpc3 succeeds
 		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "internal server error")
+		assert.Contains(t, body, "0x333333")
 	})
 
 	t.Run("HedgeDoesNotCancelOnFailuresWhenRunning", func(t *testing.T) {
@@ -1006,11 +1005,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("PrimaryFastFailBeforeHedge", func(t *testing.T) {
-		// Primary fails before hedge starts - should return immediately
+		// With try-all-upstreams, rpc1 fails → loop continues to rpc2 (success).
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // rpc2 never called
+		defer util.AssertNoPendingMocks(t, 0)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1077,14 +1076,14 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				"error": "internal server error",
 			})
 
-		// rpc2: Never called because primary fails before hedge starts
+		// rpc2: With try-all-upstreams, the loop continues past rpc1's failure
+		// to rpc2 which succeeds.
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
-			Persist(). // Keep it pending
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -1101,9 +1100,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should fail immediately with primary error
+		// With try-all-upstreams, rpc1 fails → rpc2 succeeds
 		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "internal server error")
+		assert.Contains(t, body, "0x222222")
 	})
 
 	t.Run("PrimaryFailsAfterHedgeStartsAndSucceeds", func(t *testing.T) {
