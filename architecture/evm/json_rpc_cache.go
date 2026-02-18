@@ -23,6 +23,9 @@ type EvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// Envelope settings
+	envelopeEnabled bool
+
 	// Compression settings
 	compressionEnabled   bool
 	compressionThreshold int
@@ -66,6 +69,11 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	cache := &EvmJsonRpcCache{
 		policies: policies,
 		logger:   logger,
+	}
+
+	if cfg.Envelope != nil && *cfg.Envelope {
+		cache.envelopeEnabled = true
+		logger.Info().Msg("cache envelope enabled")
 	}
 
 	// Initialize compression if configured
@@ -136,6 +144,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		logger:               &lg,
 		policies:             c.policies,
 		projectId:            projectId,
+		envelopeEnabled:      c.envelopeEnabled,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
 		compressionLevel:     c.compressionLevel,
@@ -554,20 +563,26 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			// Compress the value before storing if compression is enabled
 			valueToStore := rpcResp.GetResultBytes()
-			telemetry.MetricCacheSetOriginalBytes.WithLabelValues(
-				c.projectId,
-				req.NetworkLabel(),
-				rpcReq.Method,
-				connector.Id(),
-				policy.String(),
-				ttl.String(),
-			).Add(float64(len(valueToStore)))
+				telemetry.MetricCacheSetOriginalBytes.WithLabelValues(
+					c.projectId,
+					req.NetworkLabel(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					ttl.String(),
+				).Add(float64(len(valueToStore)))
 
-			if c.compressionEnabled && len(valueToStore) >= c.compressionThreshold {
-				compressedValue, isCompressed := c.compressValueBytes(valueToStore)
-				if isCompressed {
-					originalSize := len(valueToStore)
-					compressedSize := len(compressedValue)
+				if c.envelopeEnabled {
+					if env, wrapped := wrapCacheEnvelope(valueToStore); wrapped {
+						valueToStore = env
+					}
+				}
+
+				if c.compressionEnabled && len(valueToStore) >= c.compressionThreshold {
+					compressedValue, isCompressed := c.compressValueBytes(valueToStore)
+					if isCompressed {
+						originalSize := len(valueToStore)
+						compressedSize := len(compressedValue)
 					savings := float64(originalSize-compressedSize) / float64(originalSize) * 100
 					lg.Debug().
 						Int("originalSize", originalSize).
@@ -836,6 +851,11 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		attribute.String("cache.connector_result", "found"),
 		attribute.Int("cache.result_bytes", len(resultBytes)),
 	)
+
+	// Strip cache envelope if present (supports mixed cache formats during rollouts).
+	if b, _, ok := unwrapCacheEnvelope(resultBytes); ok {
+		resultBytes = b
+	}
 
 	// Check if it's compressed data
 	if c.compressionEnabled && c.isCompressed(resultBytes) {

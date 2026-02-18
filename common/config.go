@@ -214,6 +214,9 @@ type SharedStateConfig struct {
 }
 
 type CacheConfig struct {
+	// Envelope wraps cached values with a small header containing magic+version+cached-at timestamp.
+	// Used for cache observability and safer evolution of cached payload formats.
+	Envelope    *bool                `yaml:"envelope,omitempty" json:"envelope,omitempty"`
 	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
