@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
@@ -33,8 +34,9 @@ func newMockUpstream(id string) *mockUpstreamForSelection {
 	return &mockUpstreamForSelection{id: id}
 }
 
-// TestUpstreamSelection_NonRetryableError_Skipped tests that non-retryable errors
-// cause the upstream to be skipped on subsequent selections.
+// TestUpstreamSelection_NonRetryableError_Skipped tests that non-retryable permanent
+// errors (like method not supported) cause the upstream to be gated on subsequent
+// selections. The ErrorsByUpstream gate blocks non-retryable, non-MissingData errors.
 func TestUpstreamSelection_NonRetryableError_Skipped(t *testing.T) {
 	ctx := context.Background()
 	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
@@ -52,10 +54,11 @@ func TestUpstreamSelection_NonRetryableError_Skipped(t *testing.T) {
 	nonRetryableErr := NewErrUpstreamRequestSkipped(nil, "upstream1")
 	req.MarkUpstreamCompleted(ctx, selected1, nil, nonRetryableErr)
 
-	// Verify upstream is exhausted (stays in ConsumedUpstreams because canReUse=false for non-retryable)
+	// Verify upstream is gated (ErrorsByUpstream gate blocks non-retryable,
+	// non-MissingData errors).
 	_, err = req.NextUpstream()
 	if !HasErrorCode(err, ErrCodeNoUpstreamsLeftToSelect) {
-		t.Fatalf("expected no upstreams left after non-retryable error")
+		t.Fatalf("expected no upstreams left after non-retryable permanent error, got: %v", err)
 	}
 }
 
@@ -193,6 +196,95 @@ func TestUpstreamSelection_MultipleExhaustionsNoWastedAttempts(t *testing.T) {
 	if selectedCount != 6 {
 		t.Fatalf("expected 6 successful selections, got %d", selectedCount)
 	}
+}
+
+// TestUpstreamSelection_EmptyResponses_DontBlockReselection tests that upstreams
+// which returned empty results can be re-selected on a subsequent retry round.
+// BUG (before fix): EmptyResponses gate in NextUpstream permanently blocks
+// upstreams that returned empty, preventing useful retries.
+func TestUpstreamSelection_EmptyResponses_DontBlockReselection(t *testing.T) {
+	ctx := context.Background()
+	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+
+	up1 := newMockUpstream("rpc1")
+	up2 := newMockUpstream("rpc2")
+	req.SetUpstreams([]Upstream{up1, up2})
+
+	// Round 1: select both upstreams and mark them as returning empty
+	selected1, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("first NextUpstream should succeed: %v", err)
+	}
+	emptyResp1 := createEmptyNormalizedResponse(t)
+	req.MarkUpstreamCompleted(ctx, selected1, emptyResp1, nil)
+
+	selected2, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("second NextUpstream should succeed: %v", err)
+	}
+	emptyResp2 := createEmptyNormalizedResponse(t)
+	req.MarkUpstreamCompleted(ctx, selected2, emptyResp2, nil)
+
+	// Simulate "next retry round": both upstreams should be re-selectable.
+	// BUG (before fix): EmptyResponses gate permanently blocks both upstreams
+	// → NextUpstream returns ErrNoUpstreamsLeftToSelect.
+	reselected, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("upstreams that returned empty should be re-selectable for retry, but got: %v", err)
+	}
+	if reselected == nil {
+		t.Fatalf("expected a valid upstream to be returned")
+	}
+	t.Logf("re-selected upstream: %s", reselected.Id())
+}
+
+// TestUpstreamSelection_MissingDataError_DontBlockReselection tests that upstreams
+// which returned MissingData errors can be re-selected on a subsequent retry round.
+// BUG (before fix): ErrorsByUpstream gate treats ErrEndpointMissingData as
+// non-retryable and permanently blocks the upstream.
+func TestUpstreamSelection_MissingDataError_DontBlockReselection(t *testing.T) {
+	ctx := context.Background()
+	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+
+	up1 := newMockUpstream("rpc1")
+	up2 := newMockUpstream("rpc2")
+	req.SetUpstreams([]Upstream{up1, up2})
+
+	// Round 1: select both upstreams and mark them with MissingData errors
+	selected1, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("first NextUpstream should succeed: %v", err)
+	}
+	missingErr1 := NewErrEndpointMissingData(fmt.Errorf("missing trie node"), up1)
+	req.MarkUpstreamCompleted(ctx, selected1, nil, missingErr1)
+
+	selected2, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("second NextUpstream should succeed: %v", err)
+	}
+	missingErr2 := NewErrEndpointMissingData(fmt.Errorf("missing trie node"), up2)
+	req.MarkUpstreamCompleted(ctx, selected2, nil, missingErr2)
+
+	// Simulate "next retry round": both upstreams should be re-selectable.
+	// BUG (before fix): ErrorsByUpstream gate sees ErrEndpointMissingData as
+	// non-retryable toward upstream → permanently blocks both.
+	reselected, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("upstreams with MissingData errors should be re-selectable for retry, but got: %v", err)
+	}
+	if reselected == nil {
+		t.Fatalf("expected a valid upstream to be returned")
+	}
+	t.Logf("re-selected upstream: %s", reselected.Id())
+}
+
+func createEmptyNormalizedResponse(t *testing.T) *NormalizedResponse {
+	t.Helper()
+	jrr, err := NewJsonRpcResponse(1, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to create empty JSON-RPC response: %v", err)
+	}
+	return NewNormalizedResponse().WithJsonRpcResponse(jrr)
 }
 
 func TestEnrichFromHttpHandlesBloomValidationHeaders(t *testing.T) {

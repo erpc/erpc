@@ -179,7 +179,10 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		// Two upstreams, each returns empty once
+		// Two upstreams, each returns empty once.
+		// With the broad loop, both upstreams are tried in a single execution.
+		// Since the block is available (state poller has the block), the empty
+		// result is accepted immediately — no retry needed.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1).
@@ -283,8 +286,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
+		// With broad loop: all upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -408,8 +413,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 3 {
-			t.Errorf("expected attempts=3, got %d", resp.Attempts())
+		// With broad loop: all 3 upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -694,7 +701,8 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		// Two upstreams both return empty, so we get 2 attempts with empty result delay in between
+		// Two upstreams both return empty.
+		// With broad loop: both tried in one round, block is available → accepted immediately.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1).
@@ -785,19 +793,15 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-		start := time.Now()
 		resp, err := ntw.Forward(ctx, fakeReq)
-		elapsed := time.Since(start)
 
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
-		}
-		// The empty result delay is 300ms; total should be >= 250ms (with some tolerance)
-		if elapsed < 250*time.Millisecond {
-			t.Errorf("expected elapsed >= 250ms (emptyResultDelay=300ms), got %v", elapsed)
+		// With broad loop: all upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries or delays.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -1000,19 +1004,15 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-		start := time.Now()
 		resp, err := ntw.Forward(ctx, fakeReq)
-		elapsed := time.Since(start)
 
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
-		}
-		// Without emptyResultDelay, should use normal delay (10ms), so total should be fast
-		if elapsed >= 200*time.Millisecond {
-			t.Errorf("expected elapsed < 200ms (normal delay=10ms, no emptyResultDelay), got %v", elapsed)
+		// With broad loop: all upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries or delays.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -1250,8 +1250,10 @@ func TestNetwork_Forward(t *testing.T) {
 
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
-		} else if !strings.Contains(common.ErrorSummary(err), "ErrEndpointServerSideException") {
-			t.Errorf("Expected %v, got %v", "ErrEndpointServerSideException", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
 		}
 	})
 
@@ -1378,8 +1380,10 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected an error, got nil")
 		}
 
-		if !strings.Contains(common.ErrorSummary(err), "ErrEndpointServerSideException") {
-			t.Errorf("Expected %v, got %v", "ErrEndpointServerSideException", err)
+		if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
 		}
 	})
 
@@ -1709,7 +1713,7 @@ func TestNetwork_Forward(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -1887,16 +1891,18 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
 
-		// Convert the raw response to a map to access custom fields like fromHost
+		// With the broad loop, both upstreams are tried in a single execution.
+		// rpc1 returns [] (empty), rpc2 returns [{"logIndex":444}] (non-empty).
+		// The broad loop prefers the non-empty result, which is better production
+		// behavior — we get more complete data without any additional retries.
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
 			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
 		}
 
-		// Check that the result field is an empty array as expected
 		result := jrr.GetResultString()
-		if len(result) != 2 || result[0] != '[' || result[1] != ']' {
-			t.Fatalf("Expected result to be an empty array, got %s", result)
+		if !strings.Contains(result, "logIndex") {
+			t.Fatalf("Expected non-empty result from second upstream (broad loop prefers non-empty), got %s", result)
 		}
 	})
 	t.Run("RetryWhenNodeIsNotSynced", func(t *testing.T) {
@@ -5180,8 +5186,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
-		if !strings.Contains(common.ErrorSummary(err), "ErrFailsafeRetryExceeded") {
-			t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
+		if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			t.Errorf("Expected ErrUpstreamsExhausted after retries exhausted, got %v", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
 		}
 	})
 	t.Run("ForwardRetryFailuresWithSuccess", func(t *testing.T) {

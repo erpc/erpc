@@ -615,11 +615,10 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	}
 
 	// Use request ID because the multiplexed upstream call may carry a
-	// different ID.
-	jrr, err := ejrr.Clone()
-	if err != nil {
-		return nil, err
-	}
+	// different ID. Use CloneShallow to share the result bytes — they are
+	// immutable after parsing, so sharing is safe and avoids duplicating
+	// large payloads for every multiplexed follower.
+	jrr := ejrr.CloneShallow()
 
 	jrq := req.jsonRpcRequest.Load()
 	if jrq == nil {

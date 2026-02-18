@@ -134,7 +134,19 @@ func (m *MockUpstreamServer) handleRequest(w http.ResponseWriter, r *http.Reques
 	case "eth_getTransactionCount":
 		result = "0x10"
 	case "eth_getLogs":
-		result = []interface{}{}
+		result = []interface{}{
+			map[string]interface{}{
+				"address":          "0x0000000000000000000000000000000000000001",
+				"blockNumber":      "0x1234567",
+				"transactionHash":  "0x0000000000000000000000000000000000000000000000000000000000000001",
+				"transactionIndex": "0x0",
+				"blockHash":        "0x0000000000000000000000000000000000000000000000000000000000000001",
+				"logIndex":         "0x0",
+				"removed":          false,
+				"topics":           []interface{}{"0x0000000000000000000000000000000000000000000000000000000000000001"},
+				"data":             "0x",
+			},
+		}
 	case "eth_getTransactionReceipt":
 		result = map[string]interface{}{
 			"blockNumber": "0x1234567",

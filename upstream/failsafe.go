@@ -405,6 +405,10 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 	// When emptyResultDelay or blockUnavailableDelay is configured, override the delay for those
 	// specific retry scenarios. Returning -1 tells failsafe-go to fall back to the normally
 	// configured delay/backoff for other retries.
+	//
+	// Note: the Forward() execution loop already tries all upstreams for retryable errors
+	// before returning to the retry policy. So these delays naturally fire only after a
+	// full round of upstream attempts.
 	var emptyResultDelayDuration, blockUnavailableDelayDuration time.Duration
 	if cfg.EmptyResultDelay > 0 {
 		emptyResultDelayDuration = cfg.EmptyResultDelay.Duration()
@@ -420,9 +424,15 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 					return blockUnavailableDelayDuration
 				}
 			}
-			// Empty result: custom delay for empty responses
+			// Empty/missing data: custom delay for empty responses or missing-data errors.
+			// The empty result case covers upstreams that returned valid-but-empty responses.
+			// The missing-data error case covers upstreams that returned JSON-RPC errors
+			// (e.g. "missing trie node") which the hooks converted to ErrEndpointMissingData.
 			if emptyResultDelayDuration > 0 {
 				if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
+					return emptyResultDelayDuration
+				}
+				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 					return emptyResultDelayDuration
 				}
 			}
@@ -512,7 +522,61 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			}
 		}
 
-		// We are only short-circuiting retry if the error is not retryable towards the upstream or network
+		// MissingData/RetryEmpty checks apply to both upstream and network scopes.
+		// If RetryEmpty is disabled, don't retry MissingData at all.
+		// If RetryEmpty is enabled but the method is in emptyResultAccept, don't retry.
+		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			// Resolve the request: prefer result.Request(), fallback to
+			// ErrUpstreamsExhausted.Request() (network scope), fallback to
+			// execution context (upstream scope where result is nil).
+			var req *common.NormalizedRequest
+			if result != nil {
+				req = result.Request()
+			}
+			if req == nil {
+				if exh, ok := err.(*common.ErrUpstreamsExhausted); ok {
+					req = exh.Request()
+				} else {
+					var exhErr *common.ErrUpstreamsExhausted
+					if errors.As(err, &exhErr) {
+						req = exhErr.Request()
+					}
+				}
+			}
+			if req == nil {
+				if or := ctx.Value(common.RequestContextKey); or != nil {
+					if r, ok := or.(*common.NormalizedRequest); ok {
+						req = r
+					}
+				}
+			}
+
+			if req != nil {
+				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+					span.SetAttributes(
+						attribute.Bool("retry", false),
+						attribute.String("reason", "missing_data_but_retry_empty_disabled"),
+					)
+					return false
+				}
+				if rds := req.Directives(); rds != nil && rds.RetryEmpty {
+					method, _ := req.Method()
+					span.SetAttributes(
+						attribute.String("method", method),
+						attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
+					)
+					if slices.Contains(emptyResultAccept, method) {
+						span.SetAttributes(
+							attribute.Bool("retry", false),
+							attribute.String("reason", "missing_data_method_in_empty_accept_list"),
+						)
+						return false
+					}
+				}
+			}
+		}
+
+		// Short-circuit retry if the error is not retryable towards the upstream or network
 		if scope == common.ScopeUpstream && err != nil {
 			isRetryable := common.IsRetryableTowardsUpstream(err)
 			span.SetAttributes(
@@ -526,37 +590,6 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				return false
 			}
 		} else if scope == common.ScopeNetwork && err != nil {
-			if result != nil {
-				if req := result.Request(); req != nil {
-					if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
-						if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-							span.SetAttributes(
-								attribute.Bool("retry", false),
-								attribute.String("reason", "missing_data_but_retry_empty_disabled"),
-							)
-							return false
-						}
-					}
-					// If RetryEmpty is enabled but the error is MissingData (produced by hooks for empty results),
-					// respect the emptyResultAccept list and do NOT retry for accepted methods.
-					if rds := req.Directives(); rds != nil && rds.RetryEmpty {
-						if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-							method, _ := req.Method()
-							span.SetAttributes(
-								attribute.String("method", method),
-								attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
-							)
-							if slices.Contains(emptyResultAccept, method) {
-								span.SetAttributes(
-									attribute.Bool("retry", false),
-									attribute.String("reason", "missing_data_method_in_empty_accept_list"),
-								)
-								return false
-							}
-						}
-					}
-				}
-			}
 			isRetryable := common.IsRetryableTowardNetwork(err)
 			span.SetAttributes(
 				attribute.Bool("error.retryable_to_network", isRetryable),

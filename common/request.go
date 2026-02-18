@@ -302,7 +302,6 @@ type NormalizedRequest struct {
 	upstreamMutex    sync.Mutex
 	UpstreamIdx      uint32
 	ErrorsByUpstream sync.Map
-	EmptyResponses   sync.Map // TODO we can potentially remove this map entirely, only use is to report "wrong empty responses"
 
 	// Fields for centralized upstream management
 	upstreamList      []Upstream // Available upstreams for this request
@@ -1335,16 +1334,13 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 			continue
 		}
 
-		// Skip if already responded with non-retryable error (permanent blacklist)
+		// Skip if already responded with a permanent error (method ignored,
+		// execution exception, etc.). Retryable errors (including MissingData)
+		// are allowed through so the upstream can be retried on subsequent rounds.
 		if prevErr, exists := r.ErrorsByUpstream.Load(upstream); exists {
 			if pe, ok := prevErr.(error); ok && !IsRetryableTowardsUpstream(pe) {
 				continue
 			}
-		}
-
-		// Skip if already responded empty
-		if _, isEmpty := r.EmptyResponses.Load(upstream); isEmpty {
-			continue
 		}
 
 		// Try to reserve this upstream atomically
@@ -1368,14 +1364,16 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 
 	hasResponse := resp != nil && !resp.IsObjectNull(ctx)
 
-	// Check if this is a cancelled hedge - if so, just release and return
+	// Cancelled hedge — upstream wasn't really tried, just free reservation.
 	if err != nil && HasErrorCode(err, ErrCodeEndpointRequestCanceled) {
 		r.ConsumedUpstreams.Delete(upstream)
-		// Don't store the error - this upstream wasn't really "tried"
 		return
 	}
 
-	// Store errors for reporting and for NextUpstream to skip permanent errors.
+	// Store errors/empty-results for reporting (error messages, metrics).
+	// Used by ErrUpstreamsExhausted, the "wrong empty" metric, and error
+	// state labels. Also used as a within-round gate in NextUpstream for
+	// permanent errors (method ignored, execution exception).
 	if err != nil {
 		r.ErrorsByUpstream.Store(upstream, err)
 	} else if resp != nil && resp.IsResultEmptyish(ctx) {
@@ -1385,14 +1383,18 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 		} else {
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish: %v", jr.GetResultString()), upstream))
 		}
-		r.EmptyResponses.Store(upstream, true)
 	}
 
-	// Remove from ConsumedUpstreams if upstream can be retried:
-	// - No response yet (pre-flight error like block unavailable)
-	// - Or error is retryable (transient failure)
-	// The outer loop in networks.go is capped to prevent infinite loops.
-	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err))
+	// Free from ConsumedUpstreams if the upstream can be retried on a
+	// subsequent failsafe round:
+	// - No response (pre-flight skip like block unavailable): retryable
+	// - Error that's retryable toward the upstream: transient failure
+	// - Empty result: data may appear after emptyResultDelay
+	// Permanent errors (method ignored, execution exception with response)
+	// stay consumed. The ErrorsByUpstream gate in NextUpstream provides
+	// additional within-round protection for those.
+	isEmptyResult := hasResponse && err == nil && resp != nil && resp.IsResultEmptyish(ctx)
+	canReUse := !hasResponse || (err != nil && IsRetryableTowardsUpstream(err)) || isEmptyResult
 	if canReUse {
 		r.ConsumedUpstreams.Delete(upstream)
 	}

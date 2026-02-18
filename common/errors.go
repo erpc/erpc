@@ -357,7 +357,9 @@ func (e *BaseError) HasCode(codes ...ErrorCode) bool {
 		if cs, ok := e.Cause.(interface{ Unwrap() []error }); ok {
 			for _, err := range cs.Unwrap() {
 				if be, ok := err.(StandardError); ok {
-					return be.HasCode(codes...)
+					if be.HasCode(codes...) {
+						return true
+					}
 				}
 			}
 		}
@@ -828,7 +830,14 @@ func (e *ErrUpstreamMalformedResponse) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
-type ErrUpstreamsExhausted struct{ BaseError }
+type ErrUpstreamsExhausted struct {
+	BaseError
+	req *NormalizedRequest
+}
+
+func (e *ErrUpstreamsExhausted) Request() *NormalizedRequest {
+	return e.req
+}
 
 const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
@@ -845,7 +854,7 @@ var NewErrUpstreamsExhausted = func(
 		return true
 	})
 	e := &ErrUpstreamsExhausted{
-		BaseError{
+		BaseError: BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all upstream attempts failed",
 			Cause:   errors.Join(ers...),
@@ -860,6 +869,7 @@ var NewErrUpstreamsExhausted = func(
 				"upstreams":  upstreams,
 			},
 		},
+		req: req,
 	}
 
 	sm := e.SummarizeCauses()
@@ -872,7 +882,7 @@ var NewErrUpstreamsExhausted = func(
 
 func NewErrUpstreamsExhaustedWithCause(cause error) error {
 	return &ErrUpstreamsExhausted{
-		BaseError{
+		BaseError: BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all upstream attempts failed",
 			Cause:   cause,
@@ -1155,10 +1165,12 @@ var NewErrNoUpstreamsLeftToSelect = func(r *NormalizedRequest, reason string) er
 	}
 	for _, u := range r.upstreamList {
 		state := "unknown"
-		if _, ok := r.ErrorsByUpstream.Load(u); ok {
-			state = "errored"
-		} else if _, ok := r.EmptyResponses.Load(u); ok {
-			state = "empty_response"
+		if errVal, ok := r.ErrorsByUpstream.Load(u); ok {
+			if err, isErr := errVal.(error); isErr && HasErrorCode(err, ErrCodeEndpointMissingData) {
+				state = "empty_response"
+			} else {
+				state = "errored"
+			}
 		} else if _, ok := r.ConsumedUpstreams.Load(u); ok {
 			state = "consumed"
 		} else {
@@ -2357,9 +2369,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 
 	if HasErrorCode(
 		err,
-
-		// Missing data errors -> No Retry
-		ErrCodeEndpointMissingData,
 
 		// Circuit breaker is open -> No Retry
 		ErrCodeFailsafeCircuitBreakerOpen,

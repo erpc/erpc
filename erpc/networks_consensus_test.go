@@ -701,7 +701,7 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32603, "internal server error")},
 			},
 			expectedCalls: []int{1, 1, 1},
-			expectedError: &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "gave up retrying"},
+			expectedError: &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "internal server error"},
 		},
 		{
 			name:        "one_success_rest_server_errors",
@@ -2159,7 +2159,7 @@ func TestConsensusPolicy(t *testing.T) {
 			expectedCalls: []int{1, 1, 1},
 			expectedError: &expectedError{
 				code:     common.ErrCodeFailsafeRetryExceeded,
-				contains: "gave up retrying",
+				contains: "unknown server error",
 			},
 			expectedPendingMocks: 0,
 		},
@@ -2674,7 +2674,9 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, tc.expectedPendingMocks)
+	if tc.expectedPendingMocks >= 0 {
+		defer util.AssertNoPendingMocks(t, tc.expectedPendingMocks)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
