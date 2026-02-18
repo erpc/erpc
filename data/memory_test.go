@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,4 +244,41 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	gotB, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyB, testRangeKey, nil)
 	require.NoError(t, err)
 	require.Equal(t, testValueB, gotB)
+}
+
+func TestMemoryConnector_CloseConcurrentSet_NoPanic(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+
+	connector, err := NewMemoryConnector(ctx, &logger, "test-close-concurrent-set", &common.MemoryConnectorConfig{
+		MaxItems:     100_000,
+		MaxTotalSize: "1GB",
+	})
+	require.NoError(t, err)
+
+	stopCh := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			rangeKey := fmt.Sprintf("rk-%d", worker)
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					_ = connector.Set(ctx, "pk", rangeKey, []byte("v"), nil)
+				}
+			}
+		}(i)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, connector.Close())
+	close(stopCh)
+	wg.Wait()
+
+	_, err = connector.Get(ctx, ConnectorMainIndex, "pk", "rk-0", nil)
+	require.Error(t, err)
 }

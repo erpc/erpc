@@ -7,55 +7,10 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/erpc/erpc/util"
 	"github.com/klauspost/compress/zstd"
 )
-
-const (
-	// Cache envelope format:
-	// [0..3]  magic "ERPC"
-	// [4]     version (1)
-	// [5..12] big-endian unix seconds (cached-at)
-	cacheEnvelopeMagic   = "ERPC"
-	cacheEnvelopeVersion = byte(1)
-	cacheEnvelopeHeader  = 4 + 1 + 8
-)
-
-func safeUint64ToInt64(v uint64) (int64, bool) {
-	const maxInt64 = uint64(^uint64(0) >> 1)
-	if v > maxInt64 {
-		return 0, false
-	}
-	return int64(v), true
-}
-
-func wrapCacheEnvelope(payload []byte) ([]byte, bool) {
-	if len(payload) == 0 {
-		return payload, false
-	}
-	out := make([]byte, cacheEnvelopeHeader+len(payload))
-	copy(out[:4], []byte(cacheEnvelopeMagic))
-	out[4] = cacheEnvelopeVersion
-	binary.BigEndian.PutUint64(out[5:13], uint64(time.Now().Unix()))
-	copy(out[cacheEnvelopeHeader:], payload)
-	return out, true
-}
-
-func unwrapCacheEnvelope(b []byte) ([]byte, int64, bool) {
-	if len(b) < cacheEnvelopeHeader {
-		return b, 0, false
-	}
-	if string(b[:4]) != cacheEnvelopeMagic || b[4] != cacheEnvelopeVersion {
-		return b, 0, false
-	}
-	cachedAt, ok := safeUint64ToInt64(binary.BigEndian.Uint64(b[5:13]))
-	if !ok {
-		return b, 0, false
-	}
-	return b[cacheEnvelopeHeader:], cachedAt, true
-}
 
 // cacheResultStreamWriter streams a cached JSON-RPC "result" value (not full response)
 // without materializing the decompressed bytes in memory.

@@ -33,6 +33,7 @@ func (n *testNetworkCacheEnvelope) Logger() *zerolog.Logger       { return &log.
 func (n *testNetworkCacheEnvelope) GetMethodMetrics(method string) common.TrackedMetrics {
 	return nil
 }
+func (n *testNetworkCacheEnvelope) Cache() common.CacheDAL { return nil }
 func (n *testNetworkCacheEnvelope) Forward(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	panic("not used")
 }

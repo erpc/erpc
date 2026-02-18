@@ -220,11 +220,6 @@ type CacheConfig struct {
 	Connectors  []*ConnectorConfig   `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies    []*CachePolicyConfig `yaml:"policies,omitempty" json:"policies"`
 	Compression *CompressionConfig   `yaml:"compression,omitempty" json:"compression"`
-	// Envelope enables wrapping cached values with a metadata header (magic + version + timestamp).
-	// The header is required for cache-max-age staleness checks.
-	// Default: false (disabled) for safe rolling deploys. Old binaries cannot parse
-	// the envelope prefix, so enable only after all pods are on the new version.
-	Envelope *bool `yaml:"envelope,omitempty" json:"envelope"`
 }
 
 type CompressionConfig struct {

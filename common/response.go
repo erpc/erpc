@@ -118,8 +118,26 @@ func (r *NormalizedResponse) SetCacheStoredAtUnix(ts int64) *NormalizedResponse 
 	if r == nil {
 		return r
 	}
+	if ts <= 0 {
+		return r
+	}
 	r.cacheStoredAtUnix.Store(ts)
 	return r
+}
+
+func (r *NormalizedResponse) CacheAgeSeconds() (int64, bool) {
+	if r == nil {
+		return 0, false
+	}
+	ts := r.cacheStoredAtUnix.Load()
+	if ts <= 0 {
+		return 0, false
+	}
+	age := time.Now().Unix() - ts
+	if age < 0 {
+		age = 0
+	}
+	return age, true
 }
 
 func (r *NormalizedResponse) EvmBlockRef() interface{} {
