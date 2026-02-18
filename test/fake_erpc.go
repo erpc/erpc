@@ -145,6 +145,18 @@ func loadSamples(filename string) ([]RequestResponseSample, error) {
 }
 
 func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
+	origOsExit := util.OsExit
+	exitCodeCh := make(chan int, 1)
+	util.OsExit = func(code int) {
+		select {
+		case exitCodeCh <- code:
+		default:
+		}
+	}
+	defer func() {
+		util.OsExit = origOsExit
+	}()
+
 	// Create fake servers
 	fakeServers := CreateFakeServers(config.ServerConfigs)
 
@@ -164,15 +176,22 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	}
 
 	// Initialize eRPC
+	erpcCtx, erpcCancel := context.WithCancel(context.Background())
+	defer erpcCancel()
 	go func() {
-		err = initializeERPC(erpcConfig)
-		if err != nil {
-			log.Error().Err(err).Msg("Error initializing eRPC")
+		initErr := initializeERPC(erpcCtx, erpcConfig)
+		if initErr != nil {
+			log.Error().Err(initErr).Msg("Error initializing eRPC")
 		}
 	}()
 
 	// Wait for servers to start
 	time.Sleep(1 * time.Second)
+	select {
+	case code := <-exitCodeCh:
+		return nil, fmt.Errorf("eRPC init requested process exit with code %d", code)
+	default:
+	}
 
 	// Run stress test
 	err = runK6StressTest(fs, localBaseUrl, config)
@@ -241,15 +260,17 @@ func prepareERPCConfig(config StressTestConfig) (*common.Config, string, error) 
 	mergedConfig := &common.Config{
 		LogLevel: "ERROR",
 		Server: &common.ServerConfig{
+			ListenV4:   util.BoolPtr(true),
+			ListenV6:   util.BoolPtr(false),
 			HttpHostV4: util.StringPtr("0.0.0.0"),
-			HttpHostV6: util.StringPtr("[::]"),
 			HttpPortV4: util.IntPtr(config.ServicePort),
 		},
 		Metrics: &common.MetricsConfig{
-			Enabled: util.BoolPtr(true),
-			HostV4:  util.StringPtr("0.0.0.0"),
-			HostV6:  util.StringPtr("[::]"),
-			Port:    util.IntPtr(config.MetricsPort),
+			Enabled:  util.BoolPtr(true),
+			ListenV4: util.BoolPtr(true),
+			ListenV6: util.BoolPtr(false),
+			HostV4:   util.StringPtr("0.0.0.0"),
+			Port:     util.IntPtr(config.MetricsPort),
 		},
 		Projects: []*common.ProjectConfig{prjCfg},
 	}
@@ -275,9 +296,9 @@ func prepareERPCConfig(config StressTestConfig) (*common.Config, string, error) 
 // 	return upstreamsCfg
 // }
 
-func initializeERPC(cfg *common.Config) error {
+func initializeERPC(ctx context.Context, cfg *common.Config) error {
 	logger := log.With().Logger()
-	return erpc.Init(context.Background(), cfg, logger)
+	return erpc.Init(ctx, cfg, logger)
 }
 
 func runK6StressTest(fs afero.Fs, baseUrl string, config StressTestConfig) error {
