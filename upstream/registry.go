@@ -46,14 +46,22 @@ func (c *ScoringConfig) withDefaults() *ScoringConfig {
 	if out.PenaltyDecayRate == 0 {
 		out.PenaltyDecayRate = 0.85
 	}
+	// Negative values mean "disabled" (no stickiness).
+	// Zero is treated as "not set" and gets the default.
 	if out.SwitchThreshold == 0 {
 		out.SwitchThreshold = 3.0
+	} else if out.SwitchThreshold < 0 {
+		out.SwitchThreshold = 0
 	}
 	if out.SwitchRatio == 0 {
 		out.SwitchRatio = 0.3
+	} else if out.SwitchRatio < 0 {
+		out.SwitchRatio = 0
 	}
 	if out.MinSwitchInterval == 0 {
 		out.MinSwitchInterval = 2 * time.Minute
+	} else if out.MinSwitchInterval < 0 {
+		out.MinSwitchInterval = 0
 	}
 	return out
 }
@@ -598,7 +606,7 @@ func (u *UpstreamsRegistry) refreshScoreBased() error {
 	if cfg.ScoreGranularity == "upstream" {
 		// Compute ONE penalty per upstream using method="*" metrics, then broadcast
 		upstreamPenalties := make(map[string]map[string]float64) // network -> upstreamId -> penalty
-		networkUpstreams := make(map[string][]*Upstream)          // network -> upstreams list
+		networkUpstreams := make(map[string][]*Upstream)         // network -> upstreams list
 		for km, upsList := range work {
 			networkUpstreams[km.network] = upsList
 		}
@@ -757,6 +765,11 @@ func (u *UpstreamsRegistry) stickySort(
 		}
 		return active[i].Id() < active[j].Id()
 	})
+
+	// If stickiness is disabled (threshold=0), return pure penalty sort
+	if cfg.SwitchThreshold <= 0 {
+		return active
+	}
 
 	// Stickiness: if previous primary is still in active list, check whether to keep it
 	if prevPrimaryId == "" || active[0].Id() == prevPrimaryId {

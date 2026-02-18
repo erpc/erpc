@@ -545,9 +545,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					common.SetTraceSpanError(loopSpan, cause)
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, cause
 				}
 
@@ -621,9 +618,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						r.Release()
 					}
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 				}
 
@@ -642,9 +636,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.SetHedges(exec.Hedges())
 					loopSpan.SetStatus(codes.Ok, "")
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return r, nil
 				}
 
@@ -656,9 +647,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						r.Release()
 					}
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, err
 				}
 
@@ -671,9 +659,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
 					// Emptyish success: keep as best candidate and try more upstreams.
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					bestResp = r
 					loopSpan.SetStatus(codes.Ok, "")
 				}
@@ -686,9 +671,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				cause := context.Cause(execSpanCtx)
 				if cause == nil {
 					cause = ctxErr
-				}
-				if bestResp != nil {
-					bestResp.Release()
 				}
 				return nil, cause
 			}

@@ -40,6 +40,7 @@ func buildRegistryForBench(b *testing.B, numNetworks, upstreamsPerNetwork int, m
 		nil, // proxy pool registry
 		mt,
 		0,   // scoreRefreshInterval
+		nil, // scoringCfg
 		nil, // onUpstreamRegistered
 	)
 
