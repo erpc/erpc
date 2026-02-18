@@ -636,6 +636,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.SetHedges(exec.Hedges())
 					loopSpan.SetStatus(codes.Ok, "")
 					loopSpan.End()
+					if bestResp != nil {
+						bestResp.Release()
+					}
 					return r, nil
 				}
 
@@ -659,6 +662,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
 					// Emptyish success: keep as best candidate and try more upstreams.
+					if bestResp != nil {
+						bestResp.Release()
+					}
 					bestResp = r
 					loopSpan.SetStatus(codes.Ok, "")
 				}

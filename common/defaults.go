@@ -1136,10 +1136,12 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
 	}
-	if strings.TrimSpace(p.RoutingStrategy) == "" {
+	p.RoutingStrategy = strings.ToLower(strings.TrimSpace(p.RoutingStrategy))
+	if p.RoutingStrategy == "" {
 		p.RoutingStrategy = "score-based"
 	}
-	if strings.TrimSpace(p.ScoreGranularity) == "" {
+	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
+	if p.ScoreGranularity == "" {
 		p.ScoreGranularity = "upstream"
 	}
 	if p.ScorePenaltyDecayRate == 0 {
