@@ -849,7 +849,6 @@ func (r *JsonRpcResponse) CloneShallow() (*JsonRpcResponse, error) {
 	// Copy ID/error state (small) under read locks.
 	r.idMu.RLock()
 	id := r.id
-	errObj := r.Error
 	var idBytes []byte
 	if r.idBytes != nil {
 		idBytes = make([]byte, len(r.idBytes))
@@ -858,6 +857,7 @@ func (r *JsonRpcResponse) CloneShallow() (*JsonRpcResponse, error) {
 	r.idMu.RUnlock()
 
 	r.errMu.RLock()
+	errObj := r.Error
 	var errBytes []byte
 	if r.errBytes != nil {
 		errBytes = make([]byte, len(r.errBytes))
