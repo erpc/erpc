@@ -909,9 +909,6 @@ func executeGetLogsSubRequestsInternal(ctx context.Context, n common.Network, r 
 		if concurrency <= 0 {
 			concurrency = 10
 		}
-		if concurrency > len(subRequests) {
-			concurrency = len(subRequests)
-		}
 		if concurrency < 1 {
 			concurrency = 1
 		}
