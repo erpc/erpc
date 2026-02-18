@@ -15,7 +15,11 @@ help:
 	@echo " down                          Down docker services"
 	@echo " fmt                           Format source code"
 	@echo " docker-build                  Build docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
+	@echo " docker-build-validator        Build validator docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
+	@echo " docker-build-both             Build both images locally. Args: platform=linux/amd64 repo=local tag=local"
+	@echo " docker-push-both              Build+push both images (multi-arch). Args: repo=morphoorg tag=... platforms=linux/amd64,linux/arm64"
 	@echo " docker-run                    Run docker image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
+	@echo " docker-run-validator          Validate config in validator image. Arg: platform=linux/amd64 (default) or platform=linux/arm64"
 
 .PHONY: setup
 setup:
@@ -91,9 +95,34 @@ docker-build:
 	$(eval platform ?= linux/amd64)
 	@docker build -t local/erpc-server --platform $(platform) --build-arg VERSION=local --build-arg COMMIT_SHA=$$(git rev-parse --short HEAD) .
 
+.PHONY: docker-build-validator
+docker-build-validator:
+	$(eval platform ?= linux/amd64)
+	@docker build -f Dockerfile.validator -t local/erpc-validator --platform $(platform) --build-arg VERSION=local --build-arg COMMIT_SHA=$$(git rev-parse --short HEAD) .
+
+.PHONY: docker-build-both
+docker-build-both:
+	$(eval platform ?= linux/amd64)
+	$(eval repo ?= local)
+	$(eval tag ?= local)
+	@docker build -t $(repo)/erpc:$(tag) --platform $(platform) --build-arg VERSION=$(tag) --build-arg COMMIT_SHA=$$(git rev-parse --short HEAD) .
+	@docker build -f Dockerfile.validator -t $(repo)/erpc-validator:$(tag) --platform $(platform) --build-arg VERSION=$(tag) --build-arg COMMIT_SHA=$$(git rev-parse --short HEAD) .
+
+.PHONY: docker-push-both
+docker-push-both:
+	$(eval repo ?= morphoorg)
+	$(eval tag ?= 0.0.0-dev-$$(date -u +%Y%m%d%H%M)-g$$(git rev-parse --short HEAD))
+	$(eval platforms ?= linux/amd64,linux/arm64)
+	@REPO=$(repo) TAG=$(tag) PLATFORMS=$(platforms) PUSH=true ./scripts/docker/build-push-images.sh
+
 .PHONY: docker-run
 docker-run:
 	$(eval platform ?= linux/amd64)
 	@docker run --rm -it --platform $(platform) -p 4000:4000 -p 4001:4001 -v $(PWD)/erpc.yaml:/erpc.yaml local/erpc-server /erpc-server --config /erpc.yaml
+
+.PHONY: docker-run-validator
+docker-run-validator:
+	$(eval platform ?= linux/amd64)
+	@docker run --rm --platform $(platform) -v $(PWD)/erpc.yaml:/erpc.yaml local/erpc-validator /usr/local/bin/erpc validate --config /erpc.yaml
 
 .DEFAULT_GOAL := help
