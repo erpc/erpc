@@ -28,6 +28,7 @@ type MemoryConnector struct {
 	cache       *ristretto.Cache[string, []byte]
 	locks       sync.Map // map[string]*sync.Mutex
 	emitMetrics bool
+	closeOnce   sync.Once
 
 	// Previous metric values for calculating deltas
 	prevMetrics struct {
@@ -91,6 +92,12 @@ func NewMemoryConnector(
 		cache:       cache,
 		emitMetrics: enableMetrics,
 	}
+
+	// Ensure connector resources are released when the owning app context is canceled.
+	go func() {
+		<-ctx.Done()
+		_ = c.Close()
+	}()
 
 	// Start metrics collection goroutine if enabled
 	if enableMetrics {
@@ -323,11 +330,13 @@ func (m *MemoryConnector) List(ctx context.Context, index string, limit int, pag
 
 // Close cleans up resources including stopping the metrics collection goroutine
 func (m *MemoryConnector) Close() error {
-	if m.stopMetrics != nil {
-		m.stopMetrics()
-	}
-	if m.cache != nil {
-		m.cache.Close()
-	}
+	m.closeOnce.Do(func() {
+		if m.stopMetrics != nil {
+			m.stopMetrics()
+		}
+		if m.cache != nil {
+			m.cache.Close()
+		}
+	})
 	return nil
 }

@@ -1,6 +1,9 @@
 package test
 
 import (
+	"net"
+	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -9,13 +12,27 @@ import (
 )
 
 func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
+	if os.Getenv("RUN_K6_STRESS_TESTS") != "1" {
+		t.Skip("set RUN_K6_STRESS_TESTS=1 to run k6 stress tests")
+	}
+
+	if _, err := exec.LookPath("k6"); err != nil {
+		t.Skip("k6 binary is required for stress test")
+	}
+
+	servicePort := mustFreeTCPPort(t)
+	metricsPort := mustFreeTCPPort(t)
+	serverPort1 := mustFreeTCPPort(t)
+	serverPort2 := mustFreeTCPPort(t)
+	serverPort3 := mustFreeTCPPort(t)
+
 	config := StressTestConfig{
-		ServicePort: 4201,
-		MetricsPort: 5201,
+		ServicePort: servicePort,
+		MetricsPort: metricsPort,
 		ServerConfigs: []ServerConfig{
-			{Port: 8081, FailureRate: 0.1, MinDelay: 50 * time.Millisecond, MaxDelay: 200 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
-			{Port: 8082, FailureRate: 0.2, MinDelay: 100 * time.Millisecond, MaxDelay: 300 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
-			{Port: 8083, FailureRate: 0.05, MinDelay: 30 * time.Millisecond, MaxDelay: 150 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
+			{Port: serverPort1, FailureRate: 0.1, MinDelay: 50 * time.Millisecond, MaxDelay: 200 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
+			{Port: serverPort2, FailureRate: 0.2, MinDelay: 100 * time.Millisecond, MaxDelay: 300 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
+			{Port: serverPort3, FailureRate: 0.05, MinDelay: 30 * time.Millisecond, MaxDelay: 150 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
 		},
 		Duration: "60s",
 		VUs:      50,
@@ -79,4 +96,21 @@ func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
 	if totalUpstreamErrors == 0 {
 		t.Fatalf("No upstream errors recorded which is not expected: %f", totalUpstreamErrors)
 	}
+}
+
+func mustFreeTCPPort(t *testing.T) int {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate test TCP port: %v", err)
+	}
+	defer l.Close()
+
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("unexpected listener addr type: %T", l.Addr())
+	}
+
+	return addr.Port
 }
