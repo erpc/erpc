@@ -1296,6 +1296,83 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		u2.AssertExpectations(t)
 	})
 
+	// Verify that proactive split with all-empty sub-responses completes
+	// without corrupting data for background ref holders (e.g. cache-SET).
+	t.Run("proactive_split_all_empty_results_does_not_corrupt_response", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("ProjectId").Return("test")
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{},
+		})
+
+		u1 := new(mockEvmUpstream)
+		u1.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 2}})
+
+		bgCorrupt := make(chan string, 4)
+
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				subJrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil)
+				resp := common.NewNormalizedResponse().WithJsonRpcResponse(subJrr)
+
+				// Simulate the background cache-SET goroutine that
+				// Network.Forward() spawns: hold a ref and read the
+				// response after a short delay, then release.
+				resp.AddRef()
+				go func() {
+					defer resp.DoneRef()
+					time.Sleep(50 * time.Millisecond)
+					jr, _ := resp.JsonRpcResponse()
+					if jr != nil && jr.Error != nil {
+						bgCorrupt <- fmt.Sprintf("background reader saw corrupt response: %v", jr.Error)
+					}
+				}()
+
+				return resp, nil
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x4",
+		})
+
+		done := make(chan struct{})
+		var handled bool
+		var resp *common.NormalizedResponse
+		var err error
+		go func() {
+			defer close(done)
+			handled, resp, err = networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u1}, r)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("proactive split with all-empty sub-requests hung (deadlock)")
+		}
+
+		assert.True(t, handled)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse(ctx)
+		assert.NoError(t, err)
+		assert.True(t, jrr.IsResultEmptyish())
+
+		// Wait for background goroutines to complete and check for corruption.
+		time.Sleep(150 * time.Millisecond)
+		select {
+		case msg := <-bgCorrupt:
+			t.Fatal(msg)
+		default:
+		}
+
+		n.AssertExpectations(t)
+		u1.AssertExpectations(t)
+	})
+
 	t.Run("no_split_when_request_range_below_threshold", func(t *testing.T) {
 		n := new(mockNetwork)
 		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}})

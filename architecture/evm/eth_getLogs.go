@@ -783,12 +783,16 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 				r.UserId(),
 				r.AgentName(),
 			).Inc()
-			responses[i] = jrr
+			jrrc, err := jrr.Clone()
+			if err != nil {
+				errs = append(errs, err)
+				mu.Unlock()
+				rs.Release()
+				return
+			}
+			responses[i] = jrrc
 			fromCacheSr[i] = rs.FromCache()
 			mu.Unlock()
-			// Detach the jrr before releasing so Release() won't call jrr.Free().
-			// This avoids cloning the entire result bytes for each sub-response.
-			rs.WithJsonRpcResponse(nil)
 			rs.Release()
 		}(sr, idx)
 	}
