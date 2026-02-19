@@ -28,3 +28,7 @@ temp/**
 # Python (repo tooling)
 __pycache__/
 *.pyc
+
+# Agent runtime artifacts
+artifacts/agent/**
+!artifacts/agent/.gitkeep

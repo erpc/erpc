@@ -1,0 +1,42 @@
+name: agent-harness
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [morpho-main]
+  pull_request:
+    branches: [morpho-main]
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify autonomous harness artifacts
+        run: make agent-check
+
+      - name: Emit doc update hints
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            scripts/agent-harness/suggest-doc-updates.sh "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            scripts/agent-harness/suggest-doc-updates.sh || true
+          fi

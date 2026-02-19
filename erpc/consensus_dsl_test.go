@@ -298,19 +298,29 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 	}
 
 	upstreams := createTestUpstreams(mxp)
+	allowShortCircuitRace := atsh < mxp
 
 	// Build mocks aligned with upstreams
 	mocks := make([]mockResponse, mxp)
 	calls := make([]int, mxp)
+	expectedPendingMocks := 0
 	for i := 1; i <= mxp; i++ {
 		specStr, ok := upstreamSpecs[i]
 		if !ok {
 			// Default to infrastructure error
 			mocks[i-1] = makeInfraErrorMock()
-			calls[i-1] = 1
+			if allowShortCircuitRace {
+				calls[i-1] = -1
+				expectedPendingMocks++
+			} else {
+				calls[i-1] = 1
+			}
 			// If explicitly marked not-called, override call expectation
 			if notCalled[i] {
 				calls[i-1] = 0
+				if allowShortCircuitRace {
+					expectedPendingMocks--
+				}
 			}
 			continue
 		}
@@ -320,10 +330,18 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 			calls[i-1] = 0 // no mock setup
 		} else {
 			mocks[i-1] = mock
-			calls[i-1] = 1
+			if allowShortCircuitRace {
+				calls[i-1] = -1
+				expectedPendingMocks++
+			} else {
+				calls[i-1] = 1
+			}
 		}
 		// Override with not-called flag if present
 		if notCalled[i] {
+			if calls[i-1] == -1 {
+				expectedPendingMocks--
+			}
 			calls[i-1] = 0
 		}
 	}
@@ -391,6 +409,7 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 		consensusConfig: cfg,
 		mockResponses:   mocks,
 		expectedCalls:   calls,
+		expectedPendingMocks: expectedPendingMocks,
 		expectedResult:  expResult,
 		expectedError:   expError,
 		setupFn:         setupFn,

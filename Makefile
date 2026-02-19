@@ -7,6 +7,16 @@ help:
 	@echo " build                         Build the eRPC server"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
+	@echo " agent-context                 Print repo + impact context for autonomous loops"
+	@echo " agent-refresh                 Regenerate review/repo-map.md"
+	@echo " agent-check                   Verify autonomous harness artifacts"
+	@echo " agent-gate                    Harness check + build + fast tests"
+	@echo " agent-gate-full               Harness check + build + full tests"
+	@echo " agent-skills-shell-check      Verify skills-routing and shell guidance guardrails"
+	@echo " agent-review-load             Estimate review bottleneck risk for current diff"
+	@echo " agent-pr-health               Show PR mergeability/check-health (requires gh auth)"
+	@echo " agent-random-bug              Run random latent-bug package scan"
+	@echo " agent-digest                  Generate contribution digest (last 24h)"
 	@echo
 	@echo " run-k6                        Run k6 tests"
 	@echo " run-pprof                     Run the eRPC server with pprof"
@@ -24,6 +34,46 @@ help:
 .PHONY: setup
 setup:
 	@go mod tidy
+
+.PHONY: agent-context
+agent-context:
+	@scripts/agent-harness/context.sh
+
+.PHONY: agent-refresh
+agent-refresh:
+	@scripts/agent-harness/update-repo-map.sh
+
+.PHONY: agent-check
+agent-check:
+	@scripts/agent-harness/check.sh
+
+.PHONY: agent-gate
+agent-gate:
+	@scripts/agent-harness/gate.sh
+
+.PHONY: agent-gate-full
+agent-gate-full:
+	@scripts/agent-harness/gate.sh --full
+
+.PHONY: agent-skills-shell-check
+agent-skills-shell-check:
+	@scripts/agent-harness/skills-shell-check.sh
+
+.PHONY: agent-review-load
+agent-review-load:
+	@scripts/agent-harness/review-load.sh
+
+.PHONY: agent-pr-health
+agent-pr-health:
+	@scripts/agent-harness/pr-health.sh
+
+.PHONY: agent-random-bug
+agent-random-bug:
+	@scripts/agent-harness/random-bug-scan.sh --count 1
+
+.PHONY: agent-digest
+agent-digest:
+	@scripts/agent-harness/merged-digest.sh --since "24 hours ago"
 
 .PHONY: run
 run:
