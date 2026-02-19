@@ -42,8 +42,11 @@ func (c *ScoringConfig) withDefaults() *ScoringConfig {
 	if out.ScoreGranularity == "" {
 		out.ScoreGranularity = "upstream"
 	}
+	// Negative → instant forgetting (no EMA memory). Zero → use default.
 	if out.PenaltyDecayRate == 0 {
 		out.PenaltyDecayRate = 0.95
+	} else if out.PenaltyDecayRate < 0 {
+		out.PenaltyDecayRate = 0
 	}
 	// Negative → disabled (no stickiness). Zero → use default.
 	if out.SwitchHysteresis == 0 {

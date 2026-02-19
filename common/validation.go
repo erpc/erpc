@@ -572,8 +572,8 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			return fmt.Errorf("project.*.scoreGranularity must be one of: upstream, method")
 		}
 	}
-	if p.ScorePenaltyDecayRate != 0 && (p.ScorePenaltyDecayRate < 0 || p.ScorePenaltyDecayRate > 1) {
-		return fmt.Errorf("project.*.scorePenaltyDecayRate must be between 0 and 1")
+	if p.ScorePenaltyDecayRate > 1 {
+		return fmt.Errorf("project.*.scorePenaltyDecayRate must be <= 1 (use negative to disable EMA memory)")
 	}
 	if p.ScoreSwitchHysteresis > 1 {
 		return fmt.Errorf("project.*.scoreSwitchHysteresis must be <= 1 (use negative to disable stickiness)")

@@ -1142,13 +1142,13 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 	}
 	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
 	if p.ScoreGranularity == "" {
-		// p.ScoreGranularity = "upstream"
-		p.ScoreGranularity = "method"
+		p.ScoreGranularity = "upstream"
 	}
 	// Numeric scoring defaults are intentionally NOT set here.
 	// ScoringConfig.withDefaults() is the single source of truth so that
 	// explicit zero values from the user (e.g. scoreSwitchHysteresis: 0)
 	// are not silently overridden. Use negative values to disable:
+	//   scorePenaltyDecayRate: -1   → no EMA memory (instant penalty only)
 	//   scoreSwitchHysteresis: -1   → no stickiness
 	//   scoreMinSwitchInterval: -1  → no cooldown
 	// Default score metrics mode to compact when not provided

@@ -1105,7 +1105,7 @@ func (n *Network) handleBlockSkip(
 				go func() {
 					pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					sp.PollLatestBlockNumber(pollCtx)
+					_, _ = sp.PollLatestBlockNumber(pollCtx)
 				}()
 			}
 		}

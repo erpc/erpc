@@ -412,6 +412,7 @@ type ProjectConfig struct {
 	ScoreGranularity string `yaml:"scoreGranularity,omitempty" json:"scoreGranularity"`
 	// ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
 	// Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+	// Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
 	ScorePenaltyDecayRate float64 `yaml:"scorePenaltyDecayRate,omitempty" json:"scorePenaltyDecayRate"`
 	// ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
 	// must be at least this fraction lower than the current primary's penalty to
