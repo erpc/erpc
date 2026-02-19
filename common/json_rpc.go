@@ -730,11 +730,6 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		clone.canonicalHashWithIgnored.Store(defaultCanonicalHashPlaceholder, cached)
 	}
 
-	// Only copy resultWriter if we didn't materialize the result above
-	if clone.result == nil && r.resultWriter != nil {
-		clone.resultWriter = r.resultWriter
-	}
-
 	return clone, nil
 }
 

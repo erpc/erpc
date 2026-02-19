@@ -337,14 +337,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
-	_, upstreamSpan := common.StartSpan(ctx, "GetSortedUpstreams")
+	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
-	{
+	if common.IsTracingDetailed {
 		entries := make([]string, len(upsList))
 		for i, u := range upsList {
-			p := n.upstreamsRegistry.GetUpstreamPenalty(u.Id(), n.networkId, method)
-			entries[i] = fmt.Sprintf("%s(%.4f)", u.Id(), p)
+			s := n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)
+			entries[i] = fmt.Sprintf("%s(%.4f)", u.Id(), s)
 		}
 		upstreamSpan.SetAttributes(
 			attribute.String("upstreams.sorted", strings.Join(entries, ", ")),
@@ -579,10 +579,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				attempted[u.Id()] = struct{}{}
 
-				loopSpan.SetAttributes(
-					attribute.String("upstream.id", u.Id()),
-					attribute.Float64("upstream.penalty", n.upstreamsRegistry.GetUpstreamPenalty(u.Id(), n.networkId, method)),
-				)
+				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
+				if common.IsTracingDetailed {
+					loopSpan.SetAttributes(
+						attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
+					)
+				}
 				if eu, ok := u.(common.EvmUpstream); ok {
 					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 						loopSpan.SetAttributes(
