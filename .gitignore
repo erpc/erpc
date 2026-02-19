@@ -21,3 +21,5 @@ node_modules
 .env
 bin/**
 temp/**
+erpc-bin
+erpc.yml
