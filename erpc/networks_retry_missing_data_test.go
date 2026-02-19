@@ -1349,7 +1349,7 @@ func TestNetworkForward_UpstreamReselection_WrongEmptyStillTracked(t *testing.T)
 
 		network := setupTestNetworkForMissingDataRetry(t, ctx,
 			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
-			&common.RetryPolicyConfig{MaxAttempts: 3},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
 		)
 		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
 

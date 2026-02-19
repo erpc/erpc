@@ -723,6 +723,16 @@ func (u *UpstreamsRegistry) setPenalty(upsId, networkId, method string, val floa
 	u.penaltyState[upsId][networkId][method] = val
 }
 
+// GetUpstreamPenalty returns the current decayed penalty for an upstream on a
+// given network+method pair. Safe to call concurrently with score refreshes
+// because the caller (Network.Forward) only reads after GetSortedUpstreams
+// which already synchronized via upstreamsMu.
+func (u *UpstreamsRegistry) GetUpstreamPenalty(upsId, networkId, method string) float64 {
+	u.upstreamsMu.RLock()
+	defer u.upstreamsMu.RUnlock()
+	return u.getPenalty(upsId, networkId, method)
+}
+
 // stickySort sorts upstreams by penalty ascending, preserving the current
 // primary unless a challenger is significantly better (hysteresis) and the
 // minimum cooldown has elapsed.

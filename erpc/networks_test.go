@@ -1868,7 +1868,8 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
-						MaxAttempts: 1,
+						MaxAttempts:       1,
+						EmptyResultAccept: []string{},
 					}},
 				},
 			},
@@ -1898,10 +1899,9 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
 
-		// With the broad loop, both upstreams are tried in a single execution.
+		// With EmptyResultAccept disabled, the broad loop tries both upstreams.
 		// rpc1 returns [] (empty), rpc2 returns [{"logIndex":444}] (non-empty).
-		// The broad loop prefers the non-empty result, which is better production
-		// behavior — we get more complete data without any additional retries.
+		// The broad loop prefers the non-empty result.
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
 			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
