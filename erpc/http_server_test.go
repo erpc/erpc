@@ -4633,7 +4633,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
 			"chainId": "1",
 		})
-		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Equal(t, http.StatusNotFound, statusCode)
 		assert.Contains(t, body, "ErrNetworkNotSupported",
 			"expected network evm:1 to not be supported because only evm:5 and evm:10 are allowed")
 	})
