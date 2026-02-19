@@ -4634,8 +4634,8 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			"chainId": "1",
 		})
 		assert.Equal(t, http.StatusNotFound, statusCode)
-		assert.Contains(t, body, "ErrNetworkNotFound",
-			"expected network evm:1 to not be recognized because only evm:5 and evm:10 are allowed")
+		assert.Contains(t, body, "ErrNetworkNotSupported",
+			"expected network evm:1 to not be supported because only evm:5 and evm:10 are allowed")
 	})
 
 	t.Run("RespectsOnlyNetworksWhenMatch", func(t *testing.T) {
