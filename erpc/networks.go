@@ -592,7 +592,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				// Pre-forward: block availability gating → skip to next upstream
 				if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
-					n.recordBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
+					n.handleBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
 					loopSpan.End()
 					continue
 				}
@@ -1040,8 +1040,9 @@ func (n *Network) resolveEnforceBlockAvailability(method string) bool {
 	return true
 }
 
-// recordBlockSkip handles telemetry and state when a block availability check causes an upstream to be skipped.
-func (n *Network) recordBlockSkip(
+// handleBlockSkip records telemetry when a block availability check causes an upstream to be skipped,
+// and triggers an async state poller refresh for retryable cases so subsequent retries see fresh block numbers.
+func (n *Network) handleBlockSkip(
 	ctx context.Context,
 	span trace.Span,
 	ulg *zerolog.Logger,
@@ -1069,6 +1070,24 @@ func (n *Network) recordBlockSkip(
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
 	}
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
+
+	// When the block is slightly ahead (retryable), trigger an async poll so the
+	// state poller fetches the latest block number before the next retry fires.
+	// Without this the retry loop sleeps for blockUnavailableDelay but the cached
+	// latestBlock stays stale until the background ticker fires (often 10s+).
+	// PollLatestBlockNumber respects its own debounce interval so concurrent
+	// triggers from multiple upstreams/requests are coalesced safely.
+	if isRetryable {
+		if eu, ok := u.(common.EvmUpstream); ok {
+			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+				go func() {
+					pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					sp.PollLatestBlockNumber(pollCtx)
+				}()
+			}
+		}
+	}
 }
 
 // recordHedgeDiscard handles telemetry when a hedged request is discarded because another hedge won.

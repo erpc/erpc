@@ -811,15 +811,19 @@ func (u *UpstreamsRegistry) filterCordoned(upsList []*Upstream, method string) [
 	return active
 }
 
-// recordScores updates internal score maps and optionally emits per-method
-// detail metrics (routing_priority + score_overall) when mode is "detailed".
-// The wildcard network ("*") is skipped for metric emission because its
-// sorted list spans all chains, producing inflated position numbers that
-// would overwrite the correct per-network values.
+// recordScores updates internal score maps and emits erpc_upstream_score_overall
+// according to scoreMetricsMode (matching main-branch behaviour):
+//
+//	compact  — upstream="n/a", category="n/a"
+//	detailed — upstream=<id>,  category=<method>
+//	none     — not emitted
+//
+// Wildcard network ("*") is skipped for metric emission.
 func (u *UpstreamsRegistry) recordScores(sorted []*Upstream, networkId, method string, penalties map[string]float64) {
-	detailed := u.scoreMetricsMode == telemetry.ScoreModeDetailed
-	emitMetrics := detailed && networkId != "*"
-	for i, ups := range sorted {
+	mode := u.scoreMetricsMode
+	emitScore := networkId != "*" && mode != telemetry.ScoreModeNone
+
+	for _, ups := range sorted {
 		upsId := ups.Id()
 		penalty := 0.0
 		if penalties != nil {
@@ -835,22 +839,24 @@ func (u *UpstreamsRegistry) recordScores(sorted []*Upstream, networkId, method s
 		}
 		u.upstreamScores[upsId][networkId][method] = score
 
-		if emitMetrics {
-			telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
-				u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, method,
-			).Set(float64(i + 1))
+		if emitScore && !math.IsNaN(score) && !math.IsInf(score, 0) {
+			upLabel := "n/a"
+			catLabel := "n/a"
+			if mode == telemetry.ScoreModeDetailed {
+				upLabel = upsId
+				catLabel = method
+			}
 			telemetry.MetricUpstreamScoreOverall.WithLabelValues(
-				u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, method,
+				u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel,
 			).Set(score)
 		}
 	}
 }
 
 // emitRoutingPriority computes the average sort position of each upstream
-// across all method groups per network and emits it as the routing_priority
-// metric. Called once after all method results are committed so the value
-// is stable (no per-method flip-flop). Always emitted regardless of
-// scoreMetricsMode.
+// across all method groups per network and emits erpc_upstream_routing_priority.
+// Always emitted regardless of scoreMetricsMode (low cardinality: no method dimension).
+// Wildcard network ("*") is skipped.
 func (u *UpstreamsRegistry) emitRoutingPriority() {
 	type accKey struct{ upsId, network string }
 	type accum struct {
@@ -881,7 +887,7 @@ func (u *UpstreamsRegistry) emitRoutingPriority() {
 	for _, a := range agg {
 		avgPos := a.sum / float64(a.count)
 		telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
-			u.prjId, a.ups.VendorName(), a.ups.NetworkLabel(), a.ups.Id(), "n/a",
+			u.prjId, a.ups.VendorName(), a.ups.NetworkLabel(), a.ups.Id(),
 		).Set(avgPos)
 	}
 }

@@ -3,8 +3,11 @@ package erpc
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1383,4 +1386,268 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 	// The underlying error should be ErrUpstreamBlockUnavailable
 	require.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable),
 		"expected underlying ErrUpstreamBlockUnavailable, got: %v", err)
+}
+
+// TestHandleBlockSkip_RetryableTriggersStatePollerRefresh verifies that when a
+// block is slightly ahead of the upstream's known latest (retryable case),
+// handleBlockSkip triggers an async PollLatestBlockNumber call. We prove this
+// by using a dynamic gock response: after a baseline of polls during bootstrap,
+// the very next poll still returns the old block (consumed by EvmAssertBlockAvailability),
+// but the poll after that returns a newer block. If handleBlockSkip fires its
+// async poll, the state poller picks up the newer block number.
+func TestHandleBlockSkip_RetryableTriggersStatePollerRefresh(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var latestPollCount atomic.Int64
+	var pollBaseline atomic.Int64
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_chainId")
+		}).
+		Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+		}).
+		Reply(200).
+		Map(func(res *http.Response) *http.Response {
+			count := latestPollCount.Add(1)
+			bl := pollBaseline.Load()
+			sinceBaseline := count - bl
+			// Before baseline is set (bl==0) or the first poll after baseline
+			// (EvmAssertBlockAvailability): return old block 0x11118888.
+			// Subsequent polls (handleBlockSkip async): return new block 0x11118889.
+			bn := "0x11118888"
+			if bl > 0 && sinceBaseline > 1 {
+				bn = "0x11118889"
+			}
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, bn)
+			res.Body = io.NopCloser(strings.NewReader(body))
+			res.ContentLength = int64(len(body))
+			return res
+		})
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") &&
+				(strings.Contains(body, "finalized") || strings.Contains(body, `"0x11117777"`))
+		}).
+		Reply(200).JSON([]byte(`{"result":{"number":"0x11117777","timestamp":"0x6702a8e0"}}`))
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_syncing")
+		}).
+		Reply(200).JSON([]byte(`{"result":false}`))
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(120 * time.Second),
+			StatePollerDebounce: common.Duration(1 * time.Nanosecond), // Near-zero debounce so every PollLatestBlockNumber fires (0 is overridden to 5s by defaults)
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId:                  123,
+			EnforceBlockAvailability: b(true),
+		},
+	}
+	network, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, err)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	time.Sleep(100 * time.Millisecond)
+	pollBaseline.Store(latestPollCount.Load())
+	require.Greater(t, pollBaseline.Load(), int64(0), "state poller should have polled during bootstrap")
+
+	// Request block 0x11118889 (1 ahead of latest 0x11118888, retryable)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x11118889"]}`))
+	req.SetNetwork(network)
+
+	fwdCtx, fwdCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer fwdCancel()
+	_, fwdErr := network.Forward(fwdCtx, req)
+	require.Error(t, fwdErr)
+
+	// Wait for the handleBlockSkip async PollLatestBlockNumber goroutine
+	time.Sleep(300 * time.Millisecond)
+
+	afterPolls := latestPollCount.Load()
+	delta := afterPolls - pollBaseline.Load()
+	// EvmAssertBlockAvailability fires 1 synchronous poll + handleBlockSkip fires 1 async poll = 2
+	require.GreaterOrEqual(t, delta, int64(2),
+		"retryable block skip should trigger at least 2 polls after baseline (availability check + async refresh); delta=%d", delta)
+
+	// The async poll returned 0x11118889 → state poller should have updated
+	ups, upsErr := upr.GetSortedUpstreams(ctx, util.EvmNetworkId(123), "eth_getBalance")
+	require.NoError(t, upsErr)
+	require.NotEmpty(t, ups)
+	eu := ups[0].(common.EvmUpstream)
+	require.Equal(t, int64(0x11118889), eu.EvmStatePoller().LatestBlock(),
+		"state poller should reflect the updated block from handleBlockSkip's async poll")
+}
+
+// TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh verifies that when a
+// block is far beyond the upstream's latest (non-retryable case),
+// handleBlockSkip does NOT trigger an extra state poller refresh.
+// We prove this by using the same dynamic gock response, but since handleBlockSkip
+// never fires an async poll, the state poller never picks up the newer block.
+func TestHandleBlockSkip_NonRetryableDoesNotTriggerRefresh(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var latestPollCount atomic.Int64
+	var pollBaseline atomic.Int64
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_chainId")
+		}).
+		Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+		}).
+		Reply(200).
+		Map(func(res *http.Response) *http.Response {
+			count := latestPollCount.Add(1)
+			bl := pollBaseline.Load()
+			sinceBaseline := count - bl
+			bn := "0x11118888"
+			if bl > 0 && sinceBaseline > 1 {
+				bn = "0x11118889"
+			}
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, bn)
+			res.Body = io.NopCloser(strings.NewReader(body))
+			res.ContentLength = int64(len(body))
+			return res
+		})
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") &&
+				(strings.Contains(body, "finalized") || strings.Contains(body, `"0x11117777"`))
+		}).
+		Reply(200).JSON([]byte(`{"result":{"number":"0x11117777","timestamp":"0x6702a8e0"}}`))
+
+	gock.New("http://rpc1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_syncing")
+		}).
+		Reply(200).JSON([]byte(`{"result":false}`))
+
+	upCfg := &common.UpstreamConfig{
+		Id:       "rpc1",
+		Type:     common.UpstreamTypeEvm,
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             123,
+			StatePollerInterval: common.Duration(120 * time.Second),
+			StatePollerDebounce: common.Duration(1 * time.Nanosecond),
+		},
+	}
+
+	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil)
+	upr.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	ntwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId:                  123,
+			EnforceBlockAvailability: b(true),
+		},
+	}
+	network, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+	require.NoError(t, err)
+	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+	require.NoError(t, network.Bootstrap(ctx))
+
+	time.Sleep(100 * time.Millisecond)
+	pollBaseline.Store(latestPollCount.Load())
+	require.Greater(t, pollBaseline.Load(), int64(0), "state poller should have polled during bootstrap")
+
+	// Request block 0x11119999 = latestBlock(0x11118888) + 0x1111 (4369)
+	// Distance 4369 >> MaxRetryableBlockDistance (128), so this is NOT retryable
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x11119999"]}`))
+	req.SetNetwork(network)
+
+	fwdCtx, fwdCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer fwdCancel()
+	_, fwdErr := network.Forward(fwdCtx, req)
+	require.Error(t, fwdErr)
+
+	// Wait to ensure no async goroutine fires
+	time.Sleep(300 * time.Millisecond)
+
+	afterPolls := latestPollCount.Load()
+	delta := afterPolls - pollBaseline.Load()
+	// Without handleBlockSkip's async poll: only EvmAssertBlockAvailability fires 1 poll
+	require.Equal(t, int64(1), delta,
+		"non-retryable block skip should trigger exactly 1 poll after baseline (availability check only); delta=%d", delta)
+
+	// The state poller should still report the old block (no async refresh happened)
+	ups, upsErr := upr.GetSortedUpstreams(ctx, util.EvmNetworkId(123), "eth_getBalance")
+	require.NoError(t, upsErr)
+	require.NotEmpty(t, ups)
+	eu := ups[0].(common.EvmUpstream)
+	require.Equal(t, int64(0x11118888), eu.EvmStatePoller().LatestBlock(),
+		"state poller should NOT have been updated for non-retryable block unavailability")
 }
