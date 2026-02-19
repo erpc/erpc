@@ -601,25 +601,29 @@ func (u *UpstreamsRegistry) refreshScoreBased() error {
 	var results []pairResult
 
 	if cfg.ScoreGranularity == "upstream" {
-		// Compute ONE penalty per upstream using method="*" metrics, then broadcast
-		upstreamPenalties := make(map[string]map[string]float64) // network -> upstreamId -> penalty
-		networkUpstreams := make(map[string][]*Upstream)         // network -> upstreams list
-		for km, upsList := range work {
-			networkUpstreams[km.network] = upsList
+		// Compute ONE penalty per upstream using method="*" metrics, then sort
+		// ONCE per network using the "*" method stickiness. Broadcast that single
+		// canonical order to all methods so the metric and request path always agree.
+		type networkResult struct {
+			penalties map[string]float64
+			sorted    []*Upstream
 		}
-		for networkId, upsList := range networkUpstreams {
-			penalties := u.computePenalties(upsList, networkId, "*")
-			upstreamPenalties[networkId] = penalties
-		}
-		// Apply the same penalty-sorted order to all methods for each network
+		networkResults := make(map[string]*networkResult)
 		for km, upsList := range work {
-			penalties, ok := upstreamPenalties[km.network]
-			if !ok {
-				penalties = make(map[string]float64)
+			if _, done := networkResults[km.network]; done {
+				continue
 			}
-			active := u.filterCordoned(upsList, km.method)
-			sorted := u.stickySort(active, penalties, km.network, km.method, prevPrimary[km])
-			results = append(results, pairResult{km.network, km.method, penalties, sorted})
+			penalties := u.computePenalties(upsList, km.network, "*")
+			active := u.filterCordoned(upsList, "*")
+			prev := prevPrimary[key{km.network, "*"}]
+			sorted := u.stickySort(active, penalties, km.network, "*", prev)
+			networkResults[km.network] = &networkResult{penalties, sorted}
+		}
+		for km := range work {
+			nr := networkResults[km.network]
+			cp := make([]*Upstream, len(nr.sorted))
+			copy(cp, nr.sorted)
+			results = append(results, pairResult{km.network, km.method, nr.penalties, cp})
 		}
 	} else {
 		// Per-method: compute penalty per (upstream, method) pair
@@ -873,56 +877,41 @@ func (u *UpstreamsRegistry) recordScores(sorted []*Upstream, networkId, method s
 // emitRoutingPriority emits erpc_upstream_routing_priority.
 //
 // Two tiers of detail:
-//  1. Summary (category="*"): average position across all methods.
-//     Always emitted regardless of scoreMetricsMode.
+//  1. Summary (category="*"): position from the "*" (wildcard) method sort,
+//     which is the canonical upstream-level order. Always emitted.
 //  2. Per-method (category=<method>): exact position for each method.
 //     Only emitted when scoreMetricsMode is "detailed".
 //
-// Wildcard network ("*") and wildcard method ("*") entries are skipped.
+// Wildcard network ("*") entries are skipped.
 func (u *UpstreamsRegistry) emitRoutingPriority() {
 	detailed := u.scoreMetricsMode == telemetry.ScoreModeDetailed
-
-	type accKey struct{ upsId, network string }
-	type accum struct {
-		ups   *Upstream
-		sum   float64
-		count int
-	}
-	agg := make(map[accKey]*accum)
 
 	for networkId, methods := range u.sortedUpstreams {
 		if networkId == "*" {
 			continue
 		}
-		for method, sorted := range methods {
-			if method == "*" {
-				continue
+		// Summary: use the "*" method sort as the canonical upstream-level order.
+		// This avoids averaging across per-method sorts that may have divergent
+		// stickiness, which can produce identical averages for different upstreams.
+		if wildcardSorted, ok := methods["*"]; ok {
+			for i, ups := range wildcardSorted {
+				telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
+					u.prjId, ups.VendorName(), ups.NetworkLabel(), ups.Id(), "*",
+				).Set(float64(i + 1))
 			}
-			if detailed {
+		}
+		if detailed {
+			for method, sorted := range methods {
+				if method == "*" {
+					continue
+				}
 				for i, ups := range sorted {
 					telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
 						u.prjId, ups.VendorName(), ups.NetworkLabel(), ups.Id(), method,
 					).Set(float64(i + 1))
 				}
 			}
-			for i, ups := range sorted {
-				k := accKey{ups.Id(), networkId}
-				a, ok := agg[k]
-				if !ok {
-					a = &accum{ups: ups}
-					agg[k] = a
-				}
-				a.sum += float64(i + 1)
-				a.count++
-			}
 		}
-	}
-
-	for _, a := range agg {
-		avgPos := a.sum / float64(a.count)
-		telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
-			u.prjId, a.ups.VendorName(), a.ups.NetworkLabel(), a.ups.Id(), "*",
-		).Set(avgPos)
 	}
 }
 
