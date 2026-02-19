@@ -27,7 +27,15 @@ const (
 )
 
 func (f DataFinalityState) String() string {
-	return []string{"finalized", "unfinalized", "realtime", "unknown"}[f]
+	names := []string{"finalized", "unfinalized", "realtime", "unknown"}
+	if int(f) < 0 || int(f) >= len(names) {
+		return fmt.Sprintf("invalid(%d)", f)
+	}
+	return names[f]
+}
+
+func (f DataFinalityState) MarshalYAML() (interface{}, error) {
+	return f.String(), nil
 }
 
 func (f DataFinalityState) MarshalJSON() ([]byte, error) {
@@ -67,7 +75,15 @@ const (
 )
 
 func (b CacheEmptyBehavior) String() string {
-	return []string{"ignore", "allow", "only"}[b]
+	names := []string{"ignore", "allow", "only"}
+	if int(b) < 0 || int(b) >= len(names) {
+		return fmt.Sprintf("invalid(%d)", b)
+	}
+	return names[b]
+}
+
+func (b CacheEmptyBehavior) MarshalYAML() (interface{}, error) {
+	return b.String(), nil
 }
 
 func (b *CacheEmptyBehavior) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -104,6 +120,10 @@ func (a CachePolicyAppliesTo) String() string {
 		return string(CachePolicyAppliesToBoth)
 	}
 	return string(a)
+}
+
+func (a CachePolicyAppliesTo) MarshalYAML() (interface{}, error) {
+	return a.String(), nil
 }
 
 func (a CachePolicyAppliesTo) MarshalJSON() ([]byte, error) {

@@ -74,13 +74,11 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 		}
 	}
 
-	err = cfg.SetDefaults(opts)
-	if err != nil {
+	if err := cfg.SetDefaults(opts); err != nil {
 		return nil, err
 	}
 
-	err = cfg.Validate()
-	if err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -727,8 +725,8 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 }
 
 type ScoreMultiplierConfig struct {
-	Network         string              `yaml:"network" json:"network"`
-	Method          string              `yaml:"method" json:"method"`
+	Network         string              `yaml:"network,omitempty" json:"network,omitempty"`
+	Method          string              `yaml:"method,omitempty" json:"method,omitempty"`
 	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
 	Overall         *float64            `yaml:"overall" json:"overall"`
 	ErrorRate       *float64            `yaml:"errorRate" json:"errorRate"`
@@ -1292,13 +1290,30 @@ func (p RateLimitPeriod) String() string {
 	}
 }
 
+func (p RateLimitPeriod) MarshalYAML() (interface{}, error) {
+	return p.String(), nil
+}
+
 func (p RateLimitPeriod) MarshalJSON() ([]byte, error) {
 	return SonicCfg.Marshal(p.String())
 }
 
 // Backward-compat: accept Go duration strings (e.g., 1s, 1m, 1h, 24h, 7d, 30d, 365d) and map to enum.
 func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// Try as string (enum name)
+	// Try as integer enum first (YAML integer values like period: 1)
+	var i int
+	if err := unmarshal(&i); err == nil {
+		switch RateLimitPeriod(i) {
+		case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+			RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+			*p = RateLimitPeriod(i)
+			return nil
+		default:
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %d)", i)
+		}
+	}
+
+	// Try as string (enum name or duration expression)
 	var s string
 	if err := unmarshal(&s); err == nil {
 		ls := strings.ToLower(strings.TrimSpace(s))
@@ -1350,19 +1365,7 @@ func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error
 			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
 		}
 	}
-	// Try as integer enum
-	var i int
-	if err := unmarshal(&i); err == nil {
-		switch RateLimitPeriod(i) {
-		case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
-			RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
-			*p = RateLimitPeriod(i)
-			return nil
-		default:
-			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %d)", i)
-		}
-	}
-	// Not a string → invalid for our schema
+	// Neither integer nor string matched
 	return fmt.Errorf("invalid period type; expected string enum, integer enum, or duration like '1s'")
 }
 
@@ -1625,6 +1628,30 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 	}
 
 	return nil
+}
+
+func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
+	evf := ""
+	if c.evalFunctionOriginal != "" {
+		evf = c.evalFunctionOriginal
+	} else if c.EvalFunction != nil {
+		evf = "<function>"
+	}
+	m := map[string]interface{}{
+		"evalPerMethod":    c.EvalPerMethod,
+		"resampleExcluded": c.ResampleExcluded,
+		"resampleCount":    c.ResampleCount,
+	}
+	if c.EvalInterval != 0 {
+		m["evalInterval"] = c.EvalInterval
+	}
+	if c.ResampleInterval != 0 {
+		m["resampleInterval"] = c.ResampleInterval
+	}
+	if evf != "" {
+		m["evalFunction"] = evf
+	}
+	return m, nil
 }
 
 func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
