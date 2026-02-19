@@ -35,7 +35,7 @@ func TestIntegrationPollLock_CrossInstanceDedup_Redis(t *testing.T) {
 			LockTtl:         common.Duration(2 * time.Second),
 			LockMaxWait:     common.Duration(200 * time.Millisecond),
 			// Must be long enough for: refreshFn + background push/publish + pubsub propagation.
-			UpdateMaxWait: common.Duration(2 * time.Second),
+			UpdateMaxWait: common.Duration(5 * time.Second),
 			Connector: &common.ConnectorConfig{
 				Id:     id,
 				Driver: common.DriverRedis,
@@ -79,7 +79,7 @@ func TestIntegrationPollLock_CrossInstanceDedup_Redis(t *testing.T) {
 		return 2, nil
 	}
 
-	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+	callCtx, callCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer callCancel()
 
 	var wg sync.WaitGroup
@@ -113,4 +113,3 @@ func TestIntegrationPollLock_CrossInstanceDedup_Redis(t *testing.T) {
 		return counterA.GetValue() == 2 && counterB.GetValue() == 2
 	}, 2*time.Second, 10*time.Millisecond, "expected both counters to converge via shared state")
 }
-

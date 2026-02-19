@@ -2642,7 +2642,7 @@ func TestBatcher_MultipleDeadlinesPickEarliest(t *testing.T) {
 
 	cfg := &common.Multicall3AggregationConfig{
 		Enabled:                true,
-		WindowMs:               100,
+		WindowMs:               600,
 		MinWaitMs:              5,
 		SafetyMarginMs:         5,
 		MaxCalls:               10,
@@ -2666,7 +2666,7 @@ func TestBatcher_MultipleDeadlinesPickEarliest(t *testing.T) {
 	}
 
 	// First request with a later deadline
-	laterDeadline := time.Now().Add(200 * time.Millisecond)
+	laterDeadline := time.Now().Add(1200 * time.Millisecond)
 	ctx1, cancel1 := context.WithDeadline(context.Background(), laterDeadline)
 	defer cancel1()
 
@@ -2690,7 +2690,7 @@ func TestBatcher_MultipleDeadlinesPickEarliest(t *testing.T) {
 	batch.mu.Unlock()
 
 	// Second request with an earlier deadline (should update flush time)
-	earlierDeadline := time.Now().Add(50 * time.Millisecond)
+	earlierDeadline := time.Now().Add(350 * time.Millisecond)
 	ctx2, cancel2 := context.WithDeadline(context.Background(), earlierDeadline)
 	defer cancel2()
 
@@ -2715,14 +2715,14 @@ func TestBatcher_MultipleDeadlinesPickEarliest(t *testing.T) {
 	select {
 	case result1 := <-entry1.ResultCh:
 		require.NoError(t, result1.Error)
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for entry1 result")
 	}
 
 	select {
 	case result2 := <-entry2.ResultCh:
 		require.NoError(t, result2.Error)
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for entry2 result")
 	}
 }

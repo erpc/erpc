@@ -380,6 +380,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	// updateMu exists to coordinate expensive refresh execution in TryUpdateIfStale (thundering herd control),
 	// but local counter advancement must remain fast even if a refresh is in-flight.
 	updated := c.processNewValue(UpdateSourceTryUpdate, newValue)
+	result := c.value.Load()
 
 	// Schedule background push when value was actually updated (increase OR decrease).
 	// With unified semantics, all value changes are propagated to remote.
@@ -387,7 +388,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	if updated {
 		c.scheduleBackgroundPushCurrent()
 	}
-	return c.value.Load()
+	return result
 }
 
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {

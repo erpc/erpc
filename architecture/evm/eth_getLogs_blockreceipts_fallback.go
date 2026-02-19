@@ -207,7 +207,9 @@ func (w *getLogsFromBlockReceiptsWriter) IsResultEmptyish() bool {
 			return
 		}
 		root := ast.NewRawConcurrentRead(util.B2Str(w.jrr.GetResultBytes()))
-		root.LoadAll()
+		if err := root.LoadAll(); err != nil {
+			return
+		}
 		rIter, err := root.Values()
 		if err != nil {
 			return
