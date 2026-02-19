@@ -14,16 +14,14 @@ on:
     branches:
       - main
 
-permissions:
-  attestations: write
-  contents: write
-  id-token: write
-  pull-requests: write
-  packages: write
+permissions: read-all
 
 jobs:
   # Create Release PR - only on workflow_dispatch
   prepare-release:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     if: github.event_name == 'workflow_dispatch'
     outputs:
@@ -126,6 +124,10 @@ jobs:
 
   # Run on release PR merge
   release:
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
     if: |
       github.event_name == 'push' && 
       github.ref == 'refs/heads/main' && 
@@ -147,8 +149,10 @@ jobs:
       # Extract version from commit message
       - name: Extract version
         id: version
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          VERSION=$(echo "$COMMIT_MESSAGE" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Set up Go
@@ -248,6 +252,11 @@ jobs:
 
   # Native single-arch builds on matching runners; then compose a multi-arch manifest
   docker-build-amd64:
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [prepare-release, release]
     if: always() && github.ref == 'refs/heads/main'
@@ -290,8 +299,10 @@ jobs:
       - name: Extract version (release commits only)
         id: version
         if: "contains(github.event.head_commit.message, 'chore: release')"
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          VERSION=$(echo "$COMMIT_MESSAGE" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build+push by digest (main)
@@ -329,6 +340,11 @@ jobs:
           push-to-registry: true
 
   docker-build-arm64:
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-8vcpu-ubuntu-2404-arm' || 'ubuntu-24.04-arm' }}"
     needs: [prepare-release, release]
     if: always() && github.ref == 'refs/heads/main'
@@ -371,8 +387,10 @@ jobs:
       - name: Extract version (release commits only)
         id: version
         if: "contains(github.event.head_commit.message, 'chore: release')"
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          VERSION=$(echo "$COMMIT_MESSAGE" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build+push by digest (main)
@@ -410,6 +428,11 @@ jobs:
           push-to-registry: true
 
   docker-manifest:
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [docker-build-amd64, docker-build-arm64]
     if: always() && github.ref == 'refs/heads/main'
@@ -435,8 +458,10 @@ jobs:
       - name: Extract version (release commits only)
         id: version
         if: "contains(github.event.head_commit.message, 'chore: release')"
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          VERSION=$(echo "$COMMIT_MESSAGE" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Create multi-arch manifest for main
@@ -500,6 +525,8 @@ jobs:
   # Cleanup sha256-* tags that are created when pushing by digest.
   # We keep only meaningful tags like "main", "latest" and semver releases.
   docker-cleanup-sha256-tags:
+    permissions:
+      packages: write
     runs-on: "${{ github.repository_owner == 'erpc' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}"
     needs: [docker-manifest]
     if: always() && github.ref == 'refs/heads/main'
