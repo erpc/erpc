@@ -315,9 +315,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 				workingParams = np
 			}
 		}
-		jrq.Lock()
-		jrq.Params = workingParams
-		jrq.Unlock()
+		_ = jrq.SetParams(workingParams)
 	}
 }
 

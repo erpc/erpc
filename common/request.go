@@ -920,8 +920,6 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 	}
 
 	r.jsonRpcRequest.Store(rpcReq)
-	// Safe to drop the raw body after successful parse to reduce retention of ReadAll buffers.
-	r.body = nil
 
 	return rpcReq, nil
 }
@@ -954,7 +952,45 @@ func (r *NormalizedRequest) Method() (string, error) {
 }
 
 func (r *NormalizedRequest) Body() []byte {
+	if r == nil {
+		return nil
+	}
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		if jrq.IsModified() || jrq.WasNormalized() {
+			return nil
+		}
+	}
 	return r.body
+}
+
+// ForwardBody returns bytes to send upstream.
+// Fast-path: reuse original raw bytes if request was not modified.
+func (r *NormalizedRequest) ForwardBody(ctx ...context.Context) ([]byte, error) {
+	if body := r.Body(); len(body) > 0 {
+		return body, nil
+	}
+
+	jrq, err := r.JsonRpcRequest(ctx...)
+	if err != nil {
+		return nil, err
+	}
+	if jrq == nil {
+		return nil, NewErrInvalidRequest(fmt.Errorf("json-rpc request is nil"))
+	}
+
+	jrq.RLock()
+	requestBody, err := SonicCfg.Marshal(JsonRpcRequest{
+		JSONRPC: jrq.JSONRPC,
+		Method:  jrq.Method,
+		Params:  jrq.Params,
+		ID:      jrq.ID,
+	})
+	jrq.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+
+	return requestBody, nil
 }
 
 func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
@@ -1042,8 +1078,8 @@ func (r *NormalizedRequest) SetEvmBlockNumber(blockNumber interface{}) {
 }
 
 func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
-	if r.body != nil {
-		return r.body, nil
+	if body := r.Body(); body != nil {
+		return body, nil
 	}
 
 	if jrq := r.jsonRpcRequest.Load(); jrq != nil {

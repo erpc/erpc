@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -338,4 +339,121 @@ func TestHeaderOverridesConfigDefault_ValidateTransactionsRoot(t *testing.T) {
 			t.Fatalf("expected SkipCacheRead=true from header")
 		}
 	})
+}
+
+func TestNormalizedRequestForwardBody_RawFastPathWhenUnmodified(t *testing.T) {
+	raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+	req := NewNormalizedRequest(raw)
+
+	jrq, err := req.JsonRpcRequest()
+	if err != nil {
+		t.Fatalf("expected JsonRpcRequest parse to succeed: %v", err)
+	}
+	if jrq == nil {
+		t.Fatalf("expected JsonRpcRequest to be non-nil")
+	}
+	if jrq.IsModified() {
+		t.Fatalf("expected parsed request to be unmodified")
+	}
+
+	forwardBody, err := req.ForwardBody()
+	if err != nil {
+		t.Fatalf("expected ForwardBody to succeed: %v", err)
+	}
+	if string(forwardBody) != string(raw) {
+		t.Fatalf("expected forward body to reuse raw bytes, got %s", string(forwardBody))
+	}
+	if req.Body() == nil {
+		t.Fatalf("expected raw body to remain available when request is unmodified")
+	}
+}
+
+func TestNormalizedRequestForwardBody_InvalidatesRawAfterNormalization(t *testing.T) {
+	raw := []byte(`{"method":"eth_blockNumber","params":[]}`)
+	req := NewNormalizedRequest(raw)
+
+	jrq, err := req.JsonRpcRequest()
+	if err != nil {
+		t.Fatalf("expected JsonRpcRequest parse to succeed: %v", err)
+	}
+	if jrq == nil {
+		t.Fatalf("expected JsonRpcRequest to be non-nil")
+	}
+	if !jrq.WasNormalized() {
+		t.Fatalf("expected parsed request to be marked normalized")
+	}
+	if req.Body() != nil {
+		t.Fatalf("expected raw body to be hidden after normalization")
+	}
+
+	forwardBody, err := req.ForwardBody()
+	if err != nil {
+		t.Fatalf("expected ForwardBody to succeed: %v", err)
+	}
+	if string(forwardBody) == string(raw) {
+		t.Fatalf("expected ForwardBody to re-marshal normalized request")
+	}
+
+	var payload map[string]interface{}
+	if err := SonicCfg.Unmarshal(forwardBody, &payload); err != nil {
+		t.Fatalf("expected marshaled body to be valid json: %v", err)
+	}
+	if payload["jsonrpc"] != "2.0" {
+		t.Fatalf("expected marshaled body to include jsonrpc=2.0, got: %v", payload["jsonrpc"])
+	}
+	if payload["id"] == nil {
+		t.Fatalf("expected marshaled body to include generated id")
+	}
+}
+
+func TestNormalizedRequestForwardBody_InvalidatesRawAfterMutation(t *testing.T) {
+	raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001"}]}`)
+	req := NewNormalizedRequest(raw)
+
+	jrq, err := req.JsonRpcRequest()
+	if err != nil {
+		t.Fatalf("expected JsonRpcRequest parse to succeed: %v", err)
+	}
+	if jrq == nil {
+		t.Fatalf("expected JsonRpcRequest to be non-nil")
+	}
+
+	if err := jrq.AppendParam("latest"); err != nil {
+		t.Fatalf("expected AppendParam to succeed: %v", err)
+	}
+	if !jrq.IsModified() {
+		t.Fatalf("expected request to be marked modified after param mutation")
+	}
+	if req.Body() != nil {
+		t.Fatalf("expected raw body to be hidden after mutation")
+	}
+
+	forwardBody, err := req.ForwardBody()
+	if err != nil {
+		t.Fatalf("expected ForwardBody to succeed: %v", err)
+	}
+	if string(forwardBody) == string(raw) {
+		t.Fatalf("expected ForwardBody to re-marshal after mutation")
+	}
+	if !strings.Contains(string(forwardBody), `"latest"`) {
+		t.Fatalf("expected marshaled body to contain updated params, got %s", string(forwardBody))
+	}
+}
+
+func TestNormalizedRequestForwardBody_MarshalsWhenNoRawBody(t *testing.T) {
+	jrq := NewJsonRpcRequest("eth_blockNumber", []interface{}{})
+	if err := jrq.SetID(1); err != nil {
+		t.Fatalf("expected SetID to succeed: %v", err)
+	}
+	req := NewNormalizedRequestFromJsonRpcRequest(jrq)
+
+	forwardBody, err := req.ForwardBody()
+	if err != nil {
+		t.Fatalf("expected ForwardBody to succeed: %v", err)
+	}
+
+	expected := `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`
+	if string(forwardBody) != expected {
+		t.Fatalf("unexpected marshaled body, expected %s got %s", expected, string(forwardBody))
+	}
 }

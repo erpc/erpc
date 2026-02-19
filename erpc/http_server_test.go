@@ -6541,16 +6541,30 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			"params": ["0x12345", false]
 		}`
 
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `"id":9999`) &&
-					strings.Contains(body, `"eth_getBlockByNumber"`) &&
-					strings.Contains(body, `"0x12345"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					var req map[string]interface{}
+					if err := sonic.UnmarshalString(body, &req); err != nil {
+						return false
+					}
+					if req["method"] != "eth_getBlockByNumber" {
+						return false
+					}
+					id, ok := req["id"].(float64)
+					if !ok || int(id) != 9999 {
+						return false
+					}
+					params, ok := req["params"].([]interface{})
+					if !ok || len(params) == 0 {
+						return false
+					}
+					blockRef, ok := params[0].(string)
+					return ok && blockRef == "0x12345"
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      9999,
 				"result": map[string]interface{}{
@@ -7000,27 +7014,51 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Poller calls eth_getBlockByNumber("finalized") if it's supported. We'll say each upstream's finalized is 0x100.
 		// So the poller sees that the highest finalized block across both upstreams is also 0x100.
 		// Make these mocks specific to NOT match the user request (id:999)
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `"finalized"`) && !strings.Contains(body, `"id":999`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"result": map[string]interface{}{
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					var req map[string]interface{}
+					if err := sonic.UnmarshalString(body, &req); err != nil {
+						return false
+					}
+					id, _ := req["id"].(float64)
+					params, ok := req["params"].([]interface{})
+					if !ok || len(params) == 0 {
+						return false
+					}
+					blockRef, ok := params[0].(string)
+					return req["method"] == "eth_getBlockByNumber" &&
+						blockRef == "finalized" &&
+						int(id) != 999
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"result": map[string]interface{}{
 					"number": "0x100",
 				},
 			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `"finalized"`) && !strings.Contains(body, `"id":999`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"result": map[string]interface{}{
+			gock.New("http://rpc2.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					var req map[string]interface{}
+					if err := sonic.UnmarshalString(body, &req); err != nil {
+						return false
+					}
+					id, _ := req["id"].(float64)
+					params, ok := req["params"].([]interface{})
+					if !ok || len(params) == 0 {
+						return false
+					}
+					blockRef, ok := params[0].(string)
+					return req["method"] == "eth_getBlockByNumber" &&
+						blockRef == "finalized" &&
+						int(id) != 999
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"result": map[string]interface{}{
 					"number": "0x100",
 				},
 			})
@@ -7039,20 +7077,36 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// The user request mock should be more specific and placed after the general mocks
 		// eth_getBlockByNumber does NOT interpolate "finalized" (TranslateFinalizedTag=false by default),
 		// so the request goes to upstream with "finalized" directly.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Times(1). // Only match once for the specific user request
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				// Match the exact user request with id:999 and "finalized" tag (NOT interpolated)
-				return strings.Contains(body, `"id":999`) &&
-					strings.Contains(body, `"eth_getBlockByNumber"`) &&
-					strings.Contains(body, `"finalized"`) &&
-					strings.Contains(body, `true`) // Full block data requested
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Times(1). // Only match once for the specific user request
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					var req map[string]interface{}
+					if err := sonic.UnmarshalString(body, &req); err != nil {
+						return false
+					}
+					if req["method"] != "eth_getBlockByNumber" {
+						return false
+					}
+					id, ok := req["id"].(float64)
+					if !ok || int(id) != 999 {
+						return false
+					}
+					params, ok := req["params"].([]interface{})
+					if !ok || len(params) < 2 {
+						return false
+					}
+					blockRef, ok := params[0].(string)
+					if !ok || blockRef != "finalized" {
+						return false
+					}
+					fullBlock, ok := params[1].(bool)
+					return ok && fullBlock
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
 				"id":      999,
 				"result": map[string]interface{}{
 					"number": "0x100",
@@ -7183,16 +7237,30 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Mock the upstream returning a normal block result, e.g. block "0xABCD" for "unknownTag".
 		// In reality, many upstreams might just return an error for an unrecognized block tag,
 		// but for testing, let's assume it returns a valid response so we can confirm the override is skipped.
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, `"id":5050`) &&
-					strings.Contains(body, `"eth_getBlockByNumber"`) &&
-					strings.Contains(body, `"unknownTag"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					var req map[string]interface{}
+					if err := sonic.UnmarshalString(body, &req); err != nil {
+						return false
+					}
+					if req["method"] != "eth_getBlockByNumber" {
+						return false
+					}
+					id, ok := req["id"].(float64)
+					if !ok || int(id) != 5050 {
+						return false
+					}
+					params, ok := req["params"].([]interface{})
+					if !ok || len(params) == 0 {
+						return false
+					}
+					blockRef, ok := params[0].(string)
+					return ok && blockRef == "unknownTag"
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      5050,
 				"result": map[string]interface{}{

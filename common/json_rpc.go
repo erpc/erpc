@@ -1322,7 +1322,9 @@ type JsonRpcRequest struct {
 	Method  string        `json:"method"`
 	Params  []interface{} `json:"params"`
 
-	cacheHash atomic.Value
+	cacheHash  atomic.Value
+	modified   atomic.Bool
+	normalized atomic.Bool
 }
 
 func NewJsonRpcRequest(method string, params []interface{}) *JsonRpcRequest {
@@ -1358,12 +1360,20 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 		}
 	}
 
-	return &JsonRpcRequest{
+	cloned := &JsonRpcRequest{
 		JSONRPC: r.JSONRPC,
 		ID:      r.ID,
 		Method:  r.Method,
 		Params:  clonedParams,
 	}
+	if r.modified.Load() {
+		cloned.modified.Store(true)
+	}
+	if r.normalized.Load() {
+		cloned.normalized.Store(true)
+	}
+
+	return cloned
 }
 
 // deepCopyValue creates a deep copy of a value to avoid concurrent access issues
@@ -1398,26 +1408,78 @@ func (r *JsonRpcRequest) SetID(id interface{}) error {
 	defer r.Unlock()
 
 	r.ID = id
+	r.modified.Store(true)
 	return nil
 }
 
-func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
-	type Alias JsonRpcRequest
-	aux := &struct {
-		*Alias
-		ID json.RawMessage `json:"id,omitempty"`
-	}{
-		Alias: (*Alias)(r),
-	}
-	aux.JSONRPC = "2.0"
+func (r *JsonRpcRequest) SetParams(params []interface{}) error {
+	r.Lock()
+	defer r.Unlock()
 
-	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
+	r.Params = params
+	r.modified.Store(true)
+	return nil
+}
+
+func (r *JsonRpcRequest) AppendParam(param interface{}) error {
+	r.Lock()
+	defer r.Unlock()
+
+	r.Params = append(r.Params, param)
+	r.modified.Store(true)
+	return nil
+}
+
+func (r *JsonRpcRequest) IsModified() bool {
+	if r == nil {
+		return false
+	}
+	return r.modified.Load()
+}
+
+func (r *JsonRpcRequest) MarkModified() {
+	if r == nil {
+		return
+	}
+	r.modified.Store(true)
+}
+
+func (r *JsonRpcRequest) WasNormalized() bool {
+	if r == nil {
+		return false
+	}
+	return r.normalized.Load()
+}
+
+func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
+	r.modified.Store(false)
+	r.normalized.Store(false)
+
+	wireReq := struct {
+		JSONRPC *string          `json:"jsonrpc"`
+		ID      *json.RawMessage `json:"id"`
+		Method  string           `json:"method"`
+		Params  []interface{}    `json:"params"`
+	}{}
+
+	if err := SonicCfg.Unmarshal(data, &wireReq); err != nil {
 		return err
 	}
 
-	if aux.ID != nil {
+	normalized := false
+	r.Method = wireReq.Method
+	r.Params = wireReq.Params
+
+	if wireReq.JSONRPC == nil {
+		r.JSONRPC = "2.0"
+		normalized = true
+	} else {
+		r.JSONRPC = *wireReq.JSONRPC
+	}
+
+	if wireReq.ID != nil {
 		var id interface{}
-		if err := SonicCfg.Unmarshal(aux.ID, &id); err != nil {
+		if err := SonicCfg.Unmarshal(*wireReq.ID, &id); err != nil {
 			return err
 		}
 		switch v := id.(type) {
@@ -1425,19 +1487,24 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			r.ID = int64(v)
 		case string:
 			r.ID = v
+		default:
+			r.ID = v
 		}
+	} else {
+		r.ID = nil
 	}
 
 	if r.ID == nil {
 		r.ID = util.RandomID()
+		normalized = true
 	} else {
-		switch r.ID.(type) {
-		case string:
-			if r.ID.(string) == "" {
-				r.ID = util.RandomID()
-			}
+		if v, ok := r.ID.(string); ok && v == "" {
+			r.ID = util.RandomID()
+			normalized = true
 		}
 	}
+
+	r.normalized.Store(normalized)
 
 	return nil
 }

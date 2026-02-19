@@ -738,3 +738,26 @@ func TestJsonRpcRequest_CloneDeepCopy(t *testing.T) {
 		assert.Equal(t, "0x2", originalMap["toBlock"])
 	})
 }
+
+func TestJsonRpcRequest_UnmarshalJSON_TracksNormalizationAndResetsFlags(t *testing.T) {
+	t.Run("without-normalization", func(t *testing.T) {
+		req := &JsonRpcRequest{}
+		req.MarkModified()
+		req.normalized.Store(true)
+
+		err := req.UnmarshalJSON([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		require.NoError(t, err)
+		assert.False(t, req.IsModified())
+		assert.False(t, req.WasNormalized())
+	})
+
+	t.Run("with-normalization", func(t *testing.T) {
+		req := &JsonRpcRequest{}
+		err := req.UnmarshalJSON([]byte(`{"method":"eth_blockNumber","params":[]}`))
+		require.NoError(t, err)
+		assert.False(t, req.IsModified())
+		assert.True(t, req.WasNormalized())
+		assert.Equal(t, "2.0", req.JSONRPC)
+		assert.NotNil(t, req.ID)
+	})
+}

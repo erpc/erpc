@@ -154,11 +154,22 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	startedAt := time.Now()
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
+		method, _ := req.Method()
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			c.upstream,
 			req.NetworkId(),
-			jrReq.Method,
+			method,
+			0, 0, 0, 0,
+		)
+	}
+	if jrReq == nil {
+		method, _ := req.Method()
+		return nil, common.NewErrUpstreamRequest(
+			common.NewErrInvalidRequest(fmt.Errorf("json-rpc request is nil")),
+			c.upstream,
+			req.NetworkId(),
+			method,
 			0, 0, 0, 0,
 		)
 	}
@@ -357,44 +368,39 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		return
 	}
 
-	batchReq := make([]common.JsonRpcRequest, 0, ln)
+	requestBodies := make([][]byte, 0, ln)
 	for _, req := range requests {
-		jrReq, err := req.request.JsonRpcRequest()
-		c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrReq.Method).Msgf("preparing batch request")
+		method, methodErr := req.request.Method()
+		if methodErr != nil {
+			req.err <- common.NewErrUpstreamRequest(
+				methodErr,
+				c.upstream,
+				req.request.NetworkId(),
+				"",
+				0, 0, 0, 0,
+			)
+			continue
+		}
+		c.logger.Trace().Interface("id", req.request.ID()).Str("method", method).Msgf("preparing batch request")
+
+		body, err := req.request.ForwardBody()
 		if err != nil {
 			req.err <- common.NewErrUpstreamRequest(
 				err,
 				c.upstream,
 				req.request.NetworkId(),
-				jrReq.Method,
+				method,
 				0, 0, 0, 0,
 			)
 			continue
 		}
-		req.request.RLock()
-		jrReq.RLock()
-		batchReq = append(batchReq, common.JsonRpcRequest{
-			JSONRPC: jrReq.JSONRPC,
-			Method:  jrReq.Method,
-			Params:  jrReq.Params,
-			ID:      jrReq.ID,
-		})
+		requestBodies = append(requestBodies, body)
 	}
 
-	requestBody, err := common.SonicCfg.Marshal(batchReq)
-	for _, req := range requests {
-		req.request.RUnlock()
-		jrReq, _ := req.request.JsonRpcRequest()
-		if jrReq != nil {
-			jrReq.RUnlock()
-		}
-	}
-	if err != nil {
-		for _, req := range requests {
-			req.err <- err
-		}
+	if len(requestBodies) == 0 {
 		return
 	}
+	requestBody := buildJsonRpcBatchRequestBody(requestBodies)
 
 	reqStartTime := time.Now()
 	httpReq, err := c.prepareRequest(batchCtx, requestBody)
@@ -594,6 +600,32 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	}
 }
 
+func buildJsonRpcBatchRequestBody(requestBodies [][]byte) []byte {
+	if len(requestBodies) == 0 {
+		return []byte("[]")
+	}
+
+	totalLen := 2 // []
+	for i, body := range requestBodies {
+		totalLen += len(body)
+		if i > 0 {
+			totalLen++ // comma
+		}
+	}
+
+	batchBody := make([]byte, 0, totalLen)
+	batchBody = append(batchBody, '[')
+	for i, body := range requestBodies {
+		if i > 0 {
+			batchBody = append(batchBody, ',')
+		}
+		batchBody = append(batchBody, body...)
+	}
+	batchBody = append(batchBody, ']')
+
+	return batchBody
+}
+
 func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, error) {
 	idNode := rootNode.GetByPath("id")
 	rawID, _ := idNode.Raw()
@@ -645,9 +677,25 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 
 	// TODO check if context is cancellable and then get the "cause" that is already set
-	jrReq, err := req.JsonRpcRequest()
-	if err != nil || jrReq == nil {
-		method, _ := req.Method()
+	method, methodErr := req.Method()
+	if methodErr != nil {
+		common.SetTraceSpanError(span, methodErr)
+		return nil, common.NewErrUpstreamRequest(
+			methodErr,
+			c.upstream,
+			req.NetworkId(),
+			method,
+			0,
+			0,
+			0,
+			0,
+		)
+	}
+
+	span.SetAttributes(attribute.String("request.method", method))
+
+	requestBody, err := req.ForwardBody()
+	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
@@ -659,20 +707,6 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			0,
 			0,
 		)
-	}
-
-	jrReq.RLock()
-	span.SetAttributes(attribute.String("request.method", jrReq.Method))
-	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
-		JSONRPC: jrReq.JSONRPC,
-		Method:  jrReq.Method,
-		Params:  jrReq.Params,
-		ID:      jrReq.ID,
-	})
-	jrReq.RUnlock()
-	if err != nil {
-		common.SetTraceSpanError(span, err)
-		return nil, err
 	}
 
 	reqStartTime := time.Now()
@@ -716,7 +750,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	// Special case: eth_getLogs responses can be arbitrarily large (especially when gzipped),
 	// which can cause OOM if we fully buffer the response. Enforce a network-level cap and
 	// convert overflow into a TooLarge error so callers can split and retry.
-	if jrReq.Method == "eth_getLogs" {
+	if method == "eth_getLogs" {
 		maxBytes := int64(0)
 		if n := req.Network(); n != nil && n.Config() != nil && n.Config().Evm != nil {
 			maxBytes = n.Config().Evm.GetLogsMaxResponseBytes

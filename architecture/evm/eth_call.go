@@ -100,9 +100,7 @@ func projectPreForward_eth_call(ctx context.Context, network common.Network, nq 
 
 	// Add "latest" block param if missing (only 1 param)
 	if paramsLen == 1 {
-		jrq.Lock()
-		jrq.Params = append(jrq.Params, "latest")
-		jrq.Unlock()
+		_ = jrq.AppendParam("latest")
 	}
 
 	if handled, resp, err := handleUserMulticall3(ctx, network, nq); handled || err != nil {

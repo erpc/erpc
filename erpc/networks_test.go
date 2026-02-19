@@ -37,6 +37,27 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
+type getLogsRangeFilterRequest struct {
+	Method string `json:"method"`
+	Params []struct {
+		FromBlock string `json:"fromBlock"`
+		ToBlock   string `json:"toBlock"`
+	} `json:"params"`
+}
+
+func matchGetLogsRangeRequest(request *http.Request, fromBlock string, toBlock string) bool {
+	var payload getLogsRangeFilterRequest
+	if err := sonic.Unmarshal([]byte(util.SafeReadBody(request)), &payload); err != nil {
+		return false
+	}
+
+	if payload.Method != "eth_getLogs" || len(payload.Params) == 0 {
+		return false
+	}
+
+	return payload.Params[0].FromBlock == fromBlock && payload.Params[0].ToBlock == toBlock
+}
+
 func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
@@ -9918,10 +9939,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x11118000"`)
+				return matchGetLogsRangeRequest(request, "0x11118000", "0x11118000")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -9936,10 +9954,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118001"`) &&
-					strings.Contains(body, `"toBlock":"0x11118001"`)
+				return matchGetLogsRangeRequest(request, "0x11118001", "0x11118001")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -9954,10 +9969,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118002"`) &&
-					strings.Contains(body, `"toBlock":"0x11118002"`)
+				return matchGetLogsRangeRequest(request, "0x11118002", "0x11118002")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -10049,10 +10061,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x11118050"`)
+				return matchGetLogsRangeRequest(request, "0x11118000", "0x11118050")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -10132,10 +10141,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x111180ff"`)
+				return matchGetLogsRangeRequest(request, "0x11118000", "0x111180ff")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -10265,10 +10271,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
-					strings.Contains(body, `"toBlock":"0x111181ff"`)
+				return matchGetLogsRangeRequest(request, "0x11118100", "0x111181ff")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -10303,10 +10306,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
-					strings.Contains(body, `"toBlock":"0x111180ff"`)
+				return matchGetLogsRangeRequest(request, "0x11118000", "0x111180ff")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -10320,10 +10320,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118200"`) &&
-					strings.Contains(body, `"toBlock":"0x111182ff"`)
+				return matchGetLogsRangeRequest(request, "0x11118200", "0x111182ff")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
@@ -10337,10 +10334,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getLogs") &&
-					strings.Contains(body, `"fromBlock":"0x11118300"`) &&
-					strings.Contains(body, `"toBlock":"0x11118300"`)
+				return matchGetLogsRangeRequest(request, "0x11118300", "0x11118300")
 			}).
 			Reply(200).
 			JSON(map[string]interface{}{
