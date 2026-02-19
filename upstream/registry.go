@@ -853,11 +853,18 @@ func (u *UpstreamsRegistry) recordScores(sorted []*Upstream, networkId, method s
 	}
 }
 
-// emitRoutingPriority computes the average sort position of each upstream
-// across all method groups per network and emits erpc_upstream_routing_priority.
-// Always emitted regardless of scoreMetricsMode (low cardinality: no method dimension).
-// Wildcard network ("*") is skipped.
+// emitRoutingPriority emits erpc_upstream_routing_priority.
+//
+// Two tiers of detail:
+//  1. Summary (category="*"): average position across all methods.
+//     Always emitted regardless of scoreMetricsMode.
+//  2. Per-method (category=<method>): exact position for each method.
+//     Only emitted when scoreMetricsMode is "detailed".
+//
+// Wildcard network ("*") and wildcard method ("*") entries are skipped.
 func (u *UpstreamsRegistry) emitRoutingPriority() {
+	detailed := u.scoreMetricsMode == telemetry.ScoreModeDetailed
+
 	type accKey struct{ upsId, network string }
 	type accum struct {
 		ups   *Upstream
@@ -870,7 +877,17 @@ func (u *UpstreamsRegistry) emitRoutingPriority() {
 		if networkId == "*" {
 			continue
 		}
-		for _, sorted := range methods {
+		for method, sorted := range methods {
+			if method == "*" {
+				continue
+			}
+			if detailed {
+				for i, ups := range sorted {
+					telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
+						u.prjId, ups.VendorName(), ups.NetworkLabel(), ups.Id(), method,
+					).Set(float64(i + 1))
+				}
+			}
 			for i, ups := range sorted {
 				k := accKey{ups.Id(), networkId}
 				a, ok := agg[k]
@@ -887,7 +904,7 @@ func (u *UpstreamsRegistry) emitRoutingPriority() {
 	for _, a := range agg {
 		avgPos := a.sum / float64(a.count)
 		telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
-			u.prjId, a.ups.VendorName(), a.ups.NetworkLabel(), a.ups.Id(),
+			u.prjId, a.ups.VendorName(), a.ups.NetworkLabel(), a.ups.Id(), "*",
 		).Set(avgPos)
 	}
 }

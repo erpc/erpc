@@ -67,8 +67,8 @@ var (
 	MetricUpstreamRoutingPriority = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_routing_priority",
-		Help:      "Average sort position of upstream across all methods for a network (1 = primary). Always emitted regardless of scoreMetricsMode.",
-	}, []string{"project", "vendor", "network", "upstream"})
+		Help:      "Sort position of upstream in routing order (1 = primary). Summary with category='*' always emitted; per-method detail added in detailed scoreMetricsMode.",
+	}, []string{"project", "vendor", "network", "upstream", "category"})
 
 	MetricUpstreamLatestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
