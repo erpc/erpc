@@ -411,12 +411,11 @@ type ProjectConfig struct {
 	// "method": separate penalty per (upstream, method) pair.
 	ScoreGranularity string `yaml:"scoreGranularity,omitempty" json:"scoreGranularity"`
 	// ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
-	// Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+	// Higher = smoother. At 0.95 with 30s ticks a penalty halves in ~7 minutes.
 	ScorePenaltyDecayRate float64 `yaml:"scorePenaltyDecayRate,omitempty" json:"scorePenaltyDecayRate"`
-	// ScoreSwitchThreshold is the minimum penalty for the primary upstream to lose its position.
-	ScoreSwitchThreshold float64 `yaml:"scoreSwitchThreshold,omitempty" json:"scoreSwitchThreshold"`
-	// ScoreSwitchRatio: challenger must have penalty < primary*ratio to take over (0..1).
-	ScoreSwitchRatio float64 `yaml:"scoreSwitchRatio,omitempty" json:"scoreSwitchRatio"`
+	// ScoreSwitchHysteresis is the fraction by which a challenger must beat the current primary
+	// to trigger a switch (0..1). At 0.10 the challenger needs 10% lower penalty.
+	ScoreSwitchHysteresis float64 `yaml:"scoreSwitchHysteresis,omitempty" json:"scoreSwitchHysteresis"`
 	// ScoreMinSwitchInterval is the cooldown between primary upstream switches.
 	ScoreMinSwitchInterval Duration `yaml:"scoreMinSwitchInterval,omitempty" json:"scoreMinSwitchInterval" tstype:"Duration"`
 	// ScoreMetricsMode controls label cardinality for upstream score metrics for this project.

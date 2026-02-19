@@ -125,8 +125,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			RoutingStrategy:   prjCfg.RoutingStrategy,
 			ScoreGranularity:  prjCfg.ScoreGranularity,
 			PenaltyDecayRate:  prjCfg.ScorePenaltyDecayRate,
-			SwitchThreshold:   prjCfg.ScoreSwitchThreshold,
-			SwitchRatio:       prjCfg.ScoreSwitchRatio,
+			SwitchHysteresis:  prjCfg.ScoreSwitchHysteresis,
 			MinSwitchInterval: prjCfg.ScoreMinSwitchInterval.Duration(),
 		},
 		func(ups *upstream.Upstream) error {

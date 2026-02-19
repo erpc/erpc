@@ -350,8 +350,7 @@ func TestUpstreamsRegistry_StickyPrimaryPreventsFlip(t *testing.T) {
 
 	stickyCfg := &ScoringConfig{
 		ScoreGranularity:  "method",
-		SwitchThreshold:   3.0,
-		SwitchRatio:       0.3,
+		SwitchHysteresis:  0.10,
 		MinSwitchInterval: 2 * time.Minute,
 	}
 	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 5*time.Second, stickyCfg)
@@ -702,8 +701,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 	} else {
 		scoringCfg = &ScoringConfig{
 			ScoreGranularity:  "method",
-			SwitchThreshold:   -1,
-			SwitchRatio:       -1,
+			SwitchHysteresis:  -1,
 			MinSwitchInterval: -1,
 		}
 	}

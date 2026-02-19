@@ -27,8 +27,7 @@ type ScoringConfig struct {
 	RoutingStrategy   string
 	ScoreGranularity  string
 	PenaltyDecayRate  float64
-	SwitchThreshold   float64
-	SwitchRatio       float64
+	SwitchHysteresis  float64
 	MinSwitchInterval time.Duration
 }
 
@@ -44,19 +43,13 @@ func (c *ScoringConfig) withDefaults() *ScoringConfig {
 		out.ScoreGranularity = "upstream"
 	}
 	if out.PenaltyDecayRate == 0 {
-		out.PenaltyDecayRate = 0.85
+		out.PenaltyDecayRate = 0.95
 	}
-	// Negative values mean "disabled" (no stickiness).
-	// Zero is treated as "not set" and gets the default.
-	if out.SwitchThreshold == 0 {
-		out.SwitchThreshold = 3.0
-	} else if out.SwitchThreshold < 0 {
-		out.SwitchThreshold = 0
-	}
-	if out.SwitchRatio == 0 {
-		out.SwitchRatio = 0.3
-	} else if out.SwitchRatio < 0 {
-		out.SwitchRatio = 0
+	// Negative → disabled (no stickiness). Zero → use default.
+	if out.SwitchHysteresis == 0 {
+		out.SwitchHysteresis = 0.10
+	} else if out.SwitchHysteresis < 0 {
+		out.SwitchHysteresis = 0
 	}
 	if out.MinSwitchInterval == 0 {
 		out.MinSwitchInterval = 2 * time.Minute
@@ -647,8 +640,8 @@ func (u *UpstreamsRegistry) refreshScoreBased() error {
 	return nil
 }
 
-// computePenalties calculates the decayed penalty for each upstream in the list.
-// metricsMethod is the method key for GetUpstreamMethodMetrics ("*" for upstream-level).
+// computePenalties calculates the EMA-smoothed penalty for each upstream.
+// Uses absolute metric values (no peer-relative baseline) for stability.
 func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, metricsMethod string) map[string]float64 {
 	cfg := u.scoringCfg
 	n := len(upsList)
@@ -656,63 +649,48 @@ func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, met
 		return nil
 	}
 
-	latencies := make([]float64, n)
-	for i, ups := range upsList {
+	penalties := make(map[string]float64, n)
+	for _, ups := range upsList {
+		upsId := ups.Id()
+		mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
+		mul := ups.getScoreMultipliers(networkId, metricsMethod, nil)
+
 		qn := 0.70
 		upsCfg := ups.Config()
 		if upsCfg != nil && upsCfg.Routing != nil && upsCfg.Routing.ScoreLatencyQuantile != 0 {
 			qn = upsCfg.Routing.ScoreLatencyQuantile
 		}
-		mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
-		latencies[i] = mt.ResponseQuantiles.GetQuantile(qn).Seconds()
-	}
-	peerBest := minPositive(latencies)
-
-	penalties := make(map[string]float64, n)
-	for i, ups := range upsList {
-		upsId := ups.Id()
-		mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
-		mul := ups.getScoreMultipliers(networkId, metricsMethod, nil)
 
 		var instant float64
 
-		errRate := mt.ErrorRate()
 		if mul.ErrorRate != nil && *mul.ErrorRate > 0 {
-			instant += errRate * *mul.ErrorRate
+			instant += mt.ErrorRate() * *mul.ErrorRate
 		}
 
-		if peerBest > 0 && latencies[i] > peerBest {
-			latPenalty := (latencies[i] - peerBest) / peerBest
-			if mul.RespLatency != nil && *mul.RespLatency > 0 {
-				instant += latPenalty * *mul.RespLatency
-			}
+		if mul.RespLatency != nil && *mul.RespLatency > 0 {
+			instant += mt.ResponseQuantiles.GetQuantile(qn).Seconds() * *mul.RespLatency
 		}
 
-		throttled := mt.ThrottledRate()
 		if mul.ThrottledRate != nil && *mul.ThrottledRate > 0 {
-			instant += throttled * *mul.ThrottledRate
+			instant += mt.ThrottledRate() * *mul.ThrottledRate
 		}
 
-		blockLag := math.Max(0, float64(mt.BlockHeadLag.Load()))
 		if mul.BlockHeadLag != nil && *mul.BlockHeadLag > 0 {
-			instant += blockLag * *mul.BlockHeadLag
+			instant += math.Max(0, float64(mt.BlockHeadLag.Load())) * *mul.BlockHeadLag
 		}
 
-		finLag := math.Max(0, float64(mt.FinalizationLag.Load()))
 		if mul.FinalizationLag != nil && *mul.FinalizationLag > 0 {
-			instant += finLag * *mul.FinalizationLag
+			instant += math.Max(0, float64(mt.FinalizationLag.Load())) * *mul.FinalizationLag
 		}
 
-		misbehav := mt.MisbehaviorRate()
 		if mul.Misbehaviors != nil && *mul.Misbehaviors > 0 {
-			instant += misbehav * *mul.Misbehaviors
+			instant += mt.MisbehaviorRate() * *mul.Misbehaviors
 		}
 
 		if math.IsNaN(instant) || math.IsInf(instant, 0) {
 			instant = 0
 		}
 
-		// Exponential decay: stored = stored * decay + instant * (1 - decay)
 		stored := u.getPenalty(upsId, networkId, metricsMethod)
 		if math.IsNaN(stored) || math.IsInf(stored, 0) {
 			stored = 0
@@ -743,8 +721,9 @@ func (u *UpstreamsRegistry) setPenalty(upsId, networkId, method string, val floa
 	u.penaltyState[upsId][networkId][method] = val
 }
 
-// stickySort sorts upstreams by penalty ascending, but preserves the previous primary
-// unless all three switch conditions are met.
+// stickySort sorts upstreams by penalty ascending, preserving the current
+// primary unless a challenger is significantly better (hysteresis) and the
+// minimum cooldown has elapsed.
 func (u *UpstreamsRegistry) stickySort(
 	active []*Upstream,
 	penalties map[string]float64,
@@ -756,7 +735,6 @@ func (u *UpstreamsRegistry) stickySort(
 	}
 	cfg := u.scoringCfg
 
-	// Sort by penalty ascending, ties broken by ID for determinism
 	sort.Slice(active, func(i, j int) bool {
 		pi := penalties[active[i].Id()]
 		pj := penalties[active[j].Id()]
@@ -766,18 +744,14 @@ func (u *UpstreamsRegistry) stickySort(
 		return active[i].Id() < active[j].Id()
 	})
 
-	// If stickiness is disabled (threshold=0), return pure penalty sort
-	if cfg.SwitchThreshold <= 0 {
+	if cfg.SwitchHysteresis <= 0 || prevPrimaryId == "" || active[0].Id() == prevPrimaryId {
+		if prevPrimaryId == "" || (len(active) > 0 && active[0].Id() != prevPrimaryId) {
+			u.setLastSwitchTime(networkId, method, time.Now())
+		}
 		return active
 	}
 
-	// Stickiness: if previous primary is still in active list, check whether to keep it
-	if prevPrimaryId == "" || active[0].Id() == prevPrimaryId {
-		u.recordSwitchIfNeeded(networkId, method, active)
-		return active
-	}
-
-	var prevIdx int = -1
+	prevIdx := -1
 	for i, ups := range active {
 		if ups.Id() == prevPrimaryId {
 			prevIdx = i
@@ -785,39 +759,30 @@ func (u *UpstreamsRegistry) stickySort(
 		}
 	}
 	if prevIdx < 0 {
-		u.recordSwitchIfNeeded(networkId, method, active)
-		return active
-	}
-
-	primaryPenalty := penalties[prevPrimaryId]
-	challengerPenalty := penalties[active[0].Id()]
-	lastSwitch := u.getLastSwitchTime(networkId, method)
-
-	shouldSwitch := primaryPenalty > cfg.SwitchThreshold &&
-		challengerPenalty < primaryPenalty*cfg.SwitchRatio &&
-		time.Since(lastSwitch) >= cfg.MinSwitchInterval
-
-	if !shouldSwitch {
-		// Preserve previous primary at index 0; shift others
-		prev := active[prevIdx]
-		copy(active[prevIdx:], active[prevIdx+1:])
-		copy(active[1:], active[:len(active)-1])
-		active[0] = prev
-		return active
-	}
-
-	u.setLastSwitchTime(networkId, method, time.Now())
-	return active
-}
-
-func (u *UpstreamsRegistry) recordSwitchIfNeeded(networkId, method string, active []*Upstream) {
-	if len(active) == 0 {
-		return
-	}
-	last := u.getLastSwitchTime(networkId, method)
-	if last.IsZero() {
 		u.setLastSwitchTime(networkId, method, time.Now())
+		return active
 	}
+
+	primaryP := penalties[prevPrimaryId]
+	challengerP := penalties[active[0].Id()]
+
+	shouldSwitch := primaryP > 0 && challengerP < primaryP*(1.0-cfg.SwitchHysteresis)
+	if shouldSwitch && cfg.MinSwitchInterval > 0 {
+		if time.Since(u.getLastSwitchTime(networkId, method)) < cfg.MinSwitchInterval {
+			shouldSwitch = false
+		}
+	}
+
+	if shouldSwitch {
+		u.setLastSwitchTime(networkId, method, time.Now())
+		return active
+	}
+
+	prev := active[prevIdx]
+	copy(active[prevIdx:], active[prevIdx+1:])
+	copy(active[1:], active[:len(active)-1])
+	active[0] = prev
+	return active
 }
 
 func (u *UpstreamsRegistry) getLastSwitchTime(networkId, method string) time.Time {
@@ -844,12 +809,12 @@ func (u *UpstreamsRegistry) filterCordoned(upsList []*Upstream, method string) [
 	return active
 }
 
-// emitMetrics emits score and routing priority metrics for a sorted upstream list.
-// Must be called while holding upstreamsMu write lock (for upstreamScores update).
+// emitMetrics emits routing priority (always) and score (detailed mode only).
 func (u *UpstreamsRegistry) emitMetrics(sorted []*Upstream, networkId, method string, penalties map[string]float64) {
 	if u.scoreMetricsMode == telemetry.ScoreModeNone {
 		return
 	}
+	detailed := u.scoreMetricsMode == telemetry.ScoreModeDetailed
 	for i, ups := range sorted {
 		upsId := ups.Id()
 		penalty := 0.0
@@ -858,7 +823,6 @@ func (u *UpstreamsRegistry) emitMetrics(sorted []*Upstream, networkId, method st
 		}
 		score := 1.0 / (1.0 + penalty)
 
-		// Store the score for health endpoint
 		if _, ok := u.upstreamScores[upsId]; !ok {
 			u.upstreamScores[upsId] = make(map[string]map[string]float64)
 		}
@@ -869,16 +833,20 @@ func (u *UpstreamsRegistry) emitMetrics(sorted []*Upstream, networkId, method st
 
 		upLabel := "n/a"
 		catLabel := "n/a"
-		if u.scoreMetricsMode == telemetry.ScoreModeDetailed {
+		if detailed {
 			upLabel = upsId
 			catLabel = method
 		}
-		telemetry.MetricUpstreamScoreOverall.WithLabelValues(
-			u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel,
-		).Set(score)
+
 		telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
 			u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel,
 		).Set(float64(i + 1))
+
+		if detailed {
+			telemetry.MetricUpstreamScoreOverall.WithLabelValues(
+				u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel,
+			).Set(score)
+		}
 	}
 }
 
@@ -1123,21 +1091,6 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 			}
 		}
 	}()
-}
-
-func minPositive(vals []float64) float64 {
-	m := math.MaxFloat64
-	found := false
-	for _, v := range vals {
-		if v > 0 && v < m {
-			m = v
-			found = true
-		}
-	}
-	if !found {
-		return 0
-	}
-	return m
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {

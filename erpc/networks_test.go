@@ -7806,7 +7806,7 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 			&upstream.ScoringConfig{
 				ScoreGranularity: "method",
-				SwitchThreshold:  -1,
+				SwitchHysteresis: -1,
 			},
 			nil,
 		)

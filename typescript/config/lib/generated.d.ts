@@ -364,17 +364,14 @@ export interface ProjectConfig {
     scoreGranularity?: string;
     /**
      * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
-     * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+     * Higher = smoother. At 0.95 with 30s ticks a penalty halves in ~7 minutes.
      */
     scorePenaltyDecayRate?: number;
     /**
-     * ScoreSwitchThreshold is the minimum penalty for the primary upstream to lose its position.
+     * ScoreSwitchHysteresis is the fraction by which a challenger must beat the current primary
+     * to trigger a switch (0..1). At 0.10 the challenger needs 10% lower penalty.
      */
-    scoreSwitchThreshold?: number;
-    /**
-     * ScoreSwitchRatio: challenger must have penalty < primary*ratio to take over (0..1).
-     */
-    scoreSwitchRatio?: number;
+    scoreSwitchHysteresis?: number;
     /**
      * ScoreMinSwitchInterval is the cooldown between primary upstream switches.
      */

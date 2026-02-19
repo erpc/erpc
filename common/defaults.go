@@ -1146,13 +1146,10 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 		p.ScoreGranularity = "method"
 	}
 	if p.ScorePenaltyDecayRate == 0 {
-		p.ScorePenaltyDecayRate = 0.85
+		p.ScorePenaltyDecayRate = 0.95
 	}
-	if p.ScoreSwitchThreshold == 0 {
-		p.ScoreSwitchThreshold = 3.0
-	}
-	if p.ScoreSwitchRatio == 0 {
-		p.ScoreSwitchRatio = 0.3
+	if p.ScoreSwitchHysteresis == 0 {
+		p.ScoreSwitchHysteresis = 0.10
 	}
 	if p.ScoreMinSwitchInterval == 0 {
 		p.ScoreMinSwitchInterval = Duration(2 * time.Minute)
