@@ -2,6 +2,9 @@ package erpc
 
 import (
 	"context"
+	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -491,4 +494,61 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			assert.Equal(t, "upstream3", resp.Upstream().Id(), "Response should come from upstream3")
 		}
 	})
+}
+
+func TestNetwork_Forward_BatchSelectionCacheReuse(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkSimple(t, ctx, nil, nil)
+	err := network.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+	require.NoError(t, err)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBalance")
+		}).
+		Times(2).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"result":  "0x1",
+		})
+
+	origGetSorted := network.getSortedUpstreamsFn
+	var getSortedCalls atomic.Int32
+	network.getSortedUpstreamsFn = func(
+		ctx context.Context,
+		registry *upstream.UpstreamsRegistry,
+		networkID string,
+		method string,
+	) ([]common.Upstream, error) {
+		getSortedCalls.Add(1)
+		return origGetSorted(ctx, registry, networkID, method)
+	}
+	defer func() {
+		network.getSortedUpstreamsFn = origGetSorted
+	}()
+
+	batchCtx := common.WithBatchUpstreamSelectionCache(ctx, common.NewBatchUpstreamSelectionCache())
+	req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	resp1, err := network.Forward(batchCtx, req1)
+	require.NoError(t, err)
+	require.NotNil(t, resp1)
+	resp1.Release()
+
+	req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getBalance","params":["0xabc","latest"]}`))
+	resp2, err := network.Forward(batchCtx, req2)
+	require.NoError(t, err)
+	require.NotNil(t, resp2)
+	resp2.Release()
+
+	assert.Equal(t, int32(1), getSortedCalls.Load(), "sorted upstream selection should be reused for homogeneous batch context")
 }

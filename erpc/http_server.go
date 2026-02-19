@@ -429,6 +429,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		if !batchHandled {
+			requestSpanBaseCtx := httpCtx
+			if isBatch {
+				requestSpanBaseCtx = common.WithBatchUpstreamSelectionCache(
+					httpCtx,
+					common.NewBatchUpstreamSelectionCache(),
+				)
+			}
+
 			for i, reqBody := range requests {
 				wg.Add(1)
 				go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
@@ -452,7 +460,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					nq := common.NewNormalizedRequest(rawReq)
 					// Help GC: drop reference to the rawReq slice copy in the parent slice as soon as possible
 					rawReq = nil
-					requestCtx := common.StartRequestSpan(httpCtx, nq)
+					requestCtx := common.StartRequestSpan(requestSpanBaseCtx, nq)
 
 					// Resolve and set real client IP before any rate limiting/auth checks
 					clientIP := s.resolveRealClientIP(r)

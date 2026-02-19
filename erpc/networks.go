@@ -32,6 +32,13 @@ type FailsafeExecutor struct {
 	consensusPolicyEnabled bool
 }
 
+type getSortedUpstreamsForNetworkFn func(
+	ctx context.Context,
+	registry *upstream.UpstreamsRegistry,
+	networkID string,
+	method string,
+) ([]common.Upstream, error)
+
 type Network struct {
 	networkId                string
 	networkLabel             string
@@ -48,9 +55,19 @@ type Network struct {
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
 	initializer              *util.Initializer
+	getSortedUpstreamsFn     getSortedUpstreamsForNetworkFn
 }
 
 type skipNetworkRateLimitKey struct{}
+
+func defaultGetSortedUpstreamsForNetwork(
+	ctx context.Context,
+	registry *upstream.UpstreamsRegistry,
+	networkID string,
+	method string,
+) ([]common.Upstream, error) {
+	return registry.GetSortedUpstreams(ctx, networkID, method)
+}
 
 func withSkipNetworkRateLimit(ctx context.Context) context.Context {
 	return context.WithValue(ctx, skipNetworkRateLimitKey{}, true)
@@ -361,19 +378,90 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
-	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
-	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
-	if common.IsTracingDetailed {
-		names := make([]string, len(upsList))
-		for i, u := range upsList {
-			names[i] = u.Id()
-		}
-		upstreamSpan.SetAttributes(
-			attribute.String("upstreams.list", strings.Join(names, ", ")),
-		)
+	useUpstreamDirective := ""
+	if req.Directives() != nil {
+		useUpstreamDirective = req.Directives().UseUpstream
 	}
-	upstreamSpan.End()
+
+	loadUpstreams := func() ([]common.Upstream, error) {
+		_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
+		getSortedUpstreams := n.getSortedUpstreamsFn
+		if getSortedUpstreams == nil {
+			getSortedUpstreams = defaultGetSortedUpstreamsForNetwork
+		}
+		upsList, err := getSortedUpstreams(ctx, n.upstreamsRegistry, n.networkId, method)
+		upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
+		if common.IsTracingDetailed {
+			names := make([]string, len(upsList))
+			for i, u := range upsList {
+				names[i] = u.Id()
+			}
+			upstreamSpan.SetAttributes(
+				attribute.String("upstreams.list", strings.Join(names, ", ")),
+			)
+		}
+		upstreamSpan.End()
+
+		if err != nil {
+			return nil, err
+		}
+
+		// Filter upstreams by group if the failsafe executor specifies a group.
+		// Skip group filtering if UseUpstream directive is set - allows targeting any upstream for debugging.
+		if failsafeExecutor.upstreamGroup != "" && useUpstreamDirective == "" {
+			filteredUpstreams := make([]common.Upstream, 0, len(upsList))
+			for _, u := range upsList {
+				if cfg := u.Config(); cfg != nil && cfg.Group == failsafeExecutor.upstreamGroup {
+					filteredUpstreams = append(filteredUpstreams, u)
+				}
+			}
+			lg.Debug().
+				Str("upstreamGroup", failsafeExecutor.upstreamGroup).
+				Int("originalCount", len(upsList)).
+				Int("filteredCount", len(filteredUpstreams)).
+				Msgf("filtered upstreams by group for failsafe policy")
+			if len(filteredUpstreams) == 0 {
+				return nil, common.NewErrFailsafeConfiguration(
+					fmt.Errorf("no upstreams match the configured group '%s' for failsafe policy (had %d upstreams before filtering, method=%s)",
+						failsafeExecutor.upstreamGroup, len(upsList), method),
+					map[string]interface{}{
+						"upstreamGroup":  failsafeExecutor.upstreamGroup,
+						"originalCount":  len(upsList),
+						"method":         method,
+						"failsafeMethod": failsafeExecutor.method,
+					},
+				)
+			}
+			upsList = filteredUpstreams
+
+			forwardSpan.SetAttributes(
+				attribute.Int("upstreams.filtered_count", len(upsList)),
+				attribute.String("upstreams.filter_group", failsafeExecutor.upstreamGroup),
+			)
+		}
+
+		return upsList, nil
+	}
+
+	var upsList []common.Upstream
+	batchSelectionCache := common.BatchUpstreamSelectionCacheFromContext(ctx)
+	if batchSelectionCache != nil {
+		key := common.BatchUpstreamSelectionKey{
+			NetworkID:     n.networkId,
+			Method:        method,
+			Finality:      req.Finality(ctx),
+			UseUpstream:   useUpstreamDirective,
+			UpstreamGroup: failsafeExecutor.upstreamGroup,
+		}
+		var cacheHit bool
+		upsList, cacheHit, err = batchSelectionCache.Resolve(key, loadUpstreams)
+		forwardSpan.SetAttributes(
+			attribute.Bool("upstreams.batch_selection_cache_enabled", true),
+			attribute.Bool("upstreams.batch_selection_cache_hit", cacheHit),
+		)
+	} else {
+		upsList, err = loadUpstreams()
+	}
 
 	if err != nil {
 		common.SetTraceSpanError(forwardSpan, err)
@@ -381,51 +469,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			mlx.Close(ctx, nil, err)
 		}
 		return nil, err
-	}
-
-	// Filter upstreams by group if the failsafe executor specifies a group
-	// This is primarily used for consensus policies that should only compare
-	// responses from a specific group of upstreams (e.g., public RPC endpoints)
-	// Skip group filtering if UseUpstream directive is set - allows targeting any upstream for debugging
-	useUpstreamDirective := ""
-	if req.Directives() != nil {
-		useUpstreamDirective = req.Directives().UseUpstream
-	}
-	if failsafeExecutor.upstreamGroup != "" && useUpstreamDirective == "" {
-		filteredUpstreams := make([]common.Upstream, 0, len(upsList))
-		for _, u := range upsList {
-			if cfg := u.Config(); cfg != nil && cfg.Group == failsafeExecutor.upstreamGroup {
-				filteredUpstreams = append(filteredUpstreams, u)
-			}
-		}
-		lg.Debug().
-			Str("upstreamGroup", failsafeExecutor.upstreamGroup).
-			Int("originalCount", len(upsList)).
-			Int("filteredCount", len(filteredUpstreams)).
-			Msgf("filtered upstreams by group for failsafe policy")
-		if len(filteredUpstreams) == 0 {
-			err := common.NewErrFailsafeConfiguration(
-				fmt.Errorf("no upstreams match the configured group '%s' for failsafe policy (had %d upstreams before filtering, method=%s)",
-					failsafeExecutor.upstreamGroup, len(upsList), method),
-				map[string]interface{}{
-					"upstreamGroup":  failsafeExecutor.upstreamGroup,
-					"originalCount":  len(upsList),
-					"method":         method,
-					"failsafeMethod": failsafeExecutor.method,
-				},
-			)
-			if mlx != nil {
-				mlx.Close(ctx, nil, err)
-			}
-			return nil, err
-		}
-		upsList = filteredUpstreams
-
-		// Update tracing to reflect post-filter state
-		forwardSpan.SetAttributes(
-			attribute.Int("upstreams.filtered_count", len(upsList)),
-			attribute.String("upstreams.filter_group", failsafeExecutor.upstreamGroup),
-		)
 	}
 
 	// Set upstreams on the request

@@ -208,10 +208,12 @@ func (w *getLogsFromBlockReceiptsWriter) IsResultEmptyish() bool {
 		}
 		root := ast.NewRawConcurrentRead(util.B2Str(w.jrr.GetResultBytes()))
 		if err := root.LoadAll(); err != nil {
+			w.empty = false
 			return
 		}
 		rIter, err := root.Values()
 		if err != nil {
+			w.empty = false
 			return
 		}
 		var receipt ast.Node
