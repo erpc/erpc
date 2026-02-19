@@ -18,6 +18,11 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// defaultEmptyResultAccept is the set of methods for which the first emptyish
+// result short-circuits the upstream loop (and tells failsafe not to retry).
+// Must stay in sync with the default in upstream/failsafe.go.
+var defaultEmptyResultAccept = []string{"eth_getLogs", "eth_call"}
+
 type NetworksRegistry struct {
 	project              *PreparedProject
 	appCtx               context.Context
@@ -108,23 +113,31 @@ func NewNetwork(
 			if method == "" {
 				method = "*"
 			}
+
+			emptyAccept := defaultEmptyResultAccept
+			if fsCfg.Retry != nil && fsCfg.Retry.EmptyResultAccept != nil {
+				emptyAccept = fsCfg.Retry.EmptyResultAccept
+			}
+
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
 				method:                 method,
 				finalities:             fsCfg.MatchFinality,
 				executor:               failsafe.NewExecutor(policyArray...),
 				timeout:                timeoutDuration,
 				consensusPolicyEnabled: fsCfg.Consensus != nil,
+				emptyResultAccept:      emptyAccept,
 			})
 		}
 	}
 
 	// Create a default executor if no failsafe config is provided or matched
 	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-		method:                 "*", // "*" means match any method
-		finalities:             nil, // nil means match any finality
+		method:                 "*",
+		finalities:             nil,
 		executor:               failsafe.NewExecutor[*common.NormalizedResponse](),
 		timeout:                nil,
 		consensusPolicyEnabled: false,
+		emptyResultAccept:      defaultEmptyResultAccept,
 	})
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))

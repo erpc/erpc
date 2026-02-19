@@ -29,6 +29,11 @@ type FailsafeExecutor struct {
 	executor               failsafe.Executor[*common.NormalizedResponse]
 	timeout                *time.Duration
 	consensusPolicyEnabled bool
+	// emptyResultAccept lists methods for which the first emptyish result
+	// short-circuits the upstream loop. Without this the loop tries every
+	// upstream before returning to failsafe, even when the retry policy
+	// would accept the empty result anyway (wasting time on slow upstreams).
+	emptyResultAccept []string
 }
 
 type Network struct {
@@ -632,20 +637,32 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.WithRequest(effectiveReq)
 				}
 
-				// Happy path: non-empty success → return immediately.
-				// Emptyish results continue to the next upstream so that all
-				// upstreams are tried within a single execution round before
-				// failsafe applies emptyResultDelay between rounds.
-				if err == nil && r != nil && !r.IsObjectNull() && !r.IsResultEmptyish() {
-					r.SetAttempts(exec.Attempts())
-					r.SetRetries(exec.Retries())
-					r.SetHedges(exec.Hedges())
-					loopSpan.SetStatus(codes.Ok, "")
-					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
+				// Return immediately when the result is usable:
+				//  - Non-empty success always qualifies.
+				//  - Emptyish success qualifies when the method is in
+				//    emptyResultAccept and consensus is not required,
+				//    because failsafe would accept the empty result anyway
+				//    so trying more upstreams just wastes time on slow ones.
+				//  - Otherwise emptyish results continue to the next upstream.
+				if err == nil && r != nil && !r.IsObjectNull() {
+					emptyish := r.IsResultEmptyish()
+					acceptEmpty := !emptyish ||
+						(!failsafeExecutor.consensusPolicyEnabled &&
+							slices.Contains(failsafeExecutor.emptyResultAccept, method))
+					if acceptEmpty {
+						r.SetAttempts(exec.Attempts())
+						r.SetRetries(exec.Retries())
+						r.SetHedges(exec.Hedges())
+						loopSpan.SetStatus(codes.Ok, "")
+						if emptyish {
+							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
+						}
+						loopSpan.End()
+						if bestResp != nil {
+							bestResp.Release()
+						}
+						return r, nil
 					}
-					return r, nil
 				}
 
 				// Deterministic errors: client faults and execution reverts are the
@@ -670,7 +687,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
-					// Emptyish success: keep as best candidate and try more upstreams.
 					if bestResp != nil {
 						bestResp.Release()
 					}
