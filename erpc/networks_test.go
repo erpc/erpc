@@ -7804,7 +7804,10 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
-			nil,
+			&upstream.ScoringConfig{
+				ScoreGranularity: "method",
+				SwitchThreshold:  -1,
+			},
 			nil,
 		)
 
@@ -7844,7 +7847,6 @@ func TestNetwork_Forward(t *testing.T) {
 				Persist().
 				Post("/").
 				Filter(func(request *http.Request) bool {
-					// seek body in request without changing the original Body buffer
 					body := util.SafeReadBody(request)
 					return strings.Contains(body, method) && strings.Contains(request.Host, upstreamId)
 				}).
@@ -7855,7 +7857,6 @@ func TestNetwork_Forward(t *testing.T) {
 
 		upstream.ReorderUpstreams(upstreamsRegistry)
 
-		// Upstream A is faster for eth_call, Upstream B is faster for eth_traceTransaction, Upstream C is faster for eth_getLogs
 		mockRequests("eth_getLogs", "rpc1", 200*time.Millisecond)
 		mockRequests("eth_getLogs", "rpc2", 100*time.Millisecond)
 		mockRequests("eth_getLogs", "rpc3", 50*time.Millisecond)
@@ -7893,12 +7894,10 @@ func TestNetwork_Forward(t *testing.T) {
 						assert.NoError(t, err)
 					}
 				}(method)
-				// time.Sleep(1 * time.Millisecond)
 			}
 		}
 		wg.Wait()
 
-		// Stabilize EMA/confidence-weighted scores after heavy concurrent traffic
 		for i := 0; i < 5; i++ {
 			upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 			time.Sleep(100 * time.Millisecond)

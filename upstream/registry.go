@@ -542,7 +542,7 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 			u.rotationCounters[km.network] = make(map[string]uint64)
 		}
 		u.rotationCounters[km.network][km.method]++
-		offset := int(u.rotationCounters[km.network][km.method] % uint64(len(active)))
+		offset := int(u.rotationCounters[km.network][km.method] % uint64(len(active))) // #nosec G115
 		rotated := make([]*Upstream, len(active))
 		for i := range active {
 			rotated[i] = active[(i+offset)%len(active)]
@@ -666,7 +666,7 @@ func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, met
 		mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
 		latencies[i] = mt.ResponseQuantiles.GetQuantile(qn).Seconds()
 	}
-	peerMedian := medianPositive(latencies)
+	peerBest := minPositive(latencies)
 
 	penalties := make(map[string]float64, n)
 	for i, ups := range upsList {
@@ -681,8 +681,8 @@ func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, met
 			instant += errRate * *mul.ErrorRate
 		}
 
-		if peerMedian > 0 && latencies[i] > peerMedian {
-			latPenalty := (latencies[i] - peerMedian) / peerMedian
+		if peerBest > 0 && latencies[i] > peerBest {
+			latPenalty := (latencies[i] - peerBest) / peerBest
 			if mul.RespLatency != nil && *mul.RespLatency > 0 {
 				instant += latPenalty * *mul.RespLatency
 			}
@@ -1125,30 +1125,19 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 	}()
 }
 
-// median computes median of a slice (copying and sorting).
-func median(vals []float64) float64 {
-	if len(vals) == 0 {
-		return 0.0
-	}
-	cp := make([]float64, len(vals))
-	copy(cp, vals)
-	sort.Float64s(cp)
-	n := len(cp)
-	if n%2 == 1 {
-		return cp[n/2]
-	}
-	return (cp[n/2-1] + cp[n/2]) / 2.0
-}
-
-// medianPositive computes the median of strictly positive values.
-func medianPositive(vals []float64) float64 {
-	pos := make([]float64, 0, len(vals))
+func minPositive(vals []float64) float64 {
+	m := math.MaxFloat64
+	found := false
 	for _, v := range vals {
-		if v > 0 {
-			pos = append(pos, v)
+		if v > 0 && v < m {
+			m = v
+			found = true
 		}
 	}
-	return median(pos)
+	if !found {
+		return 0
+	}
+	return m
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {

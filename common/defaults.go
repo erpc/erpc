@@ -1142,7 +1142,8 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 	}
 	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
 	if p.ScoreGranularity == "" {
-		p.ScoreGranularity = "upstream"
+		// p.ScoreGranularity = "upstream"
+		p.ScoreGranularity = "method"
 	}
 	if p.ScorePenaltyDecayRate == 0 {
 		p.ScorePenaltyDecayRate = 0.85

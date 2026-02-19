@@ -230,11 +230,11 @@ func TestUpstreamsRegistry_MixedLatencyAndErrors(t *testing.T) {
 	simulateRequestsWithLatency(metricsTracker, ups[0], method, 10, 0.050)
 	simulateFailedRequests(metricsTracker, ups[0], method, 80)
 
-	// rpc2: slightly above-median latency but perfect reliability
-	simulateRequestsWithLatency(metricsTracker, ups[1], method, 100, 0.120)
+	// rpc2: marginally slower but perfect reliability
+	simulateRequestsWithLatency(metricsTracker, ups[1], method, 100, 0.065)
 
 	// rpc3: moderate speed, moderate errors
-	simulateRequestsWithLatency(metricsTracker, ups[2], method, 50, 0.100)
+	simulateRequestsWithLatency(metricsTracker, ups[2], method, 50, 0.060)
 	simulateFailedRequests(metricsTracker, ups[2], method, 20)
 
 	err := registry.RefreshUpstreamNetworkMethodScores()
@@ -243,8 +243,8 @@ func TestUpstreamsRegistry_MixedLatencyAndErrors(t *testing.T) {
 	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
 	require.NoError(t, err)
 
-	// rpc1: 89% errors (huge penalty), rpc2: 0% errors + mild latency above median,
-	// rpc3: 29% errors + near-median latency. rpc2 should beat rpc1 despite being slightly slower.
+	// rpc1: 89% errors (huge penalty), rpc2: 0% errors + mild latency above best,
+	// rpc3: 29% errors + near-best latency. rpc2 should beat rpc1 despite being slightly slower.
 	var i1, i2 int
 	for i, u := range ordered {
 		switch u.Id() {

@@ -545,6 +545,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					common.SetTraceSpanError(loopSpan, cause)
 					loopSpan.End()
+					if bestResp != nil {
+						bestResp.Release()
+					}
 					return nil, cause
 				}
 
@@ -618,6 +621,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						r.Release()
 					}
 					loopSpan.End()
+					if bestResp != nil {
+						bestResp.Release()
+					}
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 				}
 
@@ -650,6 +656,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						r.Release()
 					}
 					loopSpan.End()
+					if bestResp != nil {
+						bestResp.Release()
+					}
 					return nil, err
 				}
 
@@ -677,6 +686,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				cause := context.Cause(execSpanCtx)
 				if cause == nil {
 					cause = ctxErr
+				}
+				if bestResp != nil {
+					bestResp.Release()
 				}
 				return nil, cause
 			}
