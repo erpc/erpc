@@ -27,7 +27,7 @@
     },
     {
       "nl": "accept_most_common_on_dispute_when_two_match_and_one_differs_expect_the_matching_value",
-      "dsl": "MXP:3 ATSH:2 DBAMC U1:RS100A U2:RS100A U3:RS100B =\u003e RS100A"
+      "dsl": "MXP:3 ATSH:2 DBAMC U1:RS100A U2:RS100A U3:!RS100B =\u003e RS100A"
     },
     {
       "nl": "all_non_empty_results_different_under_returnerror_expect_dispute",

@@ -979,6 +979,13 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 	})
 }
 
+func TestGetLogsFromBlockReceiptsWriter_IsResultEmptyish_InvalidResultIsNotEmpty(t *testing.T) {
+	jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`{invalid-json`), nil)
+	w := newGetLogsFromBlockReceiptsWriter(nil, jrr, newGetLogsFilter(nil, nil))
+
+	assert.False(t, w.IsResultEmptyish())
+}
+
 func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing.T) {
 	r1 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[1]`), nil)
 	r2 := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[2,3]`), nil)

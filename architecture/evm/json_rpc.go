@@ -6,52 +6,6 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-// deepCopyParams creates a deep copy of a params slice to avoid race conditions.
-// It recursively copies slices and maps to ensure complete isolation.
-func deepCopyParams(params []interface{}) []interface{} {
-	if params == nil {
-		return nil
-	}
-
-	result := make([]interface{}, len(params))
-	for i, param := range params {
-		result[i] = deepCopyValue(param)
-	}
-	return result
-}
-
-// deepCopyValue recursively copies a value, handling slices and maps.
-func deepCopyValue(val interface{}) interface{} {
-	if val == nil {
-		return nil
-	}
-
-	switch v := val.(type) {
-	case map[string]interface{}:
-		// Deep copy map
-		newMap := make(map[string]interface{}, len(v))
-		for key, value := range v {
-			newMap[key] = deepCopyValue(value)
-		}
-		return newMap
-	case []interface{}:
-		// Deep copy slice
-		newSlice := make([]interface{}, len(v))
-		for i, item := range v {
-			newSlice[i] = deepCopyValue(item)
-		}
-		return newSlice
-	case string, bool, float64, int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64, float32:
-		// Primitive types are safe to copy by value
-		return v
-	default:
-		// For any other types (which shouldn't occur in JSON-RPC params),
-		// return as-is. This could be custom types that are immutable.
-		return v
-	}
-}
-
 // resolveBlockTagToHex resolves well-known tags to concrete hex numbers using highest known state.
 // IMPORTANT: Only translates tags we can accurately represent. "safe" and "pending" are passed
 // through unchanged as we don't have the necessary state information for accurate translation.
@@ -306,16 +260,54 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 
 	// Apply changes
 	if needsUpdate && !skipInterpolation {
-		// Deep copy snapshot only if we actually need to mutate
-		jrq.RLock()
-		workingParams := deepCopyParams(jrq.Params)
-		jrq.RUnlock()
+		// Apply copy-on-write updates while holding write lock to avoid races.
+		jrq.Lock()
+		origParams := jrq.Params
+		workingParams := make([]interface{}, len(origParams))
+		copy(workingParams, origParams)
+
+		indexToChanges := make(map[int][]change, len(changes))
+		var fallbackChanges []change
 		for _, ch := range changes {
-			if np, ok := replaceParamAtPath(workingParams, ch.path, ch.newVal); ok {
-				workingParams = np
+			if len(ch.path) == 0 {
+				continue
+			}
+			if idx, ok := ch.path[0].(int); ok && idx >= 0 && idx < len(workingParams) {
+				indexToChanges[idx] = append(indexToChanges[idx], ch)
+				continue
+			}
+			fallbackChanges = append(fallbackChanges, ch)
+		}
+
+		updated := false
+		for idx, grouped := range indexToChanges {
+			val := workingParams[idx]
+			valUpdated := false
+			for _, ch := range grouped {
+				next, changed := setByPath(val, ch.path[1:], ch.newVal)
+				if changed {
+					val = next
+					valUpdated = true
+				}
+			}
+			if valUpdated {
+				workingParams[idx] = val
+				updated = true
 			}
 		}
-		_ = jrq.SetParams(workingParams)
+
+		for _, ch := range fallbackChanges {
+			if np, ok := replaceParamAtPath(workingParams, ch.path, ch.newVal); ok {
+				workingParams = np
+				updated = true
+			}
+		}
+
+		if updated {
+			jrq.Params = workingParams
+			jrq.MarkModified()
+		}
+		jrq.Unlock()
 	}
 }
 

@@ -208,6 +208,7 @@ func (w *getLogsFromBlockReceiptsWriter) IsResultEmptyish() bool {
 		}
 		root := ast.NewRawConcurrentRead(util.B2Str(w.jrr.GetResultBytes()))
 		if err := root.LoadAll(); err != nil {
+			// Unknown/unparseable result should not be treated as empty.
 			w.empty = false
 			return
 		}
