@@ -58,16 +58,16 @@ jobs:
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       - name: Benchmark main branch
+        env:
+          BASE_REPO: ${{ github.repository }}
         run: |
-          # Step 1: Save current HEAD (which might be the PR code or just main code).
           PR_COMMIT=$(git rev-parse HEAD)
 
-          # Step 2: Checkout main and run benchmark on main
-          git fetch origin main
-          git checkout origin/main
+          git remote add upstream "https://github.com/${BASE_REPO}.git" 2>/dev/null || true
+          git fetch upstream main
+          git checkout upstream/main
           make bench > /tmp/benchmark-main.txt || touch /tmp/benchmark-main.txt
 
-          # Step 3: Checkout back to PR commit
           git checkout "$PR_COMMIT"
         shell: bash
 
