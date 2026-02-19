@@ -549,8 +549,9 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
 		}
 		u.sortedUpstreams[res.network][res.method] = res.sorted
-		u.emitMetrics(res.sorted, res.network, res.method, nil)
+		u.recordScores(res.sorted, res.network, res.method, nil)
 	}
+	u.emitRoutingPriority()
 	u.upstreamsMu.Unlock()
 	return nil
 }
@@ -634,8 +635,9 @@ func (u *UpstreamsRegistry) refreshScoreBased() error {
 			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
 		}
 		u.sortedUpstreams[res.network][res.method] = res.sorted
-		u.emitMetrics(res.sorted, res.network, res.method, res.penalties)
+		u.recordScores(res.sorted, res.network, res.method, res.penalties)
 	}
+	u.emitRoutingPriority()
 	u.upstreamsMu.Unlock()
 	return nil
 }
@@ -809,12 +811,14 @@ func (u *UpstreamsRegistry) filterCordoned(upsList []*Upstream, method string) [
 	return active
 }
 
-// emitMetrics emits routing priority (always) and score (detailed mode only).
-func (u *UpstreamsRegistry) emitMetrics(sorted []*Upstream, networkId, method string, penalties map[string]float64) {
-	if u.scoreMetricsMode == telemetry.ScoreModeNone {
-		return
-	}
+// recordScores updates internal score maps and optionally emits per-method
+// detail metrics (routing_priority + score_overall) when mode is "detailed".
+// The wildcard network ("*") is skipped for metric emission because its
+// sorted list spans all chains, producing inflated position numbers that
+// would overwrite the correct per-network values.
+func (u *UpstreamsRegistry) recordScores(sorted []*Upstream, networkId, method string, penalties map[string]float64) {
 	detailed := u.scoreMetricsMode == telemetry.ScoreModeDetailed
+	emitMetrics := detailed && networkId != "*"
 	for i, ups := range sorted {
 		upsId := ups.Id()
 		penalty := 0.0
@@ -831,22 +835,54 @@ func (u *UpstreamsRegistry) emitMetrics(sorted []*Upstream, networkId, method st
 		}
 		u.upstreamScores[upsId][networkId][method] = score
 
-		upLabel := "n/a"
-		catLabel := "n/a"
-		if detailed {
-			upLabel = upsId
-			catLabel = method
-		}
-
-		telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
-			u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel,
-		).Set(float64(i + 1))
-
-		if detailed {
+		if emitMetrics {
+			telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
+				u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, method,
+			).Set(float64(i + 1))
 			telemetry.MetricUpstreamScoreOverall.WithLabelValues(
-				u.prjId, ups.VendorName(), ups.NetworkLabel(), upLabel, catLabel,
+				u.prjId, ups.VendorName(), ups.NetworkLabel(), upsId, method,
 			).Set(score)
 		}
+	}
+}
+
+// emitRoutingPriority computes the average sort position of each upstream
+// across all method groups per network and emits it as the routing_priority
+// metric. Called once after all method results are committed so the value
+// is stable (no per-method flip-flop). Always emitted regardless of
+// scoreMetricsMode.
+func (u *UpstreamsRegistry) emitRoutingPriority() {
+	type accKey struct{ upsId, network string }
+	type accum struct {
+		ups   *Upstream
+		sum   float64
+		count int
+	}
+	agg := make(map[accKey]*accum)
+
+	for networkId, methods := range u.sortedUpstreams {
+		if networkId == "*" {
+			continue
+		}
+		for _, sorted := range methods {
+			for i, ups := range sorted {
+				k := accKey{ups.Id(), networkId}
+				a, ok := agg[k]
+				if !ok {
+					a = &accum{ups: ups}
+					agg[k] = a
+				}
+				a.sum += float64(i + 1)
+				a.count++
+			}
+		}
+	}
+
+	for _, a := range agg {
+		avgPos := a.sum / float64(a.count)
+		telemetry.MetricUpstreamRoutingPriority.WithLabelValues(
+			u.prjId, a.ups.VendorName(), a.ups.NetworkLabel(), a.ups.Id(), "n/a",
+		).Set(avgPos)
 	}
 }
 

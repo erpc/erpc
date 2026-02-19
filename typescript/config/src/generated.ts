@@ -384,12 +384,13 @@ export interface ProjectConfig {
   scoreGranularity?: string;
   /**
    * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
-   * Higher = smoother. At 0.95 with 30s ticks a penalty halves in ~7 minutes.
+   * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
    */
   scorePenaltyDecayRate?: number /* float64 */;
   /**
-   * ScoreSwitchHysteresis is the fraction by which a challenger must beat the current primary
-   * to trigger a switch (0..1). At 0.10 the challenger needs 10% lower penalty.
+   * ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
+   * must be at least this fraction lower than the current primary's penalty to
+   * trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
    */
   scoreSwitchHysteresis?: number /* float64 */;
   /**
