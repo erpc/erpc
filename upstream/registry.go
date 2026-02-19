@@ -271,7 +271,9 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 							Msg("upstreams became ready during grace period after providers terminal state")
 						return nil
 					}
-					return common.NewTaskFatal(common.NewErrNetworkNotSupported(u.prjId, networkId))
+					// Return a retryable error so the auto-retry loop can
+					// re-attempt when upstreams may have recovered.
+					return common.NewErrNetworkNotSupported(u.prjId, networkId)
 				}
 				// Default: initializing
 				return common.NewErrNetworkInitializing(u.prjId, networkId)
@@ -302,7 +304,9 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 							Msg("upstreams became ready during grace period after providers terminal state")
 						return nil
 					}
-					return common.NewTaskFatal(common.NewErrNetworkNotSupported(u.prjId, networkId))
+					// Return a retryable error so the auto-retry loop can
+					// re-attempt when upstreams may have recovered.
+					return common.NewErrNetworkNotSupported(u.prjId, networkId)
 				}
 				continue
 			}
