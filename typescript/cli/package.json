@@ -21,7 +21,7 @@
     "format": "biome format --write"
   },
   "devDependencies": {
-    "@types/node": "^22.19.7",
+    "@types/node": "^25.3.0",
     "typescript": "^5.9.3"
   },
   "files": [
