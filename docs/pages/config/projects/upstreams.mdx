@@ -353,28 +353,67 @@ Default values are only applied if the upstream doesn't have those values explic
   e.g. if an upstream.failsafe only has "timeout" policy, it will **NOT** get retry/circuitBreaker from upstreamDefaults (those will be disabled).
 </Callout>
 
-## Priority & selection mechanism
+## Priority & routing
 
-eRPC evaluates each upstream's performance using key metrics to decide the most suitable upstream for each request. These metrics include:
+eRPC automatically picks the best upstream for each request based on real-time performance. It tracks error rate, latency, throttling, and block lag for every upstream, computes a **score** (higher = better), and keeps the highest-scoring one as the "primary" while the others stay on standby.
 
-- **Total request failures**: Prioritizes upstreams with lower failure rates.
-- **Rate-limited requests**: Gives preference to upstreams with fewer rate-limited requests.
-- **P90 request latency**: Prioritizes upstreams with lower latency.
-- **Total requests served**: Favors upstreams that have served fewer requests to balance load.
-- **Block head lag**: Prefers upstreams with lower lag compared to the best-performing upstream.
-- **Finalization lag**: Prioritizes upstreams with lower finalization lag.
+### How it works
 
-Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window (`scoreMetricsWindowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
+1. Every few seconds eRPC computes a **score** for each upstream based on its recent performance (error rate, latency, throttling, block lag).
+2. Upstreams are sorted by score — the highest-scoring upstream becomes the **primary**.
+3. The primary is **sticky**: it stays primary until another upstream scores significantly higher (hysteresis) and a cooldown period has passed. This prevents constant flip-flopping.
+4. If the primary fails or is too slow for a particular request, the next upstream is tried automatically.
+
+### Config
+
+All routing settings live under the project level. The defaults work well for most setups — you only need to change them if you want to fine-tune switching behavior.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
-  # ...
   - id: main
-    # ...
-    scoreMetricsWindowSize: 1h
-    # ...
+    # Routing algorithm: "score-based" (default) or "round-robin".
+    # score-based: best upstream is used first (recommended).
+    # round-robin: rotate evenly across upstreams.
+    routingStrategy: score-based
+
+    # Whether to compute one score per upstream ("upstream", default) or
+    # a separate score for each RPC method ("method").
+    # "upstream" is simpler and recommended for most setups.
+    scoreGranularity: upstream
+
+    # How often to recalculate upstream scores.
+    # DEFAULT: 30s
+    scoreRefreshInterval: 30s
+
+    # Time window for collecting performance metrics (error rate, latency, etc.)
+    # DEFAULT: 10m
+    scoreMetricsWindowSize: 10m
+
+    # How much of the previous score is carried over each refresh tick (0..1).
+    # Higher = smoother/more stable scores, lower = faster reaction to changes.
+    # Use a negative value (e.g. -1) to disable smoothing (only latest metrics matter).
+    # DEFAULT: 0.95
+    scorePenaltyDecayRate: 0.95
+
+    # A challenger must score this fraction higher than the current primary
+    # to trigger a switch (0..1). e.g. 0.10 = must be 10% better.
+    # Use a negative value (e.g. -1) to disable stickiness (always pick the highest score).
+    # DEFAULT: 0.10
+    scoreSwitchHysteresis: 0.10
+
+    # Minimum time between primary switches.
+    # Use a negative value (e.g. -1) to disable the cooldown.
+    # DEFAULT: 2m
+    scoreMinSwitchInterval: 2m
+
+    # Controls prometheus metrics cardinality: "compact" (default), "detailed", or "none".
+    scoreMetricsMode: compact
+
+    upstreams:
+      - endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+        # ...
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -382,12 +421,24 @@ projects:
 import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  // ...
   projects: [
     {
       id: "main",
-      // ...
-      scoreMetricsWindowSize: "1h",
+      routingStrategy: "score-based",
+      scoreGranularity: "upstream",
+      scoreRefreshInterval: "30s",
+      scoreMetricsWindowSize: "10m",
+      scorePenaltyDecayRate: 0.95,
+      scoreSwitchHysteresis: 0.10,
+      scoreMinSwitchInterval: "2m",
+      scoreMetricsMode: "compact",
+
+      upstreams: [
+        {
+          endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+          // ...
+        },
+      ],
     },
   ],
 });
@@ -399,46 +450,60 @@ export default createConfig({
   The scoring mechanism only affects the order in which upstreams are tried. To fully disable an unreliable upstream, use the [Circuit Breaker](/config/failsafe#circuitbreaker-policy) failsafe policy at the upstream level.
 </Callout>
 
-### Customizing scores & priorities
+### Tuning tips
 
-Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
+- **Stable production setup** (default): leave everything as-is. The 10% hysteresis and 2-minute cooldown prevent unnecessary switches.
+- **Fast failover**: set `scoreSwitchHysteresis: -1` and `scoreMinSwitchInterval: -1` to always use the current best upstream immediately.
+- **Gradual adaptation**: increase `scorePenaltyDecayRate` (e.g. `0.98`) for smoother scores — performance changes take longer to take effect.
+- **Reactive adaptation**: decrease `scorePenaltyDecayRate` (e.g. `0.80`) to react faster to upstream degradation.
 
-<Callout type='info'>
-  For every value the higher the value, the more important it is. For example respLatency: 8 means you care about this more than errorRate: 4
-</Callout>
+### Customizing scores per upstream
+
+You can boost or reduce the score of specific upstreams using score multipliers.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
-upstreams:
-  # ...
-  - id: my-alchemy
-    # ...
-    routing:
-      # (OPTIONAL) The quantile to use for latency scoring. e.g. "70%" means to ignore 30% of the slowest requests.
-      # DEFAULT: 0.70
-      scoreLatencyQuantile: 0.70
+projects:
+  - id: main
+    upstreams:
+      - id: my-alchemy
+        endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+        routing:
+          # Ignore the slowest 30% of requests when measuring latency.
+          # DEFAULT: 0.70
+          scoreLatencyQuantile: 0.70
 
-      # (OPTIONAL) The score multipliers to give upstreams different priority.
-      scoreMultipliers:
-        - network: '*'  # Network(s) to apply these multipliers to (default: all networks)
-          method: '*'   # Method(s) where you want to apply these multipliers (default: all methods)
-          # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
-          finality:     # Finality states for this multiplier set (default: all finality states)
-            - finalized # Can be: "finalized", "unfinalized", "realtime", or "unknown"
-            - unfinalized
+          scoreMultipliers:
+            - network: '*'        # Apply to all networks (or e.g. "evm:1" for Ethereum only)
+              method: '*'         # Apply to all methods (or e.g. "eth_getLogs|eth_call")
 
-          # (OPTIONAL) Adjusts the overall score scale.
-          # DEFAULT: 1.0
-          overall: 1.0
-          
-          # (OPTIONAL) Default multiplier values:
-          respLatency: 8.0     # Penalize higher latency by increasing this value (according to scoreLatencyQuantile).
-          errorRate: 4.0       # Penalize higher error rates by increasing this value.
-          throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
-          blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.
-          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
-          finalizationLag: 1.0 # Penalize nodes lagging in finalization by increasing this value.
+              # "overall" boosts the score. Higher = higher score = more preferred.
+              # e.g. overall: 10 makes this upstream 10x more likely to stay primary.
+              # DEFAULT: 1.0
+              overall: 1.0
+
+              # Metric weights control how much each metric affects the score.
+              # Higher weight = that metric matters more = bigger score drop when it's bad.
+              errorRate: 4.0       # Penalize higher error rates by increasing this value.
+              respLatency: 8.0     # Penalize higher latency by increasing this value.
+              throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
+              blockHeadLag: 2.0    # Penalize block head lag by increasing this value.
+              finalizationLag: 1.0 # Penalize finalization lag by increasing this value.
+
+      # Prefer this cheaper upstream: overall: 10 boosts its score 10x
+      - id: my-cheap-node
+        endpoint: https://cheap-rpc.example.com
+        routing:
+          scoreMultipliers:
+            - overall: 10
+
+      # Fallback only: overall: 1 keeps the default score (no boost)
+      - id: my-expensive-node
+        endpoint: https://premium-rpc.example.com
+        routing:
+          scoreMultipliers:
+            - overall: 1
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -446,99 +511,50 @@ upstreams:
 import { createConfig } from "@erpc-cloud/config";
 
 export default createConfig({
-  upstreams: [
-    // ...
+  projects: [
     {
-      id: "my-alchemy",
-      // ...
-      routing: {
-        scoreMultipliers: [
-          {
-            network: "*", // Network(s) to apply these multipliers to (default: all networks)
-            method: "*", // Method(s) where you want to apply these multipliers (default: all methods)
-            // method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
-            finality: ["finalized", "unfinalized"], // Finality states for this multiplier set (default: all finality states)
-            // Can be: "finalized", "unfinalized", "realtime", or "unknown"
-
-            // (OPTIONAL) Adjusts the overall score scale.
-            // DEFAULT: 1.0
-            overall: 1.0,
-
-            // (OPTIONAL) Default multiplier values:
-            errorRate: 8.0,       // Penalize higher error rates by increasing this value.
-            respLatency: 4.0,      // Penalize higher latency by increasing this value.
-            totalRequests: 1.0,   // Give more weight to upstreams with fewer requests.
-            throttledRate: 3.0,   // Penalize higher throttled requests by increasing this value.
-            blockHeadLag: 2.0,    // Penalize nodes lagging in block head updates by increasing this value.
-            finalizationLag: 1.0, // Penalize nodes lagging in finalization by increasing this value.
+      id: "main",
+      upstreams: [
+        {
+          id: "my-alchemy",
+          endpoint: "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY",
+          routing: {
+            scoreLatencyQuantile: 0.70,
+            scoreMultipliers: [
+              {
+                network: "*",
+                method: "*",
+                overall: 1.0,       // Boosts score (higher = more preferred)
+                errorRate: 4.0,      // Penalize higher error rates by increasing this value.
+                respLatency: 8.0,
+                throttledRate: 3.0,
+                blockHeadLag: 2.0,
+                finalizationLag: 1.0,
+              },
+            ],
           },
-        ],
-      },
+        },
+        {
+          id: "my-cheap-node",
+          endpoint: "https://cheap-rpc.example.com",
+          routing: { scoreMultipliers: [{ overall: 10 }] },
+        },
+        {
+          id: "my-expensive-node",
+          endpoint: "https://premium-rpc.example.com",
+          routing: { scoreMultipliers: [{ overall: 1 }] },
+        },
+      ],
     },
   ],
 });
-
-```
-</Tabs.Tab>
-</Tabs>
-
-Example: To prioritize a less expensive (but slower) upstream, adjust the `overall` score multiplier as follows:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-upstreams:
-  # ...
-  - id: my-cheap-node
-    # ...
-    routing:
-      scoreMultipliers:
-        - overall: 10
-  - id: my-expensive-node
-    # ...
-    routing:
-      scoreMultipliers:
-        - overall: 1
-```
-</Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  upstreams: [
-    // ...
-    {
-      id: "my-cheap-node",
-      // ...
-      routing: {
-        scoreMultipliers: [
-          {
-            overall: 10,
-          },
-        ],
-      },
-    },
-    {
-      id: "my-expensive-node",
-      // ...
-      routing: {
-        scoreMultipliers: [
-          {
-            overall: 1,
-          },
-        ],
-      },
-    },
-  ],
-});
-
 ```
 </Tabs.Tab>
 </Tabs>
 
 <Callout type='info'>
-  A higher score means the upstream is tried first. If errors occur, other upstreams are attempted.
+  **`overall`** boosts the score — higher value = higher score = upstream is preferred.<br />
+  **Metric weights** (`errorRate`, `respLatency`, etc.) penalize bad performance — increase the value to penalize that metric more.
 </Callout>
 
 ## Upstream types

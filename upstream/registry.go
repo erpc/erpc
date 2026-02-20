@@ -700,6 +700,10 @@ func (u *UpstreamsRegistry) computePenalties(upsList []*Upstream, networkId, met
 			instant = 0
 		}
 
+		if mul.Overall != nil && *mul.Overall > 0 {
+			instant /= *mul.Overall
+		}
+
 		stored := u.getPenalty(upsId, networkId, metricsMethod)
 		if math.IsNaN(stored) || math.IsInf(stored, 0) {
 			stored = 0
