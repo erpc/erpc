@@ -96,9 +96,9 @@ func ParseBlockParameter(param interface{}) (blockNumber string, blockHash []byt
 		blockNumber = v
 	case float64:
 		// JSON numbers are parsed as float64
-		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
+		blockNumber = fmt.Sprintf("0x%x", uint64(v))
 	case int64:
-		blockNumber = fmt.Sprintf("0x%x", uint64(v)) // #nosec G115
+		blockNumber = fmt.Sprintf("0x%x", uint64(v))
 	case uint64:
 		blockNumber = fmt.Sprintf("0x%x", v)
 	case map[string]interface{}:

@@ -421,7 +421,7 @@ func doOpenAIRequestWithRetries(t *testing.T, apiKey string, jsonBody []byte) ([
 		}
 
 		// Exponential backoff with light jitter, capped
-		backoff := time.Second * time.Duration(1<<uint(attempt-1)) // #nosec G115
+		backoff := time.Second * time.Duration(1<<uint(attempt-1))
 		if backoff > 30*time.Second {
 			backoff = 30 * time.Second
 		}

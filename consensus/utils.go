@@ -113,7 +113,7 @@ func parseNumericValue(v interface{}) *big.Int {
 	case int64:
 		return big.NewInt(val)
 	case int:
-		return big.NewInt(int64(val)) // #nosec G115
+		return big.NewInt(int64(val))
 	}
 	return nil
 }

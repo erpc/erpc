@@ -210,8 +210,8 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 			case 3: // 20% are failures
 				tracker.RecordUpstreamRequest(upstream, method)
 				tracker.RecordUpstreamFailure(upstream, method, testErr)
-			case 4: // 20% are rate limited
-				tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
+			case 4: // 20% are remote rate limited
+				tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 			}
 
 			// Occasionally update block numbers

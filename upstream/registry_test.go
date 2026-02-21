@@ -186,9 +186,9 @@ func TestUpstreamsRegistry_ThrottlingOrdering(t *testing.T) {
 	simulateRequestsWithLatency(metricsTracker, ups[0], method, 10, 0.060)
 	simulateRequestsWithLatency(metricsTracker, ups[1], method, 10, 0.060)
 	simulateRequestsWithLatency(metricsTracker, ups[2], method, 10, 0.060)
-	simulateRequestsWithRateLimiting(metricsTracker, ups[0], method, 20, 10, 5)
-	simulateRequestsWithRateLimiting(metricsTracker, ups[1], method, 20, 1, 1)
-	simulateRequestsWithRateLimiting(metricsTracker, ups[2], method, 20, 0, 0)
+	simulateRequestsWithRateLimiting(metricsTracker, ups[0], method, 20, 5)
+	simulateRequestsWithRateLimiting(metricsTracker, ups[1], method, 20, 1)
+	simulateRequestsWithRateLimiting(metricsTracker, ups[2], method, 20, 0)
 
 	err := registry.RefreshUpstreamNetworkMethodScores()
 	require.NoError(t, err)
@@ -746,13 +746,10 @@ func simulateRequests(tracker *health.Tracker, upstream common.Upstream, method 
 	}
 }
 
-func simulateRequestsWithRateLimiting(tracker *health.Tracker, upstream common.Upstream, method string, total, selfLimited, remoteLimited int) {
+func simulateRequestsWithRateLimiting(tracker *health.Tracker, upstream common.Upstream, method string, total, remoteLimited int) {
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
-		if i < selfLimited {
-			tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
-		}
-		if i >= selfLimited && i < selfLimited+remoteLimited {
+		if i < remoteLimited {
 			tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 		}
 	}
