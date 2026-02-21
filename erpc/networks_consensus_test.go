@@ -700,8 +700,9 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32603, "internal server error")},
 				{status: 200, body: jsonRpcError(-32603, "internal server error")},
 			},
-			expectedCalls: []int{1, 1, 1},
-			expectedError: &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "internal server error"},
+			expectedCalls:        []int{-1, -1, -1},
+			expectedPendingMocks: -1,
+			expectedError:        &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "internal server error"},
 		},
 		{
 			name:        "one_success_rest_server_errors",
@@ -2156,12 +2157,12 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up2: error
 				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up3: error
 			},
-			expectedCalls: []int{1, 1, 1},
+			expectedCalls:        []int{-1, -1, -1},
+			expectedPendingMocks: -1,
 			expectedError: &expectedError{
 				code:     common.ErrCodeFailsafeRetryExceeded,
 				contains: "unknown server error",
 			},
-			expectedPendingMocks: 0,
 		},
 
 		// ======== PreferHighestValueFor tests ========

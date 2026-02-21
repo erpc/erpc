@@ -372,7 +372,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 	grpcSpan.SetAttributes(attribute.Bool("response_has_block", hasBlock))
 	if hasBlock {
 		grpcSpan.SetAttributes(
-			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)), // #nosec G115
+			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)),
 			attribute.String("response_block_hash", fmt.Sprintf("%x", grpcResp.Block.Hash)),
 		)
 	}
@@ -590,8 +590,8 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 
 	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs",
 		trace.WithAttributes(
-			attribute.Int64("from_block", int64(*fromBlock)), // #nosec G115
-			attribute.Int64("to_block", int64(*toBlock)),     // #nosec G115
+			attribute.Int64("from_block", int64(*fromBlock)),
+			attribute.Int64("to_block", int64(*toBlock)),
 		),
 	)
 	grpcResp, err := c.rpcClient.GetLogs(ctx, grpcReq)

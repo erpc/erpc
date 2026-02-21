@@ -72,7 +72,6 @@ func (t *Timer) ObserveDuration(isSuccess bool) {
 type TrackedMetrics struct {
 	ResponseQuantiles      *QuantileTracker `json:"responseQuantiles"`
 	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
-	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
 	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
 	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
 	MisbehaviorsTotal      atomic.Int64     `json:"misbehaviorsTotal"`
@@ -99,7 +98,7 @@ func (m *TrackedMetrics) ThrottledRate() float64 {
 	if reqs == 0 {
 		return 0
 	}
-	throttled := float64(m.RemoteRateLimitedTotal.Load()) + float64(m.SelfRateLimitedTotal.Load())
+	throttled := float64(m.RemoteRateLimitedTotal.Load())
 	return throttled / float64(reqs)
 }
 
@@ -115,7 +114,6 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 	return common.SonicCfg.Marshal(map[string]interface{}{
 		"responseQuantiles":      m.ResponseQuantiles,
 		"errorsTotal":            m.ErrorsTotal.Load(),
-		"selfRateLimitedTotal":   m.SelfRateLimitedTotal.Load(),
 		"remoteRateLimitedTotal": m.RemoteRateLimitedTotal.Load(),
 		"requestsTotal":          m.RequestsTotal.Load(),
 		"misbehaviorsTotal":      m.MisbehaviorsTotal.Load(),
@@ -135,7 +133,6 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 func (m *TrackedMetrics) Reset() {
 	m.ErrorsTotal.Store(0)
 	m.RequestsTotal.Store(0)
-	m.SelfRateLimitedTotal.Store(0)
 	m.RemoteRateLimitedTotal.Store(0)
 	m.MisbehaviorsTotal.Store(0)
 	// DO NOT reset m.BlockHeadLag - it's a state metric, not cumulative
@@ -523,13 +520,21 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 }
 
 func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
-	// We want to ignore errors that should not affect the scores:
+	// Ignore errors that do not reflect upstream quality:
+	// - ExecutionException: valid blockchain state (e.g. revert)
+	// - ExcludedByPolicy / RequestSkipped / Shadowing: internal routing decisions
+	// - Unsupported: capability, not quality
+	// - CapacityExceeded: remote 429, already penalized via ThrottledRate
+	// - ClientSideException: user sent a bad request, not upstream's fault
 	if common.HasErrorCode(
 		err,
 		common.ErrCodeEndpointExecutionException,
 		common.ErrCodeUpstreamExcludedByPolicy,
 		common.ErrCodeUpstreamRequestSkipped,
 		common.ErrCodeUpstreamShadowing,
+		common.ErrCodeEndpointUnsupported,
+		common.ErrCodeEndpointCapacityExceeded,
+		common.ErrCodeEndpointClientSideException,
 	) {
 		return
 	}
@@ -548,16 +553,6 @@ func (t *Tracker) RecordUpstreamMisbehavior(up common.Upstream, method string) {
 	}
 	for _, nk := range t.getNtwKeys(up, method) {
 		t.getNtwMetrics(nk).MisbehaviorsTotal.Add(1)
-	}
-}
-
-func (t *Tracker) RecordUpstreamSelfRateLimited(up common.Upstream, method string, req *common.NormalizedRequest) {
-	// Keep in-memory counters for health calculations, but do not emit per-upstream Prometheus metrics anymore
-	for _, k := range t.getUpsKeys(up, method) {
-		t.getUpsMetrics(k).SelfRateLimitedTotal.Add(1)
-	}
-	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).SelfRateLimitedTotal.Add(1)
 	}
 }
 

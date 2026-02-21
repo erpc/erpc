@@ -400,11 +400,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			}
 			if !allowed {
 				lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit exceeded")
-				u.metricsTracker.RecordUpstreamSelfRateLimited(
-					u,
-					method,
-					nrq,
-				)
 				err = common.NewErrUpstreamRateLimitRuleExceeded(
 					cfg.Id,
 					cfg.RateLimitBudget,

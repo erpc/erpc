@@ -152,80 +152,12 @@ func BenchmarkMetricUpstreamRequestDuration_Cached(b *testing.B) {
 	})
 }
 
-func prewarmPerCallSelfRateLimited(combos []labelCombo, project string) {
-	for _, c := range combos {
-		telemetry.MetricRateLimitsTotal.
-			WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "budget-x", "upstream", "auth:0", "upstream").
-			Inc()
-	}
-}
-
 func prewarmPerCallRemoteRateLimited(combos []labelCombo, project string) {
 	for _, c := range combos {
 		telemetry.MetricRateLimitsTotal.
 			WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "<remote>", "remote", "", "upstream").
 			Inc()
 	}
-}
-
-func BenchmarkUpstreamSelfRateLimited_PerCall(b *testing.B) {
-	initBenchMetrics(b)
-	project := "bench"
-	upstreams := 200
-	methods := []string{"eth_getBalance", "eth_call", "eth_getLogs", "eth_getBlockByNumber", "eth_getTransactionReceipt"}
-	users := []string{"u1", "u2", "u3"}
-	combos, _ := buildCombos(project, upstreams, methods, users)
-	prewarmPerCallSelfRateLimited(combos, project)
-
-	b.ReportAllocs()
-	b.SetParallelism(runtime.GOMAXPROCS(0))
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		local := rand.New(rand.NewSource(time.Now().UnixNano()))
-		idx := local.Intn(len(combos))
-		for pb.Next() {
-			c := combos[idx]
-			telemetry.MetricRateLimitsTotal.
-				WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "budget-x", "upstream", "auth:0", "upstream").
-				Inc()
-			idx++
-			if idx >= len(combos) {
-				idx = 0
-			}
-		}
-	})
-}
-
-func BenchmarkUpstreamSelfRateLimited_Cached(b *testing.B) {
-	initBenchMetrics(b)
-	project := "bench"
-	upstreams := 200
-	methods := []string{"eth_getBalance", "eth_call", "eth_getLogs", "eth_getBlockByNumber", "eth_getTransactionReceipt"}
-	users := []string{"u1", "u2", "u3"}
-	combos, _ := buildCombos(project, upstreams, methods, users)
-
-	lg := zerolog.New(io.Discard)
-	tk := NewTracker(&lg, project, time.Minute)
-	// Prewarm by exercising the public API; upstream self counter handle was removed
-	for _, c := range combos {
-		tk.RecordUpstreamSelfRateLimited(c.up, c.method, nil)
-	}
-
-	b.ReportAllocs()
-	b.SetParallelism(runtime.GOMAXPROCS(0))
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		local := rand.New(rand.NewSource(time.Now().UnixNano()))
-		idx := local.Intn(len(combos))
-		for pb.Next() {
-			c := combos[idx]
-			tk.RecordUpstreamSelfRateLimited(c.up, c.method, nil)
-			idx++
-			if idx >= len(combos) {
-				idx = 0
-			}
-		}
-	})
 }
 
 func BenchmarkUpstreamRemoteRateLimited_PerCall(b *testing.B) {

@@ -79,12 +79,17 @@ func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor flo
 
 	prev = rule.Config.MaxCount
 	next = uint32(math.Ceil(float64(prev) * factor))
-
-	if minBudget > 0 && next < uint32(minBudget) {
-		next = uint32(minBudget)
+	if minBudget > 0 {
+		minClamped := uint32(max(0, minBudget))
+		if next < minClamped {
+			next = minClamped
+		}
 	}
-	if maxBudget > 0 && next > uint32(maxBudget) {
-		next = uint32(maxBudget)
+	if maxBudget > 0 {
+		maxClamped := uint32(max(0, maxBudget))
+		if next > maxClamped {
+			next = maxClamped
+		}
 	}
 
 	if next == prev {
