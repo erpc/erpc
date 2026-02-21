@@ -37,7 +37,7 @@ func TestGetSortedUpstreams_WildcardMapInitialization_NoPanic(t *testing.T) {
 	}
 	tracker := health.NewTracker(&lg, "test-project", time.Minute)
 
-	reg := NewUpstreamsRegistry(ctx, &lg, "test-project", nil, nil, nil, vr, pr, ppr, tracker, 0, nil)
+	reg := NewUpstreamsRegistry(ctx, &lg, "test-project", nil, nil, nil, vr, pr, ppr, tracker, 0, nil, nil)
 
 	// Create a minimal real upstream (no HTTP) and register it
 	u := &Upstream{

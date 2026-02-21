@@ -29,6 +29,11 @@ type FailsafeExecutor struct {
 	executor               failsafe.Executor[*common.NormalizedResponse]
 	timeout                *time.Duration
 	consensusPolicyEnabled bool
+	// emptyResultAccept lists methods for which the first emptyish result
+	// short-circuits the upstream loop. Without this the loop tries every
+	// upstream before returning to failsafe, even when the retry policy
+	// would accept the empty result anyway (wasting time on slow upstreams).
+	emptyResultAccept []string
 }
 
 type Network struct {
@@ -336,12 +341,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	if common.IsTracingDetailed {
-		names := make([]string, len(upsList))
+		entries := make([]string, len(upsList))
 		for i, u := range upsList {
-			names[i] = u.Id()
+			s := n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)
+			entries[i] = fmt.Sprintf("%s(%.4f)", u.Id(), s)
 		}
 		upstreamSpan.SetAttributes(
-			attribute.String("upstreams.list", strings.Join(names, ", ")),
+			attribute.String("upstreams.sorted", strings.Join(entries, ", ")),
 		)
 	}
 	upstreamSpan.End()
@@ -574,6 +580,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				attempted[u.Id()] = struct{}{}
 
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
+				if common.IsTracingDetailed {
+					loopSpan.SetAttributes(
+						attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
+					)
+				}
 				if eu, ok := u.(common.EvmUpstream); ok {
 					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 						loopSpan.SetAttributes(
@@ -592,7 +603,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				// Pre-forward: block availability gating → skip to next upstream
 				if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
-					n.recordBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
+					n.handleBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
 					loopSpan.End()
 					continue
 				}
@@ -632,20 +643,32 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.WithRequest(effectiveReq)
 				}
 
-				// Happy path: non-empty success → return immediately.
-				// Emptyish results continue to the next upstream so that all
-				// upstreams are tried within a single execution round before
-				// failsafe applies emptyResultDelay between rounds.
-				if err == nil && r != nil && !r.IsObjectNull() && !r.IsResultEmptyish() {
-					r.SetAttempts(exec.Attempts())
-					r.SetRetries(exec.Retries())
-					r.SetHedges(exec.Hedges())
-					loopSpan.SetStatus(codes.Ok, "")
-					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
+				// Return immediately when the result is usable:
+				//  - Non-empty success always qualifies.
+				//  - Emptyish success qualifies when the method is in
+				//    emptyResultAccept and consensus is not required,
+				//    because failsafe would accept the empty result anyway
+				//    so trying more upstreams just wastes time on slow ones.
+				//  - Otherwise emptyish results continue to the next upstream.
+				if err == nil && r != nil && !r.IsObjectNull() {
+					emptyish := r.IsResultEmptyish()
+					acceptEmpty := !emptyish ||
+						(!failsafeExecutor.consensusPolicyEnabled &&
+							slices.Contains(failsafeExecutor.emptyResultAccept, method))
+					if acceptEmpty {
+						r.SetAttempts(exec.Attempts())
+						r.SetRetries(exec.Retries())
+						r.SetHedges(exec.Hedges())
+						loopSpan.SetStatus(codes.Ok, "")
+						if emptyish {
+							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
+						}
+						loopSpan.End()
+						if bestResp != nil {
+							bestResp.Release()
+						}
+						return r, nil
 					}
-					return r, nil
 				}
 
 				// Deterministic errors: client faults and execution reverts are the
@@ -670,7 +693,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
-					// Emptyish success: keep as best candidate and try more upstreams.
 					if bestResp != nil {
 						bestResp.Release()
 					}
@@ -1040,8 +1062,9 @@ func (n *Network) resolveEnforceBlockAvailability(method string) bool {
 	return true
 }
 
-// recordBlockSkip handles telemetry and state when a block availability check causes an upstream to be skipped.
-func (n *Network) recordBlockSkip(
+// handleBlockSkip records telemetry when a block availability check causes an upstream to be skipped,
+// and triggers an async state poller refresh for retryable cases so subsequent retries see fresh block numbers.
+func (n *Network) handleBlockSkip(
 	ctx context.Context,
 	span trace.Span,
 	ulg *zerolog.Logger,
@@ -1069,6 +1092,24 @@ func (n *Network) recordBlockSkip(
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
 	}
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
+
+	// When the block is slightly ahead (retryable), trigger an async poll so the
+	// state poller fetches the latest block number before the next retry fires.
+	// Without this the retry loop sleeps for blockUnavailableDelay but the cached
+	// latestBlock stays stale until the background ticker fires (often 10s+).
+	// PollLatestBlockNumber respects its own debounce interval so concurrent
+	// triggers from multiple upstreams/requests are coalesced safely.
+	if isRetryable {
+		if eu, ok := u.(common.EvmUpstream); ok {
+			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+				go func() {
+					pollCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					_, _ = sp.PollLatestBlockNumber(pollCtx)
+				}()
+			}
+		}
+	}
 }
 
 // recordHedgeDiscard handles telemetry when a hedged request is discarded because another hedge won.

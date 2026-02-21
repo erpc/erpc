@@ -1136,6 +1136,21 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
 	}
+	p.RoutingStrategy = strings.ToLower(strings.TrimSpace(p.RoutingStrategy))
+	if p.RoutingStrategy == "" {
+		p.RoutingStrategy = "score-based"
+	}
+	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
+	if p.ScoreGranularity == "" {
+		p.ScoreGranularity = "upstream"
+	}
+	// Numeric scoring defaults are intentionally NOT set here.
+	// ScoringConfig.withDefaults() is the single source of truth so that
+	// explicit zero values from the user (e.g. scoreSwitchHysteresis: 0)
+	// are not silently overridden. Use negative values to disable:
+	//   scorePenaltyDecayRate: -1   → no EMA memory (instant penalty only)
+	//   scoreSwitchHysteresis: -1   → no stickiness
+	//   scoreMinSwitchInterval: -1  → no cooldown
 	// Default score metrics mode to compact when not provided
 	if strings.TrimSpace(p.ScoreMetricsMode) == "" {
 		p.ScoreMetricsMode = "compact"

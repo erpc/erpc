@@ -260,13 +260,6 @@ func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) error {
 	return r.parseID()
 }
 
-// largeResponseThreshold is the size above which we skip the buffer pool
-// and let parsed sub-slices own the backing array directly. This avoids
-// copying the entire result for large responses (e.g. debug_traceTransaction).
-// Below this threshold we copy the fields and return the buffer to the pool
-// for reuse, which reduces GC pressure for the common small-response case.
-const largeResponseThreshold = 64 * 1024 // 64KB
-
 func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reader, expectedSize int) error {
 	if len(ctx) > 0 {
 		_, span := StartDetailSpan(ctx[0], "JsonRpcResponse.ParseFromStream")
@@ -285,66 +278,37 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		Error  json.RawMessage `json:"error"`
 	}
 
-	// For large responses, skip the pool and let sub-slices own the buffer.
-	// Sonic's Unmarshal sets RawMessage fields as sub-slices of the input,
-	// so we can assign them directly without copying. The pool buffer becomes
-	// owned memory and is collected when the response is freed.
-	//
-	// For small responses, copy the fields and return the buffer to the pool.
-	isLarge := len(data) >= largeResponseThreshold
+	// Return buffer after we're done parsing and copying what we need
+	if returnBuf != nil {
+		defer returnBuf()
+	}
 
+	// Use Sonic's Unmarshal which works directly with bytes
 	if err := SonicCfg.Unmarshal(data, &temp); err != nil {
-		if isLarge {
-			// Large: keep the buffer, assign data directly
-			r.resultMu.Lock()
-			r.result = data
-			r.resultMu.Unlock()
-		} else {
-			dataCopy := make([]byte, len(data))
-			copy(dataCopy, data)
-			r.resultMu.Lock()
-			r.result = dataCopy
-			r.resultMu.Unlock()
-			if returnBuf != nil {
-				returnBuf()
-			}
-		}
+		// Must copy data before storing since we're returning the buffer
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+		r.resultMu.Lock()
+		r.result = dataCopy
+		r.resultMu.Unlock()
 		return err
 	}
 
-	if isLarge {
-		// Large response: assign sub-slices directly (zero-copy).
-		// The pool buffer is intentionally NOT returned — it stays alive
-		// as long as r.result (or r.idBytes) references it.
-		if len(temp.ID) > 0 {
-			r.idMu.Lock()
-			r.idBytes = temp.ID
-			r.idMu.Unlock()
-		}
-		if len(temp.Result) > 0 {
-			r.resultMu.Lock()
-			r.result = temp.Result
-			r.resultMu.Unlock()
-		}
-	} else {
-		// Small response: copy fields and return buffer to pool for reuse.
-		if returnBuf != nil {
-			defer returnBuf()
-		}
-		if len(temp.ID) > 0 {
-			idCopy := make([]byte, len(temp.ID))
-			copy(idCopy, temp.ID)
-			r.idMu.Lock()
-			r.idBytes = idCopy
-			r.idMu.Unlock()
-		}
-		if len(temp.Result) > 0 {
-			resultCopy := make([]byte, len(temp.Result))
-			copy(resultCopy, temp.Result)
-			r.resultMu.Lock()
-			r.result = resultCopy
-			r.resultMu.Unlock()
-		}
+	// Copy parsed bytes since we're returning the buffer
+	if len(temp.ID) > 0 {
+		idCopy := make([]byte, len(temp.ID))
+		copy(idCopy, temp.ID)
+		r.idMu.Lock()
+		r.idBytes = idCopy
+		r.idMu.Unlock()
+	}
+
+	if len(temp.Result) > 0 {
+		resultCopy := make([]byte, len(temp.Result))
+		copy(resultCopy, temp.Result)
+		r.resultMu.Lock()
+		r.result = resultCopy
+		r.resultMu.Unlock()
 	}
 
 	if len(temp.Error) > 0 {
@@ -766,68 +730,7 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		clone.canonicalHashWithIgnored.Store(defaultCanonicalHashPlaceholder, cached)
 	}
 
-	// Only copy resultWriter if we didn't materialize the result above
-	if clone.result == nil && r.resultWriter != nil {
-		clone.resultWriter = r.resultWriter
-	}
-
 	return clone, nil
-}
-
-// CloneShallow creates a new JsonRpcResponse that shares the result and error
-// byte slices with the original instead of deep-copying them. This is safe
-// when the original's result bytes are treated as immutable (the common case
-// after parsing). Each clone gets its own idBytes since SetID() is typically
-// called afterward to stamp the correct request ID.
-// Used by the multiplexer to avoid duplicating large result payloads.
-func (r *JsonRpcResponse) CloneShallow() *JsonRpcResponse {
-	if r == nil {
-		return nil
-	}
-
-	r.idMu.RLock()
-	defer r.idMu.RUnlock()
-	r.errMu.RLock()
-	defer r.errMu.RUnlock()
-	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
-
-	clone := &JsonRpcResponse{
-		id:    r.id,
-		Error: r.Error,
-	}
-
-	// Deep copy only idBytes since SetID() will overwrite it
-	if r.idBytes != nil {
-		clone.idBytes = make([]byte, len(r.idBytes))
-		copy(clone.idBytes, r.idBytes)
-	}
-
-	// Share errBytes and result — they are immutable after parsing.
-	// Each clone holds its own Go slice header pointing to the same
-	// backing array. Free() on one clone nils its own field without
-	// affecting others.
-	clone.errBytes = r.errBytes
-	clone.result = r.result
-
-	// Never share resultWriter: it has stateful release semantics
-	// (e.g. GetLogsMultiResponseWriter frees sub-responses on Release).
-	// If both original and clone call Free(), the writer gets double-
-	// released. Instead, materialize the writer's content when result
-	// bytes aren't available.
-	if clone.result == nil && r.resultWriter != nil {
-		var buf bytes.Buffer
-		if _, err := r.resultWriter.WriteTo(&buf, false); err == nil {
-			clone.result = buf.Bytes()
-		}
-	}
-
-	// Copy canonical hash if available
-	if cached, ok := r.canonicalHashWithIgnored.Load(defaultCanonicalHashPlaceholder); ok {
-		clone.canonicalHashWithIgnored.Store(defaultCanonicalHashPlaceholder, cached)
-	}
-
-	return clone
 }
 
 func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {

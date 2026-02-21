@@ -121,6 +121,13 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.proxyPoolRegistry,
 		metricsTracker,
 		scoreRefreshInterval,
+		&upstream.ScoringConfig{
+			RoutingStrategy:   prjCfg.RoutingStrategy,
+			ScoreGranularity:  prjCfg.ScoreGranularity,
+			PenaltyDecayRate:  prjCfg.ScorePenaltyDecayRate,
+			SwitchHysteresis:  prjCfg.ScoreSwitchHysteresis,
+			MinSwitchInterval: prjCfg.ScoreMinSwitchInterval.Duration(),
+		},
 		func(ups *upstream.Upstream) error {
 			ntwId := ups.NetworkId()
 			if ntwId == "" {

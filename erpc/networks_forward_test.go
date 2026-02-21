@@ -63,7 +63,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx, logger, "testProject",
 			[]*common.UpstreamConfig{up1},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil,
 		)
 		upsReg.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -146,7 +146,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			Evm:           &common.EvmUpstreamConfig{ChainId: 123},
 		}
 
-		upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, logger, "testProject", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
@@ -266,6 +266,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 
@@ -446,6 +447,7 @@ func TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 

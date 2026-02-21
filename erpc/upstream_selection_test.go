@@ -839,6 +839,7 @@ func setupTestNetworkWithConfig(t *testing.T, ctx context.Context, upstreamConfi
 		metricsTracker,
 		1*time.Second,
 		nil,
+		nil,
 	)
 
 	networkConfig := &common.NetworkConfig{

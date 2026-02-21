@@ -402,6 +402,24 @@ type ProjectConfig struct {
 	RateLimitBudget        string            `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	ScoreMetricsWindowSize Duration          `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
 	ScoreRefreshInterval   Duration          `yaml:"scoreRefreshInterval,omitempty" json:"scoreRefreshInterval" tstype:"Duration"`
+	// RoutingStrategy selects the upstream ordering algorithm.
+	// "score-based" (default): penalty-based sticky routing.
+	// "round-robin": time-rotating equal distribution across upstreams.
+	RoutingStrategy string `yaml:"routingStrategy,omitempty" json:"routingStrategy"`
+	// ScoreGranularity controls whether penalties are computed per-upstream or per-method.
+	// "upstream" (default): one penalty across all methods using aggregate metrics.
+	// "method": separate penalty per (upstream, method) pair.
+	ScoreGranularity string `yaml:"scoreGranularity,omitempty" json:"scoreGranularity"`
+	// ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
+	// Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+	// Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
+	ScorePenaltyDecayRate float64 `yaml:"scorePenaltyDecayRate,omitempty" json:"scorePenaltyDecayRate"`
+	// ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
+	// must be at least this fraction lower than the current primary's penalty to
+	// trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
+	ScoreSwitchHysteresis float64 `yaml:"scoreSwitchHysteresis,omitempty" json:"scoreSwitchHysteresis"`
+	// ScoreMinSwitchInterval is the cooldown between primary upstream switches.
+	ScoreMinSwitchInterval Duration `yaml:"scoreMinSwitchInterval,omitempty" json:"scoreMinSwitchInterval" tstype:"Duration"`
 	// ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
 	// Allowed values:
 	// - "compact": emit compact series by setting upstream and category labels to 'n/a'

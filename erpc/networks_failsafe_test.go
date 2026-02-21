@@ -760,6 +760,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 		metricsTracker,
 		time.Second,
 		nil,
+		nil,
 	)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -835,6 +836,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 		nil,
 		metricsTracker,
 		time.Second,
+		nil,
 		nil,
 	)
 

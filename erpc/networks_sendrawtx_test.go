@@ -2260,6 +2260,7 @@ func setupSendRawTxNetwork(t *testing.T, ctx context.Context, upstreamConfigs []
 		metricsTracker,
 		1*time.Second,
 		nil,
+		nil,
 	)
 
 	network, err := NewNetwork(

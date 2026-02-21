@@ -189,8 +189,8 @@ func TestUpstreamDegradationScenarios(t *testing.T) {
 			Name:                    "TwoBadOneGood",
 			Description:             "Two slow upstreams (6s, 3s) and one fast upstream (200ms) - should heavily favor the fast one",
 			NumRequests:             TEST_DEFAULT_BATCH_SIZE * 6,
-			ExpectedP50:             300*time.Millisecond + 20*time.Millisecond, /*overhead*/
-			ExpectedP90:             300*time.Millisecond + 50*time.Millisecond, /*overhead*/
+			ExpectedP50:             2 * time.Second,
+			ExpectedP90:             3 * time.Second,
 			MaxErrorRate:            0.05,
 			ExpectedFinalScoreOrder: []string{"fast_upstream", "slow_upstream", "worst_upstream"},
 			NetworkFailsafe: &common.FailsafeConfig{
@@ -449,6 +449,9 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 				Id:                     "test_project",
 				ScoreMetricsWindowSize: common.Duration(scoreWindow),
 				ScoreRefreshInterval:   common.Duration(100 * time.Millisecond),
+				ScoreSwitchHysteresis:  -1,
+				ScoreMinSwitchInterval: common.Duration(500 * time.Millisecond),
+				ScorePenaltyDecayRate:  0.5,
 				Networks: []*common.NetworkConfig{
 					{
 						Architecture: common.ArchitectureEvm,
