@@ -1,7 +1,6 @@
 package upstream
 
 import (
-	"math"
 	"sync"
 	"time"
 
@@ -19,13 +18,12 @@ type RateLimitAutoTuner struct {
 	decreaseFactor     float64
 	minBudget          int
 	maxBudget          int
-	mu                 sync.RWMutex
+	mu                 sync.Mutex
 }
 
 type ErrorCounter struct {
 	totalCount int
 	errorCount int
-	lastSeen   time.Time
 }
 
 func NewRateLimitAutoTuner(
@@ -39,6 +37,7 @@ func NewRateLimitAutoTuner(
 	maxBudget int,
 ) *RateLimitAutoTuner {
 	return &RateLimitAutoTuner{
+		logger:             logger,
 		budget:             budget,
 		errorCounts:        make(map[string]*ErrorCounter),
 		lastAdjustments:    make(map[string]time.Time),
@@ -55,64 +54,89 @@ func (arl *RateLimitAutoTuner) RecordSuccess(method string) {
 	arl.mu.Lock()
 	defer arl.mu.Unlock()
 
-	if _, exists := arl.errorCounts[method]; !exists {
-		arl.errorCounts[method] = &ErrorCounter{}
-	}
-
-	arl.errorCounts[method].totalCount++
+	arl.getOrCreateCounter(method).totalCount++
+	arl.maybeAdjust(method)
 }
 
 func (arl *RateLimitAutoTuner) RecordError(method string) {
 	arl.mu.Lock()
 	defer arl.mu.Unlock()
 
-	if _, exists := arl.errorCounts[method]; !exists {
-		arl.errorCounts[method] = &ErrorCounter{}
-	}
-
-	arl.errorCounts[method].totalCount++
-	arl.errorCounts[method].errorCount++
-	arl.errorCounts[method].lastSeen = time.Now()
-
-	arl.adjustBudget(method)
+	c := arl.getOrCreateCounter(method)
+	c.totalCount++
+	c.errorCount++
+	arl.maybeAdjust(method)
 }
 
-func (arl *RateLimitAutoTuner) adjustBudget(method string) {
-	lastAdjustment, exists := arl.lastAdjustments[method]
-	if !exists || time.Since(lastAdjustment) >= arl.adjustmentPeriod {
-		rules, err := arl.budget.GetRulesByMethod(method)
-		if err != nil {
-			arl.logger.Warn().Err(err).Msgf("failed to get rules for method %s", method)
-			return
+func (arl *RateLimitAutoTuner) getOrCreateCounter(method string) *ErrorCounter {
+	if c, exists := arl.errorCounts[method]; exists {
+		return c
+	}
+	c := &ErrorCounter{}
+	arl.errorCounts[method] = c
+	return c
+}
+
+// maybeAdjust checks whether enough time has elapsed since the last adjustment
+// for the given method and, if so, evaluates the error rate to scale the budget
+// up or down. Must be called while arl.mu is held.
+func (arl *RateLimitAutoTuner) maybeAdjust(method string) {
+	lastAdj, exists := arl.lastAdjustments[method]
+	if exists && time.Since(lastAdj) < arl.adjustmentPeriod {
+		return
+	}
+
+	c := arl.errorCounts[method]
+	ttc := c.totalCount
+	erc := c.errorCount
+
+	// Reset counters for next window regardless of whether we adjust.
+	arl.lastAdjustments[method] = time.Now()
+	c.totalCount = 0
+	c.errorCount = 0
+
+	if ttc < 10 {
+		return
+	}
+
+	errorRate := float64(erc) / float64(ttc)
+
+	var direction string
+	if errorRate > arl.errorRateThreshold {
+		direction = "decrease"
+	} else if errorRate == 0 {
+		direction = "increase"
+	} else {
+		return
+	}
+
+	rules, err := arl.budget.GetRulesByMethod(method)
+	if err != nil {
+		arl.logger.Warn().Err(err).Str("method", method).Msg("auto-tuner: failed to get rules")
+		return
+	}
+
+	for _, rule := range rules {
+		var factor float64
+		if direction == "decrease" {
+			factor = arl.decreaseFactor
+		} else {
+			factor = arl.increaseFactor
 		}
-		for _, rule := range rules {
-			currentMax := rule.Config.MaxCount
-			erc := arl.errorCounts[method].errorCount
-			ttc := arl.errorCounts[method].totalCount
 
-			if ttc < 10 {
-				continue
-			}
-
-			errorRate := float64(erc) / float64(ttc)
-
-			var newMaxCount uint32
-			if errorRate > arl.errorRateThreshold {
-				newMaxCount = uint32(math.Ceil(float64(currentMax) * arl.decreaseFactor))
-			} else if errorRate == 0 {
-				newMaxCount = uint32(math.Ceil(float64(currentMax) * arl.increaseFactor))
-			} else {
-				continue
-			}
-
-			err := arl.budget.AdjustBudget(rule, newMaxCount)
-			if err != nil {
-				arl.logger.Warn().Err(err).Msgf("failed to adjust budget for method %s", method)
-			}
+		prev, next, changed := arl.budget.AdjustBudgetByFactor(rule, factor, arl.minBudget, arl.maxBudget)
+		if !changed {
+			continue
 		}
 
-		arl.lastAdjustments[method] = time.Now()
-		arl.errorCounts[method].errorCount = 0
-		arl.errorCounts[method].totalCount = 0
+		arl.logger.Info().
+			Str("method", rule.Config.Method).
+			Str("triggeredBy", method).
+			Uint32("from", prev).
+			Uint32("to", next).
+			Float64("errorRate", errorRate).
+			Int("samples", ttc).
+			Str("direction", direction).
+			Msg("auto-tuner: adjusting rate limit budget")
 	}
 }

@@ -865,15 +865,18 @@ func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 		return nil
 	}
 
-	// First check if this is a gRPC status error
-	st, ok := status.FromError(err)
-	if !ok {
-		// Not a gRPC error, return as transport failure
-		return common.NewErrEndpointTransportFailure(c.Url, err)
+	// status.FromError only checks the top-level error for GRPCStatus().
+	// Handler methods wrap gRPC errors with fmt.Errorf, so we walk the
+	// Unwrap chain to find the original gRPC status.
+	current := err
+	for current != nil {
+		if st, ok := status.FromError(current); ok {
+			return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
+		}
+		current = errors.Unwrap(current)
 	}
 
-	// Pass to the EVM error normalizer
-	return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
+	return common.NewErrEndpointTransportFailure(c.Url, err)
 }
 
 func (c *GenericGrpcBdsClient) shutdown() {
