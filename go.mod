@@ -20,6 +20,7 @@ require (
 	github.com/go-logr/zerologr v1.2.3
 	github.com/go-redsync/redsync/v4 v4.15.0
 	github.com/golang-jwt/jwt/v4 v4.5.2
+	github.com/gorilla/websocket v1.5.3
 	github.com/grafana/sobek v0.0.0-20241024150027-d91f02b05e9b
 	github.com/h2non/gock v1.2.0
 	github.com/jackc/pgx/v4 v4.18.3

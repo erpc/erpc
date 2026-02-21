@@ -148,6 +148,24 @@ var (
 		Help:      "Total number of times the finalized block was pro-actively polled from an upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	MetricUpstreamWebsocketConnected = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_websocket_connected",
+		Help:      "Whether the upstream websocket subscription is connected (1) or not (0).",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	MetricUpstreamWebsocketReconnectsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_websocket_reconnects_total",
+		Help:      "Total number of websocket reconnection attempts.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
+	MetricUpstreamWebsocketBlocksReceivedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_websocket_blocks_received_total",
+		Help:      "Total number of block headers received via websocket subscription.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	MetricUpstreamBlockHeadLargeRollback = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_block_head_large_rollback",

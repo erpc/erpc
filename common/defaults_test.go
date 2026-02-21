@@ -1081,6 +1081,175 @@ func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 	})
 }
 
+func TestStatePollerSubscribePropagation(t *testing.T) {
+	t.Run("StatePollerSubscribeFromUpstreamDefaults", func(t *testing.T) {
+		enabled := true
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test",
+					UpstreamDefaults: &UpstreamConfig{
+						Evm: &EvmUpstreamConfig{
+							StatePollerSubscribe: &enabled,
+						},
+					},
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint: "http://rpc1.localhost",
+							Evm: &EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+						{
+							Endpoint: "http://rpc2.localhost",
+							// No Evm config - should inherit StatePollerSubscribe
+						},
+					},
+				},
+			},
+		}
+
+		err := cfg.SetDefaults(&DefaultOptions{})
+		assert.NoError(t, err)
+
+		// First upstream has Evm config - should get StatePollerSubscribe from defaults
+		assert.NotNil(t, cfg.Projects[0].Upstreams[0].Evm)
+		assert.NotNil(t, cfg.Projects[0].Upstreams[0].Evm.StatePollerSubscribe)
+		assert.True(t, *cfg.Projects[0].Upstreams[0].Evm.StatePollerSubscribe)
+
+		// Second upstream should also get StatePollerSubscribe from defaults
+		assert.NotNil(t, cfg.Projects[0].Upstreams[1].Evm)
+		assert.NotNil(t, cfg.Projects[0].Upstreams[1].Evm.StatePollerSubscribe)
+		assert.True(t, *cfg.Projects[0].Upstreams[1].Evm.StatePollerSubscribe)
+	})
+
+	t.Run("StatePollerSubscribeNotOverriddenByDefaults", func(t *testing.T) {
+		enabled := true
+		disabled := false
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test",
+					UpstreamDefaults: &UpstreamConfig{
+						Evm: &EvmUpstreamConfig{
+							StatePollerSubscribe: &enabled,
+						},
+					},
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint: "http://rpc1.localhost",
+							Evm: &EvmUpstreamConfig{
+								ChainId:              1,
+								StatePollerSubscribe: &disabled, // Explicitly disabled
+							},
+						},
+					},
+				},
+			},
+		}
+
+		err := cfg.SetDefaults(&DefaultOptions{})
+		assert.NoError(t, err)
+
+		// Upstream's explicit value should be preserved
+		assert.NotNil(t, cfg.Projects[0].Upstreams[0].Evm.StatePollerSubscribe)
+		assert.False(t, *cfg.Projects[0].Upstreams[0].Evm.StatePollerSubscribe)
+	})
+
+	t.Run("StatePollerSubscribeNilByDefault", func(t *testing.T) {
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test",
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint: "http://rpc1.localhost",
+							Evm: &EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		err := cfg.SetDefaults(&DefaultOptions{})
+		assert.NoError(t, err)
+
+		// Without defaults, StatePollerSubscribe should remain nil
+		assert.Nil(t, cfg.Projects[0].Upstreams[0].Evm.StatePollerSubscribe)
+	})
+}
+
+func TestWebsocketEndpointValidation(t *testing.T) {
+	t.Run("ValidWSSEndpoint", func(t *testing.T) {
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test",
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint:          "http://rpc1.localhost",
+							WebsocketEndpoint: "wss://rpc1.localhost/ws",
+						},
+					},
+				},
+			},
+		}
+
+		err := cfg.SetDefaults(&DefaultOptions{})
+		assert.NoError(t, err)
+
+		err = cfg.Validate()
+		assert.NoError(t, err)
+	})
+
+	t.Run("ValidWSEndpoint", func(t *testing.T) {
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test",
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint:          "http://localhost:8545",
+							WebsocketEndpoint: "ws://localhost:8545/ws",
+						},
+					},
+				},
+			},
+		}
+
+		err := cfg.SetDefaults(&DefaultOptions{})
+		assert.NoError(t, err)
+
+		err = cfg.Validate()
+		assert.NoError(t, err)
+	})
+
+	t.Run("InvalidWebsocketEndpoint_HTTP", func(t *testing.T) {
+		upstream := &UpstreamConfig{
+			Id:                "test-upstream",
+			Endpoint:          "http://rpc1.localhost",
+			WebsocketEndpoint: "http://rpc1.localhost/ws", // Invalid - should be ws:// or wss://
+		}
+
+		err := upstream.Validate(nil, false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "websocketEndpoint must start with ws:// or wss://")
+	})
+
+	t.Run("EmptyWebsocketEndpoint_Valid", func(t *testing.T) {
+		upstream := &UpstreamConfig{
+			Id:                "test-upstream",
+			Endpoint:          "http://rpc1.localhost",
+			WebsocketEndpoint: "", // Empty is valid
+		}
+
+		err := upstream.Validate(nil, false)
+		assert.NoError(t, err)
+	})
+}
+
 func TestBuildProviderSettings(t *testing.T) {
 	// Test case for Chainstack with query parameters
 	t.Run("chainstack with filters", func(t *testing.T) {
