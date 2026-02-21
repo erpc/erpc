@@ -401,6 +401,24 @@ func TestMixedResponseTypes(t *testing.T) {
 						"result":  []interface{}{}, // Empty array
 					})
 
+				// The post-forward hook side-calls eth_getTransactionByHash on rpc1
+				// Return a mined tx so the hook treats null receipt as retryable
+				gock.New("http://rpc1.localhost").
+					Post("").
+					Filter(func(request *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(request), "eth_getTransactionByHash")
+					}).
+					Times(1).
+					Reply(200).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"result": map[string]interface{}{
+							"hash":        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+							"blockNumber": "0x100",
+						},
+					})
+
 				// Upstream 2: Returns non-empty result
 				gock.New("http://rpc2.localhost").
 					Post("").
@@ -500,6 +518,8 @@ func TestMixedResponseTypes(t *testing.T) {
 				},
 			}
 			network := setupTestNetworkForTiming(t, ctx, failsafeConfig)
+			// Enable the receipt pending check feature flag
+			network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
 
 			time.Sleep(100 * time.Millisecond)
 			upstream.ReorderUpstreams(network.upstreamsRegistry)

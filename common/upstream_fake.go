@@ -22,6 +22,7 @@ type FakeUpstream struct {
 	lastCordonedReason string
 	cordonMu           sync.RWMutex
 	tracker            HealthTracker
+	ForwardFunc        func(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error)
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -111,6 +112,9 @@ func (u *FakeUpstream) EvmStatePoller() EvmStatePoller {
 }
 
 func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error) {
+	if u.ForwardFunc != nil {
+		return u.ForwardFunc(ctx, nq, skipSyncingCheck)
+	}
 	return nil, nil
 }
 

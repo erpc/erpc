@@ -1587,6 +1587,12 @@ type EvmNetworkConfig struct {
 	// to work safely with transaction broadcasting.
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
+
+	// ReceiptPendingCheck enables a side-call to eth_getTransactionByHash when
+	// eth_getTransactionReceipt returns null. This distinguishes pending transactions
+	// (where null is valid) from mined-but-unindexed transactions (which should be retried).
+	// When disabled (default), the hook is skipped entirely.
+	ReceiptPendingCheck *bool `yaml:"receiptPendingCheck,omitempty" json:"receiptPendingCheck,omitempty"`
 }
 
 // EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

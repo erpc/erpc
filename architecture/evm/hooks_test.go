@@ -2,10 +2,14 @@ package evm
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestNetworkWithMarkEmptyMethods creates a testNetwork (defined in eth_getBlockByNumber_test.go)
@@ -194,4 +198,116 @@ func TestUpstreamPostForward_UnexpectedEmpty_EmptyConfig(t *testing.T) {
 
 	_, err = HandleUpstreamPostForward(context.Background(), network, nil, req, resp, nil, false)
 	assert.NoError(t, err, "eth_getBlockByNumber: expected NO error when markEmptyAsErrorMethods is empty")
+}
+
+func TestUpstreamPostForward_TransactionReceipt_PendingTx(t *testing.T) {
+	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
+
+	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
+	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+		m, _ := nq.Method()
+		if strings.EqualFold(m, "eth_getTransactionByHash") {
+			jrr, _ := common.NewJsonRpcResponseFromBytes(
+				[]byte(`1`),
+				[]byte(`{"hash":"0xabc","blockNumber":null}`),
+				nil,
+			)
+			return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+		}
+		return nil, fmt.Errorf("unexpected method: %s", m)
+	}
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabc"]}`))
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte("null"), nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	outResp, outErr := HandleUpstreamPostForward(context.Background(), network, fakeUp, req, resp, nil, false)
+
+	assert.NoError(t, outErr, "pending tx should not produce an error")
+	assert.Equal(t, resp, outResp)
+	assert.True(t, outResp.IsEmptyAccepted(), "emptyAccepted should be set for pending tx")
+}
+
+func TestUpstreamPostForward_TransactionReceipt_MinedTx(t *testing.T) {
+	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
+
+	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
+	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+		m, _ := nq.Method()
+		if strings.EqualFold(m, "eth_getTransactionByHash") {
+			jrr, _ := common.NewJsonRpcResponseFromBytes(
+				[]byte(`1`),
+				[]byte(`{"hash":"0xabc","blockNumber":"0x100"}`),
+				nil,
+			)
+			return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+		}
+		return nil, fmt.Errorf("unexpected method: %s", m)
+	}
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabc"]}`))
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte("null"), nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	outResp, outErr := HandleUpstreamPostForward(context.Background(), network, fakeUp, req, resp, nil, false)
+
+	assert.Error(t, outErr, "mined tx with null receipt should produce an error")
+	assert.True(t, common.HasErrorCode(outErr, common.ErrCodeEndpointMissingData))
+	assert.Equal(t, resp, outResp)
+	assert.False(t, outResp.IsEmptyAccepted(), "emptyAccepted should NOT be set for mined tx")
+}
+
+func TestUpstreamPostForward_TransactionReceipt_UnknownTx(t *testing.T) {
+	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
+
+	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
+	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+		m, _ := nq.Method()
+		if strings.EqualFold(m, "eth_getTransactionByHash") {
+			jrr, _ := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte("null"), nil)
+			return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+		}
+		return nil, fmt.Errorf("unexpected method: %s", m)
+	}
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabc"]}`))
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte("null"), nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	outResp, outErr := HandleUpstreamPostForward(context.Background(), network, fakeUp, req, resp, nil, false)
+
+	assert.NoError(t, outErr, "unknown tx should not produce an error")
+	assert.Equal(t, resp, outResp)
+	assert.True(t, outResp.IsEmptyAccepted(), "emptyAccepted should be set for unknown tx")
+}
+
+func TestUpstreamPostForward_TransactionReceipt_SideCallFails(t *testing.T) {
+	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network.cfg.Evm.ReceiptPendingCheck = util.BoolPtr(true)
+
+	fakeUp := common.NewFakeUpstream("rpc1").(*common.FakeUpstream)
+	fakeUp.ForwardFunc = func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
+		return nil, fmt.Errorf("connection refused")
+	}
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabc"]}`))
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte("null"), nil)
+	require.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	outResp, outErr := HandleUpstreamPostForward(context.Background(), network, fakeUp, req, resp, nil, false)
+
+	assert.NoError(t, outErr, "side-call failure should not produce an error")
+	assert.Equal(t, resp, outResp)
+	assert.True(t, outResp.IsEmptyAccepted(), "emptyAccepted should be set when side-call fails")
 }

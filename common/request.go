@@ -1376,7 +1376,7 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 	// permanent errors (method ignored, execution exception).
 	if err != nil {
 		r.ErrorsByUpstream.Store(upstream, err)
-	} else if resp != nil && resp.IsResultEmptyish(ctx) {
+	} else if resp != nil && !resp.IsEmptyAccepted() && resp.IsResultEmptyish(ctx) {
 		jr, jrErr := resp.JsonRpcResponse(ctx)
 		if jr == nil {
 			r.ErrorsByUpstream.Store(upstream, NewErrEndpointMissingData(fmt.Errorf("upstream responded emptyish but cannot extract json-rpc response: %v", jrErr), upstream))
