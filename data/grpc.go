@@ -391,3 +391,15 @@ func (g *GrpcConnector) checkReady() error {
 	}
 	return nil
 }
+
+func (g *GrpcConnector) WatchCacheInvalidation(ctx context.Context, channel string) (<-chan CacheInvalidationEvent, func(), error) {
+	ch := make(chan CacheInvalidationEvent)
+	cleanup := func() {
+		close(ch)
+	}
+	return ch, cleanup, nil
+}
+
+func (g *GrpcConnector) PublishCacheInvalidation(ctx context.Context, channel string, event CacheInvalidationEvent) error {
+	return nil
+}
