@@ -80,11 +80,10 @@ func TestTracker(t *testing.T) {
 
 		ups := common.NewFakeUpstream("a")
 
-		simulateRateLimitedRequestMetrics(tracker, ups, "method1", 100, 20, 10)
+		simulateRateLimitedRequestMetrics(tracker, ups, "method1", 100, 10)
 
 		metrics := tracker.GetUpstreamMethodMetrics(ups, "method1")
 		assert.Equal(t, int64(100), metrics.RequestsTotal.Load())
-		assert.Equal(t, int64(20), metrics.SelfRateLimitedTotal.Load())
 		assert.Equal(t, int64(10), metrics.RemoteRateLimitedTotal.Load())
 	})
 
@@ -151,7 +150,6 @@ func TestTracker(t *testing.T) {
 		metricsBefore := tracker.GetUpstreamMethodMetrics(ups, "method1")
 		assert.Equal(t, int64(100), metricsBefore.RequestsTotal.Load())
 		assert.Equal(t, int64(10), metricsBefore.ErrorsTotal.Load())
-		assert.Equal(t, int64(0), metricsBefore.SelfRateLimitedTotal.Load())
 		assert.Equal(t, int64(0), metricsBefore.RemoteRateLimitedTotal.Load())
 
 		time.Sleep(windowSize + 10*time.Millisecond)
@@ -159,7 +157,6 @@ func TestTracker(t *testing.T) {
 		metricsAfter := tracker.GetUpstreamMethodMetrics(ups, "method1")
 		assert.Equal(t, int64(0), metricsAfter.RequestsTotal.Load())
 		assert.Equal(t, int64(0), metricsAfter.ErrorsTotal.Load())
-		assert.Equal(t, int64(0), metricsAfter.SelfRateLimitedTotal.Load())
 		assert.Equal(t, int64(0), metricsAfter.RemoteRateLimitedTotal.Load())
 	})
 
@@ -294,13 +291,10 @@ func simulateRequestMetrics(tracker *Tracker, upstream common.Upstream, method s
 	}
 }
 
-func simulateRateLimitedRequestMetrics(tracker *Tracker, upstream common.Upstream, method string, total, selfLimited, remoteLimited int) {
+func simulateRateLimitedRequestMetrics(tracker *Tracker, upstream common.Upstream, method string, total, remoteLimited int) {
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
-		if i < selfLimited {
-			tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
-		}
-		if i >= selfLimited && i < selfLimited+remoteLimited {
+		if i < remoteLimited {
 			tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 		}
 	}

@@ -1316,8 +1316,8 @@ func (r *NormalizedRequest) NextUpstream() (Upstream, error) {
 	// infinite loops. Retryable errors are removed from ConsumedUpstreams by
 	// MarkUpstreamCompleted, allowing re-selection on subsequent iterations.
 	for attempts := 0; attempts < upstreamCount; attempts++ {
-		idx := r.UpstreamIdx % uint32(upstreamCount) // #nosec G115
-		r.UpstreamIdx++                              // Guaranteed increment for next caller
+		idx := r.UpstreamIdx % uint32(upstreamCount)
+		r.UpstreamIdx++ // Guaranteed increment for next caller
 
 		upstream := r.upstreamList[idx]
 

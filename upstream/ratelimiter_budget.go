@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +65,40 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 	rule.Config.MaxCount = newMaxCount
 	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(newMaxCount))
 	return nil
+}
+
+// AdjustBudgetByFactor reads currentMax, multiplies by factor, clamps to
+// [minBudget, maxBudget], and writes the result -- all under rulesMu.
+// Returns (prev, next, changed) so callers can log without holding the lock.
+func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor float64, minBudget, maxBudget int) (prev, next uint32, changed bool) {
+	if rule == nil || rule.Config == nil {
+		return 0, 0, false
+	}
+	b.rulesMu.Lock()
+	defer b.rulesMu.Unlock()
+
+	prev = rule.Config.MaxCount
+	next = uint32(math.Ceil(float64(prev) * factor))
+	if minBudget > 0 {
+		minClamped := uint32(max(0, minBudget))
+		if next < minClamped {
+			next = minClamped
+		}
+	}
+	if maxBudget > 0 {
+		maxClamped := uint32(max(0, maxBudget))
+		if next > maxClamped {
+			next = maxClamped
+		}
+	}
+
+	if next == prev {
+		return prev, next, false
+	}
+
+	rule.Config.MaxCount = next
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(next))
+	return prev, next, true
 }
 
 // ruleResult holds the result of evaluating a single rule.

@@ -259,7 +259,7 @@ func (m *MemoryConnector) collectAndEmitMetrics() {
 				Uint64("diff", diff).
 				Msg("Current cost exceeds int64 capacity, capping to MaxInt64")
 		} else {
-			currentCost = int64(diff) // #nosec G115
+			currentCost = int64(diff)
 		}
 	} else {
 		// This shouldn't happen in normal operation, but handle gracefully

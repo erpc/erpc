@@ -538,7 +538,7 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 			u.rotationCounters[km.network] = make(map[string]uint64)
 		}
 		u.rotationCounters[km.network][km.method]++
-		offset := int(u.rotationCounters[km.network][km.method] % uint64(len(active))) // #nosec G115
+		offset := int(u.rotationCounters[km.network][km.method] % uint64(len(active)))
 		rotated := make([]*Upstream, len(active))
 		for i := range active {
 			rotated[i] = active[(i+offset)%len(active)]

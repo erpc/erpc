@@ -242,7 +242,7 @@ func (s *DatabaseStrategy) getWithRetries(ctx context.Context, index, partitionK
 		}
 
 		if attempt < maxAttempts {
-			backoff := baseBackoff << uint(attempt-1) // #nosec G115
+			backoff := baseBackoff << uint(attempt-1)
 			s.logger.Warn().
 				Err(err).
 				Str("driver", string(s.cfg.Connector.Driver)).
