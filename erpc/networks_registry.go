@@ -332,14 +332,7 @@ func (nr *NetworksRegistry) registerAlias(alias, arch, chain string) {
 func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.NetworkConfig, error) {
 	prj := nr.project
 
-	// Try to find config
-	var nwCfg *common.NetworkConfig
-	for _, cfg := range prj.Config.Networks {
-		if cfg.NetworkId() == networkId {
-			nwCfg = cfg
-			break
-		}
-	}
+	nwCfg := prj.FindNetworkConfig(networkId)
 	if nwCfg == nil {
 		// Create a new config if none was found
 		nwCfg = &common.NetworkConfig{}

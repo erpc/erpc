@@ -783,10 +783,15 @@ func (u *UpstreamsRegistry) GetUpstreamScoreBreakdown(ups common.Upstream, netwo
 
 	mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
 
+	qn := 0.70
+	if upsCfg := ups.Config(); upsCfg != nil && upsCfg.Routing != nil && upsCfg.Routing.ScoreLatencyQuantile != 0 {
+		qn = upsCfg.Routing.ScoreLatencyQuantile
+	}
+
 	bd := ScoreBreakdown{
 		Score:           score,
 		ErrorRate:       mt.ErrorRate(),
-		Latency:         mt.ResponseQuantiles.GetQuantile(0.70).Seconds(),
+		Latency:         mt.ResponseQuantiles.GetQuantile(qn).Seconds(),
 		ThrottledRate:   mt.ThrottledRate(),
 		BlockHeadLag:    math.Max(0, float64(mt.BlockHeadLag.Load())),
 		FinalizationLag: math.Max(0, float64(mt.FinalizationLag.Load())),
