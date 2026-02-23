@@ -41,7 +41,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_ListedMethods(t *testing.T) {
 	}
 
 	// Create a test network with the default methods configured
-	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods())
 
 	for _, m := range methods {
 		// Build a minimal request with method m
@@ -82,7 +82,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_RetryEmptyFalse(t *testing.T) {
 	}
 
 	// Create a test network with the default methods configured
-	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods())
 
 	for _, m := range methods {
 		// Build a minimal request with method m
@@ -125,7 +125,7 @@ func TestUpstreamPostForward_UnexpectedEmpty_NonListedMethods(t *testing.T) {
 	}
 
 	// Create a test network with the default methods configured
-	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods)
+	network := newTestNetworkWithMarkEmptyMethods(common.DefaultMarkEmptyAsErrorMethods())
 
 	for _, m := range methods {
 		// Build a minimal request with method m

@@ -1834,7 +1834,7 @@ func TestNetworkForward_EmptyResultAccept_StopsRetryForAcceptedMethod(t *testing
 				MaxAttempts:       5,
 				Delay:             common.Duration(50 * time.Millisecond),
 				EmptyResultDelay:  common.Duration(100 * time.Millisecond),
-				EmptyResultAccept: []string{"eth_getLogs", "eth_call"},
+				EmptyResultAccept: common.DefaultEmptyResultAccept(),
 			},
 		)
 

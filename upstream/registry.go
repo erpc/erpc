@@ -781,22 +781,30 @@ func (u *UpstreamsRegistry) GetUpstreamScoreBreakdown(ups common.Upstream, netwo
 		metricsMethod = "*"
 	}
 
+	bd := ScoreBreakdown{Score: score}
+
+	if u.metricsTracker == nil {
+		return bd
+	}
+
 	mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
+	if mt == nil {
+		return bd
+	}
 
 	qn := 0.70
 	if upsCfg := ups.Config(); upsCfg != nil && upsCfg.Routing != nil && upsCfg.Routing.ScoreLatencyQuantile != 0 {
 		qn = upsCfg.Routing.ScoreLatencyQuantile
 	}
 
-	bd := ScoreBreakdown{
-		Score:           score,
-		ErrorRate:       mt.ErrorRate(),
-		Latency:         mt.ResponseQuantiles.GetQuantile(qn).Seconds(),
-		ThrottledRate:   mt.ThrottledRate(),
-		BlockHeadLag:    math.Max(0, float64(mt.BlockHeadLag.Load())),
-		FinalizationLag: math.Max(0, float64(mt.FinalizationLag.Load())),
-		MisbehaviorRate: mt.MisbehaviorRate(),
-		Cordoned:        mt.Cordoned.Load(),
+	bd.ErrorRate = mt.ErrorRate()
+	bd.ThrottledRate = mt.ThrottledRate()
+	bd.BlockHeadLag = math.Max(0, float64(mt.BlockHeadLag.Load()))
+	bd.FinalizationLag = math.Max(0, float64(mt.FinalizationLag.Load()))
+	bd.MisbehaviorRate = mt.MisbehaviorRate()
+	bd.Cordoned = mt.Cordoned.Load()
+	if mt.ResponseQuantiles != nil {
+		bd.Latency = mt.ResponseQuantiles.GetQuantile(qn).Seconds()
 	}
 
 	if pen, ok := u.penaltyState[upsId]; ok {

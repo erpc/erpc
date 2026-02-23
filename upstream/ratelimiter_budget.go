@@ -78,7 +78,17 @@ func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor flo
 	defer b.rulesMu.Unlock()
 
 	prev = rule.Config.MaxCount
-	next = uint32(math.Ceil(float64(prev) * factor))
+	raw := math.Ceil(float64(prev) * factor)
+	// Clamp to a valid uint32 range before the narrowing cast.  A large
+	// increaseFactor can push the float64 product above math.MaxUint32,
+	// which causes Go's float64→uint32 conversion to wrap to an arbitrary
+	// small value -- the opposite of an increase.
+	if raw > math.MaxUint32 {
+		raw = math.MaxUint32
+	} else if raw < 0 {
+		raw = 0
+	}
+	next = uint32(raw)
 	if minBudget > 0 {
 		minClamped := uint32(max(0, minBudget))
 		if next < minClamped {
