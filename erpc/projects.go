@@ -40,6 +40,19 @@ func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Ne
 	return p.networksRegistry.GetNetwork(ctx, networkId)
 }
 
+// FindNetworkConfig returns the existing config for the given network, or nil.
+// Safe for concurrent use.
+func (p *PreparedProject) FindNetworkConfig(networkId string) *common.NetworkConfig {
+	p.cfgMu.RLock()
+	defer p.cfgMu.RUnlock()
+	for _, cfg := range p.Config.Networks {
+		if cfg.NetworkId() == networkId {
+			return cfg
+		}
+	}
+	return nil
+}
+
 // ExposeNetworkConfig is used to add lazy-loaded network configs to the project
 // so that other components can use them, also is returned via erpc_project admin API.
 func (p *PreparedProject) ExposeNetworkConfig(nwCfg *common.NetworkConfig) {
