@@ -774,3 +774,162 @@ func simulateFailedRequests(tracker *health.Tracker, upstream common.Upstream, m
 		tracker.RecordUpstreamFailure(upstream, method, fmt.Errorf("test problem"))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Hedge cancellation must NOT penalize upstream scoring
+// ---------------------------------------------------------------------------
+
+func TestUpstreamsRegistry_HedgeCancellationDoesNotDegradeScore(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "trace_block"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+
+	// rpc1 and rpc2 each handle 100 requests successfully
+	simulateRequestsWithLatency(metricsTracker, ups[0], method, 100, 0.050)
+	simulateRequestsWithLatency(metricsTracker, ups[1], method, 100, 0.050)
+	simulateRequestsWithLatency(metricsTracker, ups[2], method, 100, 0.050)
+
+	// Simulate 50 hedge cancellations on rpc2 (rpc2 always lost the hedge race).
+	// These should NOT affect rpc2's score because they aren't real failures.
+	for i := 0; i < 50; i++ {
+		metricsTracker.RecordUpstreamRequest(ups[1], method)
+		metricsTracker.RecordUpstreamFailure(ups[1], method,
+			common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
+	}
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	require.NoError(t, err)
+
+	// rpc1 and rpc2 should have equivalent scores because hedge cancellations
+	// are ignored by RecordUpstreamFailure. Both have zero real errors and
+	// the same latency. The EMA decay applies equally to both so comparing
+	// them directly avoids decay-drift issues.
+	scoreAfter1 := registry.GetUpstreamScore(ups[0].Id(), networkID, method)
+	scoreAfter2 := registry.GetUpstreamScore(ups[1].Id(), networkID, method)
+
+	assert.InDelta(t, scoreAfter1, scoreAfter2, 0.01,
+		"rpc2 (with hedge cancellations) should score the same as rpc1 (clean)")
+
+	// Verify ordering hasn't changed — rpc2 should not have been demoted
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+
+	rpc2Rank := -1
+	for i, u := range ordered {
+		if u.Id() == "rpc2" {
+			rpc2Rank = i
+			break
+		}
+	}
+	assert.LessOrEqual(t, rpc2Rank, 2, "rpc2 should still be in the top positions")
+}
+
+func TestUpstreamsRegistry_RealErrorsDegradeButHedgeCancellationsDont(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+
+	// rpc1: clean record
+	simulateRequests(metricsTracker, ups[0], method, 100, 0)
+	// rpc2: 50 hedge cancellations (should be ignored) + 0 real errors
+	simulateRequests(metricsTracker, ups[1], method, 100, 0)
+	for i := 0; i < 50; i++ {
+		metricsTracker.RecordUpstreamRequest(ups[1], method)
+		metricsTracker.RecordUpstreamFailure(ups[1], method,
+			common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
+	}
+	// rpc3: 30 real errors (should degrade score)
+	simulateRequests(metricsTracker, ups[2], method, 100, 30)
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	require.NoError(t, err)
+
+	s1 := registry.GetUpstreamScore(ups[0].Id(), networkID, method)
+	s2 := registry.GetUpstreamScore(ups[1].Id(), networkID, method)
+	s3 := registry.GetUpstreamScore(ups[2].Id(), networkID, method)
+
+	// rpc2 (hedge cancellations only) should score similarly to rpc1 (clean)
+	assert.InDelta(t, s1, s2, 0.05,
+		"upstream with hedge cancellations should score similarly to clean upstream")
+	// rpc3 (real errors) should score worse than both
+	assert.Greater(t, s1, s3, "clean upstream should score higher than one with real errors")
+	assert.Greater(t, s2, s3, "upstream with hedge cancellations should score higher than one with real errors")
+}
+
+// ---------------------------------------------------------------------------
+// GetUpstreamScoreBreakdown
+// ---------------------------------------------------------------------------
+
+func TestUpstreamsRegistry_GetUpstreamScoreBreakdown(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2")
+
+	// rpc1: some errors and latency
+	simulateRequests(metricsTracker, ups[0], method, 100, 20)
+	simulateRequestsWithLatency(metricsTracker, ups[0], method, 50, 0.100)
+	// rpc2: clean
+	simulateRequestsWithLatency(metricsTracker, ups[1], method, 100, 0.020)
+
+	err := registry.RefreshUpstreamNetworkMethodScores()
+	require.NoError(t, err)
+
+	bd1 := registry.GetUpstreamScoreBreakdown(ups[0], networkID, method)
+	bd2 := registry.GetUpstreamScoreBreakdown(ups[1], networkID, method)
+
+	// Basic sanity: scores should be in (0, 1]
+	assert.Greater(t, bd1.Score, 0.0)
+	assert.LessOrEqual(t, bd1.Score, 1.0)
+	assert.Greater(t, bd2.Score, 0.0)
+	assert.LessOrEqual(t, bd2.Score, 1.0)
+
+	// rpc1 has errors so its error rate should be > 0
+	assert.Greater(t, bd1.ErrorRate, 0.0, "rpc1 should have nonzero error rate")
+	assert.Equal(t, 0.0, bd2.ErrorRate, "rpc2 should have zero error rate")
+
+	// rpc1 has higher latency
+	assert.Greater(t, bd1.Latency, bd2.Latency, "rpc1 should have higher latency than rpc2")
+
+	// Penalty should be higher for rpc1 (worse metrics)
+	assert.Greater(t, bd1.Penalty, bd2.Penalty, "rpc1 should have higher penalty")
+
+	// Score should be lower for rpc1
+	assert.Less(t, bd1.Score, bd2.Score, "rpc1 should have lower score")
+
+	// Neither should be cordoned
+	assert.False(t, bd1.Cordoned)
+	assert.False(t, bd2.Cordoned)
+}

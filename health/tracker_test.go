@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTracker(t *testing.T) {
@@ -663,5 +664,72 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		expectedDistance := currentTime - blockTimestamp
 		assert.GreaterOrEqual(t, expectedDistance, int64(29), "Distance should be at least 29 seconds")
 		assert.LessOrEqual(t, expectedDistance, int64(32), "Distance should be at most 32 seconds")
+	})
+}
+
+func TestRecordUpstreamFailure_IgnoresHedgeCancellationErrors(t *testing.T) {
+	projectID := "test-project"
+	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups := common.NewFakeUpstream("qn-upstream")
+	method := "trace_block"
+
+	t.Run("RequestCanceled_not_counted_as_failure", func(t *testing.T) {
+		tracker.RecordUpstreamRequest(ups, method)
+		tracker.RecordUpstreamFailure(ups, method, common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
+
+		mt := tracker.GetUpstreamMethodMetrics(ups, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(1), mt.RequestsTotal.Load(), "request should be counted")
+		assert.Equal(t, int64(0), mt.ErrorsTotal.Load(), "cancelled hedge should NOT count as error")
+		assert.Equal(t, float64(0), mt.ErrorRate(), "error rate should be zero")
+	})
+
+	t.Run("HedgeCancelled_not_counted_as_failure", func(t *testing.T) {
+		ups2 := common.NewFakeUpstream("qn-upstream-2")
+		tracker.RecordUpstreamRequest(ups2, method)
+		tracker.RecordUpstreamFailure(ups2, method,
+			common.NewErrUpstreamHedgeCancelled("qn-upstream-2", fmt.Errorf("context canceled")))
+
+		mt := tracker.GetUpstreamMethodMetrics(ups2, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(1), mt.RequestsTotal.Load(), "request should be counted")
+		assert.Equal(t, int64(0), mt.ErrorsTotal.Load(), "hedge cancellation should NOT count as error")
+	})
+
+	t.Run("real_errors_still_counted", func(t *testing.T) {
+		ups3 := common.NewFakeUpstream("qn-upstream-3")
+		tracker.RecordUpstreamRequest(ups3, method)
+		tracker.RecordUpstreamFailure(ups3, method, fmt.Errorf("connection refused"))
+
+		mt := tracker.GetUpstreamMethodMetrics(ups3, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(1), mt.RequestsTotal.Load())
+		assert.Equal(t, int64(1), mt.ErrorsTotal.Load(), "real errors should still be counted")
+	})
+
+	t.Run("mixed_real_and_cancelled_errors", func(t *testing.T) {
+		ups4 := common.NewFakeUpstream("qn-upstream-4")
+
+		for i := 0; i < 10; i++ {
+			tracker.RecordUpstreamRequest(ups4, method)
+		}
+		// 5 real failures
+		for i := 0; i < 5; i++ {
+			tracker.RecordUpstreamFailure(ups4, method, fmt.Errorf("timeout"))
+		}
+		// 5 hedge cancellations (should be ignored)
+		for i := 0; i < 5; i++ {
+			tracker.RecordUpstreamFailure(ups4, method, common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
+		}
+
+		mt := tracker.GetUpstreamMethodMetrics(ups4, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(10), mt.RequestsTotal.Load())
+		assert.Equal(t, int64(5), mt.ErrorsTotal.Load(), "only real errors should be counted, not hedge cancellations")
+		assert.InDelta(t, 0.5, mt.ErrorRate(), 0.001, "error rate should only reflect real failures")
 	})
 }

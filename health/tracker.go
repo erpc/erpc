@@ -526,6 +526,7 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 	// - Unsupported: capability, not quality
 	// - CapacityExceeded: remote 429, already penalized via ThrottledRate
 	// - ClientSideException: user sent a bad request, not upstream's fault
+	// - RequestCanceled / HedgeCancelled: hedge lost the race, not an upstream fault
 	if common.HasErrorCode(
 		err,
 		common.ErrCodeEndpointExecutionException,
@@ -535,6 +536,8 @@ func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err e
 		common.ErrCodeEndpointUnsupported,
 		common.ErrCodeEndpointCapacityExceeded,
 		common.ErrCodeEndpointClientSideException,
+		common.ErrCodeEndpointRequestCanceled,
+		common.ErrCodeUpstreamHedgeCancelled,
 	) {
 		return
 	}
