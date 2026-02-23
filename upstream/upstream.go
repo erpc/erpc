@@ -503,6 +503,10 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.UserId(),
 						nrq.AgentName(),
 					).Inc()
+				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
+					// Cancelled request (e.g. hedge lost the race). Not the upstream's
+					// fault — skip failure recording and generic error metric. The
+					// network layer records hedge discards via MetricNetworkHedgeDiscardsTotal.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)

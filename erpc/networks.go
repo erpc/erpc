@@ -343,8 +343,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if common.IsTracingDetailed {
 		entries := make([]string, len(upsList))
 		for i, u := range upsList {
-			s := n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)
-			entries[i] = fmt.Sprintf("%s(%.4f)", u.Id(), s)
+			bd := n.upstreamsRegistry.GetUpstreamScoreBreakdown(u, n.networkId, method)
+			entries[i] = fmt.Sprintf("%s(score=%.4f pen=%.4f err=%.3f lat=%.4fs thr=%.3f blag=%.0f flag=%.0f mis=%.3f cor=%v)",
+				u.Id(), bd.Score, bd.Penalty, bd.ErrorRate, bd.Latency, bd.ThrottledRate,
+				bd.BlockHeadLag, bd.FinalizationLag, bd.MisbehaviorRate, bd.Cordoned,
+			)
 		}
 		upstreamSpan.SetAttributes(
 			attribute.String("upstreams.sorted", strings.Join(entries, ", ")),

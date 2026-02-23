@@ -748,6 +748,61 @@ func (u *UpstreamsRegistry) GetUpstreamScore(upsId, networkId, method string) fl
 	return 0
 }
 
+// ScoreBreakdown holds the components that contribute to an upstream's penalty and final score.
+type ScoreBreakdown struct {
+	Score           float64
+	Penalty         float64
+	ErrorRate       float64
+	Latency         float64
+	ThrottledRate   float64
+	BlockHeadLag    float64
+	FinalizationLag float64
+	MisbehaviorRate float64
+	Cordoned        bool
+}
+
+// GetUpstreamScoreBreakdown returns the score and its contributing penalty
+// components for a given upstream, so callers (e.g. traces) can diagnose
+// why an upstream was ranked higher or lower.
+func (u *UpstreamsRegistry) GetUpstreamScoreBreakdown(ups common.Upstream, networkId, method string) ScoreBreakdown {
+	u.upstreamsMu.RLock()
+	defer u.upstreamsMu.RUnlock()
+
+	upsId := ups.Id()
+	score := 0.0
+	if nets, ok := u.upstreamScores[upsId]; ok {
+		if meths, ok := nets[networkId]; ok {
+			score = meths[method]
+		}
+	}
+
+	metricsMethod := method
+	if u.scoringCfg.ScoreGranularity == "upstream" {
+		metricsMethod = "*"
+	}
+
+	mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
+
+	bd := ScoreBreakdown{
+		Score:           score,
+		ErrorRate:       mt.ErrorRate(),
+		Latency:         mt.ResponseQuantiles.GetQuantile(0.70).Seconds(),
+		ThrottledRate:   mt.ThrottledRate(),
+		BlockHeadLag:    math.Max(0, float64(mt.BlockHeadLag.Load())),
+		FinalizationLag: math.Max(0, float64(mt.FinalizationLag.Load())),
+		MisbehaviorRate: mt.MisbehaviorRate(),
+		Cordoned:        mt.Cordoned.Load(),
+	}
+
+	if pen, ok := u.penaltyState[upsId]; ok {
+		if meth, ok := pen[networkId]; ok {
+			bd.Penalty = meth[metricsMethod]
+		}
+	}
+
+	return bd
+}
+
 // stickySort sorts upstreams by penalty ascending, preserving the current
 // primary unless a challenger is significantly better (hysteresis) and the
 // minimum cooldown has elapsed.
