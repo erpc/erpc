@@ -713,3 +713,138 @@ func TestRetryPolicy_TypeAssertion(t *testing.T) {
 		t.Errorf("Type assertion to EvmUpstream failed for %T", mockUpstream)
 	}
 }
+
+func executeRetryPolicyWithContext(t *testing.T, cfg *common.RetryPolicyConfig, scope common.Scope, response *common.NormalizedResponse, err error, ctx context.Context) (attempts int, finalErr error) {
+	policy, policyErr := createRetryPolicy(scope, cfg)
+	assert.NoError(t, policyErr)
+
+	executor := failsafe.NewExecutor(policy).WithContext(ctx)
+	attempts = 0
+
+	_, finalErr = executor.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		attempts = exec.Attempts()
+		return response, err
+	})
+
+	return attempts, finalErr
+}
+
+func TestRetryPolicy_MissingDataErrorVsEmptyResponse(t *testing.T) {
+	t.Run("MissingDataError_MethodInAcceptList_ShouldRetry", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts:       3,
+			EmptyResultAccept: []string{"eth_call"},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"method":"eth_call","params":[{"to":"0x1234"},"0x64"],"id":1,"jsonrpc":"2.0"}`))
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+		missingDataErr := &common.ErrEndpointMissingData{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeEndpointMissingData,
+				Message: "remote endpoint does not have this data",
+			},
+		}
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   errors.Join(missingDataErr),
+			},
+		}
+
+		ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
+		attempts, _ := executeRetryPolicyWithContext(t, cfg, common.ScopeNetwork, nil, exhaustedErr, ctx)
+		assert.Equal(t, 3, attempts,
+			"ErrEndpointMissingData is a transient error (e.g. 'header not found'), "+
+				"emptyResultAccept should NOT suppress retry for errors — only for genuinely empty responses")
+	})
+
+	t.Run("MissingDataError_RetryEmptyDisabled_NoRetry", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts:       3,
+			EmptyResultAccept: []string{"eth_call"},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"method":"eth_call","params":[{"to":"0x1234"},"0x64"],"id":1,"jsonrpc":"2.0"}`))
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
+
+		missingDataErr := &common.ErrEndpointMissingData{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeEndpointMissingData,
+				Message: "remote endpoint does not have this data",
+			},
+		}
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   errors.Join(missingDataErr),
+			},
+		}
+
+		ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
+		attempts, _ := executeRetryPolicyWithContext(t, cfg, common.ScopeNetwork, nil, exhaustedErr, ctx)
+		assert.Equal(t, 1, attempts,
+			"Explicit RetryEmpty=false should suppress retry for MissingData errors")
+	})
+
+	t.Run("MissingDataError_PlusBlockUnavailable_ShouldRetry", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts:       3,
+			EmptyResultAccept: []string{"eth_call"},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"method":"eth_call","params":[{"to":"0x1234"},"0x64"],"id":1,"jsonrpc":"2.0"}`))
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+		missingDataErr := &common.ErrEndpointMissingData{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeEndpointMissingData,
+				Message: "remote endpoint does not have this data",
+			},
+		}
+		blockUnavailableErr1 := common.NewErrUpstreamBlockUnavailable("alchemy", 100, 99, 95)
+		blockUnavailableErr2 := common.NewErrUpstreamBlockUnavailable("chainstack", 100, 99, 94)
+		blockUnavailableErr3 := common.NewErrUpstreamBlockUnavailable("gcs", 100, 99, 95)
+
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   errors.Join(missingDataErr, blockUnavailableErr1, blockUnavailableErr2, blockUnavailableErr3),
+			},
+		}
+
+		ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
+		attempts, _ := executeRetryPolicyWithContext(t, cfg, common.ScopeNetwork, nil, exhaustedErr, ctx)
+		assert.Equal(t, 3, attempts,
+			"ErrEndpointMissingData + ErrUpstreamBlockUnavailable should retry")
+	})
+
+	t.Run("BlockUnavailable_Only_ShouldRetry", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts:       3,
+			EmptyResultAccept: []string{"eth_call"},
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"method":"eth_call","params":[{"to":"0x1234"},"0x64"],"id":1,"jsonrpc":"2.0"}`))
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+		blockUnavailableErr1 := common.NewErrUpstreamBlockUnavailable("alchemy", 100, 99, 95)
+		blockUnavailableErr2 := common.NewErrUpstreamBlockUnavailable("chainstack", 100, 99, 94)
+
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   errors.Join(blockUnavailableErr1, blockUnavailableErr2),
+			},
+		}
+
+		ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
+		attempts, _ := executeRetryPolicyWithContext(t, cfg, common.ScopeNetwork, nil, exhaustedErr, ctx)
+		assert.Equal(t, 3, attempts,
+			"ErrUpstreamBlockUnavailable alone should always retry")
+	})
+}
