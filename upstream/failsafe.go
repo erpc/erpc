@@ -75,7 +75,12 @@ func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scop
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
-		p, err := createHedgePolicy(&lg, fsCfg.Hedge)
+		consensusEnabled := fsCfg.Consensus != nil
+		emptyResultAccept := common.DefaultEmptyResultAccept()
+		if fsCfg.Retry != nil && fsCfg.Retry.EmptyResultAccept != nil {
+			emptyResultAccept = fsCfg.Retry.EmptyResultAccept
+		}
+		p, err := createHedgePolicy(&lg, fsCfg.Hedge, emptyResultAccept, consensusEnabled)
 		if err != nil {
 			return nil, err
 		}
@@ -256,7 +261,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, emptyResultAccept []string, consensusEnabled bool) (failsafe.Policy[*common.NormalizedResponse], error) {
 	var builder hedgepolicy.HedgePolicyBuilder[*common.NormalizedResponse]
 
 	// Observe hedge delay via histogram; no background publisher.
@@ -363,13 +368,42 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		return true
 	})
 
+	// Cancel other hedges when this execution has a result worth taking (accepted result
+	// only — see below). We currently cancel on any non-exhaustion error so the first
+	// failure stops the others (lower latency when all would fail). An alternative is
+	// to cancel only on terminal errors (client/execution exception) so a slower hedge
+	// can still return success when the first returns e.g. "method not supported".
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
-		// Don't cancel on ErrUpstreamsExhausted
+		// Don't cancel on exhaustion errors so other hedges can still complete.
 		if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
 			return false
 		}
-
-		return result != nil || err != nil
+		if err != nil {
+			return true
+		}
+		if result == nil || result.IsObjectNull(exec.Context()) {
+			return false
+		}
+		// Only cancel other hedges when this result would be "accepted" by the network
+		// loop (non-empty, or empty but in emptyResultAccept and not consensus). Otherwise
+		// we'd prematurely cancel
+		if emptyResultAccept == nil {
+			emptyResultAccept = common.DefaultEmptyResultAccept()
+		}
+		emptyish := result.IsResultEmptyish(exec.Context())
+		if !emptyish {
+			return true
+		}
+		if consensusEnabled {
+			return false
+		}
+		var method string
+		if r := exec.Context().Value(common.RequestContextKey); r != nil {
+			if req, ok := r.(*common.NormalizedRequest); ok && req != nil {
+				method, _ = req.Method()
+			}
+		}
+		return slices.Contains(emptyResultAccept, method)
 	})
 
 	return builder.Build(), nil
@@ -464,7 +498,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 
 	emptyResultAccept := cfg.EmptyResultAccept
 	if emptyResultAccept == nil {
-		emptyResultAccept = []string{"eth_getLogs", "eth_call"}
+		emptyResultAccept = common.DefaultEmptyResultAccept()
 	}
 
 	builder = builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {

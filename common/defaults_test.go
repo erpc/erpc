@@ -104,11 +104,12 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.EqualValues(t, &FailsafeConfig{
 			MatchMethod: "*",
 			Retry: &RetryPolicyConfig{
-				MaxAttempts:     12345,
-				Delay:           Duration(0 * time.Millisecond),
-				BackoffMaxDelay: Duration(3 * time.Second),
-				BackoffFactor:   1.2,
-				Jitter:          Duration(0 * time.Millisecond),
+				MaxAttempts:       12345,
+				Delay:             Duration(0 * time.Millisecond),
+				BackoffMaxDelay:   Duration(3 * time.Second),
+				BackoffFactor:     1.2,
+				Jitter:            Duration(0 * time.Millisecond),
+				EmptyResultAccept: DefaultEmptyResultAccept(),
 			},
 		}, network.Failsafe[0])
 		assert.Nil(t, network.Failsafe[0].Timeout)
@@ -359,11 +360,12 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		// Verify failsafe retry is only applied to the first upstream
 		retry := cfg.Projects[0].Upstreams[0].Failsafe[0].Retry
 		assert.EqualValues(t, &RetryPolicyConfig{
-			MaxAttempts:     2,
-			BackoffMaxDelay: Duration(10 * time.Second),
-			Delay:           Duration(1 * time.Second),
-			Jitter:          Duration(500 * time.Millisecond),
-			BackoffFactor:   1.2,
+			MaxAttempts:       2,
+			BackoffMaxDelay:   Duration(10 * time.Second),
+			Delay:             Duration(1 * time.Second),
+			Jitter:            Duration(500 * time.Millisecond),
+			BackoffFactor:     1.2,
+			EmptyResultAccept: DefaultEmptyResultAccept(),
 		}, retry, "Retry policy should match expected values")
 
 		assert.Nil(t, cfg.Projects[0].Upstreams[0].Failsafe[0].CircuitBreaker, "Circuit breaker should be nil because this upstream has failsafe defined")

@@ -65,7 +65,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 				MaxAttempts:       3,
 				Delay:             common.Duration(50 * time.Millisecond),
 				EmptyResultDelay:  common.Duration(200 * time.Millisecond),
-				EmptyResultAccept: []string{"eth_getLogs", "eth_call"},
+				EmptyResultAccept: common.DefaultEmptyResultAccept(),
 			},
 		)
 
@@ -134,7 +134,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 				MaxAttempts:       3,
 				Delay:             common.Duration(50 * time.Millisecond),
 				EmptyResultDelay:  common.Duration(200 * time.Millisecond),
-				EmptyResultAccept: []string{"eth_getLogs", "eth_call"},
+				EmptyResultAccept: common.DefaultEmptyResultAccept(),
 			},
 		)
 
@@ -206,7 +206,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 				MaxAttempts:       2,
 				Delay:             common.Duration(10 * time.Millisecond),
 				EmptyResultDelay:  common.Duration(10 * time.Millisecond),
-				EmptyResultAccept: []string{"eth_getLogs", "eth_call"},
+				EmptyResultAccept: common.DefaultEmptyResultAccept(),
 			},
 		)
 
@@ -269,7 +269,7 @@ func TestEmptyResultAcceptShortCircuit(t *testing.T) {
 				MaxAttempts:       3,
 				Delay:             common.Duration(50 * time.Millisecond),
 				EmptyResultDelay:  common.Duration(200 * time.Millisecond),
-				EmptyResultAccept: []string{"eth_getLogs", "eth_call"},
+				EmptyResultAccept: common.DefaultEmptyResultAccept(),
 			},
 		)
 

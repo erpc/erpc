@@ -225,7 +225,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 			},
 			&common.RetryPolicyConfig{
 				MaxAttempts:       3,
-				EmptyResultAccept: []string{"eth_getLogs", "eth_call"}, // eth_getTransactionByHash not in list
+				EmptyResultAccept: common.DefaultEmptyResultAccept(), // eth_getTransactionByHash not in list
 			},
 		)
 

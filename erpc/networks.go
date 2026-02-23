@@ -839,6 +839,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
+	forwardSpan.SetAttributes(attribute.Bool("response.emptyish", isEmpty))
 	if isEmpty {
 		lg.Trace().Msgf("response is empty")
 	}
@@ -868,6 +869,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if upstream != nil {
 				if mt := upstream.MetricsTracker(); mt != nil {
 					mt.RecordUpstreamFailure(upstream, method, upstreamErr)
+					mt.RecordUpstreamMisbehavior(upstream, method)
 				}
 			}
 			return true

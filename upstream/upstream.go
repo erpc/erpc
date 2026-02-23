@@ -532,7 +532,9 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				}
 
-				timer.ObserveDuration(false)
+				// ExecutionException is a valid blockchain response (e.g. revert) — count its latency.
+				// All other errors should NOT contribute to the latency quantile.
+				timer.ObserveDuration(common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException))
 				// We're converting a response+error into a pure error. Release the response to avoid retention.
 				if nrs != nil {
 					nrs.Release()
@@ -562,7 +564,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					)
 				}
 			} else {
-				if nrs.IsResultEmptyish() {
+				emptyish := nrs.IsResultEmptyish()
+				if emptyish {
 					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(
 						u.ProjectId,
 						u.VendorName(),
@@ -574,9 +577,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				}
+				// Empty responses shouldn't contribute to latency quantiles — fast empty
+				// returns reflect data absence, not superior upstream performance.
+				timer.ObserveDuration(isSuccess && !emptyish)
 			}
 
-			timer.ObserveDuration(isSuccess)
 			if isSuccess {
 				u.recordRequestSuccess(method)
 			}
