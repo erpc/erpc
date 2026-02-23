@@ -368,18 +368,26 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, em
 		return true
 	})
 
-	// Cancel other hedges when this execution has a result worth taking (accepted result
-	// only — see below). We currently cancel on any non-exhaustion error so the first
-	// failure stops the others (lower latency when all would fail). An alternative is
-	// to cancel only on terminal errors (client/execution exception) so a slower hedge
-	// can still return success when the first returns e.g. "method not supported".
+	// Cancel other hedges when this execution has a result worth taking.
+	//
+	// Error semantics:
+	//   - ErrUpstreamsExhausted: all upstreams in this execution were already tried.
+	//     Cancel other hedges — they will hit the same exhausted pool (no benefit waiting).
+	//   - Terminal/deterministic errors (execution reverted, client faults, method unsupported):
+	//     Cancel other hedges — all upstreams would return the same result.
+	//   - Transient errors (MissingData, ServerSideException, BlockUnavailable):
+	//     Do NOT cancel. In consensus mode each hedge execution only tries one upstream,
+	//     so a transient error from one execution doesn't preclude a different execution
+	//     (targeting a healthy upstream) from succeeding.
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
-		// Don't cancel on exhaustion errors so other hedges can still complete.
-		if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
-			return false
-		}
 		if err != nil {
-			return true
+			// Exhausted = all upstreams already tried in this execution, cancel remaining hedges
+			if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+				return true
+			}
+			// Transient/retryable errors: don't cancel — other hedge executions may reach healthy upstreams
+			// Terminal/deterministic errors: cancel — all upstreams would agree on the same result
+			return !common.IsRetryableTowardNetwork(err)
 		}
 		if result == nil || result.IsObjectNull(exec.Context()) {
 			return false
@@ -556,13 +564,18 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			}
 		}
 
-		// MissingData/RetryEmpty checks apply to both upstream and network scopes.
-		// If RetryEmpty is disabled, don't retry MissingData at all.
-		// If RetryEmpty is enabled but the method is in emptyResultAccept, don't retry.
+		// ErrEndpointMissingData in the error path means one or more upstreams
+		// returned a JSON-RPC error (e.g. "header not found", "missing trie node")
+		// that was classified as missing data. These are transient node errors,
+		// NOT genuinely empty responses — empty responses go through the
+		// response-path retry logic at the ScopeNetwork+result!=nil block below.
+		//
+		// The only suppression we apply here is RetryEmpty=false, which is an
+		// explicit user directive to skip retries on any missing-data scenario.
+		// We intentionally do NOT check emptyResultAccept here: that list governs
+		// which methods may return valid empty results, and has no bearing on
+		// whether transient upstream errors should be retried.
 		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-			// Resolve the request: prefer result.Request(), fallback to
-			// ErrUpstreamsExhausted.Request() (network scope), fallback to
-			// execution context (upstream scope where result is nil).
 			var req *common.NormalizedRequest
 			if result != nil {
 				req = result.Request()
@@ -592,20 +605,6 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						attribute.String("reason", "missing_data_but_retry_empty_disabled"),
 					)
 					return false
-				}
-				if rds := req.Directives(); rds != nil && rds.RetryEmpty {
-					method, _ := req.Method()
-					span.SetAttributes(
-						attribute.String("method", method),
-						attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
-					)
-					if slices.Contains(emptyResultAccept, method) {
-						span.SetAttributes(
-							attribute.Bool("retry", false),
-							attribute.String("reason", "missing_data_method_in_empty_accept_list"),
-						)
-						return false
-					}
 				}
 			}
 		}

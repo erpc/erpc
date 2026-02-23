@@ -163,12 +163,12 @@ func TestNetworkRetry_MissingDataError(t *testing.T) {
 		totalCalls := rpc1CallCount + rpc2CallCount
 		t.Logf("Total upstream calls: %d (rpc1: %d, rpc2: %d)", totalCalls, rpc1CallCount, rpc2CallCount)
 
-		// Both upstreams should be tried exactly once (failover from rpc1 to rpc2).
-		// "missing trie node" is classified as ErrEndpointMissingData which is not retryable
-		// toward the same upstream but is retryable toward the network (tries other upstreams).
-		assert.Equal(t, 2, totalCalls, "Each upstream should be called exactly once")
-		assert.Equal(t, 1, rpc1CallCount, "rpc1 should be called exactly once")
-		assert.Equal(t, 1, rpc2CallCount, "rpc2 should be called exactly once")
+		// With RetryEmpty=true and MaxAttempts=3, MissingData is retried at network scope.
+		// Each attempt exhausts both upstreams (rpc1 then rpc2), so we expect 3 calls
+		// per upstream and 6 total calls.
+		assert.Equal(t, 6, totalCalls, "Should retry network scope across all max attempts")
+		assert.Equal(t, 3, rpc1CallCount, "rpc1 should be called once per attempt")
+		assert.Equal(t, 3, rpc2CallCount, "rpc2 should be called once per attempt")
 	})
 }
 
