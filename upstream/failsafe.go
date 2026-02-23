@@ -620,7 +620,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 
 			// Retry empty responses on network-level to give a chance for another upstream to
 			// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
-			if rds != nil && rds.RetryEmpty {
+			if rds != nil && rds.RetryEmpty && !result.IsEmptyAccepted() {
 				isEmpty := result.IsResultEmptyish()
 				span.SetAttributes(
 					attribute.Bool("directive.retry_empty", true),
