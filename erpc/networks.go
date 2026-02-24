@@ -689,9 +689,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if cause == nil {
 					cause = ctxErr
 				}
-				if bestResp != nil {
-					bestResp.Release()
-				}
 				return nil, cause
 			}
 
@@ -881,8 +878,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// After consensus success, ensure we don't keep a loser in req.LastValidResponse
 	if failsafeExecutor.consensusPolicyEnabled {
-		if lvr := req.LastValidResponse(); lvr != nil && lvr != resp {
-			lvr.Release()
+		if lvr := req.LastValidResponse(); lvr != nil {
 			req.ClearLastValidResponse()
 		}
 	}
@@ -1237,6 +1233,10 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
+	if !n.cfg.MultiplexingEnabled() {
+		return nil, nil, nil
+	}
+
 	mlxHash, err := req.CacheHash()
 	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {

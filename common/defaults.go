@@ -1794,6 +1794,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			n.DirectiveDefaults = &DirectiveDefaultsConfig{}
 			*n.DirectiveDefaults = *defaults.DirectiveDefaults
 		}
+		if n.Multiplexing == nil && defaults.Multiplexing != nil {
+			v := *defaults.Multiplexing
+			n.Multiplexing = &v
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}

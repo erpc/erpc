@@ -448,6 +448,7 @@ type NetworkDefaults struct {
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -1440,6 +1441,14 @@ type NetworkConfig struct {
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
+	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+}
+
+func (n *NetworkConfig) MultiplexingEnabled() bool {
+	if n == nil || n.Multiplexing == nil {
+		return true
+	}
+	return *n.Multiplexing
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
