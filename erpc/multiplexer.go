@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/erpc/erpc/common"
@@ -40,18 +41,26 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
-		// Process the response if provided
+		// Guarantee the done channel is closed even if cloning panics,
+		// so followers never hang indefinitely.
+		defer close(m.done)
+		defer func() {
+			if rec := recover(); rec != nil {
+				m.resp = nil
+				m.err = fmt.Errorf("panic in multiplexer close: %v", rec)
+			}
+		}()
+
 		if resp != nil {
-			if jrr, parseErr := resp.JsonRpcResponse(ctx); parseErr != nil {
-				resp.Request().Network().Logger().Warn().Err(parseErr).Str("multiplexerHash", m.hash).Object("response", resp).Msg("failed to parse response before storing in multiplexer")
-				// If parsing fails, propagate this error instead of storing a response that can't be copied
+			jrr, parseErr := resp.JsonRpcResponse(ctx)
+			if parseErr != nil {
 				if err == nil {
 					err = parseErr
 				}
-				resp = nil // Don't store a response that can't be parsed
+				resp = nil
+			} else if jrr == nil {
+				resp = nil
 			} else {
-				// Create a deep clone of the JsonRpcResponse so that upstream buffers can be released
-				// on the original without affecting the multiplexer copy.
 				cloned, cerr := jrr.Clone()
 				if cerr != nil {
 					resp = nil
@@ -71,11 +80,7 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 			}
 		}
 
-		// Store the final result
 		m.resp = resp
 		m.err = err
-
-		// Signal completion
-		close(m.done)
 	})
 }

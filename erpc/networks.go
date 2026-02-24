@@ -555,9 +555,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					common.SetTraceSpanError(loopSpan, cause)
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, cause
 				}
 
@@ -632,13 +629,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// Hedge cancelled → this execution lost the race, bail out
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 					n.recordHedgeDiscard(loopCtx, loopSpan, &ulg, u, effectiveReq, method, err, attempts, hedges)
-					if r != nil {
-						r.Release()
-					}
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 				}
 
@@ -668,9 +659,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
 						}
 						loopSpan.End()
-						if bestResp != nil {
-							bestResp.Release()
-						}
 						return r, nil
 					}
 				}
@@ -679,27 +667,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// same on every upstream — no point trying others.
 				if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 					common.SetTraceSpanError(loopSpan, err)
-					if r != nil {
-						r.Release()
-					}
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, err
 				}
 
 				// Track best result and continue to next upstream.
 				if err != nil {
 					lastErr = err
-					if r != nil {
-						r.Release()
-					}
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					bestResp = r
 					loopSpan.SetStatus(codes.Ok, "")
 				}
