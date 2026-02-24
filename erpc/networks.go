@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -847,6 +848,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if execErr == nil && !isEmpty {
 		n.enrichStatePoller(ctx, method, req, resp)
 
+		// Extract block number from successful response for block availability bounds check below.
+		var respBlockNumber int64
+		if n.cfg.Architecture == common.ArchitectureEvm {
+			if _, bn, err := evm.ExtractBlockReferenceFromResponse(ctx, resp); err == nil && bn > 0 {
+				respBlockNumber = bn
+			}
+		}
+
 		// If response is not empty, but at least one upstream responded empty we track in a metric.
 		// Derived from ErrorsByUpstream entries with ErrEndpointMissingData code.
 		req.ErrorsByUpstream.Range(func(key, value any) bool {
@@ -866,9 +875,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				req.UserId(),
 				req.AgentName(),
 			).Inc()
+
+			// If the response block number is known, check if it falls outside
+			// this upstream's configured block availability range.
+			// If so, the empty response was expected — skip misbehavior recording.
+			if respBlockNumber > 0 {
+				minBound, maxBound := upstream.EvmBlockAvailabilityBounds()
+				if (minBound != math.MinInt64 && respBlockNumber < minBound) ||
+					(maxBound != math.MaxInt64 && respBlockNumber > maxBound) {
+					return true
+				}
+			}
+
+			// Wrong-empty is a misbehavior (data disagreement with other upstreams),
+			// not an error. The upstream responded correctly, it just lacked data
+			// that others had. Only record misbehavior, not failure.
 			if upstream != nil {
 				if mt := upstream.MetricsTracker(); mt != nil {
-					mt.RecordUpstreamFailure(upstream, method, upstreamErr)
 					mt.RecordUpstreamMisbehavior(upstream, method)
 				}
 			}

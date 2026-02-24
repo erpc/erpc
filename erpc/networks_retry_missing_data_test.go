@@ -1381,6 +1381,301 @@ func TestNetworkForward_UpstreamReselection_WrongEmptyStillTracked(t *testing.T)
 	})
 }
 
+// Test: wrong-empty punishment respects block availability bounds.
+// When an upstream with blockAvailability config returns empty for a request
+// whose response block number falls outside the upstream's configured range,
+// the upstream should NOT be punished (no misbehavior recorded).
+func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *testing.T) {
+	txHash := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// Block 200 in hex = 0xC8
+	txReceiptResult := map[string]interface{}{
+		"blockHash":   "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"blockNumber": "0xC8",
+		"from":        "0x1111111111111111111111111111111111111111",
+		"to":          "0x2222222222222222222222222222222222222222",
+		"hash":        txHash,
+	}
+	int64Ptr := func(v int64) *int64 { return &v }
+
+	t.Run("BoundedUpstream_BlockOutOfRange_NoPunishment", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// rpc1 returns null (block 200 is above its upper bound of 100)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		// rpc2 returns transaction data with blockNumber 200
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  txReceiptResult,
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc1",
+					Endpoint: "http://rpc1.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+						BlockAvailability: &common.EvmBlockAvailabilityConfig{
+							Upper: &common.EvmAvailabilityBoundConfig{
+								ExactBlock: int64Ptr(100),
+							},
+						},
+					},
+				},
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc2",
+					Endpoint: "http://rpc2.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		// rpc1 should be in ErrorsByUpstream (for observability)
+		emptyCount := 0
+		req.ErrorsByUpstream.Range(func(key, value interface{}) bool {
+			if err, ok := value.(error); ok {
+				if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+					emptyCount++
+				}
+			}
+			return true
+		})
+		assert.Equal(t, 1, emptyCount, "rpc1 should still be tracked in ErrorsByUpstream")
+
+		// But rpc1 should NOT be punished — block 200 is outside its upper bound of 100
+		ups := network.upstreamsRegistry.GetAllUpstreams()
+		var rpc1 *upstream.Upstream
+		for _, u := range ups {
+			if u.Id() == "rpc1" {
+				rpc1 = u
+				break
+			}
+		}
+		require.NotNil(t, rpc1)
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		assert.Equal(t, int64(0), metrics.MisbehaviorsTotal.Load(),
+			"rpc1 should NOT have misbehavior recorded — block 200 is outside its upper bound of 100")
+	})
+
+	t.Run("BoundedUpstream_BlockInRange_MisbehaviorRecorded", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// rpc1 returns null (block 200 is within its upper bound of 300)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		// rpc2 returns transaction data with blockNumber 200
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  txReceiptResult,
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc1",
+					Endpoint: "http://rpc1.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+						BlockAvailability: &common.EvmBlockAvailabilityConfig{
+							Upper: &common.EvmAvailabilityBoundConfig{
+								ExactBlock: int64Ptr(300),
+							},
+						},
+					},
+				},
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc2",
+					Endpoint: "http://rpc2.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		// rpc1 SHOULD be punished — block 200 is within its upper bound of 300
+		ups := network.upstreamsRegistry.GetAllUpstreams()
+		var rpc1 *upstream.Upstream
+		for _, u := range ups {
+			if u.Id() == "rpc1" {
+				rpc1 = u
+				break
+			}
+		}
+		require.NotNil(t, rpc1)
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
+			"rpc1 SHOULD have misbehavior recorded — block 200 is within its upper bound of 300")
+		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),
+			"rpc1 should NOT have errors recorded — wrong-empty only records misbehavior, not failure")
+	})
+
+	t.Run("UnboundedUpstream_MisbehaviorRecorded", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// rpc1 returns null (no block availability configured)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  nil,
+			})
+
+		// rpc2 returns transaction data
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  txReceiptResult,
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc1",
+					Endpoint: "http://rpc1.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc2",
+					Endpoint: "http://rpc2.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		// rpc1 SHOULD be punished — no block availability config means unbounded
+		ups := network.upstreamsRegistry.GetAllUpstreams()
+		var rpc1 *upstream.Upstream
+		for _, u := range ups {
+			if u.Id() == "rpc1" {
+				rpc1 = u
+				break
+			}
+		}
+		require.NotNil(t, rpc1)
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash")
+		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
+			"rpc1 SHOULD have misbehavior recorded — no block availability bounds configured")
+		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),
+			"rpc1 should NOT have errors recorded — wrong-empty only records misbehavior, not failure")
+	})
+}
+
 // Test: blockUnavailableDelay applied after full round of all upstreams
 // reporting block unavailable. The request targets a future block that the
 // state poller hasn't seen yet, so the pre-flight check skips all upstreams.
@@ -2469,4 +2764,75 @@ func setupTestNetworkForMissingDataRetry(
 ) *Network {
 	t.Helper()
 	return setupTestNetworkWithRetryConfig(t, ctx, directiveDefaults, retryConfig)
+}
+
+func setupTestNetworkWithCustomUpstreams(
+	t *testing.T,
+	ctx context.Context,
+	upstreamConfigs []*common.UpstreamConfig,
+	directiveDefaults *common.DirectiveDefaultsConfig,
+	retryConfig *common.RetryPolicyConfig,
+) *Network {
+	t.Helper()
+
+	networkConfig := &common.NetworkConfig{
+		Architecture:      common.ArchitectureEvm,
+		DirectiveDefaults: directiveDefaults,
+		Evm: &common.EvmNetworkConfig{
+			ChainId: 123,
+		},
+		Failsafe: []*common.FailsafeConfig{{
+			Retry: retryConfig,
+		}},
+	}
+
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	require.NoError(t, err)
+
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems:     100_000,
+				MaxTotalSize: "1GB",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx,
+		&log.Logger,
+		"test",
+		upstreamConfigs,
+		ssr,
+		rateLimitersRegistry,
+		vr,
+		pr,
+		nil,
+		metricsTracker,
+		time.Second,
+		nil,
+		nil,
+	)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+	require.NoError(t, err)
+
+	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
+	require.NoError(t, err)
+
+	err = network.Bootstrap(ctx)
+	require.NoError(t, err)
+
+	return network
 }

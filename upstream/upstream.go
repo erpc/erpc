@@ -1074,6 +1074,15 @@ func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
 	return finalizedBlock
 }
 
+// EvmBlockAvailabilityBounds returns the resolved [min, max] block availability bounds
+// for this upstream based on its BlockAvailability configuration.
+// Returns (math.MinInt64, math.MaxInt64) when unbounded on either side.
+// This is used post-forward to determine if an upstream's MissingData response
+// is expected (block outside configured range) vs. a genuine wrong-empty misbehavior.
+func (u *Upstream) EvmBlockAvailabilityBounds() (int64, int64) {
+	return u.resolveAvailabilityBounds()
+}
+
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
 // It returns whether the block is within the available range and records metrics if not.
 func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller common.EvmStatePoller, blockNumber int64, maxAvailableRecentBlocks int64, forMethod string, confidence common.AvailbilityConfidence) (available bool, err error) {

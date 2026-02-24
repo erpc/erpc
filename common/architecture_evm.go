@@ -25,6 +25,9 @@ type EvmUpstream interface {
 	// EvmEffectiveFinalizedBlock returns the finalized block adjusted for the upstream's upper availability bound.
 	// If the upstream has a blockAvailability.upper config, this returns min(finalizedBlock, upperBound).
 	EvmEffectiveFinalizedBlock() int64
+	// EvmBlockAvailabilityBounds returns the resolved [min, max] block range this upstream
+	// is configured to serve. Returns (math.MinInt64, math.MaxInt64) for unbounded sides.
+	EvmBlockAvailabilityBounds() (int64, int64)
 }
 
 type AvailbilityConfidence int
