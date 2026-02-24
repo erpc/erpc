@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 
@@ -150,6 +151,21 @@ func (u *FakeUpstream) EvmEffectiveFinalizedBlock() int64 {
 		return 0
 	}
 	return u.evmStatePoller.FinalizedBlock()
+}
+
+func (u *FakeUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
+	cfg := u.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil {
+		return math.MinInt64, math.MaxInt64
+	}
+	minVal, maxVal := int64(math.MinInt64), int64(math.MaxInt64)
+	if cfg.Evm.BlockAvailability.Lower != nil && cfg.Evm.BlockAvailability.Lower.ExactBlock != nil {
+		minVal = *cfg.Evm.BlockAvailability.Lower.ExactBlock
+	}
+	if cfg.Evm.BlockAvailability.Upper != nil && cfg.Evm.BlockAvailability.Upper.ExactBlock != nil {
+		maxVal = *cfg.Evm.BlockAvailability.Upper.ExactBlock
+	}
+	return minVal, maxVal
 }
 
 type FakeEvmStatePoller struct {

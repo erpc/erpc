@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -78,6 +79,10 @@ func (m *mockUpstreamForRetry) EvmEffectiveLatestBlock() int64 {
 
 func (m *mockUpstreamForRetry) EvmEffectiveFinalizedBlock() int64 {
 	return 0
+}
+
+func (m *mockUpstreamForRetry) EvmBlockAvailabilityBounds() (int64, int64) {
+	return math.MinInt64, math.MaxInt64
 }
 
 // Test helper to execute retry policy
