@@ -90,6 +90,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	wsDuration := prjCfg.ScoreMetricsWindowSize.Duration()
 	metricsTracker := health.NewTracker(&lg, prjCfg.Id, wsDuration)
+	metricsTracker.SetKnownEvmBlockTimes(evm.KnownBlockTimes)
 	providersRegistry, err := thirdparty.NewProvidersRegistry(
 		&lg,
 		r.vendorsRegistry,

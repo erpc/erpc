@@ -847,3 +847,135 @@ func TestRecordUpstreamMisbehavior_WrongEmpty(t *testing.T) {
 			"regular errors should have zero misbehavior rate")
 	})
 }
+
+func TestGetNetworkBlockTime(t *testing.T) {
+	t.Run("UnknownChainNoSamples_ReturnsZero", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+
+		// No known block times, no EMA samples → 0
+		d := tracker.GetNetworkBlockTime("evm:99999", 99999)
+		assert.Equal(t, time.Duration(0), d)
+	})
+
+	t.Run("FallbackToKnownBlockTimes", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.SetKnownEvmBlockTimes(map[int64]time.Duration{
+			1: 12 * time.Second,
+		})
+
+		// No EMA samples yet → falls back to known
+		d := tracker.GetNetworkBlockTime("evm:1", 1)
+		assert.Equal(t, 12*time.Second, d)
+	})
+
+	t.Run("EMABecomesAvailableAfterMinSamples", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.SetMinBlockTimeSamples(3) // low threshold for testing
+		tracker.SetKnownEvmBlockTimes(map[int64]time.Duration{
+			1: 12 * time.Second,
+		})
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// Simulate poll cycles with 12s block time (1 block per 12 seconds)
+		baseBlock := int64(1000)
+		baseTimestamp := int64(1700000000)
+
+		// First call: sets prev values, no sample yet
+		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
+		d := tracker.GetNetworkBlockTime(networkId, 1)
+		assert.Equal(t, 12*time.Second, d, "before minSamples, should fall back to known")
+
+		// Generate samples (each 1 block, 12 seconds apart)
+		for i := int64(1); i <= 3; i++ {
+			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*12)
+		}
+
+		// Now should have 3 samples → EMA is available
+		d = tracker.GetNetworkBlockTime(networkId, 1)
+		assert.NotEqual(t, time.Duration(0), d, "should have a dynamic value")
+		// The EMA should be close to 12s
+		assert.InDelta(t, 12.0, d.Seconds(), 1.0, "EMA should be close to 12s block time")
+	})
+
+	t.Run("EMAOverridesKnownWhenReady", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.SetMinBlockTimeSamples(2)
+		tracker.SetKnownEvmBlockTimes(map[int64]time.Duration{
+			1: 12 * time.Second, // known says 12s
+		})
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// Simulate 6s actual block time (different from known 12s)
+		baseBlock := int64(1000)
+		baseTimestamp := int64(1700000000)
+
+		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
+		for i := int64(1); i <= 3; i++ {
+			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*6)
+		}
+
+		d := tracker.GetNetworkBlockTime(networkId, 1)
+		// Should be closer to 6s than 12s
+		assert.Less(t, d.Seconds(), 10.0, "dynamic EMA should override known 12s")
+		assert.Greater(t, d.Seconds(), 3.0, "should be in reasonable range")
+	})
+
+	t.Run("EMAConvergesToTrueBlockTime", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.SetMinBlockTimeSamples(1) // report after first sample
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// Simulate 2s block time over many samples
+		baseBlock := int64(1000)
+		baseTimestamp := int64(1700000000)
+		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
+
+		for i := int64(1); i <= 50; i++ {
+			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*2)
+		}
+
+		d := tracker.GetNetworkBlockTime(networkId, 0)
+		// After 50 samples, EMA should be very close to 2s
+		assert.InDelta(t, 2.0, d.Seconds(), 0.2, "EMA should converge to 2s block time")
+	})
+
+	t.Run("IgnoresZeroTimestamp", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.SetMinBlockTimeSamples(1)
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// First call with valid timestamp
+		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
+		// Second call with zero timestamp (from shared state, not direct fetch)
+		tracker.SetLatestBlockNumber(ups, 1001, 0)
+		// Third call with valid timestamp
+		tracker.SetLatestBlockNumber(ups, 1002, 1700000024)
+
+		// Should only have 1 sample (from block 1000→1002)
+		d := tracker.GetNetworkBlockTime(networkId, 0)
+		assert.Equal(t, 12*time.Second, d, "should compute from valid timestamps only")
+	})
+
+	t.Run("RejectsAbsurdValues", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.SetMinBlockTimeSamples(1)
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// Simulate absurdly large block time (> 120s)
+		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
+		tracker.SetLatestBlockNumber(ups, 1001, 1700000200) // 200s per block
+
+		d := tracker.GetNetworkBlockTime(networkId, 0)
+		assert.Equal(t, time.Duration(0), d, "should reject absurd block times")
+	})
+}

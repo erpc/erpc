@@ -1435,14 +1435,17 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 }
 
 func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime(chainId int64) {
-	if d, ok := KnownBlockTimes[chainId]; ok {
-		// Anything lower than 1 second has a chance of causing a thundering herd (e.g. a high RPS for a method like getLogs).
-		// If users truly want to have a smaller value they can directly set the debounce interval
-		// either on network config or upstream config.
-		if d < 1*time.Second {
-			e.debounceInterval = 1 * time.Second
-		} else {
-			e.debounceInterval = d
-		}
+	networkId := e.upstream.NetworkId()
+	d := e.tracker.GetNetworkBlockTime(networkId, chainId)
+	if d <= 0 {
+		return
+	}
+	// Anything lower than 1 second has a chance of causing a thundering herd (e.g. a high RPS for a method like getLogs).
+	// If users truly want to have a smaller value they can directly set the debounce interval
+	// either on network config or upstream config.
+	if d < 1*time.Second {
+		e.debounceInterval = 1 * time.Second
+	} else {
+		e.debounceInterval = d
 	}
 }
