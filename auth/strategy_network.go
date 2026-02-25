@@ -12,6 +12,7 @@ type NetworkStrategy struct {
 	cfg          *common.NetworkStrategyConfig
 	allowedIPs   []*net.IP
 	allowedCIDRs []*net.IPNet
+	ipAsUser     bool
 }
 
 var _ AuthStrategy = &NetworkStrategy{}
@@ -19,6 +20,7 @@ var _ AuthStrategy = &NetworkStrategy{}
 func NewNetworkStrategy(cfg *common.NetworkStrategyConfig) (*NetworkStrategy, error) {
 	s := &NetworkStrategy{
 		cfg: cfg,
+		ipAsUser: cfg.IPAsUser,
 	}
 
 	// Parse and store allowed IPs
@@ -80,7 +82,10 @@ func (s *NetworkStrategy) Authenticate(ctx context.Context, req *common.Normaliz
 	// Check against allowed CIDRs
 	for _, cidr := range s.allowedCIDRs {
 		if cidr.Contains(clientIP) {
-			user := &common.User{Id: clientIP.String()}
+			user := &common.User{Id: cidr.String()}
+			if (s.ipAsUser) {
+				user.Id = clientIP.String()
+			}
 			if s.cfg.RateLimitBudget != "" {
 				user.RateLimitBudget = s.cfg.RateLimitBudget
 			}

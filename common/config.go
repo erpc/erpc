@@ -1755,6 +1755,7 @@ type NetworkStrategyConfig struct {
 	TrustedProxies []string `yaml:"trustedProxies" json:"trustedProxies"`
 	// RateLimitBudget, if set, is applied to the authenticated user (client IP)
 	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	IPAsUser        bool   `yaml:"ipAsUser,omitempty" json:"ipAsUser,omitempty"`
 }
 
 type LabelMode string
