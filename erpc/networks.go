@@ -306,15 +306,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
-		// When the original request is already fulfilled by multiplexer
-		forwardSpan.SetAttributes(attribute.Bool("multiplexed", true))
+		// When the original request is already fulfilled by multiplexer (follower path)
+		forwardSpan.SetAttributes(
+			attribute.Bool("multiplexed", true),
+			attribute.String("multiplexer.role", "follower"),
+		)
 		if err != nil {
 			common.SetTraceSpanError(forwardSpan, err)
 		}
 		return resp, err
 	}
 	if mlx != nil {
-		// If we decided to multiplex, we need to make sure to clean up the multiplexer
+		forwardSpan.SetAttributes(
+			attribute.String("multiplexer.hash", mlx.hash),
+			attribute.String("multiplexer.role", "leader"),
+		)
 		defer n.cleanupMultiplexer(mlx)
 	}
 
@@ -555,9 +561,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					common.SetTraceSpanError(loopSpan, cause)
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, cause
 				}
 
@@ -632,13 +635,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// Hedge cancelled → this execution lost the race, bail out
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 					n.recordHedgeDiscard(loopCtx, loopSpan, &ulg, u, effectiveReq, method, err, attempts, hedges)
-					if r != nil {
-						r.Release()
-					}
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 				}
 
@@ -668,9 +665,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
 						}
 						loopSpan.End()
-						if bestResp != nil {
-							bestResp.Release()
-						}
 						return r, nil
 					}
 				}
@@ -679,27 +673,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// same on every upstream — no point trying others.
 				if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 					common.SetTraceSpanError(loopSpan, err)
-					if r != nil {
-						r.Release()
-					}
 					loopSpan.End()
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					return nil, err
 				}
 
 				// Track best result and continue to next upstream.
 				if err != nil {
 					lastErr = err
-					if r != nil {
-						r.Release()
-					}
 					common.SetTraceSpanError(loopSpan, err)
 				} else if r != nil {
-					if bestResp != nil {
-						bestResp.Release()
-					}
 					bestResp = r
 					loopSpan.SetStatus(codes.Ok, "")
 				}
@@ -712,9 +694,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				cause := context.Cause(execSpanCtx)
 				if cause == nil {
 					cause = ctxErr
-				}
-				if bestResp != nil {
-					bestResp.Release()
 				}
 				return nil, cause
 			}
@@ -768,11 +747,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
-			// Ensure any lastValidResponse kept on the request is released and cleared
-			if lvr := req.LastValidResponse(); lvr != nil {
-				lvr.Release()
-				req.ClearLastValidResponse()
-			}
+			// LVR is a borrowed pointer — consensus executor owns releasing all participant
+			// responses (winners and losers). Just drop our reference to avoid dangling pointer.
+			req.ClearLastValidResponse()
 			return nil, translatedErr
 		}
 
@@ -800,8 +777,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if resp != nil {
 		if n.cacheDal != nil {
-			resp.RLockWithTrace(ctx)
-			// Hold a reference so Release waits for cache-set to complete
+			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
+			// TODO For other architectures we might need a different approach
+			_, _ = resp.JsonRpcResponse(ctx)
 			resp.AddRef()
 
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
@@ -818,7 +796,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							Msgf("unexpected panic on cache-set")
 					}
 				})()
-				defer resp.RUnlock()
 				defer resp.DoneRef()
 
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
@@ -903,12 +880,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		mlx.Close(ctx, resp, nil)
 	}
 
-	// After consensus success, ensure we don't keep a loser in req.LastValidResponse
+	// LVR is a borrowed pointer — consensus executor owns releasing non-winner responses.
+	// Just drop our reference so it doesn't outlive the response lifecycle.
 	if failsafeExecutor.consensusPolicyEnabled {
-		if lvr := req.LastValidResponse(); lvr != nil && lvr != resp {
-			lvr.Release()
-			req.ClearLastValidResponse()
-		}
+		req.ClearLastValidResponse()
 	}
 
 	return resp, nil
@@ -1261,6 +1236,10 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
+	if !n.cfg.MultiplexingEnabled() {
+		return nil, nil, nil
+	}
+
 	mlxHash, err := req.CacheHash()
 	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {
@@ -1303,6 +1282,10 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 
 		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
 
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.SetAttributes(attribute.String("multiplexer.hash", mlxHash))
+		}
+
 		resp, err := n.waitForMultiplexResult(ctx, inf, req, startTime)
 
 		// Done() is called in waitForMultiplexResult via defer
@@ -1323,6 +1306,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Network.WaitForMultiplexResult")
 	defer span.End()
+	span.SetAttributes(attribute.String("multiplexer.hash", mlx.hash))
 
 	// Caller already registered with copyWg.Add(1), ensure we signal completion
 	defer mlx.copyWg.Done()

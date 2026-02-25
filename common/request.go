@@ -379,6 +379,10 @@ func (r *NormalizedRequest) LastUpstream() Upstream {
 	return nil
 }
 
+// SetLastValidResponse stores a borrowed reference to the most recent valid response.
+// This is a non-owning pointer: the caller that produced the response (upstream Forward,
+// consensus executor, etc.) is responsible for its Release(). Overwriting a previous
+// LVR does NOT release the old one — the original producer still owns it.
 func (r *NormalizedRequest) SetLastValidResponse(ctx context.Context, nrs *NormalizedResponse) bool {
 	if r == nil || nrs == nil {
 		return false
@@ -406,7 +410,8 @@ func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
 	return r.lastValidResponse.Load()
 }
 
-// ClearLastValidResponse clears the stored last valid response pointer.
+// ClearLastValidResponse drops the borrowed reference without releasing the response.
+// The original producer is responsible for calling Release().
 func (r *NormalizedRequest) ClearLastValidResponse() {
 	if r == nil {
 		return

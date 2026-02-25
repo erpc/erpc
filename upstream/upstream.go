@@ -534,8 +534,15 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 				// ExecutionException is a valid blockchain response (e.g. revert) — count its latency.
 				// All other errors should NOT contribute to the latency quantile.
-				timer.ObserveDuration(common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException))
+				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
+				timer.ObserveDuration(isRevert)
 				// We're converting a response+error into a pure error. Release the response to avoid retention.
+				// Only clear LVR for execution exceptions: these are "response+error" cases where
+				// this same response may have been stored as LVR above (line ~465). For missing-data
+				// and other retryable errors we keep LVR so network-level fallback can still work.
+				if isRevert {
+					nrq.ClearLastValidResponse()
+				}
 				if nrs != nil {
 					nrs.Release()
 					nrs = nil

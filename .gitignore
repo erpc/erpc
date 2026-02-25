@@ -23,3 +23,4 @@ bin/**
 temp/**
 erpc-bin
 erpc.yml
+.claude/**
