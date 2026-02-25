@@ -1930,6 +1930,7 @@ func DefaultEmptyResultAccept() []string {
 // only allow null for pending txs.
 func DefaultMarkEmptyAsErrorMethods() []string {
 	return []string{
+		"eth_blockNumber",
 		"eth_getBlockByNumber",
 		"eth_getBlockReceipts",
 		"eth_getTransactionByHash",

@@ -306,15 +306,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
-		// When the original request is already fulfilled by multiplexer
-		forwardSpan.SetAttributes(attribute.Bool("multiplexed", true))
+		// When the original request is already fulfilled by multiplexer (follower path)
+		forwardSpan.SetAttributes(
+			attribute.Bool("multiplexed", true),
+			attribute.String("multiplexer.role", "follower"),
+		)
 		if err != nil {
 			common.SetTraceSpanError(forwardSpan, err)
 		}
 		return resp, err
 	}
 	if mlx != nil {
-		// If we decided to multiplex, we need to make sure to clean up the multiplexer
+		forwardSpan.SetAttributes(
+			attribute.String("multiplexer.hash", mlx.hash),
+			attribute.String("multiplexer.role", "leader"),
+		)
 		defer n.cleanupMultiplexer(mlx)
 	}
 
@@ -1279,6 +1285,10 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 
 		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
 
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.SetAttributes(attribute.String("multiplexer.hash", mlxHash))
+		}
+
 		resp, err := n.waitForMultiplexResult(ctx, inf, req, startTime)
 
 		// Done() is called in waitForMultiplexResult via defer
@@ -1299,6 +1309,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Network.WaitForMultiplexResult")
 	defer span.End()
+	span.SetAttributes(attribute.String("multiplexer.hash", mlx.hash))
 
 	// Caller already registered with copyWg.Add(1), ensure we signal completion
 	defer mlx.copyWg.Done()
