@@ -747,11 +747,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
-			// Ensure any lastValidResponse kept on the request is released and cleared
-			if lvr := req.LastValidResponse(); lvr != nil {
-				lvr.Release()
-				req.ClearLastValidResponse()
-			}
+			// LVR is a borrowed pointer — consensus executor owns releasing all participant
+			// responses (winners and losers). Just drop our reference to avoid dangling pointer.
+			req.ClearLastValidResponse()
 			return nil, translatedErr
 		}
 
@@ -779,8 +777,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if resp != nil {
 		if n.cacheDal != nil {
-			resp.RLockWithTrace(ctx)
-			// Hold a reference so Release waits for cache-set to complete
+			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
+			// TODO For other architectures we might need a different approach
+			_, _ = resp.JsonRpcResponse(ctx)
 			resp.AddRef()
 
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
@@ -797,7 +796,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							Msgf("unexpected panic on cache-set")
 					}
 				})()
-				defer resp.RUnlock()
 				defer resp.DoneRef()
 
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
@@ -882,11 +880,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		mlx.Close(ctx, resp, nil)
 	}
 
-	// After consensus success, ensure we don't keep a loser in req.LastValidResponse
+	// LVR is a borrowed pointer — consensus executor owns releasing non-winner responses.
+	// Just drop our reference so it doesn't outlive the response lifecycle.
 	if failsafeExecutor.consensusPolicyEnabled {
-		if lvr := req.LastValidResponse(); lvr != nil {
-			req.ClearLastValidResponse()
-		}
+		req.ClearLastValidResponse()
 	}
 
 	return resp, nil
