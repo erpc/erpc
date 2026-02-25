@@ -870,7 +870,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 	t.Run("EMABecomesAvailableAfterMinSamples", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetMinBlockTimeSamples(3) // low threshold for testing
+		tracker.SetNetworkBlockTimeMinSamples("evm:123", 3) // low threshold for testing
 		tracker.SetKnownEvmBlockTimes(map[int64]time.Duration{
 			1: 12 * time.Second,
 		})
@@ -901,7 +901,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 	t.Run("EMAOverridesKnownWhenReady", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetMinBlockTimeSamples(2)
+		tracker.SetNetworkBlockTimeMinSamples("evm:123", 2)
 		tracker.SetKnownEvmBlockTimes(map[int64]time.Duration{
 			1: 12 * time.Second, // known says 12s
 		})
@@ -926,7 +926,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 	t.Run("EMAConvergesToTrueBlockTime", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetMinBlockTimeSamples(1) // report after first sample
+		tracker.SetNetworkBlockTimeMinSamples("evm:123", 1) // report after first sample
 
 		ups := common.NewFakeUpstream("ups1")
 		networkId := ups.NetworkId()
@@ -947,7 +947,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 	t.Run("IgnoresZeroTimestamp", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetMinBlockTimeSamples(1)
+		tracker.SetNetworkBlockTimeMinSamples("evm:123", 1)
 
 		ups := common.NewFakeUpstream("ups1")
 		networkId := ups.NetworkId()
@@ -966,7 +966,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 	t.Run("RejectsAbsurdValues", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetMinBlockTimeSamples(1)
+		tracker.SetNetworkBlockTimeMinSamples("evm:123", 1)
 
 		ups := common.NewFakeUpstream("ups1")
 		networkId := ups.NetworkId()

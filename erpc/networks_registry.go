@@ -167,6 +167,11 @@ func NewNetwork(
 		nwCfg.Architecture = common.ArchitectureEvm
 	}
 
+	// Apply per-network block time samples config to the tracker
+	if nwCfg.Evm != nil && nwCfg.Evm.BlockTimeSamples != nil {
+		metricsTracker.SetNetworkBlockTimeMinSamples(netId, *nwCfg.Evm.BlockTimeSamples)
+	}
+
 	return network, nil
 }
 

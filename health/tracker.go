@@ -50,10 +50,10 @@ type NetworkMetadata struct {
 	evmFinalizedBlockNumber atomic.Int64
 
 	// EMA-based dynamic block time tracking
-	evmBlockTime          atomic.Int64 // current EMA value in nanoseconds; 0 = not yet available
-	evmBlockTimeSamples   atomic.Int64 // number of EMA samples accumulated
-	evmPrevBlockNumber    atomic.Int64 // previous block number for delta computation
-	evmPrevBlockTimestamp atomic.Int64 // previous block timestamp (unix seconds) for delta computation
+	evmBlockTime           atomic.Int64 // current EMA value in nanoseconds; 0 = not yet available
+	evmBlockTimeSamples    atomic.Int64 // number of EMA samples accumulated
+	evmBlockTimeMinSamples atomic.Int64 // minimum samples before reporting (0 = use default 10)
+	evmBlockTimeRefBlock   atomic.Int64 // block number from the last valid (block, timestamp) pair used for EMA
 }
 
 type Timer struct {
@@ -167,8 +167,7 @@ type Tracker struct {
 	mu                 sync.RWMutex             // Protect the map
 
 	// Dynamic block time tracking
-	knownEvmBlockTimes  map[int64]time.Duration // injected known block times (e.g. from KnownBlockTimes)
-	minBlockTimeSamples int64                   // minimum EMA samples before reporting block time (default 10)
+	knownEvmBlockTimes map[int64]time.Duration // injected known block times (e.g. from KnownBlockTimes)
 
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
@@ -339,7 +338,6 @@ func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Durati
 		projectId:           projectId,
 		windowSize:          windowSize,
 		upstreamsByNetwork:  make(map[string][]upstreamKey),
-		minBlockTimeSamples: 10,
 	}
 }
 
@@ -743,6 +741,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// 1) Possibly update the network-level highest block head
 	ntwMeta := t.getMetadata(ntwMdKey)
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()
+	oldNtwTs := ntwMeta.evmLatestBlockTimestamp.Load()
 	needsGlobalUpdate := false
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
@@ -764,7 +763,11 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			).Set(float64(distance))
 
 			// Update EMA-based block time tracking
-			t.updateBlockTimeEMA(ntwMeta, netLabel, blockNumber, blockTimestamp)
+			// Use evmBlockTimeRefBlock (not oldNtwVal) because evmLatestBlockNumber
+			// advances even on calls with timestamp=0, which would skew the delta.
+			prevRefBlock := ntwMeta.evmBlockTimeRefBlock.Load()
+			t.updateBlockTimeEMA(ntwMeta, netLabel, blockNumber, blockTimestamp, prevRefBlock, oldNtwTs)
+			ntwMeta.evmBlockTimeRefBlock.Store(blockNumber)
 		}
 	}
 
@@ -827,29 +830,25 @@ func (t *Tracker) SetKnownEvmBlockTimes(m map[int64]time.Duration) {
 	t.knownEvmBlockTimes = m
 }
 
-// SetMinBlockTimeSamples configures the minimum number of EMA samples required
-// before GetNetworkBlockTime reports a dynamic value.
-func (t *Tracker) SetMinBlockTimeSamples(n int64) {
-	t.minBlockTimeSamples = n
+// SetNetworkBlockTimeMinSamples configures the minimum number of EMA samples required
+// before GetNetworkBlockTime reports a dynamic value for a specific network.
+// If not set, defaults to 10.
+func (t *Tracker) SetNetworkBlockTimeMinSamples(networkId string, n int64) {
+	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
+	ntwMeta.evmBlockTimeMinSamples.Store(n)
 }
 
 // updateBlockTimeEMA computes a per-block time sample from the delta between
-// consecutive (blockNumber, blockTimestamp) pairs and folds it into the running EMA.
-func (t *Tracker) updateBlockTimeEMA(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64) {
-	prevNum := ntwMeta.evmPrevBlockNumber.Load()
-	prevTs := ntwMeta.evmPrevBlockTimestamp.Load()
-
-	// Store current as previous for next iteration
-	ntwMeta.evmPrevBlockNumber.Store(blockNumber)
-	ntwMeta.evmPrevBlockTimestamp.Store(blockTimestamp)
-
+// the current and previous (blockNumber, blockTimestamp) pairs and folds it into the running EMA.
+// prevBlockNumber and prevBlockTimestamp are the values captured before overwriting.
+func (t *Tracker) updateBlockTimeEMA(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64, prevBlockNumber int64, prevBlockTimestamp int64) {
 	// Need valid previous values to compute a delta
-	if prevNum <= 0 || prevTs <= 0 {
+	if prevBlockNumber <= 0 || prevBlockTimestamp <= 0 {
 		return
 	}
 
-	blockDiff := blockNumber - prevNum
-	timeDiff := blockTimestamp - prevTs
+	blockDiff := blockNumber - prevBlockNumber
+	timeDiff := blockTimestamp - prevBlockTimestamp
 	if blockDiff <= 0 || timeDiff <= 0 {
 		return
 	}
@@ -886,8 +885,13 @@ func (t *Tracker) updateBlockTimeEMA(ntwMeta *NetworkMetadata, netLabel string, 
 func (t *Tracker) GetNetworkBlockTime(networkId string, chainId int64) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
+	minSamples := ntwMeta.evmBlockTimeMinSamples.Load()
+	if minSamples <= 0 {
+		minSamples = 10 // default
+	}
+
 	samples := ntwMeta.evmBlockTimeSamples.Load()
-	if samples >= t.minBlockTimeSamples {
+	if samples >= minSamples {
 		if v := ntwMeta.evmBlockTime.Load(); v > 0 {
 			return time.Duration(v)
 		}
