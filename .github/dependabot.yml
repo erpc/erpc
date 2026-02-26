@@ -1,121 +1,102 @@
 version: 2
+
+multi-ecosystem-groups:
+  all-updates:
+    schedule:
+      interval: "weekly"
+    reviewers:
+      - "kasrakhosravi"
+      - "aramalipoor"
+    labels:
+      - "dependencies"
+
 updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-actions:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: weekly
+  - package-ecosystem: "docker"
+    directory: "/"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-docker:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: docker
-    directory: /docs
-    schedule:
-      interval: weekly
+  - package-ecosystem: "docker"
+    directory: "/docs"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-docker-docs:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: npm
-    directory: /docs
-    schedule:
-      interval: weekly
+  - package-ecosystem: "docker"
+    directory: "/monitoring"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-npm-docs:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: gomod
-    directory: /
-    schedule:
-      interval: weekly
+  - package-ecosystem: "gomod"
+    directory: "/"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-go:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: docker
-    directory: /monitoring
-    schedule:
-      interval: weekly
+  - package-ecosystem: "npm"
+    directory: "/"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-docker-monitoring:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
+  - package-ecosystem: "npm"
+    directory: "/docs"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-npm-root:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: npm
-    directory: /test/util
-    schedule:
-      interval: weekly
+  - package-ecosystem: "npm"
+    directory: "/test/util"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-npm-test:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: npm
-    directory: /typescript/cli
-    schedule:
-      interval: weekly
+  - package-ecosystem: "npm"
+    directory: "/typescript/cli"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-npm-cli:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
 
-  - package-ecosystem: npm
-    directory: /typescript/config
-    schedule:
-      interval: weekly
+  - package-ecosystem: "npm"
+    directory: "/typescript/config"
+    patterns:
+      - "*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-    groups:
-      all-npm-config:
-        patterns:
-          - "*"
+    multi-ecosystem-group: "all-updates"
