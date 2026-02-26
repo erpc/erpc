@@ -1437,12 +1437,5 @@ func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime() {
 	if d <= 0 {
 		return
 	}
-	// Anything lower than 1 second has a chance of causing a thundering herd (e.g. a high RPS for a method like getLogs).
-	// If users truly want to have a smaller value they can directly set the debounce interval
-	// either on network config or upstream config.
-	if d < 1*time.Second {
-		e.debounceInterval = 1 * time.Second
-	} else {
-		e.debounceInterval = d
-	}
+	e.debounceInterval = d
 }
