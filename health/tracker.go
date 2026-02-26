@@ -49,15 +49,15 @@ type NetworkMetadata struct {
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
-	// Dynamic block time tracking (SMA seed → EMA)
-	evmBlockTime           atomic.Int64 // current EMA value in nanoseconds; 0 = not yet available
-	evmBlockTimeSamples    atomic.Int64 // total number of samples seen (including seed phase)
-	evmBlockTimeMinSamples atomic.Int64 // samples to collect before averaging into the EMA seed (0 = use default 10)
-	evmBlockTimeRefBlock   atomic.Int64 // block number from the last valid (block, timestamp) pair
+	// Dynamic block time tracking (SMA seed → EMA).
+	// evmBlockTime is 0 during the seed phase and >0 once seeded.
+	evmBlockTime           atomic.Int64 // current EMA value in nanoseconds; 0 = not yet seeded
+	evmBlockTimeSamples    atomic.Int64 // total samples seen (including seed phase)
+	evmBlockTimeMinSamples atomic.Int64 // seed threshold (0 = default 10)
+	evmBlockTimeRefBlock   atomic.Int64 // block number from last valid (block, timestamp) pair
 
-	evmBlockTimeMu     sync.Mutex // protects evmBlockTimeBuf
-	evmBlockTimeBuf    []int64    // buffered samples (nanoseconds) during seed phase
-	evmBlockTimeSeeded bool       // true once the SMA seed has been computed and EMA is active
+	evmBlockTimeMu  sync.Mutex // protects evmBlockTimeBuf during seed phase
+	evmBlockTimeBuf []int64    // buffered samples (nanoseconds); nil once seeded
 }
 
 type Timer struct {
@@ -879,7 +879,7 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 
 	newCount := ntwMeta.evmBlockTimeSamples.Add(1)
 
-	if !ntwMeta.evmBlockTimeSeeded {
+	if ntwMeta.evmBlockTime.Load() == 0 {
 		// Seed phase: buffer samples
 		ntwMeta.evmBlockTimeBuf = append(ntwMeta.evmBlockTimeBuf, sampleNs)
 
@@ -891,7 +891,6 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 			}
 			seed := sum / int64(len(ntwMeta.evmBlockTimeBuf))
 			ntwMeta.evmBlockTime.Store(seed)
-			ntwMeta.evmBlockTimeSeeded = true
 			ntwMeta.evmBlockTimeBuf = nil // free buffer
 
 			telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
@@ -919,10 +918,8 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
-	if ntwMeta.evmBlockTimeSeeded {
-		if v := ntwMeta.evmBlockTime.Load(); v > 0 {
-			return time.Duration(v)
-		}
+	if v := ntwMeta.evmBlockTime.Load(); v > 0 {
+		return time.Duration(v)
 	}
 
 	// Fallback to known block times during seed phase
