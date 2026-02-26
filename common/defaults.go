@@ -1975,11 +1975,6 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		e.MarkEmptyAsErrorMethods = DefaultMarkEmptyAsErrorMethods()
 	}
 
-	if e.BlockTimeSamples == nil {
-		defaultSamples := int64(10)
-		e.BlockTimeSamples = &defaultSamples
-	}
-
 	return nil
 }
 
