@@ -49,14 +49,10 @@ type NetworkMetadata struct {
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
-	// Dynamic block time tracking (SMA seed → EMA).
-	// evmBlockTime is 0 during the seed phase and >0 once seeded.
-	evmBlockTime         atomic.Int64 // current EMA value in nanoseconds; 0 = not yet seeded
+	// Dynamic block time EMA. 0 = no samples yet, falls back to KnownBlockTimes.
+	evmBlockTime         atomic.Int64 // current EMA value in nanoseconds
 	evmBlockTimeRefBlock atomic.Int64 // block number from last valid (block, timestamp) pair
-
-	evmBlockTimeMu      sync.Mutex // protects seed counters and EMA read-modify-write
-	evmBlockTimeSeedSum int64      // running sum of samples during seed phase (ns)
-	evmBlockTimeSeedN   int64      // number of samples collected during seed phase
+	evmBlockTimeMu       sync.Mutex   // protects EMA read-modify-write
 }
 
 type Timer struct {
@@ -825,21 +821,16 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 // Dynamic Block Time (EMA)
 // ------------------------------------
 
-const (
-	blockTimeEMAAlpha    = 0.1 // smoothing factor for the EMA once seeded
-	blockTimeSeedSamples = 10  // number of samples to average before seeding the EMA
-)
+const blockTimeEMAAlpha = 0.1
 
 // SetKnownEvmBlockTimes injects the known block times map used as a fallback
-// during the seed phase (before enough samples have been collected).
+// before any dynamic samples have been collected.
 func (t *Tracker) SetKnownEvmBlockTimes(m map[string]time.Duration) {
 	t.knownEvmBlockTimes = m
 }
 
-// updateBlockTimeSample computes a per-block time sample from the delta between
-// the current and previous (blockNumber, blockTimestamp) pairs.
-// During the seed phase, samples accumulate a running sum. Once blockTimeSeedSamples
-// are collected, their average seeds the EMA. After that, each new sample updates the EMA.
+// updateBlockTimeSample computes a per-block time sample and folds it into the EMA.
+// The first valid sample becomes the initial EMA value; subsequent samples smooth it.
 func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64, prevBlockNumber int64, prevBlockTimestamp int64) {
 	if prevBlockNumber <= 0 || prevBlockTimestamp <= 0 {
 		return
@@ -861,33 +852,22 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	ntwMeta.evmBlockTimeMu.Lock()
 	defer ntwMeta.evmBlockTimeMu.Unlock()
 
-	if ntwMeta.evmBlockTime.Load() == 0 {
-		// Seed phase: accumulate running sum
-		ntwMeta.evmBlockTimeSeedSum += sampleNs
-		ntwMeta.evmBlockTimeSeedN++
-
-		if ntwMeta.evmBlockTimeSeedN >= blockTimeSeedSamples {
-			seed := ntwMeta.evmBlockTimeSeedSum / ntwMeta.evmBlockTimeSeedN
-			ntwMeta.evmBlockTime.Store(seed)
-
-			telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
-				t.projectId, netLabel,
-			).Set(time.Duration(seed).Seconds())
-		}
+	current := ntwMeta.evmBlockTime.Load()
+	var newEMA int64
+	if current == 0 {
+		newEMA = sampleNs
 	} else {
-		// EMA phase
-		currentEMA := ntwMeta.evmBlockTime.Load()
-		newEMA := int64(blockTimeEMAAlpha*float64(sampleNs) + (1-blockTimeEMAAlpha)*float64(currentEMA))
-		ntwMeta.evmBlockTime.Store(newEMA)
-
-		telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
-			t.projectId, netLabel,
-		).Set(time.Duration(newEMA).Seconds())
+		newEMA = int64(blockTimeEMAAlpha*float64(sampleNs) + (1-blockTimeEMAAlpha)*float64(current))
 	}
+	ntwMeta.evmBlockTime.Store(newEMA)
+
+	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
+		t.projectId, netLabel,
+	).Set(time.Duration(newEMA).Seconds())
 }
 
 // GetNetworkBlockTime returns the dynamic block time for a network.
-// Fallback priority: EMA value (if seeded) → KnownBlockTimes → 0 (not available).
+// Fallback priority: EMA → KnownBlockTimes → 0.
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
@@ -895,7 +875,7 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 		return time.Duration(v)
 	}
 
-	// Fallback to known block times during seed phase
+	// Fallback to known block times before any samples arrive
 	if t.knownEvmBlockTimes != nil {
 		if known, ok := t.knownEvmBlockTimes[networkId]; ok {
 			return known

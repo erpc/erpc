@@ -868,7 +868,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, 12*time.Second, d)
 	})
 
-	t.Run("SeedPhaseFallsBackToKnown", func(t *testing.T) {
+	t.Run("FirstSampleOverridesKnown", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		tracker.SetKnownEvmBlockTimes(map[string]time.Duration{
 			"evm:123": 12 * time.Second,
@@ -880,24 +880,15 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		baseBlock := int64(1000)
 		baseTimestamp := int64(1700000000)
 
-		// First call sets reference, no sample yet
+		// First call sets reference, no sample yet → falls back to known
 		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Equal(t, 12*time.Second, d, "before seed, should fall back to known")
+		assert.Equal(t, 12*time.Second, d, "before any sample, should fall back to known")
 
-		// 5 samples — still in seed phase (need 10)
-		for i := int64(1); i <= 5; i++ {
-			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*12)
-		}
+		// Second call produces first sample (6s block time) → EMA = 6s, overrides known
+		tracker.SetLatestBlockNumber(ups, baseBlock+1, baseTimestamp+6)
 		d = tracker.GetNetworkBlockTime(networkId)
-		assert.Equal(t, 12*time.Second, d, "still in seed phase, should fall back to known")
-
-		// 5 more samples → seeded (SMA of 10 × 12s = 12s)
-		for i := int64(6); i <= 10; i++ {
-			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*12)
-		}
-		d = tracker.GetNetworkBlockTime(networkId)
-		assert.InDelta(t, 12.0, d.Seconds(), 0.1, "SMA seed should be 12s")
+		assert.InDelta(t, 6.0, d.Seconds(), 0.1, "first sample should immediately set EMA")
 	})
 
 	t.Run("EMAOverridesKnownWhenReady", func(t *testing.T) {
@@ -914,10 +905,8 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		baseTimestamp := int64(1700000000)
 
 		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
-		// 10 samples to seed + 1 EMA update, all at 6s
-		for i := int64(1); i <= 11; i++ {
-			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*6)
-		}
+		// First sample immediately sets EMA to 6s, overriding known 12s
+		tracker.SetLatestBlockNumber(ups, baseBlock+1, baseTimestamp+6)
 
 		d := tracker.GetNetworkBlockTime(networkId)
 		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "dynamic value should override known 12s")
@@ -947,16 +936,16 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		ups := common.NewFakeUpstream("ups1")
 		networkId := ups.NetworkId()
 
-		// First call with valid timestamp
+		// First call with valid timestamp — sets reference block
 		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
-		// Second call with zero timestamp (from shared state, not direct fetch)
+		// Second call with zero timestamp (from shared state, not direct fetch) — skipped
 		tracker.SetLatestBlockNumber(ups, 1001, 0)
 		// Third call with valid timestamp — produces 1 sample (block 1000→1002, 24s / 2 blocks = 12s)
 		tracker.SetLatestBlockNumber(ups, 1002, 1700000024)
 
-		// Only 1 sample, still in seed phase → 0 (no known block time set)
+		// First sample immediately sets EMA to 12s
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Equal(t, time.Duration(0), d, "1 sample is not enough to seed")
+		assert.InDelta(t, 12.0, d.Seconds(), 0.1, "zero-timestamp call should be skipped; sample from 1000→1002 = 12s")
 	})
 
 	t.Run("RejectsAbsurdValues", func(t *testing.T) {
@@ -973,7 +962,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, time.Duration(0), d, "should reject absurd block times")
 	})
 
-	t.Run("SMASeedAbsorbsBadSample", func(t *testing.T) {
+	t.Run("EMAConvergesAfterBadFirstSample", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 
 		ups := common.NewFakeUpstream("ups1")
@@ -982,25 +971,18 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		// First call: sets reference values, no sample produced
 		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
 
-		// Second call: bad sample (60s gap, as if chain was idle)
+		// Second call: bad first sample (60s gap) → initial EMA = 60s
 		tracker.SetLatestBlockNumber(ups, 1001, 1700000060)
-
-		// Next 9 calls: true 2s block time (produces 9 more samples, total = 10 → seeds)
-		for i := int64(2); i <= 10; i++ {
-			tracker.SetLatestBlockNumber(ups, 1000+i, 1700000060+(i-1)*2)
-		}
-
-		// SMA of [60s, 2s, 2s, 2s, 2s, 2s, 2s, 2s, 2s, 2s] = 7.8s
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Less(t, d.Seconds(), 10.0, "SMA should dilute the bad 60s sample")
-		assert.Greater(t, d.Seconds(), 5.0, "SMA should still reflect the bad sample somewhat")
+		assert.InDelta(t, 60.0, d.Seconds(), 0.1, "first sample becomes initial EMA")
 
-		// After 20 more EMA updates at 2s, it should converge closer to 2s
-		for i := int64(11); i <= 30; i++ {
+		// Next 29 calls: true 2s block time → EMA converges toward 2s
+		// With α=0.1: EMA(n) = 2 + 58*0.9^n → after 29 samples ≈ 4.5s
+		for i := int64(2); i <= 30; i++ {
 			tracker.SetLatestBlockNumber(ups, 1000+i, 1700000060+(i-1)*2)
 		}
 
 		d = tracker.GetNetworkBlockTime(networkId)
-		assert.Less(t, d.Seconds(), 6.0, "EMA should converge toward 2s after more samples")
+		assert.Less(t, d.Seconds(), 6.0, "EMA should converge toward 2s after many samples")
 	})
 }
