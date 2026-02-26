@@ -385,6 +385,7 @@ export interface ProjectConfig {
   /**
    * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
    * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+   * Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
    */
   scorePenaltyDecayRate?: number /* float64 */;
   /**
@@ -428,13 +429,8 @@ export interface NetworkDefaults {
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
   evm?: TsEvmNetworkConfigForDefaults;
+  multiplexing?: boolean;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -470,12 +466,6 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
   ignoreFields?: { [key: string]: string[]};
@@ -776,13 +766,8 @@ export interface NetworkConfig {
   directiveDefaults?: DirectiveDefaultsConfig;
   alias?: string;
   methods?: MethodsConfig;
+  multiplexing?: boolean;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
@@ -986,6 +971,7 @@ export interface NetworkStrategyConfig {
    * RateLimitBudget, if set, is applied to the authenticated user (client IP)
    */
   rateLimitBudget?: string;
+  ipAsUser?: boolean;
 }
 export type LabelMode = string;
 export const ErrorLabelModeVerbose: LabelMode = "verbose";
