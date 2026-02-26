@@ -171,7 +171,7 @@ type Tracker struct {
 	mu                 sync.RWMutex             // Protect the map
 
 	// Dynamic block time tracking
-	knownEvmBlockTimes map[int64]time.Duration // injected known block times (e.g. from KnownBlockTimes)
+	knownEvmBlockTimes map[string]time.Duration // injected known block times keyed by networkId (e.g. "evm:1")
 
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
@@ -832,8 +832,8 @@ const (
 )
 
 // SetKnownEvmBlockTimes injects the known block times map used as a fallback
-// during cold start (before enough EMA samples have accumulated).
-func (t *Tracker) SetKnownEvmBlockTimes(m map[int64]time.Duration) {
+// during the seed phase (before enough samples have been collected).
+func (t *Tracker) SetKnownEvmBlockTimes(m map[string]time.Duration) {
 	t.knownEvmBlockTimes = m
 }
 
@@ -916,7 +916,7 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 
 // GetNetworkBlockTime returns the dynamic block time for a network.
 // Fallback priority: EMA value (if seeded) → KnownBlockTimes → 0 (not available).
-func (t *Tracker) GetNetworkBlockTime(networkId string, chainId int64) time.Duration {
+func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
 	if ntwMeta.evmBlockTimeSeeded {
@@ -926,8 +926,8 @@ func (t *Tracker) GetNetworkBlockTime(networkId string, chainId int64) time.Dura
 	}
 
 	// Fallback to known block times during seed phase
-	if chainId > 0 && t.knownEvmBlockTimes != nil {
-		if known, ok := t.knownEvmBlockTimes[chainId]; ok {
+	if t.knownEvmBlockTimes != nil {
+		if known, ok := t.knownEvmBlockTimes[networkId]; ok {
 			return known
 		}
 	}

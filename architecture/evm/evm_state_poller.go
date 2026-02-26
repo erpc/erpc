@@ -154,8 +154,8 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		if cfg.Evm.StatePollerDebounce != 0 {
 			e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
 		}
-		if e.debounceInterval == 0 && cfg.Evm.ChainId > 0 {
-			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
+		if e.debounceInterval == 0 {
+			e.inferDebounceIntervalFromBlockTime()
 		}
 	}
 
@@ -233,9 +233,7 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 		}
 	}
 	if e.debounceInterval == 0 {
-		if cfg.Evm.ChainId > 0 {
-			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
-		}
+		e.inferDebounceIntervalFromBlockTime()
 	}
 }
 
@@ -1434,9 +1432,8 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 	return l, nil
 }
 
-func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime(chainId int64) {
-	networkId := e.upstream.NetworkId()
-	d := e.tracker.GetNetworkBlockTime(networkId, chainId)
+func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime() {
+	d := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
 	if d <= 0 {
 		return
 	}
