@@ -782,3 +782,83 @@ func (r *RedisConnector) List(ctx context.Context, index string, limit int, pagi
 
 	return results, nextToken, nil
 }
+
+// WatchCacheInvalidation subscribes to cache invalidation events for a given channel.
+// Uses Redis pub/sub for real-time cross-instance cache invalidation.
+func (r *RedisConnector) WatchCacheInvalidation(ctx context.Context, channel string) (<-chan CacheInvalidationEvent, func(), error) {
+	r.logger.Debug().Str("channel", channel).Msg("trying to watch cache invalidation in Redis")
+	if err := r.checkReady(); err != nil {
+		return nil, nil, err
+	}
+
+	// Ensure pubsub manager is initialized
+	if r.pubsubManager == nil {
+		return nil, nil, fmt.Errorf("pubsub manager not initialized")
+	}
+
+	// Subscribe through the centralized manager with a cache invalidation prefix
+	counterCh, cleanup, err := r.pubsubManager.Subscribe("cache_inv:" + channel)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Convert CounterInt64State channel to CacheInvalidationEvent channel
+	eventCh := make(chan CacheInvalidationEvent, 10)
+	go func() {
+		defer close(eventCh)
+		for st := range counterCh {
+			// The UpdatedBy field is used to store the cache key
+			if st.UpdatedBy != "" {
+				select {
+				case eventCh <- CacheInvalidationEvent{Key: st.UpdatedBy, Timestamp: st.UpdatedAt}:
+				default:
+					// Channel full, skip to avoid blocking
+				}
+			}
+		}
+	}()
+
+	return eventCh, cleanup, nil
+}
+
+// PublishCacheInvalidation publishes a cache invalidation event to a channel.
+// Uses Redis pub/sub for real-time cross-instance cache invalidation.
+func (r *RedisConnector) PublishCacheInvalidation(ctx context.Context, channel string, event CacheInvalidationEvent) error {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.PublishCacheInvalidation",
+		trace.WithAttributes(
+			attribute.String("channel", channel),
+			attribute.String("key", event.Key),
+		),
+	)
+	defer span.End()
+
+	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	// Use CounterInt64State as the payload format for consistency with existing pubsub
+	// The UpdatedBy field is used to store the cache key
+	value := CounterInt64State{
+		Value:     0,
+		UpdatedAt: event.Timestamp,
+		UpdatedBy: event.Key,
+	}
+
+	payload, err := common.SonicCfg.Marshal(value)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return err
+	}
+
+	r.logger.Debug().
+		Str("channel", channel).
+		Str("key", event.Key).
+		Msg("publishing cache invalidation event to redis")
+
+	err = r.client.Publish(ctx, "counter:cache_inv:"+channel, payload).Err()
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+	}
+	return err
+}

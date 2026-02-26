@@ -17,13 +17,15 @@ import (
 )
 
 type DatabaseStrategy struct {
-	logger    *zerolog.Logger
-	cfg       *common.DatabaseStrategyConfig
-	connector data.Connector
-	cache     *ristretto.Cache[string, *common.User]
-	negCache  *ristretto.Cache[string, struct{}]
-	negTTL    time.Duration
-	sf        singleflight.Group
+	logger        *zerolog.Logger
+	cfg           *common.DatabaseStrategyConfig
+	connector     data.Connector
+	connectorId   string
+	cache         *ristretto.Cache[string, *common.User]
+	negCache      *ristretto.Cache[string, struct{}]
+	negTTL        time.Duration
+	sf            singleflight.Group
+	cleanupInv    func() // cleanup function for cache invalidation listener
 }
 
 var _ AuthStrategy = &DatabaseStrategy{}
@@ -78,14 +80,22 @@ func NewDatabaseStrategy(appCtx context.Context, logger *zerolog.Logger, cfg *co
 			Msg("initialized API key cache for database authentication strategy")
 	}
 
-	return &DatabaseStrategy{
-		logger:    logger,
-		cfg:       cfg,
-		connector: connector,
-		cache:     cache,
-		negCache:  negCache,
-		negTTL:    negTTL,
-	}, nil
+	strategy := &DatabaseStrategy{
+		logger:      logger,
+		cfg:         cfg,
+		connector:   connector,
+		connectorId: cfg.Connector.Id,
+		cache:       cache,
+		negCache:    negCache,
+		negTTL:      negTTL,
+	}
+
+	// Start listening for cache invalidation events if caching is enabled
+	if cache != nil {
+		strategy.startCacheInvalidationListener(appCtx)
+	}
+
+	return strategy, nil
 }
 
 func (s *DatabaseStrategy) Supports(ap *AuthPayload) bool {
@@ -270,11 +280,20 @@ func (s *DatabaseStrategy) GetConnector() data.Connector {
 	return s.connector
 }
 
-// InvalidateCache removes an API key from the cache
+// GetConnectorId returns the connector ID for this strategy
+func (s *DatabaseStrategy) GetConnectorId() string {
+	return s.connectorId
+}
+
+// InvalidateCache removes an API key from both positive and negative caches
 func (s *DatabaseStrategy) InvalidateCache(apiKey string) {
 	if s.cache != nil {
 		s.cache.Del(apiKey)
 		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key cache entry")
+	}
+	if s.negCache != nil {
+		s.negCache.Del(apiKey)
+		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key negative cache entry")
 	}
 }
 
@@ -288,6 +307,9 @@ func (s *DatabaseStrategy) ClearCache() {
 
 // Close closes the cache and performs cleanup
 func (s *DatabaseStrategy) Close() {
+	if s.cleanupInv != nil {
+		s.cleanupInv()
+	}
 	if s.cache != nil {
 		s.cache.Close()
 		s.logger.Debug().Msg("closed API key cache")
@@ -296,6 +318,54 @@ func (s *DatabaseStrategy) Close() {
 		s.negCache.Close()
 		s.logger.Debug().Msg("closed API key negative cache")
 	}
+}
+
+// startCacheInvalidationListener starts listening for cache invalidation events
+// from other erpc instances via the connector's pub/sub mechanism.
+func (s *DatabaseStrategy) startCacheInvalidationListener(ctx context.Context) {
+	channel := s.connectorId
+	events, cleanup, err := s.connector.WatchCacheInvalidation(ctx, channel)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("channel", channel).Msg("failed to start cache invalidation listener, cache will rely on TTL for invalidation")
+		return
+	}
+
+	s.cleanupInv = cleanup
+	s.logger.Info().Str("channel", channel).Msg("started cache invalidation listener for cross-instance cache synchronization")
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				s.logger.Debug().Msg("stopping cache invalidation listener due to context cancellation")
+				return
+			case event, ok := <-events:
+				if !ok {
+					s.logger.Debug().Msg("cache invalidation channel closed")
+					return
+				}
+				if event.Key != "" {
+					s.logger.Debug().Str("apiKey", event.Key).Int64("timestamp", event.Timestamp).Msg("received cache invalidation event from another instance")
+					s.InvalidateCache(event.Key)
+				}
+			}
+		}
+	}()
+}
+
+// PublishCacheInvalidation publishes a cache invalidation event to notify other instances.
+// Only publishes when caching is enabled; otherwise it's a no-op.
+func (s *DatabaseStrategy) PublishCacheInvalidation(ctx context.Context, apiKey string) error {
+	// Only publish if caching is enabled
+	if s.cache == nil {
+		return nil
+	}
+	channel := s.connectorId
+	event := data.CacheInvalidationEvent{
+		Key:       apiKey,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	return s.connector.PublishCacheInvalidation(ctx, channel, event)
 }
 
 // recordAuthFailureMetric increments the auth failure metric with safe labels
