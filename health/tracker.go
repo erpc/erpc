@@ -49,11 +49,15 @@ type NetworkMetadata struct {
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
-	// EMA-based dynamic block time tracking
+	// Dynamic block time tracking (SMA seed → EMA)
 	evmBlockTime           atomic.Int64 // current EMA value in nanoseconds; 0 = not yet available
-	evmBlockTimeSamples    atomic.Int64 // number of EMA samples accumulated
-	evmBlockTimeMinSamples atomic.Int64 // minimum samples before reporting (0 = use default 10)
-	evmBlockTimeRefBlock   atomic.Int64 // block number from the last valid (block, timestamp) pair used for EMA
+	evmBlockTimeSamples    atomic.Int64 // total number of samples seen (including seed phase)
+	evmBlockTimeMinSamples atomic.Int64 // samples to collect before averaging into the EMA seed (0 = use default 10)
+	evmBlockTimeRefBlock   atomic.Int64 // block number from the last valid (block, timestamp) pair
+
+	evmBlockTimeMu     sync.Mutex // protects evmBlockTimeBuf
+	evmBlockTimeBuf    []int64    // buffered samples (nanoseconds) during seed phase
+	evmBlockTimeSeeded bool       // true once the SMA seed has been computed and EMA is active
 }
 
 type Timer struct {
@@ -766,7 +770,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 			// Use evmBlockTimeRefBlock (not oldNtwVal) because evmLatestBlockNumber
 			// advances even on calls with timestamp=0, which would skew the delta.
 			prevRefBlock := ntwMeta.evmBlockTimeRefBlock.Load()
-			t.updateBlockTimeEMA(ntwMeta, netLabel, blockNumber, blockTimestamp, prevRefBlock, oldNtwTs)
+			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp, prevRefBlock, oldNtwTs)
 			ntwMeta.evmBlockTimeRefBlock.Store(blockNumber)
 		}
 	}
@@ -823,13 +827,8 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 // ------------------------------------
 
 const (
-	// blockTimeEMAAlphaWarmup is used for the first few samples so the EMA
-	// converges quickly and isn't stuck on a potentially bad first reading.
-	blockTimeEMAAlphaWarmup = 0.5
-	// blockTimeEMAAlpha is used once enough samples have been collected.
+	// blockTimeEMAAlpha is the smoothing factor for the EMA once seeded.
 	blockTimeEMAAlpha = 0.1
-	// blockTimeEMAWarmupSamples is the number of samples that use the higher warmup alpha.
-	blockTimeEMAWarmupSamples = 5
 )
 
 // SetKnownEvmBlockTimes injects the known block times map used as a fallback
@@ -846,10 +845,11 @@ func (t *Tracker) SetNetworkBlockTimeMinSamples(networkId string, n int64) {
 	ntwMeta.evmBlockTimeMinSamples.Store(n)
 }
 
-// updateBlockTimeEMA computes a per-block time sample from the delta between
-// the current and previous (blockNumber, blockTimestamp) pairs and folds it into the running EMA.
-// prevBlockNumber and prevBlockTimestamp are the values captured before overwriting.
-func (t *Tracker) updateBlockTimeEMA(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64, prevBlockNumber int64, prevBlockTimestamp int64) {
+// updateBlockTimeSample computes a per-block time sample from the delta between
+// the current and previous (blockNumber, blockTimestamp) pairs.
+// During the seed phase, samples are buffered. Once minSamples are collected,
+// their simple average seeds the EMA. After that, each new sample updates the EMA directly.
+func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64, prevBlockNumber int64, prevBlockTimestamp int64) {
 	// Need valid previous values to compute a delta
 	if prevBlockNumber <= 0 || prevBlockTimestamp <= 0 {
 		return
@@ -869,55 +869,63 @@ func (t *Tracker) updateBlockTimeEMA(ntwMeta *NetworkMetadata, netLabel string, 
 		return
 	}
 
-	currentEMA := ntwMeta.evmBlockTime.Load()
-	sampleCount := ntwMeta.evmBlockTimeSamples.Load()
-
-	var newEMA int64
-	if currentEMA == 0 {
-		// First sample: use it directly
-		newEMA = sampleNs
-	} else {
-		// Use a higher alpha during warmup so the EMA converges quickly
-		// and doesn't get stuck on a potentially bad first sample.
-		alpha := blockTimeEMAAlpha
-		if sampleCount < blockTimeEMAWarmupSamples {
-			alpha = blockTimeEMAAlphaWarmup
-		}
-		newEMA = int64(alpha*float64(sampleNs) + (1-alpha)*float64(currentEMA))
+	minSamples := ntwMeta.evmBlockTimeMinSamples.Load()
+	if minSamples <= 0 {
+		minSamples = 10
 	}
 
-	ntwMeta.evmBlockTime.Store(newEMA)
+	ntwMeta.evmBlockTimeMu.Lock()
+	defer ntwMeta.evmBlockTimeMu.Unlock()
+
 	newCount := ntwMeta.evmBlockTimeSamples.Add(1)
 
-	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
-		t.projectId,
-		netLabel,
-	).Set(time.Duration(newEMA).Seconds())
+	if !ntwMeta.evmBlockTimeSeeded {
+		// Seed phase: buffer samples
+		ntwMeta.evmBlockTimeBuf = append(ntwMeta.evmBlockTimeBuf, sampleNs)
+
+		if int64(len(ntwMeta.evmBlockTimeBuf)) >= minSamples {
+			// Compute SMA of buffered samples to seed the EMA
+			var sum int64
+			for _, s := range ntwMeta.evmBlockTimeBuf {
+				sum += s
+			}
+			seed := sum / int64(len(ntwMeta.evmBlockTimeBuf))
+			ntwMeta.evmBlockTime.Store(seed)
+			ntwMeta.evmBlockTimeSeeded = true
+			ntwMeta.evmBlockTimeBuf = nil // free buffer
+
+			telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
+				t.projectId, netLabel,
+			).Set(time.Duration(seed).Seconds())
+		}
+	} else {
+		// EMA phase: single alpha
+		currentEMA := ntwMeta.evmBlockTime.Load()
+		newEMA := int64(blockTimeEMAAlpha*float64(sampleNs) + (1-blockTimeEMAAlpha)*float64(currentEMA))
+		ntwMeta.evmBlockTime.Store(newEMA)
+
+		telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
+			t.projectId, netLabel,
+		).Set(time.Duration(newEMA).Seconds())
+	}
 
 	telemetry.MetricNetworkBlockTimeSamples.WithLabelValues(
-		t.projectId,
-		netLabel,
+		t.projectId, netLabel,
 	).Set(float64(newCount))
 }
 
 // GetNetworkBlockTime returns the dynamic block time for a network.
-// Fallback priority: EMA value (if >= minSamples) → KnownBlockTimes → 0 (not available).
+// Fallback priority: EMA value (if seeded) → KnownBlockTimes → 0 (not available).
 func (t *Tracker) GetNetworkBlockTime(networkId string, chainId int64) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
-	minSamples := ntwMeta.evmBlockTimeMinSamples.Load()
-	if minSamples <= 0 {
-		minSamples = 10 // default
-	}
-
-	samples := ntwMeta.evmBlockTimeSamples.Load()
-	if samples >= minSamples {
+	if ntwMeta.evmBlockTimeSeeded {
 		if v := ntwMeta.evmBlockTime.Load(); v > 0 {
 			return time.Duration(v)
 		}
 	}
 
-	// Fallback to known block times during cold start
+	// Fallback to known block times during seed phase
 	if chainId > 0 && t.knownEvmBlockTimes != nil {
 		if known, ok := t.knownEvmBlockTimes[chainId]; ok {
 			return known

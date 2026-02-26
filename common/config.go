@@ -1620,8 +1620,8 @@ type EvmNetworkConfig struct {
 	// Set to false to disable this behavior and return raw upstream errors.
 	IdempotentTransactionBroadcast *bool `yaml:"idempotentTransactionBroadcast,omitempty" json:"idempotentTransactionBroadcast,omitempty"`
 
-	// BlockTimeSamples is the minimum number of EMA samples required before the dynamically
-	// computed block time is considered available. Until this threshold is reached,
+	// BlockTimeSamples is the number of block time observations to collect before
+	// computing their average to seed the EMA. Until this threshold is reached,
 	// GetNetworkBlockTime falls back to KnownBlockTimes (if the chain is known) or returns 0.
 	// Default: 10.
 	BlockTimeSamples *int64 `yaml:"blockTimeSamples,omitempty" json:"blockTimeSamples,omitempty"`
