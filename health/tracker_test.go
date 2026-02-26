@@ -978,4 +978,32 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		d := tracker.GetNetworkBlockTime(networkId, 0)
 		assert.Equal(t, time.Duration(0), d, "should reject absurd block times")
 	})
+
+	t.Run("WarmupAlphaConvergesQuickly", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.SetNetworkBlockTimeMinSamples("evm:123", 1)
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// First call: sets reference values, no sample produced
+		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
+
+		// Second call: bad first sample (60s gap, as if chain was idle)
+		tracker.SetLatestBlockNumber(ups, 1001, 1700000060)
+		d := tracker.GetNetworkBlockTime(networkId, 0)
+		assert.InDelta(t, 60.0, d.Seconds(), 1.0, "first sample should reflect 60s gap")
+
+		// Next 9 calls: true 2s block time
+		for i := int64(2); i <= 10; i++ {
+			tracker.SetLatestBlockNumber(ups, 1000+i, 1700000060+(i-1)*2)
+		}
+
+		d = tracker.GetNetworkBlockTime(networkId, 0)
+		// With warmup alpha (0.5 for first 5 samples), the EMA converges
+		// quickly from the bad first sample. Without warmup (all α=0.1),
+		// EMA would still be ~35s after 10 samples.
+		assert.Less(t, d.Seconds(), 8.0, "warmup alpha should bring EMA down quickly from bad first sample")
+		assert.Greater(t, d.Seconds(), 1.0, "should still be above true block time due to bad first sample influence")
+	})
 }

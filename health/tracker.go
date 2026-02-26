@@ -822,7 +822,15 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 // Dynamic Block Time (EMA)
 // ------------------------------------
 
-const blockTimeEMAAlpha = 0.1
+const (
+	// blockTimeEMAAlphaWarmup is used for the first few samples so the EMA
+	// converges quickly and isn't stuck on a potentially bad first reading.
+	blockTimeEMAAlphaWarmup = 0.5
+	// blockTimeEMAAlpha is used once enough samples have been collected.
+	blockTimeEMAAlpha = 0.1
+	// blockTimeEMAWarmupSamples is the number of samples that use the higher warmup alpha.
+	blockTimeEMAWarmupSamples = 5
+)
 
 // SetKnownEvmBlockTimes injects the known block times map used as a fallback
 // during cold start (before enough EMA samples have accumulated).
@@ -862,22 +870,34 @@ func (t *Tracker) updateBlockTimeEMA(ntwMeta *NetworkMetadata, netLabel string, 
 	}
 
 	currentEMA := ntwMeta.evmBlockTime.Load()
+	sampleCount := ntwMeta.evmBlockTimeSamples.Load()
+
 	var newEMA int64
 	if currentEMA == 0 {
 		// First sample: use it directly
 		newEMA = sampleNs
 	} else {
-		// EMA: newValue = α * sample + (1 - α) * current
-		newEMA = int64(blockTimeEMAAlpha*float64(sampleNs) + (1-blockTimeEMAAlpha)*float64(currentEMA))
+		// Use a higher alpha during warmup so the EMA converges quickly
+		// and doesn't get stuck on a potentially bad first sample.
+		alpha := blockTimeEMAAlpha
+		if sampleCount < blockTimeEMAWarmupSamples {
+			alpha = blockTimeEMAAlphaWarmup
+		}
+		newEMA = int64(alpha*float64(sampleNs) + (1-alpha)*float64(currentEMA))
 	}
 
 	ntwMeta.evmBlockTime.Store(newEMA)
-	ntwMeta.evmBlockTimeSamples.Add(1)
+	newCount := ntwMeta.evmBlockTimeSamples.Add(1)
 
 	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
 		t.projectId,
 		netLabel,
 	).Set(time.Duration(newEMA).Seconds())
+
+	telemetry.MetricNetworkBlockTimeSamples.WithLabelValues(
+		t.projectId,
+		netLabel,
+	).Set(float64(newCount))
 }
 
 // GetNetworkBlockTime returns the dynamic block time for a network.
