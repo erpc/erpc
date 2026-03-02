@@ -51,10 +51,11 @@ type NetworkMetadata struct {
 
 	// Dynamic block time EMA. Callers should use GetNetworkBlockTime which
 	// only returns the EMA once enough samples have been collected.
-	evmBlockTime         atomic.Int64 // current EMA value in nanoseconds
-	evmBlockTimeSamples  atomic.Int64 // number of samples folded into the EMA
-	evmBlockTimeRefBlock atomic.Int64 // block number from last valid (block, timestamp) pair
-	evmBlockTimeMu       sync.Mutex   // protects EMA read-modify-write
+	evmBlockTime           atomic.Int64 // current EMA value in nanoseconds
+	evmBlockTimeSamples    atomic.Int64 // number of samples folded into the EMA
+	evmBlockTimeMu         sync.Mutex   // protects ref fields below + EMA read-modify-write
+	evmBlockTimeRefBlock   int64        // block number from last valid (block, timestamp) pair
+	evmBlockTimeRefTimestamp int64      // timestamp from that same block
 }
 
 type Timer struct {
@@ -739,7 +740,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// 1) Possibly update the network-level highest block head
 	ntwMeta := t.getMetadata(ntwMdKey)
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()
-	oldNtwTs := ntwMeta.evmLatestBlockTimestamp.Load()
 	needsGlobalUpdate := false
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
@@ -747,11 +747,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
 
-		// Atomically update timestamp when network-level block number is updated
 		if blockTimestamp > 0 {
 			ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 
-			// Calculate and record distance metric from EVM state poller
 			currentTime := time.Now().Unix()
 			distance := currentTime - blockTimestamp
 			telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
@@ -760,12 +758,9 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 				"evm_state_poller",
 			).Set(float64(distance))
 
-			// Update EMA-based block time tracking
-			// Use evmBlockTimeRefBlock (not oldNtwVal) because evmLatestBlockNumber
-			// advances even on calls with timestamp=0, which would skew the delta.
-			prevRefBlock := ntwMeta.evmBlockTimeRefBlock.Load()
-			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp, prevRefBlock, oldNtwTs)
-			ntwMeta.evmBlockTimeRefBlock.Store(blockNumber)
+			// EMA block time tracking — ref state is managed internally under its own mutex,
+			// so concurrent callers can't interleave ref reads/writes.
+			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
 		}
 	}
 
@@ -823,28 +818,49 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 const blockTimeEMAAlpha = 0.1
 const blockTimeMinSamples = 10 // minimum samples before the EMA is considered stable
 
-// updateBlockTimeSample computes a per-block time sample and folds it into the EMA.
-// The first valid sample becomes the initial EMA value; subsequent samples smooth it.
-func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64, prevBlockNumber int64, prevBlockTimestamp int64) {
-	if prevBlockNumber <= 0 || prevBlockTimestamp <= 0 {
+// updateBlockTimeSample manages the reference (block, timestamp) pair and folds
+// a new per-block time sample into the EMA. All ref state is read and written
+// under evmBlockTimeMu so concurrent callers cannot interleave.
+func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64) {
+	ntwMeta.evmBlockTimeMu.Lock()
+	defer ntwMeta.evmBlockTimeMu.Unlock()
+
+	prevBlock := ntwMeta.evmBlockTimeRefBlock
+	prevTs := ntwMeta.evmBlockTimeRefTimestamp
+
+	// Out-of-order update — another goroutine already advanced past this block.
+	if blockNumber <= prevBlock {
 		return
 	}
 
-	blockDiff := blockNumber - prevBlockNumber
-	timeDiff := blockTimestamp - prevBlockTimestamp
-	if blockDiff <= 0 || timeDiff <= 0 {
+	// First call: seed the reference point, no sample to compute yet.
+	if prevBlock <= 0 || prevTs <= 0 {
+		ntwMeta.evmBlockTimeRefBlock = blockNumber
+		ntwMeta.evmBlockTimeRefTimestamp = blockTimestamp
 		return
 	}
 
+	timeDiff := blockTimestamp - prevTs
+
+	// Timestamp went backwards or didn't advance — data is suspect, don't
+	// update the reference so the next call retries against the same baseline.
+	if timeDiff <= 0 {
+		return
+	}
+
+	// The reference is valid regardless of whether the *sample* passes the
+	// outlier filter below. Advancing the ref avoids a cascade of rejected
+	// samples when a single anomalous span (e.g. 100-block jump) is followed
+	// by normal single-block increments.
+	ntwMeta.evmBlockTimeRefBlock = blockNumber
+	ntwMeta.evmBlockTimeRefTimestamp = blockTimestamp
+
+	blockDiff := blockNumber - prevBlock // guaranteed > 0 from the check above
 	sampleNs := int64(float64(timeDiff) / float64(blockDiff) * float64(time.Second))
 
-	// Reject absurd values (< 50ms or > 120s per block)
 	if sampleNs < int64(50*time.Millisecond) || sampleNs > int64(120*time.Second) {
 		return
 	}
-
-	ntwMeta.evmBlockTimeMu.Lock()
-	defer ntwMeta.evmBlockTimeMu.Unlock()
 
 	current := ntwMeta.evmBlockTime.Load()
 	var newEMA int64
