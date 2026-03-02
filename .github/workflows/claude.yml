@@ -13,7 +13,6 @@ on:
 jobs:
   claude:
     if: |
-      secrets.CLAUDE_CODE_OAUTH_TOKEN != '' &&
       (
         (
           github.event_name == 'issue_comment' &&
@@ -60,12 +59,26 @@ jobs:
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
+      - name: Check Claude token
+        id: token
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "${CLAUDE_CODE_OAUTH_TOKEN}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "CLAUDE_CODE_OAUTH_TOKEN is not configured; skipping."
+          fi
+
       - name: Checkout repository
+        if: steps.token.outputs.configured == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Run Claude Code
+        if: steps.token.outputs.configured == 'true'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
