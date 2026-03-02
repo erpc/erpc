@@ -361,12 +361,17 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
 	}
+	e.stateMu.RLock()
+	cfg := e.cfg
+	networkLabel := e.networkLabel
+	e.stateMu.RUnlock()
+
 	dbi := e.debounceInterval
 	if dbi == 0 {
 		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
 	}
-	if dbi == 0 && e.cfg != nil && e.cfg.FallbackStatePollerDebounce != 0 {
-		dbi = e.cfg.FallbackStatePollerDebounce.Duration()
+	if dbi == 0 && cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
+		dbi = cfg.FallbackStatePollerDebounce.Duration()
 	}
 	if dbi == 0 {
 		dbi = 1 * time.Second
@@ -379,11 +384,6 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		),
 	)
 	defer span.End()
-
-	// Read networkLabel with lock to avoid race condition
-	e.stateMu.RLock()
-	networkLabel := e.networkLabel
-	e.stateMu.RUnlock()
 
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		if e.logger.GetLevel() <= zerolog.TraceLevel {
@@ -481,21 +481,22 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		),
 	)
 	defer span.End()
+
+	e.stateMu.RLock()
+	cfg := e.cfg
+	networkLabel := e.networkLabel
+	e.stateMu.RUnlock()
+
 	dbi := e.debounceInterval
 	if dbi == 0 {
 		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
 	}
-	if dbi == 0 && e.cfg != nil && e.cfg.FallbackStatePollerDebounce != 0 {
-		dbi = e.cfg.FallbackStatePollerDebounce.Duration()
+	if dbi == 0 && cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
+		dbi = cfg.FallbackStatePollerDebounce.Duration()
 	}
 	if dbi == 0 {
 		dbi = 1 * time.Second
 	}
-
-	// Read networkLabel with lock to avoid race condition
-	e.stateMu.RLock()
-	networkLabel := e.networkLabel
-	e.stateMu.RUnlock()
 
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
