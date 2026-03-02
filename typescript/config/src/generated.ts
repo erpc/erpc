@@ -77,6 +77,19 @@ export interface EvmProbeEarliestInfo {
 }
 
 //////////
+// source: batch_upstream_selection.go
+
+export interface BatchUpstreamSelectionKey {
+  networkid: string;
+  method: string;
+  finality: DataFinalityState;
+  useupstream: string;
+  upstreamgroup: string;
+}
+export interface BatchUpstreamSelectionCache {
+}
+
+//////////
 // source: cache_dal.go
 
 export type CacheDAL = any;
@@ -230,16 +243,14 @@ export interface SharedStateConfig {
   updateMaxWait?: Duration;
 }
 export interface CacheConfig {
+  /**
+   * Envelope wraps cached values with a small header containing magic+version+cached-at timestamp.
+   * Used for cache observability and safer evolution of cached payload formats.
+   */
+  envelope?: boolean;
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   compression?: CompressionConfig;
-  /**
-   * Envelope enables wrapping cached values with a metadata header (magic + version + timestamp).
-   * The header is required for cache-max-age staleness checks.
-   * Default: false (disabled) for safe rolling deploys. Old binaries cannot parse
-   * the envelope prefix, so enable only after all pods are on the new version.
-   */
-  envelope?: boolean;
 }
 export interface CompressionConfig {
   enabled?: boolean;
@@ -746,6 +757,11 @@ export interface DirectiveDefaultsConfig {
   enforceGetLogsBlockRange?: boolean;
   enforceNonNullTaggedBlocks?: boolean;
   /**
+   * ValidateTransactionsRoot: checks transactionsRoot vs transaction count consistency.
+   * Defaults to true. Disable for non-standard chains that use unusual trie roots.
+   */
+  validateTransactionsRoot?: boolean;
+  /**
    * Validation: Header Field Lengths
    */
   validateHeaderFieldLengths?: boolean;
@@ -794,9 +810,21 @@ export interface EvmNetworkConfig {
   getLogsMaxAllowedRange?: number /* int64 */;
   getLogsMaxAllowedAddresses?: number /* int64 */;
   getLogsMaxAllowedTopics?: number /* int64 */;
+  /**
+   * GetLogsMaxResponseBytes caps the decompressed upstream response size for eth_getLogs.
+   * When exceeded, the request is treated as "too large" and split/retried with smaller sub-requests.
+   * Default is set in SetDefaults(). Set to 0 to disable (not recommended in production).
+   */
+  getLogsMaxResponseBytes?: number /* int64 */;
   getLogsSplitOnError?: boolean;
   getLogsSplitConcurrency?: number /* int */;
   getLogsCacheChunkSize?: number /* int64 */;
+  /**
+   * GetLogsCacheChunkConcurrency controls the base concurrency for cache-chunked eth_getLogs sub-requests.
+   * The effective concurrency is max(GetLogsCacheChunkConcurrency, GetLogsSplitConcurrency) to ensure
+   * recursive splits within cache chunks are not throttled below the split concurrency.
+   */
+  getLogsCacheChunkConcurrency?: number /* int */;
   /**
    * EnforceBlockAvailability controls whether the network should enforce per-upstream
    * block availability bounds (upper/lower) for methods by default. Method-level config may override.
