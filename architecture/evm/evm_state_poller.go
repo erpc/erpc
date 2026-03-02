@@ -224,9 +224,7 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 		e.networkLabel = cfg.NetworkId()
 	}
 
-	// debounceInterval is intentionally NOT set from FallbackStatePollerDebounce here.
-	// Poll methods resolve dbi dynamically each call:
-	//   user config → EMA block time → FallbackStatePollerDebounce → 1s hard floor
+	// debounceInterval is intentionally NOT set here — see resolveDebounce().
 }
 
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
@@ -354,6 +352,22 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }
 
+// resolveDebounce returns the debounce interval for poll methods.
+//
+//	user config → EMA block time → network FallbackStatePollerDebounce → 1s hard floor
+func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
+	if dbi := e.debounceInterval; dbi != 0 {
+		return dbi
+	}
+	if dbi := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); dbi != 0 {
+		return dbi
+	}
+	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
+		return cfg.FallbackStatePollerDebounce.Duration()
+	}
+	return 1 * time.Second
+}
+
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
@@ -366,16 +380,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
 
-	dbi := e.debounceInterval
-	if dbi == 0 {
-		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
-	}
-	if dbi == 0 && cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
-		dbi = cfg.FallbackStatePollerDebounce.Duration()
-	}
-	if dbi == 0 {
-		dbi = 1 * time.Second
-	}
+	dbi := e.resolveDebounce(cfg)
 	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
@@ -487,16 +492,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
 
-	dbi := e.debounceInterval
-	if dbi == 0 {
-		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
-	}
-	if dbi == 0 && cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
-		dbi = cfg.FallbackStatePollerDebounce.Duration()
-	}
-	if dbi == 0 {
-		dbi = 1 * time.Second
-	}
+	dbi := e.resolveDebounce(cfg)
 
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
