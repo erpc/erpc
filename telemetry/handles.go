@@ -84,7 +84,14 @@ func ObserverHandle(hv *prometheus.HistogramVec, labels ...string) prometheus.Ob
 
 // ResetHandleCache clears all handle caches. Call this after re-creating metric Vecs.
 func ResetHandleCache() {
-	counterHandleCache = sync.Map{}
-	gaugeHandleCache = sync.Map{}
-	observerHandleCache = sync.Map{}
+	clearSyncMap(&counterHandleCache)
+	clearSyncMap(&gaugeHandleCache)
+	clearSyncMap(&observerHandleCache)
+}
+
+func clearSyncMap(m *sync.Map) {
+	m.Range(func(key, _ interface{}) bool {
+		m.Delete(key)
+		return true
+	})
 }

@@ -1131,7 +1131,7 @@ func determineResponseStatusCode(res interface{}) int {
 	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
 		return http.StatusUnauthorized
 	// 404 Not Found - resource not found
-	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound):
+	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound, common.ErrCodeNetworkNotSupported):
 		return http.StatusNotFound
 	// 413 Request Entity Too Large
 	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge):
@@ -1307,7 +1307,7 @@ func handleErrorResponse(
 	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
 		statusCode = http.StatusUnauthorized
 	// 404 Not Found - resource not found at HTTP level
-	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound):
+	case common.HasErrorCode(err, common.ErrCodeProjectNotFound, common.ErrCodeNetworkNotFound, common.ErrCodeNetworkNotSupported):
 		statusCode = http.StatusNotFound
 	// 413 Request Entity Too Large
 	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTooLarge):

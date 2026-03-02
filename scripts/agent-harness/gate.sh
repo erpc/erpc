@@ -9,13 +9,20 @@ if [[ "${1:-}" == "--full" ]]; then
   full=1
 fi
 
+go_test_parallel="${GO_TEST_PARALLEL:-1}"
+go_test_p="${GO_TEST_P:-$go_test_parallel}"
+
 pkg_list=()
 while IFS= read -r pkg; do
   pkg_list+=("$pkg")
 done < <(
-  go list ./... \
-    | rg -v '^github\.com/erpc/erpc/cmd($|/)' \
-    | rg -v '^github\.com/erpc/erpc/test($|/)'
+  if command -v rg >/dev/null 2>&1; then
+    go list ./... \
+      | rg -v '^github\.com/erpc/erpc/(cmd|test)($|/)'
+  else
+    go list ./... \
+      | grep -Ev '^github\.com/erpc/erpc/(cmd|test)($|/)'
+  fi
 )
 
 if [[ ${#pkg_list[@]} -eq 0 ]]; then
@@ -28,10 +35,10 @@ scripts/agent-harness/review-load.sh || true
 make build
 if [[ $full -eq 1 ]]; then
   go clean -testcache
-  go test ./cmd/... -count 1 -parallel 1
-  go test "${pkg_list[@]}" -covermode=atomic -v -race -count 1 -parallel 1 -timeout 15m -failfast=false
+  go test ./cmd/... -count 1 -parallel "$go_test_parallel" -p "$go_test_p"
+  go test "${pkg_list[@]}" -covermode=atomic -v -race -count 1 -parallel "$go_test_parallel" -p "$go_test_p" -timeout 15m -failfast=false
 else
   go clean -testcache
-  go test ./cmd/... -count 1 -parallel 1 -v
-  go test "${pkg_list[@]}" -count 1 -parallel 1 -v -timeout 10m -failfast=false
+  go test ./cmd/... -count 1 -parallel "$go_test_parallel" -p "$go_test_p" -v
+  go test "${pkg_list[@]}" -count 1 -parallel "$go_test_parallel" -p "$go_test_p" -v -timeout 10m -failfast=false
 fi

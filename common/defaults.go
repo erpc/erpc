@@ -1137,6 +1137,21 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
 	}
+	p.RoutingStrategy = strings.ToLower(strings.TrimSpace(p.RoutingStrategy))
+	if p.RoutingStrategy == "" {
+		p.RoutingStrategy = "score-based"
+	}
+	p.ScoreGranularity = strings.ToLower(strings.TrimSpace(p.ScoreGranularity))
+	if p.ScoreGranularity == "" {
+		p.ScoreGranularity = "upstream"
+	}
+	// Numeric scoring defaults are intentionally NOT set here.
+	// ScoringConfig.withDefaults() is the single source of truth so that
+	// explicit zero values from the user (e.g. scoreSwitchHysteresis: 0)
+	// are not silently overridden. Use negative values to disable:
+	//   scorePenaltyDecayRate: -1   → no EMA memory (instant penalty only)
+	//   scoreSwitchHysteresis: -1   → no stickiness
+	//   scoreMinSwitchInterval: -1  → no cooldown
 	// Default score metrics mode to compact when not provided
 	if strings.TrimSpace(p.ScoreMetricsMode) == "" {
 		p.ScoreMetricsMode = "compact"
@@ -1780,6 +1795,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			n.DirectiveDefaults = &DirectiveDefaultsConfig{}
 			*n.DirectiveDefaults = *defaults.DirectiveDefaults
 		}
+		if n.Multiplexing == nil && defaults.Multiplexing != nil {
+			v := *defaults.Multiplexing
+			n.Multiplexing = &v
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}
@@ -1902,29 +1921,37 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 
-// DefaultMarkEmptyAsErrorMethods lists the default methods for which empty/null results
-// should be treated as "missing data" errors, triggering retry on other upstreams.
-// Note: eth_getBlockByHash is intentionally excluded because subgraph-based upstreams
-// commonly return empty for this method, which is expected behavior.
-// Note: eth_getTransactionReceipt is excluded as a quick remedy. Ideally we'd only allow null
-// for pending txs (historical txs should retry on other upstreams). The "retry on empty" directive
-// can still be used since some nodes may already have the receipt.
-var DefaultMarkEmptyAsErrorMethods = []string{
-	// Block lookups (eth_getBlockByHash excluded - subgraphs return empty for it)
-	"eth_getBlockByNumber",
-	"eth_getBlockReceipts",
-	// Transaction lookups (eth_getTransactionReceipt excluded - see note above)
-	"eth_getTransactionByHash",
-	"eth_getTransactionByBlockHashAndIndex",
-	"eth_getTransactionByBlockNumberAndIndex",
-	// Uncle/ommers (legacy API)
-	"eth_getUncleByBlockHashAndIndex",
-	"eth_getUncleByBlockNumberAndIndex",
-	// Traces (debug/trace/parity modules)
-	"debug_traceTransaction",
-	"trace_transaction",
-	"trace_block",
-	"trace_get",
+// DefaultEmptyResultAccept returns a fresh copy of the methods for which an
+// empty/null result is considered valid (e.g. eth_getLogs, eth_call). A new
+// slice is returned on every call so callers cannot mutate the shared default.
+func DefaultEmptyResultAccept() []string {
+	return []string{"eth_getLogs", "eth_call"}
+}
+
+// DefaultMarkEmptyAsErrorMethods returns a fresh copy of the methods for which
+// empty/null results should be treated as "missing data" errors, triggering retry
+// on other upstreams. A new slice is returned on every call so callers cannot
+// mutate the shared default.
+//
+// Note: eth_getBlockByHash is intentionally excluded because subgraph-based
+// upstreams commonly return empty for this method, which is expected behavior.
+// Note: eth_getTransactionReceipt is excluded as a quick remedy. Ideally we'd
+// only allow null for pending txs.
+func DefaultMarkEmptyAsErrorMethods() []string {
+	return []string{
+		"eth_blockNumber",
+		"eth_getBlockByNumber",
+		"eth_getBlockReceipts",
+		"eth_getTransactionByHash",
+		"eth_getTransactionByBlockHashAndIndex",
+		"eth_getTransactionByBlockNumberAndIndex",
+		"eth_getUncleByBlockHashAndIndex",
+		"eth_getUncleByBlockNumberAndIndex",
+		"debug_traceTransaction",
+		"trace_transaction",
+		"trace_block",
+		"trace_get",
+	}
 }
 
 func (e *EvmNetworkConfig) SetDefaults() error {
@@ -1966,7 +1993,7 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 
 	// Default methods for marking empty results as errors
 	if e.MarkEmptyAsErrorMethods == nil {
-		e.MarkEmptyAsErrorMethods = DefaultMarkEmptyAsErrorMethods
+		e.MarkEmptyAsErrorMethods = DefaultMarkEmptyAsErrorMethods()
 	}
 
 	return nil
@@ -2116,9 +2143,20 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	if r.EmptyResultConfidence == 0 && defaults != nil && defaults.EmptyResultConfidence != 0 {
 		r.EmptyResultConfidence = defaults.EmptyResultConfidence
 	}
-	// Only set EmptyResultIgnore if provided through defaults
-	if r.EmptyResultIgnore == nil && defaults != nil && defaults.EmptyResultIgnore != nil {
-		r.EmptyResultIgnore = defaults.EmptyResultIgnore
+	// Backward compat: migrate deprecated EmptyResultIgnore → EmptyResultAccept
+	if r.EmptyResultAccept == nil && r.EmptyResultIgnore != nil {
+		r.EmptyResultAccept = r.EmptyResultIgnore
+	}
+	// Inherit from defaults
+	if r.EmptyResultAccept == nil && defaults != nil {
+		if defaults.EmptyResultAccept != nil {
+			r.EmptyResultAccept = defaults.EmptyResultAccept
+		} else if defaults.EmptyResultIgnore != nil {
+			r.EmptyResultAccept = defaults.EmptyResultIgnore
+		}
+	}
+	if r.EmptyResultAccept == nil {
+		r.EmptyResultAccept = DefaultEmptyResultAccept()
 	}
 
 	// Default EmptyResultMaxAttempts to MaxAttempts if not set
@@ -2132,6 +2170,12 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	// When not set, the regular delay settings are used for empty result retries.
 	if r.EmptyResultDelay == 0 && defaults != nil && defaults.EmptyResultDelay != 0 {
 		r.EmptyResultDelay = defaults.EmptyResultDelay
+	}
+
+	// BlockUnavailableDelay inherits from defaults if provided, no hardcoded fallback.
+	// When not set, block-unavailable retries use the normal delay/backoff.
+	if r.BlockUnavailableDelay == 0 && defaults != nil && defaults.BlockUnavailableDelay != 0 {
+		r.BlockUnavailableDelay = defaults.BlockUnavailableDelay
 	}
 
 	return nil

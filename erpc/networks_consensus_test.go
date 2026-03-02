@@ -90,7 +90,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(500)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			},
 		},
 		{
@@ -381,7 +381,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			},
 		},
 		{
@@ -405,7 +405,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			},
 		},
 		{
@@ -429,7 +429,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
 				ups[2].EvmStatePoller().SuggestLatestBlock(100)
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			},
 		},
 		{
@@ -451,7 +451,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			},
 		},
 		{
@@ -473,7 +473,7 @@ func TestConsensusPolicy(t *testing.T) {
 				ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 				ups[0].EvmStatePoller().SuggestLatestBlock(300)
 				ups[1].EvmStatePoller().SuggestLatestBlock(100)
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			},
 		},
 		{
@@ -703,8 +703,9 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32603, "internal server error")},
 				{status: 200, body: jsonRpcError(-32603, "internal server error")},
 			},
-			expectedCalls: []int{1, 1, 1},
-			expectedError: &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "gave up retrying"},
+			expectedCalls:        []int{-1, -1, -1},
+			expectedPendingMocks: -1,
+			expectedError:        &expectedError{code: common.ErrCodeFailsafeRetryExceeded, contains: "internal server error"},
 		},
 		{
 			name:        "one_success_rest_server_errors",
@@ -2159,12 +2160,12 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up2: error
 				{status: 200, body: jsonRpcError(-32603, "unknown server error")}, // up3: error
 			},
-			expectedCalls: []int{1, 1, 1},
+			expectedCalls:        []int{-1, -1, -1},
+			expectedPendingMocks: -1,
 			expectedError: &expectedError{
 				code:     common.ErrCodeFailsafeRetryExceeded,
-				contains: "gave up retrying",
+				contains: "unknown server error",
 			},
-			expectedPendingMocks: 0,
 		},
 
 		// ======== PreferHighestValueFor tests ========
@@ -2677,12 +2678,14 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, tc.expectedPendingMocks)
+	if tc.expectedPendingMocks >= 0 {
+		defer util.AssertNoPendingMocks(t, tc.expectedPendingMocks)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
 		cancel()
-		time.Sleep(50 * time.Millisecond) // allow goroutines to settle
+		time.Sleep(10 * time.Millisecond) // allow goroutines to settle
 	}()
 
 	// Setup mocks BEFORE any network components initialize
@@ -2725,7 +2728,7 @@ func runConsensusTest(t *testing.T, tc consensusTestCase) {
 	}
 
 	// Allow background bootstrap to settle to avoid flakiness in tests
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(40 * time.Millisecond)
 
 	// Make request
 	method := tc.requestMethod
@@ -2803,7 +2806,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx, &log.Logger, "prjA", tc.upstreams,
-		ssr, nil, vr, pr, nil, mt, 1*time.Second, nil,
+		ssr, nil, vr, pr, nil, mt, 1*time.Second, nil, nil,
 	)
 
 	if err := tc.consensusConfig.SetDefaults(); err != nil {
@@ -2831,7 +2834,7 @@ func setupNetworkForConsensusTest(t *testing.T, ctx context.Context, tc consensu
 	require.NoError(t, err)
 
 	upsReg.Bootstrap(ctx)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(25 * time.Millisecond)
 	err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	require.NoError(t, err)
 	upstream.ReorderUpstreams(upsReg)

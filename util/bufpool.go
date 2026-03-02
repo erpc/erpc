@@ -18,7 +18,9 @@ func BorrowBuf() *bytes.Buffer {
 	return buf
 }
 
-// ReturnBuf puts buf back in the pool when its capacity is reasonable.
+// ReturnBuf puts buf back in the pool only if its capacity is reasonable.
+// Oversized buffers (e.g., from large responses) are discarded to avoid
+// bloating the pool with memory that won't be reused efficiently.
 func ReturnBuf(buf *bytes.Buffer) {
 	if buf == nil {
 		return

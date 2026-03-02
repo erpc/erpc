@@ -108,6 +108,12 @@ func NewNetwork(
 			if method == "" {
 				method = "*"
 			}
+
+			emptyAccept := common.DefaultEmptyResultAccept()
+			if fsCfg.Retry != nil && fsCfg.Retry.EmptyResultAccept != nil {
+				emptyAccept = fsCfg.Retry.EmptyResultAccept
+			}
+
 			failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
 				method:                 method,
 				finalities:             fsCfg.MatchFinality,
@@ -115,17 +121,19 @@ func NewNetwork(
 				executor:               failsafe.NewExecutor(policyArray...),
 				timeout:                timeoutDuration,
 				consensusPolicyEnabled: fsCfg.Consensus != nil,
+				emptyResultAccept:      emptyAccept,
 			})
 		}
 	}
 
 	// Create a default executor if no failsafe config is provided or matched
 	failsafeExecutors = append(failsafeExecutors, &FailsafeExecutor{
-		method:                 "*", // "*" means match any method
-		finalities:             nil, // nil means match any finality
+		method:                 "*",
+		finalities:             nil,
 		executor:               failsafe.NewExecutor[*common.NormalizedResponse](),
 		timeout:                nil,
 		consensusPolicyEnabled: false,
+		emptyResultAccept:      common.DefaultEmptyResultAccept(),
 	})
 
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msgf("created %d failsafe executors", len(failsafeExecutors))
@@ -321,14 +329,7 @@ func (nr *NetworksRegistry) registerAlias(alias, arch, chain string) {
 func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.NetworkConfig, error) {
 	prj := nr.project
 
-	// Try to find config
-	var nwCfg *common.NetworkConfig
-	for _, cfg := range prj.Config.Networks {
-		if cfg.NetworkId() == networkId {
-			nwCfg = cfg
-			break
-		}
-	}
+	nwCfg := prj.FindNetworkConfig(networkId)
 	if nwCfg == nil {
 		// Create a new config if none was found
 		nwCfg = &common.NetworkConfig{}

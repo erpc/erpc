@@ -241,11 +241,15 @@ export default createConfig({
 
 ### Empty responses
 
+<Callout type="tip">
+For comprehensive documentation on empty results, missing data errors, and block unavailability — including all config fields and production guidelines — see [**Empty or missing data handling**](/config/failsafe/integrity#empty-or-missing-data-handling).
+</Callout>
+
 Retry feature is useful to handle empty responses when a node is lagging behind or for some other reason returns an unexpected empty response.
 
 - **What counts as empty**: Results like `null`, `[]`, `""`, `{}`, `0x`, `"0x"`, hex strings that are all zeros (e.g., `0x000...0`), and method-specific empties (e.g., empty logs). Internally we detect these directly from response bytes.
 - **Where retries apply**: Only at the **network level** when the request has `retryEmpty` enabled (via directive defaults or request headers/params). Upstream-level retry does not retry on empties.
-- **Default ignore list (`retry.emptyResultIgnore`)**: Methods to NEVER retry when the response is empty (e.g., `eth_getLogs`, `eth_call`). Configure to override defaults.
+- **Default ignore list (`retry.emptyResultAccept`)**: Methods to NEVER retry when the response is empty (e.g., `eth_getLogs`, `eth_call`). Configure to override defaults.
 - **Block availability check**: For EVM, when empty and the upstream is not syncing, we try to extract the block number and check upstream availability. If the upstream can serve that block but still returned empty, we do not retry.
 - **Availability confidence (`retry.emptyResultConfidence`)**:
   - `finalizedBlock`: If the target block is finalized (at or below finalized), empty responses are treated as valid (no retry). If the target block is after finalized, we will retry.
@@ -271,7 +275,7 @@ projects:
           - matchMethod: "*"
             retry:
               maxAttempts: 4 # total attempts (initial + retries)
-              emptyResultIgnore: ["eth_getLogs", "eth_call"] # Never retry these methods when result is empty
+              emptyResultAccept: ["eth_getLogs", "eth_call"] # Never retry these methods when result is empty
               emptyResultConfidence: finalizedBlock # treat finalized empties as valid
               emptyResultMaxAttempts: 2 # cap attempts for empty-result retries only
 ```
@@ -293,7 +297,7 @@ export default createConfig({
         matchMethod: "*",
         retry: {
           maxAttempts: 4,
-          // emptyResultIgnore: ["eth_getLogs", "eth_call"], // NEVER retry these when empty
+          // emptyResultAccept: ["eth_getLogs", "eth_call"], // NEVER retry these when empty
           // emptyResultConfidence: "finalized",              // treat finalized empties as valid
           emptyResultMaxAttempts: 2      // cap attempts for empty-result retries only
         }

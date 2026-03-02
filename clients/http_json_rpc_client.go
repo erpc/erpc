@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -991,6 +992,25 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 			},
 		)
 		return e
+	}
+
+	// A context cancellation during response body parsing (or any other
+	// phase) can surface as a JSON-RPC error whose message contains the
+	// Go context sentinel strings. Reclassify before the error extractor
+	// turns it into a generic ServerSideException — the upstream didn't
+	// actually fail.
+	if jr != nil && jr.Error != nil {
+		msg := jr.Error.Message
+		if strings.Contains(msg, "context canceled") {
+			return common.NewErrEndpointRequestCanceled(
+				fmt.Errorf("response processing interrupted: %s", msg),
+			)
+		}
+		if strings.Contains(msg, "context deadline exceeded") {
+			return common.NewErrEndpointRequestTimeout(0,
+				fmt.Errorf("response processing timed out: %s", msg),
+			)
+		}
 	}
 
 	if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {

@@ -400,11 +400,6 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 			}
 			if !allowed {
 				lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit exceeded")
-				u.metricsTracker.RecordUpstreamSelfRateLimited(
-					u,
-					method,
-					nrq,
-				)
 				err = common.NewErrUpstreamRateLimitRuleExceeded(
 					cfg.Id,
 					cfg.RateLimitBudget,
@@ -508,6 +503,10 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.UserId(),
 						nrq.AgentName(),
 					).Inc()
+				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointRequestCanceled) {
+					// Cancelled request (e.g. hedge lost the race). Not the upstream's
+					// fault — skip failure recording and generic error metric. The
+					// network layer records hedge discards via MetricNetworkHedgeDiscardsTotal.
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(ctx, method, nrq)
@@ -533,8 +532,17 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					).Inc()
 				}
 
-				timer.ObserveDuration(false)
+				// ExecutionException is a valid blockchain response (e.g. revert) — count its latency.
+				// All other errors should NOT contribute to the latency quantile.
+				isRevert := common.HasErrorCode(errCall, common.ErrCodeEndpointExecutionException)
+				timer.ObserveDuration(isRevert)
 				// We're converting a response+error into a pure error. Release the response to avoid retention.
+				// Only clear LVR for execution exceptions: these are "response+error" cases where
+				// this same response may have been stored as LVR above (line ~465). For missing-data
+				// and other retryable errors we keep LVR so network-level fallback can still work.
+				if isRevert {
+					nrq.ClearLastValidResponse()
+				}
 				if nrs != nil {
 					nrs.Release()
 					nrs = nil
@@ -563,7 +571,8 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					)
 				}
 			} else {
-				if nrs.IsResultEmptyish() {
+				emptyish := nrs.IsResultEmptyish()
+				if emptyish {
 					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(
 						u.ProjectId,
 						u.VendorName(),
@@ -575,9 +584,11 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 						nrq.AgentName(),
 					).Inc()
 				}
+				// Empty responses shouldn't contribute to latency quantiles — fast empty
+				// returns reflect data absence, not superior upstream performance.
+				timer.ObserveDuration(isSuccess && !emptyish)
 			}
 
-			timer.ObserveDuration(isSuccess)
 			if isSuccess {
 				u.recordRequestSuccess(method)
 			}
@@ -1068,6 +1079,15 @@ func (u *Upstream) EvmEffectiveFinalizedBlock() int64 {
 		return maxBound
 	}
 	return finalizedBlock
+}
+
+// EvmBlockAvailabilityBounds returns the resolved [min, max] block availability bounds
+// for this upstream based on its BlockAvailability configuration.
+// Returns (math.MinInt64, math.MaxInt64) when unbounded on either side.
+// This is used post-forward to determine if an upstream's MissingData response
+// is expected (block outside configured range) vs. a genuine wrong-empty misbehavior.
+func (u *Upstream) EvmBlockAvailabilityBounds() (int64, int64) {
+	return u.resolveAvailabilityBounds()
 }
 
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.

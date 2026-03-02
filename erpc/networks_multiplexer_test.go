@@ -420,6 +420,7 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 		metricsTracker,
 		1*time.Second,
 		nil,
+		nil,
 	)
 
 	network, err := NewNetwork(

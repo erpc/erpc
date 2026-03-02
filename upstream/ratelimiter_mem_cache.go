@@ -42,7 +42,7 @@ func (m *memoryRateLimitCache) shardFor(key string) *bucketShard {
 		h ^= uint64(key[i])
 		h *= prime64
 	}
-	idx := int(h % uint64(len(m.shards))) // #nosec G115
+	idx := int(h % uint64(len(m.shards)))
 	return &m.shards[idx]
 }
 

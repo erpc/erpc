@@ -19,7 +19,7 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
+func TestConsensusSelectsLargestResponseBelowThreshold(t *testing.T) {
 	// Test that when multiple responses are in the same consensus group,
 	// the largest response is selected (not just the first one)
 
@@ -62,16 +62,13 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 		},
 	}
 
-	// Create network config with consensus that ignores certain fields
-	// This allows responses with different sizes to be in the same consensus group
+	// Create network config with consensus preference for larger responses.
+	// With accept-most-common behavior, the policy can pick the largest non-empty
+	// response even when all participants are below threshold.
 	consensusConfig := &common.ConsensusPolicyConfig{
 		MaxParticipants:    3,
-		AgreementThreshold: 3,
-		DisputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
-		IgnoreFields: map[string][]string{
-			// For eth_getTransactionReceipt, ignore blockTimestamp and other fields that might vary
-			"eth_getTransactionReceipt": {"blockTimestamp", "gasUsedRatio"},
-		},
+		AgreementThreshold: 2,
+		DisputeBehavior:    common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
 	}
 
 	// Setup network
@@ -80,81 +77,80 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 		consensusConfig: consensusConfig,
 	})
 
-	// Create receipt responses with same core data but different additional fields
-	// The ignored fields (blockTimestamp) allow them to be in the same consensus group
-
-	// All receipts MUST have the same fields (except ignored ones) to be in same consensus group
-	// Only the ignored fields (blockTimestamp, gasUsedRatio) can differ in value
-	// Response size difference comes from different values of ignored fields
-
-	// Small receipt - short values for ignored fields
-	smallReceipt := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"result": map[string]interface{}{
-			"transactionHash":   "0xabc123",
-			"blockHash":         "0xdef456",
-			"blockNumber":       "0x1234",
-			"status":            "0x1",
-			"gasUsed":           "0x5208",
-			"cumulativeGasUsed": "0x5208",
-			"from":              "0x1111111111111111111111111111111111111111",
-			"to":                "0x2222222222222222222222222222222222222222",
-			"transactionIndex":  "0x0",
-			"type":              "0x2",
-			"effectiveGasPrice": "0x3b9aca00",
-			"logs":              []interface{}{},
-			"logsBloom":         "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-			"contractAddress":   nil,
-			"blockTimestamp":    "0x1", // Short value (ignored field)
+	// Use struct-encoded JSON to keep field order deterministic across responses.
+	type receiptResult struct {
+		TransactionHash string `json:"transactionHash"`
+		BlockHash       string `json:"blockHash"`
+		BlockNumber     string `json:"blockNumber"`
+		Status          string `json:"status"`
+		GasUsed         string `json:"gasUsed"`
+		From            string `json:"from"`
+		To              string `json:"to"`
+		BlockTimestamp  string `json:"blockTimestamp"`
+		GasUsedRatio    string `json:"gasUsedRatio"`
+		Padding         string `json:"padding"`
+	}
+	type receiptResponse struct {
+		Jsonrpc string        `json:"jsonrpc"`
+		ID      int           `json:"id"`
+		Result  receiptResult `json:"result"`
+	}
+	base := receiptResult{
+		TransactionHash: "0xabc123",
+		BlockHash:       "0xdef456",
+		BlockNumber:     "0x1234",
+		Status:          "0x1",
+		GasUsed:         "0x5208",
+		From:            "0x1111111111111111111111111111111111111111",
+		To:              "0x2222222222222222222222222222222222222222",
+	}
+	smallReceipt := receiptResponse{
+		Jsonrpc: "2.0",
+		ID:      1,
+		Result: receiptResult{
+			TransactionHash: base.TransactionHash,
+			BlockHash:       base.BlockHash,
+			BlockNumber:     base.BlockNumber,
+			Status:          base.Status,
+			GasUsed:         base.GasUsed,
+			From:            base.From,
+			To:              base.To,
+			BlockTimestamp:  "0x650000001234",
+			GasUsedRatio:    "0.333333333333",
+			Padding:         "0x0",
 		},
 	}
-
-	// Medium receipt - medium values for ignored fields
-	mediumReceipt := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"result": map[string]interface{}{
-			"transactionHash":   "0xabc123",
-			"blockHash":         "0xdef456",
-			"blockNumber":       "0x1234",
-			"status":            "0x1",
-			"gasUsed":           "0x5208",
-			"cumulativeGasUsed": "0x5208",
-			"from":              "0x1111111111111111111111111111111111111111",
-			"to":                "0x2222222222222222222222222222222222222222",
-			"transactionIndex":  "0x0",
-			"type":              "0x2",
-			"effectiveGasPrice": "0x3b9aca00",
-			"logs":              []interface{}{},
-			"logsBloom":         "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-			"contractAddress":   nil,
-			"blockTimestamp":    "0x650000001234", // Medium value (ignored field)
-			"gasUsedRatio":      "0.333333333333", // Medium value (ignored field)
+	mediumReceipt := receiptResponse{
+		Jsonrpc: "2.0",
+		ID:      1,
+		Result: receiptResult{
+			TransactionHash: base.TransactionHash,
+			BlockHash:       base.BlockHash,
+			BlockNumber:     base.BlockNumber,
+			Status:          base.Status,
+			GasUsed:         base.GasUsed,
+			From:            base.From,
+			To:              base.To,
+			BlockTimestamp:  "0x650000001234",
+			GasUsedRatio:    "0.333333333333",
+			Padding:         "0x0000000000000000",
 		},
 	}
-
-	// Large receipt - large values for ignored fields
-	largeReceipt := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"result": map[string]interface{}{
-			"transactionHash":   "0xabc123",
-			"blockHash":         "0xdef456",
-			"blockNumber":       "0x1234",
-			"status":            "0x1",
-			"gasUsed":           "0x5208",
-			"cumulativeGasUsed": "0x5208",
-			"from":              "0x1111111111111111111111111111111111111111",
-			"to":                "0x2222222222222222222222222222222222222222",
-			"transactionIndex":  "0x0",
-			"type":              "0x2",
-			"effectiveGasPrice": "0x3b9aca00",
-			"logs":              []interface{}{},
-			"logsBloom":         "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-			"contractAddress":   nil,
-			"blockTimestamp":    "0x6500000012345678901234567890abcdef", // Large value (ignored field)
-			"gasUsedRatio":      "0.555555555555555555555555555555555",  // Large value (ignored field)
+	largePadding := "0x0000000000000000000000000000000000000000000000000000000000000000"
+	largeReceipt := receiptResponse{
+		Jsonrpc: "2.0",
+		ID:      1,
+		Result: receiptResult{
+			TransactionHash: base.TransactionHash,
+			BlockHash:       base.BlockHash,
+			BlockNumber:     base.BlockNumber,
+			Status:          base.Status,
+			GasUsed:         base.GasUsed,
+			From:            base.From,
+			To:              base.To,
+			BlockTimestamp:  "0x650000001234",
+			GasUsedRatio:    "0.333333333333",
+			Padding:         largePadding,
 		},
 	}
 
@@ -214,12 +210,5 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 	// Verify that the largest response was selected
 	resultStr := jrr.GetResultString()
 
-	// The largest response should contain all the extra fields
-	assert.Contains(t, resultStr, "effectiveGasPrice", "Expected the largest response with effectiveGasPrice to be selected")
-	assert.Contains(t, resultStr, "logsBloom", "Expected the largest response with logsBloom to be selected")
-	assert.Contains(t, resultStr, "transactionIndex", "Expected the largest response with transactionIndex to be selected")
-
-	// Verify the response size is the largest
-	resultLen := jrr.ResultLength()
-	assert.True(t, resultLen > 500, "Expected large result length from the largest response")
+	assert.Contains(t, resultStr, largePadding, "expected largest response to be selected")
 }

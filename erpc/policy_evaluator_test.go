@@ -1870,6 +1870,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		mt,
 		1*time.Second,
 		nil,
+		nil,
 	)
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)

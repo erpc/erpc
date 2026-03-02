@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -75,6 +76,50 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 		rule.Config.ScopeString(),
 	).Set(float64(newMaxCount))
 	return nil
+}
+
+// AdjustBudgetByFactor reads currentMax, multiplies by factor, clamps to
+// [minBudget, maxBudget], and writes the result -- all under rulesMu.
+// Returns (prev, next, changed) so callers can log without holding the lock.
+func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor float64, minBudget, maxBudget int) (prev, next uint32, changed bool) {
+	if rule == nil || rule.Config == nil {
+		return 0, 0, false
+	}
+	b.rulesMu.Lock()
+	defer b.rulesMu.Unlock()
+
+	prev = rule.Config.MaxCount
+	raw := math.Ceil(float64(prev) * factor)
+	// Clamp to a valid uint32 range before the narrowing cast.  A large
+	// increaseFactor can push the float64 product above math.MaxUint32,
+	// which causes Go's float64→uint32 conversion to wrap to an arbitrary
+	// small value -- the opposite of an increase.
+	if raw > math.MaxUint32 {
+		raw = math.MaxUint32
+	} else if raw < 0 {
+		raw = 0
+	}
+	next = uint32(raw)
+	if minBudget > 0 {
+		minClamped := uint32(max(0, minBudget))
+		if next < minClamped {
+			next = minClamped
+		}
+	}
+	if maxBudget > 0 {
+		maxClamped := uint32(max(0, maxBudget))
+		if next > maxClamped {
+			next = maxClamped
+		}
+	}
+
+	if next == prev {
+		return prev, next, false
+	}
+
+	rule.Config.MaxCount = next
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(next))
+	return prev, next, true
 }
 
 // ruleResult holds the result of evaluating a single rule.

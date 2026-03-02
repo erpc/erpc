@@ -99,6 +99,7 @@ func TestHttpServer_IngressTelemetry_InflightAndPreForward(t *testing.T) {
 		"proxy",
 		"forwarded",
 	)
+	beforeInflight := gaugeValue(t, telemetry.MetricHTTPIngressInflight, "proxy", http.MethodPost)
 
 	done := make(chan struct{})
 	var (
@@ -111,12 +112,12 @@ func TestHttpServer_IngressTelemetry_InflightAndPreForward(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		return gaugeValue(t, telemetry.MetricHTTPIngressInflight, "proxy", http.MethodPost) >= 1
-	}, 2*time.Second, 10*time.Millisecond)
+		return gaugeValue(t, telemetry.MetricHTTPIngressInflight, "proxy", http.MethodPost) >= beforeInflight+1
+	}, 5*time.Second, 10*time.Millisecond)
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("request did not complete")
 	}
 
@@ -124,14 +125,16 @@ func TestHttpServer_IngressTelemetry_InflightAndPreForward(t *testing.T) {
 	assert.Contains(t, body, `"result":"0x1"`)
 
 	require.Eventually(t, func() bool {
-		return gaugeValue(t, telemetry.MetricHTTPIngressInflight, "proxy", http.MethodPost) == 0
-	}, 2*time.Second, 10*time.Millisecond)
+		return gaugeValue(t, telemetry.MetricHTTPIngressInflight, "proxy", http.MethodPost) <= beforeInflight
+	}, 5*time.Second, 10*time.Millisecond)
 
-	afterPreForward := histogramCount(
-		t,
-		telemetry.MetricHTTPIngressPreForwardDuration,
-		"proxy",
-		"forwarded",
-	)
-	assert.GreaterOrEqual(t, afterPreForward-beforePreForward, uint64(1))
+	require.Eventually(t, func() bool {
+		afterPreForward := histogramCount(
+			t,
+			telemetry.MetricHTTPIngressPreForwardDuration,
+			"proxy",
+			"forwarded",
+		)
+		return afterPreForward-beforePreForward >= uint64(1)
+	}, 2*time.Second, 10*time.Millisecond)
 }

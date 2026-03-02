@@ -189,6 +189,18 @@ func TestIntegrationPollLock_ContentionWait_GetsFresh_Redis(t *testing.T) {
 		defer wg.Done()
 		valA, errA = counterA.TryUpdateIfStale(callCtx, 5*time.Second, fnA)
 	}()
+
+	// Ensure A acquires the distributed poll lock before starting B.
+	// This makes contention deterministic even when the full suite is CPU-contended.
+	require.Eventually(t, func() bool {
+		for _, k := range s.Keys() {
+			if strings.Contains(k, "lock:test/poll-lock-contention/poll") {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "expected lock to be acquired before contender starts")
+
 	go func() {
 		defer wg.Done()
 		valB, errB = counterB.TryUpdateIfStale(callCtx, 5*time.Second, fnB)
@@ -202,11 +214,21 @@ func TestIntegrationPollLock_ContentionWait_GetsFresh_Redis(t *testing.T) {
 	assert.Equal(t, int64(2), valB)
 	assert.Equal(t, int32(1), callsA.Load()+callsB.Load(), "expected exactly one refreshFn execution across instances")
 
-	assert.GreaterOrEqual(t, metricDelta(t, "acquired", beforeAcquired), 1.0)
-	assert.GreaterOrEqual(t, metricDelta(t, "contention", beforeContention), 1.0)
-	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockWaitDuration, "acquired")-beforeWaitAcquired, uint64(1))
-	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockHoldDuration, "released")-beforeHoldReleased, uint64(1))
-	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "contention_fresh")-beforeFallbackFresh, uint64(1))
+	require.Eventually(t, func() bool {
+		return metricDelta(t, "acquired", beforeAcquired) >= 1.0
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return metricDelta(t, "contention", beforeContention) >= 1.0
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockWaitDuration, "acquired")-beforeWaitAcquired >= uint64(1)
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockHoldDuration, "released")-beforeHoldReleased >= uint64(1)
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "contention_fresh")-beforeFallbackFresh >= uint64(1)
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestIntegrationPollLock_UnchangedValue_PublishesFreshness_Redis(t *testing.T) {

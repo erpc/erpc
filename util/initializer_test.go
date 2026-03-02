@@ -3,6 +3,7 @@ package util
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,11 +179,10 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 		return nil
 	})
 
-	attempts := 0
+	var attempts atomic.Int32
 	failingTaskFirst := NewBootstrapTask("fail-first-attempt", func(ctx context.Context) error {
 		time.Sleep(10 * time.Millisecond)
-		attempts++
-		if attempts <= 1 {
+		if attempts.Add(1) <= 1 {
 			return errors.New("failing on first attempt")
 		}
 		return nil
@@ -197,16 +197,23 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 		_ = init.ExecuteTasks(appCtx, longRunningTask, failingTaskFirst, immediateSuccess)
 	}()
 
-	// Give an instant for tasks to start so we can observe StateInitializing.
-	time.Sleep(5 * time.Millisecond)
-	assert.Equal(t, StateInitializing, init.State(), "one or more tasks should still be running")
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, StatePartial, init.State(), "one task must be failed")
+	// Avoid brittle fixed sleeps: under high suite parallelism scheduling jitter
+	// can delay transitions by hundreds of milliseconds.
+	require.Eventually(t, func() bool {
+		return init.State() == StateInitializing
+	}, 500*time.Millisecond, 5*time.Millisecond, "one or more tasks should still be running")
+	require.Eventually(t, func() bool {
+		return init.State() == StatePartial
+	}, 2*time.Second, 10*time.Millisecond, "one task must be failed before retry succeeds")
 
-	// Wait again for the retry attempt to finish
-	time.Sleep(250 * time.Millisecond)
-	err := init.WaitForTasks(appCtx)
-	require.NoError(t, err, "the second attempt should succeed, no further errors expected")
+	require.Eventually(t, func() bool {
+		return attempts.Load() >= 2 && init.State() == StateReady
+	}, 5*time.Second, 10*time.Millisecond, "second attempt should succeed and move initializer to ready")
+
+	// Once state is Ready, WaitForTasks should be stable and non-flaky.
+	waitCtx, waitCancel := context.WithTimeout(appCtx, 2*time.Second)
+	defer waitCancel()
+	require.NoError(t, init.WaitForTasks(waitCtx))
 
 	// Now that the failed task has succeeded, the overall state should be Ready.
 	assert.Equal(t, StateReady, init.State(), "once all tasks succeed, the initializer should be Ready")

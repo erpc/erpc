@@ -149,7 +149,7 @@ func NewGrpcConnector(
 				}
 				// normalize to network id
 				uval, _ := evm.HexToUint64(chainHex)
-				val := int64(uval) // #nosec G115
+				val := int64(uval)
 				networkId := util.EvmNetworkId(val)
 				gc.mu.Lock()
 				defer gc.mu.Unlock()
@@ -220,8 +220,8 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 		if bn, ok := bni.(uint64); ok && bn < earliest {
 			span.SetAttributes(
 				attribute.String("grpc.skip_reason", "block_before_earliest"),
-				attribute.Int64("grpc.block_number", int64(bn)),         // #nosec G115
-				attribute.Int64("grpc.earliest_block", int64(earliest)), // #nosec G115
+				attribute.Int64("grpc.block_number", int64(bn)),
+				attribute.Int64("grpc.earliest_block", int64(earliest)),
 			)
 			return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
 		}

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/erpc/erpc/common"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Multiplexer struct {
@@ -35,6 +36,7 @@ func NewMultiplexer(hash string) *Multiplexer {
 func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse, err error) {
 	_, span := common.StartDetailSpan(ctx, "Multiplexer.Close")
 	defer span.End()
+	span.SetAttributes(attribute.String("multiplexer.hash", m.hash))
 
 	// Ensure we only close once using once.Do for thread safety
 	m.once.Do(func() {
@@ -75,11 +77,8 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 			}
 		}
 
-		// Store the final result
 		m.resp = resp
 		m.err = err
-
-		// Signal completion
 		close(m.done)
 	})
 }

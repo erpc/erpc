@@ -75,7 +75,12 @@ func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scop
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
-		p, err := createHedgePolicy(&lg, fsCfg.Hedge)
+		consensusEnabled := fsCfg.Consensus != nil
+		emptyResultAccept := common.DefaultEmptyResultAccept()
+		if fsCfg.Retry != nil && fsCfg.Retry.EmptyResultAccept != nil {
+			emptyResultAccept = fsCfg.Retry.EmptyResultAccept
+		}
+		p, err := createHedgePolicy(&lg, fsCfg.Hedge, emptyResultAccept, consensusEnabled)
 		if err != nil {
 			return nil, err
 		}
@@ -256,7 +261,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, emptyResultAccept []string, consensusEnabled bool) (failsafe.Policy[*common.NormalizedResponse], error) {
 	var builder hedgepolicy.HedgePolicyBuilder[*common.NormalizedResponse]
 
 	// Observe hedge delay via histogram; no background publisher.
@@ -363,13 +368,50 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 		return true
 	})
 
+	// Cancel other hedges when this execution has a result worth taking.
+	//
+	// Error semantics:
+	//   - ErrUpstreamsExhausted: all upstreams in this execution were already tried.
+	//     Cancel other hedges — they will hit the same exhausted pool (no benefit waiting).
+	//   - Terminal/deterministic errors (execution reverted, client faults, method unsupported):
+	//     Cancel other hedges — all upstreams would return the same result.
+	//   - Transient errors (MissingData, ServerSideException, BlockUnavailable):
+	//     Do NOT cancel. In consensus mode each hedge execution only tries one upstream,
+	//     so a transient error from one execution doesn't preclude a different execution
+	//     (targeting a healthy upstream) from succeeding.
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
-		// Don't cancel on ErrUpstreamsExhausted
-		if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+		if err != nil {
+			// Exhausted = all upstreams already tried in this execution, cancel remaining hedges
+			if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+				return true
+			}
+			// Transient/retryable errors: don't cancel — other hedge executions may reach healthy upstreams
+			// Terminal/deterministic errors: cancel — all upstreams would agree on the same result
+			return !common.IsRetryableTowardNetwork(err)
+		}
+		if result == nil || result.IsObjectNull(exec.Context()) {
 			return false
 		}
-
-		return result != nil || err != nil
+		// Only cancel other hedges when this result would be "accepted" by the network
+		// loop (non-empty, or empty but in emptyResultAccept and not consensus). Otherwise
+		// we'd prematurely cancel
+		if emptyResultAccept == nil {
+			emptyResultAccept = common.DefaultEmptyResultAccept()
+		}
+		emptyish := result.IsResultEmptyish(exec.Context())
+		if !emptyish {
+			return true
+		}
+		if consensusEnabled {
+			return false
+		}
+		var method string
+		if r := exec.Context().Value(common.RequestContextKey); r != nil {
+			if req, ok := r.(*common.NormalizedRequest); ok && req != nil {
+				method, _ = req.Method()
+			}
+		}
+		return slices.Contains(emptyResultAccept, method)
 	})
 
 	return builder.Build(), nil
@@ -402,13 +444,39 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
-	// When emptyResultDelay is configured, override the delay for empty result retries.
-	// Returning -1 tells failsafe-go to fall back to the normally configured delay/backoff for non-empty retries.
+	// When emptyResultDelay or blockUnavailableDelay is configured, override the delay for those
+	// specific retry scenarios. Returning -1 tells failsafe-go to fall back to the normally
+	// configured delay/backoff for other retries.
+	//
+	// Note: the Forward() execution loop already tries all upstreams for retryable errors
+	// before returning to the retry policy. So these delays naturally fire only after a
+	// full round of upstream attempts.
+	var emptyResultDelayDuration, blockUnavailableDelayDuration time.Duration
 	if cfg.EmptyResultDelay > 0 {
-		emptyResultDelayDuration := cfg.EmptyResultDelay.Duration()
+		emptyResultDelayDuration = cfg.EmptyResultDelay.Duration()
+	}
+	if cfg.BlockUnavailableDelay > 0 {
+		blockUnavailableDelayDuration = cfg.BlockUnavailableDelay.Duration()
+	}
+	if emptyResultDelayDuration > 0 || blockUnavailableDelayDuration > 0 {
 		builder = builder.WithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
-			if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
-				return emptyResultDelayDuration
+			// Block-unavailable: all upstreams don't have the block yet, wait for propagation
+			if blockUnavailableDelayDuration > 0 {
+				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+					return blockUnavailableDelayDuration
+				}
+			}
+			// Empty/missing data: custom delay for empty responses or missing-data errors.
+			// The empty result case covers upstreams that returned valid-but-empty responses.
+			// The missing-data error case covers upstreams that returned JSON-RPC errors
+			// (e.g. "missing trie node") which the hooks converted to ErrEndpointMissingData.
+			if emptyResultDelayDuration > 0 {
+				if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
+					return emptyResultDelayDuration
+				}
+				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+					return emptyResultDelayDuration
+				}
 			}
 			return -1
 		})
@@ -436,9 +504,9 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		emptyResultConfidence = common.AvailbilityConfidenceFinalized
 	}
 
-	emptyResultIgnore := cfg.EmptyResultIgnore
-	if emptyResultIgnore == nil {
-		emptyResultIgnore = []string{"eth_getLogs", "eth_call"}
+	emptyResultAccept := cfg.EmptyResultAccept
+	if emptyResultAccept == nil {
+		emptyResultAccept = common.DefaultEmptyResultAccept()
 	}
 
 	builder = builder.HandleIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
@@ -496,7 +564,52 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			}
 		}
 
-		// We are only short-circuiting retry if the error is not retryable towards the upstream or network
+		// ErrEndpointMissingData in the error path means one or more upstreams
+		// returned a JSON-RPC error (e.g. "header not found", "missing trie node")
+		// that was classified as missing data. These are transient node errors,
+		// NOT genuinely empty responses — empty responses go through the
+		// response-path retry logic at the ScopeNetwork+result!=nil block below.
+		//
+		// The only suppression we apply here is RetryEmpty=false, which is an
+		// explicit user directive to skip retries on any missing-data scenario.
+		// We intentionally do NOT check emptyResultAccept here: that list governs
+		// which methods may return valid empty results, and has no bearing on
+		// whether transient upstream errors should be retried.
+		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			var req *common.NormalizedRequest
+			if result != nil {
+				req = result.Request()
+			}
+			if req == nil {
+				if exh, ok := err.(*common.ErrUpstreamsExhausted); ok {
+					req = exh.Request()
+				} else {
+					var exhErr *common.ErrUpstreamsExhausted
+					if errors.As(err, &exhErr) {
+						req = exhErr.Request()
+					}
+				}
+			}
+			if req == nil {
+				if or := ctx.Value(common.RequestContextKey); or != nil {
+					if r, ok := or.(*common.NormalizedRequest); ok {
+						req = r
+					}
+				}
+			}
+
+			if req != nil {
+				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+					span.SetAttributes(
+						attribute.Bool("retry", false),
+						attribute.String("reason", "missing_data_but_retry_empty_disabled"),
+					)
+					return false
+				}
+			}
+		}
+
+		// Short-circuit retry if the error is not retryable towards the upstream or network
 		if scope == common.ScopeUpstream && err != nil {
 			isRetryable := common.IsRetryableTowardsUpstream(err)
 			span.SetAttributes(
@@ -510,37 +623,6 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				return false
 			}
 		} else if scope == common.ScopeNetwork && err != nil {
-			if result != nil {
-				if req := result.Request(); req != nil {
-					if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
-						if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-							span.SetAttributes(
-								attribute.Bool("retry", false),
-								attribute.String("reason", "missing_data_but_retry_empty_disabled"),
-							)
-							return false
-						}
-					}
-					// If RetryEmpty is enabled but the error is MissingData (produced by hooks for empty results),
-					// respect the emptyResultIgnore list and do NOT retry for ignored methods.
-					if rds := req.Directives(); rds != nil && rds.RetryEmpty {
-						if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-							method, _ := req.Method()
-							span.SetAttributes(
-								attribute.String("method", method),
-								attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
-							)
-							if slices.Contains(emptyResultIgnore, method) {
-								span.SetAttributes(
-									attribute.Bool("retry", false),
-									attribute.String("reason", "missing_data_method_in_empty_ignore_list"),
-								)
-								return false
-							}
-						}
-					}
-				}
-			}
 			isRetryable := common.IsRetryableTowardNetwork(err)
 			span.SetAttributes(
 				attribute.Bool("error.retryable_to_network", isRetryable),
@@ -596,13 +678,13 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 					method, _ := req.Method()
 					span.SetAttributes(
 						attribute.String("method", method),
-						attribute.Bool("method_in_ignore_list", slices.Contains(emptyResultIgnore, method)),
+						attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
 					)
-					// Check if method is in ignore list - if so, do NOT retry
-					if slices.Contains(emptyResultIgnore, method) {
+					// Check if method is in accept list - if so, empty is valid, do NOT retry
+					if slices.Contains(emptyResultAccept, method) {
 						span.SetAttributes(
 							attribute.Bool("retry", false),
-							attribute.String("reason", "method_in_empty_ignore_list"),
+							attribute.String("reason", "method_in_empty_accept_list"),
 						)
 						return false
 					}

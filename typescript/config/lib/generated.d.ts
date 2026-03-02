@@ -365,6 +365,34 @@ export interface ProjectConfig {
     scoreMetricsWindowSize?: Duration;
     scoreRefreshInterval?: Duration;
     /**
+     * RoutingStrategy selects the upstream ordering algorithm.
+     * "score-based" (default): penalty-based sticky routing.
+     * "round-robin": time-rotating equal distribution across upstreams.
+     */
+    routingStrategy?: string;
+    /**
+     * ScoreGranularity controls whether penalties are computed per-upstream or per-method.
+     * "upstream" (default): one penalty across all methods using aggregate metrics.
+     * "method": separate penalty per (upstream, method) pair.
+     */
+    scoreGranularity?: string;
+    /**
+     * ScorePenaltyDecayRate is the fraction of previous penalty retained per refresh tick (0..1).
+     * Lower = faster forgetting. At 0.85 with 30s ticks a penalty halves in ~2 minutes.
+     * Use a negative value (e.g. -1) to disable EMA memory entirely (instant penalty = no decay).
+     */
+    scorePenaltyDecayRate?: number;
+    /**
+     * ScoreSwitchHysteresis prevents primary flip-flop: the challenger's penalty
+     * must be at least this fraction lower than the current primary's penalty to
+     * trigger a switch (0..1). For example 0.10 means 10% better. Negative disables stickiness.
+     */
+    scoreSwitchHysteresis?: number;
+    /**
+     * ScoreMinSwitchInterval is the cooldown between primary upstream switches.
+     */
+    scoreMinSwitchInterval?: Duration;
+    /**
      * ScoreMetricsMode controls label cardinality for upstream score metrics for this project.
      * Allowed values:
      * - "compact": emit compact series by setting upstream and category labels to 'n/a'
@@ -395,6 +423,7 @@ export interface NetworkDefaults {
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
     evm?: TsEvmNetworkConfigForDefaults;
+    multiplexing?: boolean;
 }
 export interface CORSConfig {
     allowedOrigins: string[];
@@ -546,6 +575,14 @@ export interface RetryPolicyConfig {
     backoffFactor?: number;
     jitter?: Duration;
     emptyResultConfidence?: AvailbilityConfidence;
+    /**
+     * EmptyResultAccept lists methods for which an empty/null result is considered valid
+     * and should NOT be retried (e.g. eth_getLogs, eth_call where empty is a legitimate response).
+     */
+    emptyResultAccept?: string[];
+    /**
+     * @deprecated: use EmptyResultAccept instead.
+     */
     emptyResultIgnore?: string[];
     /**
      * EmptyResultMaxAttempts limits total attempts when retries are triggered due to empty responses.
@@ -732,6 +769,7 @@ export interface NetworkConfig {
     directiveDefaults?: DirectiveDefaultsConfig;
     alias?: string;
     methods?: MethodsConfig;
+    multiplexing?: boolean;
 }
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
@@ -1036,6 +1074,7 @@ export interface NetworkStrategyConfig {
      * RateLimitBudget, if set, is applied to the authenticated user (client IP)
      */
     rateLimitBudget?: string;
+    ipAsUser?: boolean;
 }
 export type LabelMode = string;
 export declare const ErrorLabelModeVerbose: LabelMode;

@@ -1,19 +1,20 @@
 ---
-description: Integrity module enforces block/logs data integrity and consistency across multiple RPC nodes.
+description: Integrity module enforces block/logs data integrity, empty/missing data handling, and consistency across multiple RPC nodes.
 ---
 
 import { Callout } from "nextra/components";
 
 # Integrity
 
-RPC nodes may return stale or inconsistent data. eRPC's integrity module ensures you always get the most recent and valid blockchain data through:
+RPC nodes may return stale, empty, or inconsistent data. eRPC's integrity module ensures you always get the most recent and valid blockchain data through:
 
 1. **Block tracking** — Monitors highest known block across all upstreams, ensures `eth_blockNumber` and `eth_getBlockByNumber(latest/finalized)` return the freshest data.
 2. **Range enforcement** — For `eth_getLogs`, ensures the requested block range is available on the chosen upstream.
-3. **Response validation** — Validates response structure and consistency (bloom filters, receipts, logs). See [Validations](#validations).
+3. **Empty/missing data handling** — Detects empty results, missing data errors, and block unavailability; retries automatically. See [Empty or Missing Data Handling](#empty-or-missing-data-handling).
+4. **Response validation** — Validates response structure and consistency (bloom filters, receipts, logs). See [Validations](#validations).
 
 <Callout type="tip">
-Combine with [retry](/config/failsafe/retry) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
+Combine with [retry](/config/failsafe#retry-policy) and [consensus](/config/failsafe/consensus) policies for automatic failover when integrity checks fail.
 </Callout>
 
 ## Config
@@ -59,7 +60,132 @@ When `enforceGetLogsBlockRange: true`, eRPC checks that the upstream has the req
 
 **Metrics**: `erpc_upstream_evm_get_logs_stale_upper_bound_total`, `erpc_upstream_evm_get_logs_stale_lower_bound_total`, `erpc_upstream_evm_get_logs_forced_splits_total`
 
-## Validations Directives
+## Empty or Missing Data Handling
+
+RPC nodes often return empty or missing data — especially near the tip of the chain where not all nodes have indexed the latest block yet.
+eRPC automatically detects these situations and retries on other upstreams.
+
+There are three situations eRPC handles:
+
+| Situation | Example | What eRPC does |
+|-----------|---------|---------------|
+| **Block not ready** | You request block N, but an upstream is still on block N-1 | Skips that upstream before even sending the request; retries after `blockUnavailableDelay` |
+| **Empty result** | `eth_getBlockByNumber` returns `null` | Tries other upstreams; optionally retries after `emptyResultDelay` |
+| **Missing data error** | Upstream returns "missing trie node" or "header not found" | Tries other upstreams; optionally retries with a delay |
+
+### How it works
+
+1. **Before sending** — eRPC checks if the upstream has the requested block. If not, it skips to the next upstream without wasting a network call.
+2. **After receiving** — If the upstream returns an empty result for a point-lookup method (like `eth_getBlockByNumber`), eRPC treats it as missing data and tries the next upstream.
+3. **After all upstreams tried** — If every upstream failed, eRPC can retry the whole round with a short delay, giving nodes time to catch up.
+
+<Callout type="info">
+The pre-send block availability check is the most important mechanism. It prevents tip-of-chain errors on fast chains (Polygon, Arbitrum, Base) where upstreams may be 1-2 blocks apart.
+</Callout>
+
+### Config reference
+
+| Field | Where | Default | Description |
+|-------|-------|---------|-------------|
+| `retryEmpty` | `directiveDefaults` | `true` | Enable retrying when all upstreams return empty or missing data |
+| `emptyResultAccept` | `failsafe[].retry` | `["eth_getLogs", "eth_call"]` | Methods where empty is a **valid** response — never retry these on empty |
+| `emptyResultConfidence` | `failsafe[].retry` | `finalizedBlock` | When to trust an empty result: `blockHead` (block ≤ latest) or `finalizedBlock` (block ≤ finalized) |
+| `emptyResultMaxAttempts` | `failsafe[].retry` | same as `maxAttempts` | Max retry attempts specifically for empty results |
+| `emptyResultDelay` | `failsafe[].retry` | _(none)_ | Fixed delay between empty-result retries (overrides normal `delay`) |
+| `blockUnavailableDelay` | `failsafe[].retry` | _(none)_ | Delay before retrying when upstreams don't have the block yet |
+
+<Callout type="info">
+**You generally don't need to configure `markEmptyAsErrorMethods`.** eRPC ships with sensible defaults that cover all common point-lookup methods (`eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getTransactionByHash`, traces, etc.). The defaults automatically treat `null` results for these methods as missing data, triggering failover to other upstreams. Only override this if you have unusual methods or upstream behaviors.
+</Callout>
+
+<Callout type="warning">
+`eth_getBlockByHash` and `eth_getTransactionReceipt` are intentionally **excluded** from the defaults.
+Subgraph upstreams commonly return `null` for `eth_getBlockByHash`, and `eth_getTransactionReceipt` returns `null` for pending transactions.
+If you need null-safety for `eth_getBlockByHash`, use aggressive `emptyResultMaxAttempts` (see example below).
+</Callout>
+
+### Example
+
+This example uses Polygon (2.3s blocks). Adjust delays for your chain's block time.
+
+`blockUnavailableDelay` and `emptyResultDelay` only fire when relevant -- for finalized blocks, `emptyResultConfidence: blockHead` knows the block exists and treats empty as valid, so no delay triggers. This means you can use **one retry policy for all finalities** instead of splitting by finality.
+
+The one exception is **consensus for unfinalized logs/receipts**: during reorgs, upstreams may disagree, so consensus picks the correct result.
+
+```yaml
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 137
+
+        # This is enabled by default to instruct erpc to retry
+        # on other upstreams when one upstream gives an "empty-ish" response.
+        # Such as null, or 0x, or [] empty array, etc.
+        directiveDefaults:
+          retryEmpty: true
+
+        failsafe:
+          # ── Unfinalized logs/receipts: add consensus for reorg safety ──
+          - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+            matchFinality: [unfinalized, unknown]
+            retry: &retry-standard
+              maxAttempts: 6
+              delay: 0
+              blockUnavailableDelay: 1s
+              emptyResultDelay: 500ms
+              emptyResultMaxAttempts: 1
+              emptyResultConfidence: blockHead
+              emptyResultAccept: ["eth_getLogs"]
+            consensus:
+              maxParticipants: 3
+              agreementThreshold: 2
+
+          # ── All other logs/receipts: same retry, no consensus ──
+          - matchMethod: "eth_getLogs|eth_getBlockReceipts"
+            retry: *retry-standard
+
+          # ── eth_call: empty is a valid contract return ──
+          - matchMethod: "eth_call"
+            retry:
+              <<: *retry-standard
+              emptyResultAccept: ["eth_call"]
+
+          # ── eth_getBlockByHash: null often means not indexed yet ──
+          - matchMethod: "eth_getBlockByHash"
+            retry:
+              <<: *retry-standard
+              emptyResultMaxAttempts: 6
+
+          # ── Everything else ──
+          - matchMethod: "*"
+            retry:
+              <<: *retry-standard
+              emptyResultMaxAttempts: 2
+              emptyResultAccept: ["eth_getLogs", "eth_call"]
+```
+
+### Production guidelines
+
+**Choosing `emptyResultDelay`** — set it so a few retries span roughly one block time:
+
+| Chain | Block time | `emptyResultDelay` | `emptyResultMaxAttempts` |
+|-------|-----------|-------------------|-------------------------|
+| Ethereum | 12s | `2000ms` | 3 |
+| Polygon | 2.3s | `500ms` | 5–6 |
+| Base / Optimism | 2s | `500ms` | 4–5 |
+| Arbitrum | 250ms | `200ms` | 5 |
+| Monad | 500ms | `200ms` | 3 |
+
+**`blockUnavailableDelay`** — set to `500ms`–`2s` if you see "block unavailable" errors.
+
+**`emptyResultAccept` rules of thumb:**
+- Always include `eth_getLogs` — empty logs is a valid response.
+- Always include `eth_call` — empty/null is a valid contract return.
+- Consider including `eth_getBlockByHash` if your upstreams reliably have blocks by hash.
+
+## Validations directives
 
 Response validation directives are ideal for **high-integrity use-cases** (such as indexing) where you need guaranteed data accuracy. When a validation fails, eRPC treats it as an upstream error — the response is rejected and retry/consensus policies automatically try other upstreams until valid data is found.
 

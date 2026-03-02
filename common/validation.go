@@ -556,6 +556,28 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
 	}
+	if p.RoutingStrategy != "" {
+		switch strings.ToLower(strings.TrimSpace(p.RoutingStrategy)) {
+		case "score-based", "round-robin":
+			// ok
+		default:
+			return fmt.Errorf("project.*.routingStrategy must be one of: score-based, round-robin")
+		}
+	}
+	if p.ScoreGranularity != "" {
+		switch strings.ToLower(strings.TrimSpace(p.ScoreGranularity)) {
+		case "upstream", "method":
+			// ok
+		default:
+			return fmt.Errorf("project.*.scoreGranularity must be one of: upstream, method")
+		}
+	}
+	if p.ScorePenaltyDecayRate > 1 {
+		return fmt.Errorf("project.*.scorePenaltyDecayRate must be <= 1 (use negative to disable EMA memory)")
+	}
+	if p.ScoreSwitchHysteresis > 1 {
+		return fmt.Errorf("project.*.scoreSwitchHysteresis must be <= 1 (use negative to disable stickiness)")
+	}
 	if p.ScoreMetricsMode != "" {
 		switch strings.ToLower(strings.TrimSpace(p.ScoreMetricsMode)) {
 		case "compact", "detailed", "none":

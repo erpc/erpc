@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -613,4 +614,112 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		assert.Equal(t, "myproxy1:8080", proxiedUrl.Host)
 	})
 
+}
+
+func TestNormalizeJsonRpcError_ContextCanceledDuringBodyParsing(t *testing.T) {
+	logger := log.Logger
+
+	makeClient := func(t *testing.T) *GenericHttpJsonRpcClient {
+		t.Helper()
+		ctx := context.Background()
+		ups := common.NewFakeUpstream("rpc1")
+		ups.Config().Type = common.UpstreamTypeEvm
+		ups.Config().Endpoint = "http://rpc1.localhost:8545"
+		c, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups,
+			&url.URL{Scheme: "http", Host: "rpc1.localhost:8545"},
+			ups.Config().JsonRpc, nil, &noopErrorExtractor{})
+		require.NoError(t, err)
+		return c.(*GenericHttpJsonRpcClient)
+	}
+
+	fakeHTTPResp := &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}
+
+	t.Run("parse_exception_with_context_canceled_becomes_RequestCanceled", func(t *testing.T) {
+		client := makeClient(t)
+
+		jr := &common.JsonRpcResponse{}
+		jr.Error = common.NewErrJsonRpcExceptionExternal(
+			int(common.JsonRpcErrorParseException),
+			"cannot parse json-rpc response: context canceled",
+			"",
+		)
+		nr := common.NewNormalizedResponse().WithJsonRpcResponse(jr)
+
+		err := client.normalizeJsonRpcError(fakeHTTPResp, nr)
+
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled),
+			"should be ErrEndpointRequestCanceled, got: %v", err)
+		assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+			"should NOT be ErrEndpointServerSideException")
+	})
+
+	t.Run("server_side_error_with_context_canceled_becomes_RequestCanceled", func(t *testing.T) {
+		client := makeClient(t)
+
+		jr := &common.JsonRpcResponse{}
+		jr.Error = common.NewErrJsonRpcExceptionExternal(
+			-32000,
+			"internal error: context canceled",
+			"",
+		)
+		nr := common.NewNormalizedResponse().WithJsonRpcResponse(jr)
+
+		err := client.normalizeJsonRpcError(fakeHTTPResp, nr)
+
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled),
+			"any error with 'context canceled' should be RequestCanceled, got: %v", err)
+	})
+
+	t.Run("context_deadline_exceeded_becomes_RequestTimeout", func(t *testing.T) {
+		client := makeClient(t)
+
+		jr := &common.JsonRpcResponse{}
+		jr.Error = common.NewErrJsonRpcExceptionExternal(
+			int(common.JsonRpcErrorParseException),
+			"cannot parse json-rpc response: context deadline exceeded",
+			"",
+		)
+		nr := common.NewNormalizedResponse().WithJsonRpcResponse(jr)
+
+		err := client.normalizeJsonRpcError(fakeHTTPResp, nr)
+
+		require.Error(t, err)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout),
+			"should be ErrEndpointRequestTimeout, got: %v", err)
+	})
+
+	t.Run("real_server_error_still_passes_through", func(t *testing.T) {
+		client := makeClient(t)
+
+		jr := &common.JsonRpcResponse{}
+		jr.Error = common.NewErrJsonRpcExceptionExternal(
+			-32000,
+			"execution reverted",
+			"",
+		)
+		nr := common.NewNormalizedResponse().WithJsonRpcResponse(jr)
+
+		err := client.normalizeJsonRpcError(fakeHTTPResp, nr)
+
+		require.Error(t, err)
+		assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled),
+			"real server error should NOT be reclassified as cancelled")
+	})
+
+	t.Run("no_error_returns_nil", func(t *testing.T) {
+		client := makeClient(t)
+
+		jr := &common.JsonRpcResponse{}
+		nr := common.NewNormalizedResponse().WithJsonRpcResponse(jr)
+
+		err := client.normalizeJsonRpcError(fakeHTTPResp, nr)
+		assert.NoError(t, err)
+	})
 }

@@ -375,7 +375,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				strings.Contains(msg, "Header") ||
 				strings.Contains(msg, "Block") ||
 				strings.Contains(msg, "transaction") ||
-				strings.Contains(msg, "Transaction") {
+				strings.Contains(msg, "Transaction") ||
+				strings.Contains(msg, "state") ||
+				strings.Contains(msg, "State") {
 				return common.NewErrEndpointMissingData(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),

@@ -403,16 +403,16 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 	}
 
 	return consensusTestCase{
-		name:            util.SanitizeTestName(spec),
-		description:     spec,
-		upstreams:       upstreams,
-		consensusConfig: cfg,
-		mockResponses:   mocks,
-		expectedCalls:   calls,
+		name:                 util.SanitizeTestName(spec),
+		description:          spec,
+		upstreams:            upstreams,
+		consensusConfig:      cfg,
+		mockResponses:        mocks,
+		expectedCalls:        calls,
 		expectedPendingMocks: expectedPendingMocks,
-		expectedResult:  expResult,
-		expectedError:   expError,
-		setupFn:         setupFn,
+		expectedResult:       expResult,
+		expectedError:        expError,
+		setupFn:              setupFn,
 	}
 }
 

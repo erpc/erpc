@@ -39,7 +39,7 @@ func TestRefreshScoresRace_ErasesNewlyRegisteredUpstreams(t *testing.T) {
 	}
 	tracker := health.NewTracker(&lg, "test-project", time.Minute)
 
-	reg := NewUpstreamsRegistry(ctx, &lg, "test-project", nil, nil, nil, vr, pr, ppr, tracker, 0, nil)
+	reg := NewUpstreamsRegistry(ctx, &lg, "test-project", nil, nil, nil, vr, pr, ppr, tracker, 0, nil, nil)
 
 	mk := func(id string) *Upstream {
 		u := &Upstream{

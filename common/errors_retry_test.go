@@ -37,7 +37,7 @@ func TestIsRetryableTowardNetwork_MissingDataError(t *testing.T) {
 		assert.True(t, result, "Single ErrEndpointMissingData should be retryable toward network")
 	})
 
-	t.Run("MissingDataError_NotRetryableTowardUpstream", func(t *testing.T) {
+	t.Run("MissingDataError_RetryableTowardUpstream", func(t *testing.T) {
 		missingDataErr := NewErrEndpointMissingData(
 			NewErrJsonRpcExceptionInternal(-32000, -32014, "missing trie node", nil, nil),
 			nil,
@@ -45,7 +45,7 @@ func TestIsRetryableTowardNetwork_MissingDataError(t *testing.T) {
 
 		result := IsRetryableTowardsUpstream(missingDataErr)
 
-		assert.False(t, result, "ErrEndpointMissingData should NOT be retryable toward same upstream")
+		assert.True(t, result, "ErrEndpointMissingData should be retryable toward upstream (respects emptyResultDelay)")
 	})
 
 	t.Run("ErrUpstreamsExhausted_AllMissingData_ShouldBeRetryable", func(t *testing.T) {

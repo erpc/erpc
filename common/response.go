@@ -45,6 +45,9 @@ type NormalizedResponse struct {
 	bodyOnce sync.Once
 	// bodyMu coordinates concurrent parsing and releasing of the body
 	bodyMu sync.RWMutex
+
+	// releaseOnce ensures Release() is idempotent — safe to call multiple times
+	releaseOnce sync.Once
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -501,25 +504,27 @@ func (r *NormalizedResponse) Release() {
 		return
 	}
 
-	// Wait for all pending background operations (e.g., cache set) to complete
-	// before freeing heavy buffers.
-	r.pendingOps.Wait()
+	r.releaseOnce.Do(func() {
+		// Wait for all pending background operations (e.g., cache set) to complete
+		// before freeing heavy buffers.
+		r.pendingOps.Wait()
 
-	// Clear these synchronously (fast, no I/O)
-	r.Lock()
-	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
-		jrr.Free()
-	}
-	r.jsonRpcResponse.Store(nil)
-	if r.request != nil {
-		r.request = nil // Break cycle immediately
-	}
-	r.Unlock()
+		// Clear these synchronously (fast, no I/O)
+		r.Lock()
+		if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+			jrr.Free()
+		}
+		r.jsonRpcResponse.Store(nil)
+		if r.request != nil {
+			r.request = nil
+		}
+		r.Unlock()
 
-	// Close the body exactly once and only after parsing completes
-	r.bodyMu.Lock()
-	r.closeBodyOnce()
-	r.bodyMu.Unlock()
+		// Close the body exactly once and only after parsing completes
+		r.bodyMu.Lock()
+		r.closeBodyOnce()
+		r.bodyMu.Unlock()
+	})
 }
 
 // closeBodyOnce closes and detaches the response body exactly once.

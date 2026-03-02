@@ -10,8 +10,6 @@ import (
 )
 
 func TestJsonRpcResponse_ParseFromStream_LargeResultStaysStable(t *testing.T) {
-	t.Parallel()
-
 	payload := benchMakeLargeJsonRpcResponse(80 << 10)
 	var rr bytes.Reader
 	rr.Reset(payload)

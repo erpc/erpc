@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTracker(t *testing.T) {
@@ -80,11 +81,10 @@ func TestTracker(t *testing.T) {
 
 		ups := common.NewFakeUpstream("a")
 
-		simulateRateLimitedRequestMetrics(tracker, ups, "method1", 100, 20, 10)
+		simulateRateLimitedRequestMetrics(tracker, ups, "method1", 100, 10)
 
 		metrics := tracker.GetUpstreamMethodMetrics(ups, "method1")
 		assert.Equal(t, int64(100), metrics.RequestsTotal.Load())
-		assert.Equal(t, int64(20), metrics.SelfRateLimitedTotal.Load())
 		assert.Equal(t, int64(10), metrics.RemoteRateLimitedTotal.Load())
 	})
 
@@ -151,7 +151,6 @@ func TestTracker(t *testing.T) {
 		metricsBefore := tracker.GetUpstreamMethodMetrics(ups, "method1")
 		assert.Equal(t, int64(100), metricsBefore.RequestsTotal.Load())
 		assert.Equal(t, int64(10), metricsBefore.ErrorsTotal.Load())
-		assert.Equal(t, int64(0), metricsBefore.SelfRateLimitedTotal.Load())
 		assert.Equal(t, int64(0), metricsBefore.RemoteRateLimitedTotal.Load())
 
 		time.Sleep(windowSize + 10*time.Millisecond)
@@ -159,7 +158,6 @@ func TestTracker(t *testing.T) {
 		metricsAfter := tracker.GetUpstreamMethodMetrics(ups, "method1")
 		assert.Equal(t, int64(0), metricsAfter.RequestsTotal.Load())
 		assert.Equal(t, int64(0), metricsAfter.ErrorsTotal.Load())
-		assert.Equal(t, int64(0), metricsAfter.SelfRateLimitedTotal.Load())
 		assert.Equal(t, int64(0), metricsAfter.RemoteRateLimitedTotal.Load())
 	})
 
@@ -294,13 +292,10 @@ func simulateRequestMetrics(tracker *Tracker, upstream common.Upstream, method s
 	}
 }
 
-func simulateRateLimitedRequestMetrics(tracker *Tracker, upstream common.Upstream, method string, total, selfLimited, remoteLimited int) {
+func simulateRateLimitedRequestMetrics(tracker *Tracker, upstream common.Upstream, method string, total, remoteLimited int) {
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, method)
-		if i < selfLimited {
-			tracker.RecordUpstreamSelfRateLimited(upstream, method, nil)
-		}
-		if i >= selfLimited && i < selfLimited+remoteLimited {
+		if i < remoteLimited {
 			tracker.RecordUpstreamRemoteRateLimited(context.Background(), upstream, method, nil)
 		}
 	}
@@ -669,5 +664,186 @@ func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 		expectedDistance := currentTime - blockTimestamp
 		assert.GreaterOrEqual(t, expectedDistance, int64(29), "Distance should be at least 29 seconds")
 		assert.LessOrEqual(t, expectedDistance, int64(32), "Distance should be at most 32 seconds")
+	})
+}
+
+func TestRecordUpstreamFailure_IgnoresHedgeCancellationErrors(t *testing.T) {
+	projectID := "test-project"
+	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups := common.NewFakeUpstream("qn-upstream")
+	method := "trace_block"
+
+	t.Run("RequestCanceled_not_counted_as_failure", func(t *testing.T) {
+		tracker.RecordUpstreamRequest(ups, method)
+		tracker.RecordUpstreamFailure(ups, method, common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
+
+		mt := tracker.GetUpstreamMethodMetrics(ups, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(1), mt.RequestsTotal.Load(), "request should be counted")
+		assert.Equal(t, int64(0), mt.ErrorsTotal.Load(), "cancelled hedge should NOT count as error")
+		assert.Equal(t, float64(0), mt.ErrorRate(), "error rate should be zero")
+	})
+
+	t.Run("HedgeCancelled_not_counted_as_failure", func(t *testing.T) {
+		ups2 := common.NewFakeUpstream("qn-upstream-2")
+		tracker.RecordUpstreamRequest(ups2, method)
+		tracker.RecordUpstreamFailure(ups2, method,
+			common.NewErrUpstreamHedgeCancelled("qn-upstream-2", fmt.Errorf("context canceled")))
+
+		mt := tracker.GetUpstreamMethodMetrics(ups2, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(1), mt.RequestsTotal.Load(), "request should be counted")
+		assert.Equal(t, int64(0), mt.ErrorsTotal.Load(), "hedge cancellation should NOT count as error")
+	})
+
+	t.Run("real_errors_still_counted", func(t *testing.T) {
+		ups3 := common.NewFakeUpstream("qn-upstream-3")
+		tracker.RecordUpstreamRequest(ups3, method)
+		tracker.RecordUpstreamFailure(ups3, method, fmt.Errorf("connection refused"))
+
+		mt := tracker.GetUpstreamMethodMetrics(ups3, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(1), mt.RequestsTotal.Load())
+		assert.Equal(t, int64(1), mt.ErrorsTotal.Load(), "real errors should still be counted")
+	})
+
+	t.Run("mixed_real_and_cancelled_errors", func(t *testing.T) {
+		ups4 := common.NewFakeUpstream("qn-upstream-4")
+
+		for i := 0; i < 10; i++ {
+			tracker.RecordUpstreamRequest(ups4, method)
+		}
+		// 5 real failures
+		for i := 0; i < 5; i++ {
+			tracker.RecordUpstreamFailure(ups4, method, fmt.Errorf("timeout"))
+		}
+		// 5 hedge cancellations (should be ignored)
+		for i := 0; i < 5; i++ {
+			tracker.RecordUpstreamFailure(ups4, method, common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled")))
+		}
+
+		mt := tracker.GetUpstreamMethodMetrics(ups4, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(10), mt.RequestsTotal.Load())
+		assert.Equal(t, int64(5), mt.ErrorsTotal.Load(), "only real errors should be counted, not hedge cancellations")
+		assert.InDelta(t, 0.5, mt.ErrorRate(), 0.001, "error rate should only reflect real failures")
+	})
+}
+
+func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
+	projectID := "test-latency"
+	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	method := "eth_call"
+
+	t.Run("success_latency_recorded_in_quantile", func(t *testing.T) {
+		ups := common.NewFakeUpstream("ups-success")
+		tracker.RecordUpstreamRequest(ups, method)
+		tracker.RecordUpstreamDuration(ups, method, 200*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "")
+
+		mt := tracker.GetUpstreamMethodMetrics(ups, method)
+		require.NotNil(t, mt)
+		q := mt.ResponseQuantiles.GetQuantile(0.70)
+		assert.Greater(t, q.Seconds(), 0.0, "successful latency should be in quantile")
+	})
+
+	t.Run("error_latency_not_in_quantile", func(t *testing.T) {
+		ups := common.NewFakeUpstream("ups-error")
+		tracker.RecordUpstreamRequest(ups, method)
+		tracker.RecordUpstreamDuration(ups, method, 50*time.Millisecond, false, "none", common.DataFinalityStateUnknown, "")
+
+		mt := tracker.GetUpstreamMethodMetrics(ups, method)
+		require.NotNil(t, mt)
+		q := mt.ResponseQuantiles.GetQuantile(0.70)
+		assert.Equal(t, 0.0, q.Seconds(), "error latency should NOT be in quantile")
+	})
+
+	t.Run("empty_response_latency_should_not_be_in_quantile", func(t *testing.T) {
+		// The upstream.go caller passes isSuccess=false for emptyish responses.
+		// This ensures fast empty responses don't inflate the latency quantile.
+		ups := common.NewFakeUpstream("ups-empty")
+		tracker.RecordUpstreamRequest(ups, method)
+		tracker.RecordUpstreamDuration(ups, method, 10*time.Millisecond, false, "none", common.DataFinalityStateUnknown, "")
+
+		mt := tracker.GetUpstreamMethodMetrics(ups, method)
+		require.NotNil(t, mt)
+		q := mt.ResponseQuantiles.GetQuantile(0.70)
+		assert.Equal(t, 0.0, q.Seconds(), "empty response latency should NOT inflate quantile")
+	})
+
+	t.Run("execution_exception_latency_should_be_in_quantile", func(t *testing.T) {
+		// ExecutionException (e.g. revert) is valid blockchain state — its latency
+		// should count. The upstream.go caller passes isSuccess=true for these.
+		ups := common.NewFakeUpstream("ups-revert")
+		tracker.RecordUpstreamRequest(ups, method)
+		tracker.RecordUpstreamDuration(ups, method, 150*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "")
+
+		mt := tracker.GetUpstreamMethodMetrics(ups, method)
+		require.NotNil(t, mt)
+		q := mt.ResponseQuantiles.GetQuantile(0.70)
+		assert.Greater(t, q.Seconds(), 0.0, "execution exception latency should be in quantile")
+	})
+}
+
+func TestRecordUpstreamMisbehavior_WrongEmpty(t *testing.T) {
+	projectID := "test-misbehavior"
+	tracker := NewTracker(&log.Logger, projectID, 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	method := "trace_block"
+
+	t.Run("wrong_empty_increments_misbehavior", func(t *testing.T) {
+		ups := common.NewFakeUpstream("alchemy")
+		for i := 0; i < 10; i++ {
+			tracker.RecordUpstreamRequest(ups, method)
+		}
+
+		// 3 wrong-empty responses: both failure AND misbehavior
+		for i := 0; i < 3; i++ {
+			tracker.RecordUpstreamFailure(ups, method, common.NewErrEndpointMissingData(fmt.Errorf("empty"), ups))
+			tracker.RecordUpstreamMisbehavior(ups, method)
+		}
+
+		mt := tracker.GetUpstreamMethodMetrics(ups, method)
+		require.NotNil(t, mt)
+		assert.Equal(t, int64(3), mt.ErrorsTotal.Load(), "wrong-empty should count as error")
+		assert.Equal(t, int64(3), mt.MisbehaviorsTotal.Load(), "wrong-empty should count as misbehavior")
+		assert.InDelta(t, 0.3, mt.ErrorRate(), 0.001)
+		assert.InDelta(t, 0.3, mt.MisbehaviorRate(), 0.001)
+	})
+
+	t.Run("wrong_empty_double_penalty_vs_regular_error", func(t *testing.T) {
+		upsWrongEmpty := common.NewFakeUpstream("ups-wrong-empty")
+		upsRegularErr := common.NewFakeUpstream("ups-regular-err")
+
+		for i := 0; i < 10; i++ {
+			tracker.RecordUpstreamRequest(upsWrongEmpty, method)
+			tracker.RecordUpstreamRequest(upsRegularErr, method)
+		}
+
+		// Both have same error rate
+		for i := 0; i < 3; i++ {
+			tracker.RecordUpstreamFailure(upsWrongEmpty, method, common.NewErrEndpointMissingData(fmt.Errorf("empty"), upsWrongEmpty))
+			tracker.RecordUpstreamMisbehavior(upsWrongEmpty, method)
+			tracker.RecordUpstreamFailure(upsRegularErr, method, fmt.Errorf("timeout"))
+		}
+
+		mtWE := tracker.GetUpstreamMethodMetrics(upsWrongEmpty, method)
+		mtRE := tracker.GetUpstreamMethodMetrics(upsRegularErr, method)
+
+		assert.Equal(t, mtWE.ErrorRate(), mtRE.ErrorRate(), "same error rate")
+		assert.Greater(t, mtWE.MisbehaviorRate(), mtRE.MisbehaviorRate(),
+			"wrong-empty should have higher misbehavior rate than regular errors")
+		assert.Equal(t, float64(0), mtRE.MisbehaviorRate(),
+			"regular errors should have zero misbehavior rate")
 	})
 }

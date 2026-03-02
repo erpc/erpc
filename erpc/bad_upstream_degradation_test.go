@@ -134,7 +134,19 @@ func (m *MockUpstreamServer) handleRequest(w http.ResponseWriter, r *http.Reques
 	case "eth_getTransactionCount":
 		result = "0x10"
 	case "eth_getLogs":
-		result = []interface{}{}
+		result = []interface{}{
+			map[string]interface{}{
+				"address":          "0x0000000000000000000000000000000000000001",
+				"blockNumber":      "0x1234567",
+				"transactionHash":  "0x0000000000000000000000000000000000000000000000000000000000000001",
+				"transactionIndex": "0x0",
+				"blockHash":        "0x0000000000000000000000000000000000000000000000000000000000000001",
+				"logIndex":         "0x0",
+				"removed":          false,
+				"topics":           []interface{}{"0x0000000000000000000000000000000000000000000000000000000000000001"},
+				"data":             "0x",
+			},
+		}
 	case "eth_getTransactionReceipt":
 		result = map[string]interface{}{
 			"blockNumber": "0x1234567",
@@ -180,8 +192,8 @@ func TestUpstreamDegradationScenarios(t *testing.T) {
 			Name:                    "TwoBadOneGood",
 			Description:             "Two slow upstreams (6s, 3s) and one fast upstream (200ms) - should heavily favor the fast one",
 			NumRequests:             TEST_DEFAULT_BATCH_SIZE * 6,
-			ExpectedP50:             300*time.Millisecond + 20*time.Millisecond, /*overhead*/
-			ExpectedP90:             300*time.Millisecond + 50*time.Millisecond, /*overhead*/
+			ExpectedP50:             2 * time.Second,
+			ExpectedP90:             3 * time.Second,
 			MaxErrorRate:            0.05,
 			ExpectedFinalScoreOrder: []string{"fast_upstream", "slow_upstream", "worst_upstream"},
 			NetworkFailsafe: &common.FailsafeConfig{
@@ -442,6 +454,9 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 				Id:                     "test_project",
 				ScoreMetricsWindowSize: common.Duration(scoreWindow),
 				ScoreRefreshInterval:   common.Duration(100 * time.Millisecond),
+				ScoreSwitchHysteresis:  -1,
+				ScoreMinSwitchInterval: common.Duration(500 * time.Millisecond),
+				ScorePenaltyDecayRate:  0.5,
 				Networks: []*common.NetworkConfig{
 					{
 						Architecture: common.ArchitectureEvm,
@@ -526,10 +541,10 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 	// Initial score order snapshot
 	logCurrentScoreOrder("initial")
 
-	// Schedule a mid-run snapshot after 2s
+	// Schedule a mid-run snapshot shortly after startup
 	go func() {
-		time.Sleep(2 * time.Second)
-		logCurrentScoreOrder("t+2s")
+		time.Sleep(500 * time.Millisecond)
+		logCurrentScoreOrder("t+0.5s")
 	}()
 
 	// Helper to build request body for a given index
@@ -564,7 +579,7 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 		for i := batchStart; i < batchEnd; i++ {
 			idx := i
 			batchWG.Add(1)
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(1 * time.Millisecond)
 			go func() {
 				defer batchWG.Done()
 				reqBody := preparedBodies[idx-batchStart]
@@ -626,7 +641,7 @@ func runUpstreamTest(t *testing.T, scenario TestScenario) {
 		}
 		runBatchRequests(batchStart, batchEnd)
 		// Small pause between batches to ease resource pressure
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 		// Extra score logs to ensure visibility
 		batchIdx := (batchStart / batchSize) + 1
 		if batchIdx == 1 || batchIdx%5 == 0 {

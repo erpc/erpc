@@ -143,6 +143,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		ntw, err := NewNetwork(
 			ctx,
@@ -200,7 +201,10 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		// Two upstreams, each returns empty once
+		// Two upstreams, each returns empty once.
+		// With the broad loop, both upstreams are tried in a single execution.
+		// Since the block is available (state poller has the block), the empty
+		// result is accepted immediately — no retry needed.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1).
@@ -260,7 +264,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
@@ -304,8 +308,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
+		// With broad loop: all upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -380,7 +386,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2, up3}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2, up3}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
@@ -429,8 +435,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 3 {
-			t.Errorf("expected attempts=3, got %d", resp.Attempts())
+		// With broad loop: all 3 upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -494,7 +502,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
@@ -588,7 +596,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
@@ -647,7 +655,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
-		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultIgnore: []string{"eth_getBalance"}}}
+		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultAccept: []string{"eth_getBalance"}}}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
@@ -674,7 +682,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
@@ -705,7 +713,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		if resp.Attempts() != 1 {
-			t.Errorf("expected attempts=1 when method in EmptyResultIgnore, got %d", resp.Attempts())
+			t.Errorf("expected attempts=1 when method in EmptyResultAccept, got %d", resp.Attempts())
 		}
 	})
 
@@ -715,7 +723,8 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		// Two upstreams both return empty, so we get 2 attempts with empty result delay in between
+		// Two upstreams both return empty.
+		// With broad loop: both tried in one round, block is available → accepted immediately.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1).
@@ -770,7 +779,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
@@ -806,19 +815,15 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-		start := time.Now()
 		resp, err := ntw.Forward(ctx, fakeReq)
-		elapsed := time.Since(start)
 
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
-		}
-		// The empty result delay is 300ms; total should be >= 250ms (with some tolerance)
-		if elapsed < 250*time.Millisecond {
-			t.Errorf("expected elapsed >= 250ms (emptyResultDelay=300ms), got %v", elapsed)
+		// With broad loop: all upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries or delays.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -882,7 +887,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
@@ -985,7 +990,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
@@ -1021,19 +1026,15 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
 		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
-		start := time.Now()
 		resp, err := ntw.Forward(ctx, fakeReq)
-		elapsed := time.Since(start)
 
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		if resp.Attempts() != 2 {
-			t.Errorf("expected attempts=2, got %d", resp.Attempts())
-		}
-		// Without emptyResultDelay, should use normal delay (10ms), so total should be fast
-		if elapsed >= 200*time.Millisecond {
-			t.Errorf("expected elapsed < 200ms (normal delay=10ms, no emptyResultDelay), got %v", elapsed)
+		// With broad loop: all upstreams tried in one round, block is available,
+		// so HandleIf accepts the empty result without triggering retries or delays.
+		if resp.Attempts() != 1 {
+			t.Errorf("expected attempts=1, got %d", resp.Attempts())
 		}
 	})
 
@@ -1114,6 +1115,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		ntw, err := NewNetwork(
@@ -1232,6 +1234,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1271,8 +1274,10 @@ func TestNetwork_Forward(t *testing.T) {
 
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
-		} else if !strings.Contains(common.ErrorSummary(err), "ErrEndpointServerSideException") {
-			t.Errorf("Expected %v, got %v", "ErrEndpointServerSideException", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
 		}
 	})
 
@@ -1356,6 +1361,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1399,8 +1405,10 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected an error, got nil")
 		}
 
-		if !strings.Contains(common.ErrorSummary(err), "ErrEndpointServerSideException") {
-			t.Errorf("Expected %v, got %v", "ErrEndpointServerSideException", err)
+		if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			t.Errorf("Expected ErrUpstreamsExhausted wrapping server error, got %v", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
 		}
 	})
 
@@ -1506,6 +1514,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -1673,6 +1682,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1730,7 +1740,7 @@ func TestNetwork_Forward(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1)
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -1829,6 +1839,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -1878,7 +1889,8 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 				Failsafe: []*common.FailsafeConfig{{
 					Retry: &common.RetryPolicyConfig{
-						MaxAttempts: 1,
+						MaxAttempts:       1,
+						EmptyResultAccept: []string{},
 					}},
 				},
 			},
@@ -1908,16 +1920,17 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
 
-		// Convert the raw response to a map to access custom fields like fromHost
+		// With EmptyResultAccept disabled, the broad loop tries both upstreams.
+		// rpc1 returns [] (empty), rpc2 returns [{"logIndex":444}] (non-empty).
+		// The broad loop prefers the non-empty result.
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
 			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
 		}
 
-		// Check that the result field is an empty array as expected
 		result := jrr.GetResultString()
-		if len(result) != 2 || result[0] != '[' || result[1] != ']' {
-			t.Fatalf("Expected result to be an empty array, got %s", result)
+		if !strings.Contains(result, "logIndex") {
+			t.Fatalf("Expected non-empty result from second upstream (broad loop prefers non-empty), got %s", result)
 		}
 	})
 	t.Run("RetryWhenNodeIsNotSynced", func(t *testing.T) {
@@ -2025,6 +2038,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -2236,6 +2250,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -2428,6 +2443,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -2617,7 +2633,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		})
 
-		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil)
+		upr := upstream.NewUpstreamsRegistry(ctx, &log.Logger, "prjA", []*common.UpstreamConfig{up1, up2}, ssr, rlr, vr, pr, nil, mt, 0, nil, nil)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 		_ = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
@@ -2780,6 +2796,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -2989,6 +3006,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3179,6 +3197,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3361,6 +3380,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			0,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -3571,6 +3591,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			0,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -3793,6 +3814,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			0,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -3984,6 +4006,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			0,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4172,6 +4195,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			0,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4341,6 +4365,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4472,6 +4497,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -4631,6 +4657,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4783,6 +4810,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -4917,6 +4945,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5041,6 +5070,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 
 		upsReg.Bootstrap(ctx)
@@ -5160,6 +5190,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5201,8 +5232,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
-		if !strings.Contains(common.ErrorSummary(err), "ErrFailsafeRetryExceeded") {
-			t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
+		if !common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			t.Errorf("Expected ErrUpstreamsExhausted after retries exhausted, got %v", err)
+		} else if !common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			t.Errorf("Expected server-side exception inside ErrUpstreamsExhausted, got %v", err)
 		}
 	})
 	t.Run("ForwardRetryFailuresWithSuccess", func(t *testing.T) {
@@ -5289,6 +5322,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -5417,6 +5451,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -5550,6 +5585,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -5689,6 +5725,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -5843,6 +5880,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -5993,6 +6031,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -6145,6 +6184,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6278,6 +6318,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Hour,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -6419,6 +6460,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -6566,6 +6608,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6711,6 +6754,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6849,6 +6893,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -6982,6 +7027,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -7134,6 +7180,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -7290,6 +7337,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7423,6 +7471,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7544,6 +7593,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -7667,6 +7717,7 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -7774,6 +7825,10 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			&upstream.ScoringConfig{
+				ScoreGranularity: "method",
+				SwitchHysteresis: -1,
+			},
 			nil,
 		)
 
@@ -7813,7 +7868,6 @@ func TestNetwork_Forward(t *testing.T) {
 				Persist().
 				Post("/").
 				Filter(func(request *http.Request) bool {
-					// seek body in request without changing the original Body buffer
 					body := util.SafeReadBody(request)
 					return strings.Contains(body, method) && strings.Contains(request.Host, upstreamId)
 				}).
@@ -7824,7 +7878,6 @@ func TestNetwork_Forward(t *testing.T) {
 
 		upstream.ReorderUpstreams(upstreamsRegistry)
 
-		// Upstream A is faster for eth_call, Upstream B is faster for eth_traceTransaction, Upstream C is faster for eth_getLogs
 		mockRequests("eth_getLogs", "rpc1", 200*time.Millisecond)
 		mockRequests("eth_getLogs", "rpc2", 100*time.Millisecond)
 		mockRequests("eth_getLogs", "rpc3", 50*time.Millisecond)
@@ -7862,12 +7915,10 @@ func TestNetwork_Forward(t *testing.T) {
 						assert.NoError(t, err)
 					}
 				}(method)
-				// time.Sleep(1 * time.Millisecond)
 			}
 		}
 		wg.Wait()
 
-		// Stabilize EMA/confidence-weighted scores after heavy concurrent traffic
 		for i := 0; i < 5; i++ {
 			upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 			time.Sleep(100 * time.Millisecond)
@@ -7981,6 +8032,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			mt,
 			1*time.Second,
+			nil,
 			nil,
 		)
 		upr.Bootstrap(ctx)
@@ -9623,6 +9675,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				metricsTracker,
 				1*time.Second,
 				nil,
+				nil,
 			)
 
 			networkConfig := &common.NetworkConfig{
@@ -10540,7 +10593,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -10730,7 +10783,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
-			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil,
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second, nil, nil,
 		)
 		upr.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
@@ -10923,6 +10976,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			mt,
 			1*time.Second,
 			nil,
+			nil,
 		)
 
 		ntwCfg := &common.NetworkConfig{
@@ -11032,6 +11086,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		nil,
 		metricsTracker,
 		1*time.Second,
+		nil,
 		nil,
 	)
 	if networkConfig == nil {
@@ -11145,6 +11200,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		nil,
 		metricsTracker,
 		120*time.Second,
+		nil,
 		nil,
 	)
 
@@ -11286,6 +11342,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			nil,
 			nil,
 		)
 
@@ -11439,6 +11496,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			nil,
 			nil,
 		)
 
@@ -11598,6 +11656,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			metricsTracker,
 			1*time.Second,
 			nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11724,6 +11783,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			nil,
 			nil,
 		)
 
@@ -11859,6 +11919,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			metricsTracker,
 			1*time.Second,
 			nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -11990,6 +12051,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			metricsTracker,
 			1*time.Second,
 			nil,
+			nil,
 		)
 
 		networkConfig := &common.NetworkConfig{
@@ -12118,6 +12180,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			nil,
 			metricsTracker,
 			1*time.Second,
+			nil,
 			nil,
 		)
 

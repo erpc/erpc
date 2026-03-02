@@ -372,7 +372,7 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, req *
 	grpcSpan.SetAttributes(attribute.Bool("response_has_block", hasBlock))
 	if hasBlock {
 		grpcSpan.SetAttributes(
-			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)), // #nosec G115
+			attribute.Int64("response_block_number", int64(grpcResp.Block.Number)),
 			attribute.String("response_block_hash", fmt.Sprintf("%x", grpcResp.Block.Hash)),
 		)
 	}
@@ -590,8 +590,8 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, req *common.No
 
 	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs",
 		trace.WithAttributes(
-			attribute.Int64("from_block", int64(*fromBlock)), // #nosec G115
-			attribute.Int64("to_block", int64(*toBlock)),     // #nosec G115
+			attribute.Int64("from_block", int64(*fromBlock)),
+			attribute.Int64("to_block", int64(*toBlock)),
 		),
 	)
 	grpcResp, err := c.rpcClient.GetLogs(ctx, grpcReq)
@@ -865,15 +865,18 @@ func (c *GenericGrpcBdsClient) normalizeGrpcError(err error) error {
 		return nil
 	}
 
-	// First check if this is a gRPC status error
-	st, ok := status.FromError(err)
-	if !ok {
-		// Not a gRPC error, return as transport failure
-		return common.NewErrEndpointTransportFailure(c.Url, err)
+	// status.FromError only checks the top-level error for GRPCStatus().
+	// Handler methods wrap gRPC errors with fmt.Errorf, so we walk the
+	// Unwrap chain to find the original gRPC status.
+	current := err
+	for current != nil {
+		if st, ok := status.FromError(current); ok {
+			return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
+		}
+		current = errors.Unwrap(current)
 	}
 
-	// Pass to the EVM error normalizer
-	return common.ExtractGrpcErrorFromGrpcStatus(st, c.upstream)
+	return common.NewErrEndpointTransportFailure(c.Url, err)
 }
 
 func (c *GenericGrpcBdsClient) shutdown() {

@@ -33,7 +33,9 @@ func TestIntegrationPollLock_CrossInstanceDedup_Redis(t *testing.T) {
 			ClusterKey:      "test",
 			FallbackTimeout: common.Duration(2 * time.Second),
 			LockTtl:         common.Duration(2 * time.Second),
-			LockMaxWait:     common.Duration(200 * time.Millisecond),
+			// Keep contention wait comfortably above refresh latency to avoid
+			// fallback local-refresh under CPU contention when suite runs highly parallel.
+			LockMaxWait: common.Duration(1 * time.Second),
 			// Must be long enough for: refreshFn + background push/publish + pubsub propagation.
 			UpdateMaxWait: common.Duration(5 * time.Second),
 			Connector: &common.ConnectorConfig{
@@ -65,7 +67,7 @@ func TestIntegrationPollLock_CrossInstanceDedup_Redis(t *testing.T) {
 	counterA.TryUpdate(ctx, 1)
 	require.Eventually(t, func() bool {
 		return counterB.GetValue() == 1
-	}, 2*time.Second, 10*time.Millisecond, "expected counterB to observe counterA update via shared state")
+	}, 5*time.Second, 10*time.Millisecond, "expected counterB to observe counterA update via shared state")
 
 	// Force both sides stale so both attempt refresh concurrently.
 	staleTs := time.Now().Add(-10 * time.Second).UnixMilli()
@@ -75,7 +77,7 @@ func TestIntegrationPollLock_CrossInstanceDedup_Redis(t *testing.T) {
 	var refreshCalls atomic.Int32
 	refreshFn := func(ctx context.Context) (int64, error) {
 		refreshCalls.Add(1)
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 		return 2, nil
 	}
 
@@ -111,5 +113,5 @@ func TestIntegrationPollLock_CrossInstanceDedup_Redis(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return counterA.GetValue() == 2 && counterB.GetValue() == 2
-	}, 2*time.Second, 10*time.Millisecond, "expected both counters to converge via shared state")
+	}, 5*time.Second, 10*time.Millisecond, "expected both counters to converge via shared state")
 }
