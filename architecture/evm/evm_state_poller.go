@@ -224,11 +224,9 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 		e.networkLabel = cfg.NetworkId()
 	}
 
-	if e.debounceInterval == 0 {
-		if cfg.Evm.FallbackStatePollerDebounce != 0 {
-			e.debounceInterval = cfg.Evm.FallbackStatePollerDebounce.Duration()
-		}
-	}
+	// Note: debounceInterval is intentionally NOT set from FallbackStatePollerDebounce here.
+	// Poll methods read GetNetworkBlockTime() live, using FallbackStatePollerDebounce only
+	// when no user config AND no EMA samples are available yet.
 }
 
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
@@ -367,9 +365,8 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	if dbi == 0 {
 		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
 	}
-	if dbi == 0 {
-		// No user config and no EMA samples yet — safe fallback, just polls more often
-		dbi = 1 * time.Second
+	if dbi == 0 && e.cfg != nil && e.cfg.FallbackStatePollerDebounce != 0 {
+		dbi = e.cfg.FallbackStatePollerDebounce.Duration()
 	}
 	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
@@ -485,9 +482,8 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	if dbi == 0 {
 		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
 	}
-	if dbi == 0 {
-		// No user config and no EMA samples yet — safe fallback, just polls more often
-		dbi = 1 * time.Second
+	if dbi == 0 && e.cfg != nil && e.cfg.FallbackStatePollerDebounce != 0 {
+		dbi = e.cfg.FallbackStatePollerDebounce.Duration()
 	}
 
 	// Read networkLabel with lock to avoid race condition
