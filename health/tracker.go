@@ -165,9 +165,6 @@ type Tracker struct {
 	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
 	mu                 sync.RWMutex             // Protect the map
 
-	// Dynamic block time tracking
-	knownEvmBlockTimes map[string]time.Duration // injected known block times keyed by networkId (e.g. "evm:1")
-
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
 	urdObsCache sync.Map // map[urdoKey]prometheus.Observer
@@ -823,12 +820,6 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 
 const blockTimeEMAAlpha = 0.1
 
-// SetKnownEvmBlockTimes injects the known block times map used as a fallback
-// before any dynamic samples have been collected.
-func (t *Tracker) SetKnownEvmBlockTimes(m map[string]time.Duration) {
-	t.knownEvmBlockTimes = m
-}
-
 // updateBlockTimeSample computes a per-block time sample and folds it into the EMA.
 // The first valid sample becomes the initial EMA value; subsequent samples smooth it.
 func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64, prevBlockNumber int64, prevBlockTimestamp int64) {
@@ -866,20 +857,13 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	).Set(time.Duration(newEMA).Seconds())
 }
 
-// GetNetworkBlockTime returns the dynamic block time for a network.
-// Fallback priority: EMA → KnownBlockTimes → 0.
+// GetNetworkBlockTime returns the dynamic EMA-based block time for a network.
+// Returns 0 if no samples have been collected yet.
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
 	if v := ntwMeta.evmBlockTime.Load(); v > 0 {
 		return time.Duration(v)
-	}
-
-	// Fallback to known block times before any samples arrive
-	if t.knownEvmBlockTimes != nil {
-		if known, ok := t.knownEvmBlockTimes[networkId]; ok {
-			return known
-		}
 	}
 
 	return 0

@@ -857,22 +857,20 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, time.Duration(0), d)
 	})
 
-	t.Run("FallbackToKnownBlockTimes", func(t *testing.T) {
+	t.Run("NoSamplesYet_ReturnsZero", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetKnownEvmBlockTimes(map[string]time.Duration{
-			"evm:1": 12 * time.Second,
-		})
 
-		// No samples yet → falls back to known
-		d := tracker.GetNetworkBlockTime("evm:1")
-		assert.Equal(t, 12*time.Second, d)
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// First call sets reference only, no sample yet → 0
+		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
+		d := tracker.GetNetworkBlockTime(networkId)
+		assert.Equal(t, time.Duration(0), d, "before any sample, should return 0")
 	})
 
-	t.Run("FirstSampleOverridesKnown", func(t *testing.T) {
+	t.Run("FirstSampleSetsEMA", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetKnownEvmBlockTimes(map[string]time.Duration{
-			"evm:123": 12 * time.Second,
-		})
 
 		ups := common.NewFakeUpstream("ups1")
 		networkId := ups.NetworkId()
@@ -880,36 +878,11 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		baseBlock := int64(1000)
 		baseTimestamp := int64(1700000000)
 
-		// First call sets reference, no sample yet → falls back to known
+		// First call sets reference, second produces first sample (6s block time)
 		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
-		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Equal(t, 12*time.Second, d, "before any sample, should fall back to known")
-
-		// Second call produces first sample (6s block time) → EMA = 6s, overrides known
 		tracker.SetLatestBlockNumber(ups, baseBlock+1, baseTimestamp+6)
-		d = tracker.GetNetworkBlockTime(networkId)
+		d := tracker.GetNetworkBlockTime(networkId)
 		assert.InDelta(t, 6.0, d.Seconds(), 0.1, "first sample should immediately set EMA")
-	})
-
-	t.Run("EMAOverridesKnownWhenReady", func(t *testing.T) {
-		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
-		tracker.SetKnownEvmBlockTimes(map[string]time.Duration{
-			"evm:123": 12 * time.Second, // known says 12s
-		})
-
-		ups := common.NewFakeUpstream("ups1")
-		networkId := ups.NetworkId()
-
-		// Simulate 6s actual block time (different from known 12s)
-		baseBlock := int64(1000)
-		baseTimestamp := int64(1700000000)
-
-		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
-		// First sample immediately sets EMA to 6s, overriding known 12s
-		tracker.SetLatestBlockNumber(ups, baseBlock+1, baseTimestamp+6)
-
-		d := tracker.GetNetworkBlockTime(networkId)
-		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "dynamic value should override known 12s")
 	})
 
 	t.Run("EMAConvergesToTrueBlockTime", func(t *testing.T) {

@@ -154,9 +154,6 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		if cfg.Evm.StatePollerDebounce != 0 {
 			e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
 		}
-		if e.debounceInterval == 0 {
-			e.inferDebounceIntervalFromBlockTime()
-		}
 	}
 
 	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
@@ -231,9 +228,6 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 		if cfg.Evm.FallbackStatePollerDebounce != 0 {
 			e.debounceInterval = cfg.Evm.FallbackStatePollerDebounce.Duration()
 		}
-	}
-	if e.debounceInterval == 0 {
-		e.inferDebounceIntervalFromBlockTime()
 	}
 }
 
@@ -371,7 +365,10 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	}
 	dbi := e.debounceInterval
 	if dbi == 0 {
-		// We must have some debounce interval to avoid thundering herd
+		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	}
+	if dbi == 0 {
+		// No user config and no EMA samples yet — safe fallback, just polls more often
 		dbi = 1 * time.Second
 	}
 	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
@@ -486,7 +483,10 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	defer span.End()
 	dbi := e.debounceInterval
 	if dbi == 0 {
-		// We must have some debounce interval to avoid thundering herd
+		dbi = e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	}
+	if dbi == 0 {
+		// No user config and no EMA samples yet — safe fallback, just polls more often
 		dbi = 1 * time.Second
 	}
 
@@ -1432,10 +1432,3 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 	return l, nil
 }
 
-func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime() {
-	d := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
-	if d <= 0 {
-		return
-	}
-	e.debounceInterval = d
-}
