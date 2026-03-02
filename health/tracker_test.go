@@ -880,15 +880,15 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
 
-		// Feed 4 samples (below minSamples=5) — should still return 0
-		for i := int64(1); i <= 4; i++ {
+		// Feed 9 samples (below minSamples=10) — should still return 0
+		for i := int64(1); i <= 9; i++ {
 			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*6)
 		}
 		d := tracker.GetNetworkBlockTime(networkId)
 		assert.Equal(t, time.Duration(0), d, "below minSamples should return 0")
 
-		// 5th sample crosses the threshold
-		tracker.SetLatestBlockNumber(ups, baseBlock+5, baseTimestamp+30)
+		// 10th sample crosses the threshold
+		tracker.SetLatestBlockNumber(ups, baseBlock+10, baseTimestamp+60)
 		d = tracker.GetNetworkBlockTime(networkId)
 		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "at minSamples should return EMA")
 	})
@@ -924,8 +924,8 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		// Valid call — sample spans block 1000→1002 (skipping 1001), 24s / 2 blocks = 12s
 		tracker.SetLatestBlockNumber(ups, 1002, 1700000024)
 
-		// Feed more 12s samples to reach minSamples
-		for i := int64(3); i <= 6; i++ {
+		// Feed more 12s samples to reach minSamples=10
+		for i := int64(3); i <= 11; i++ {
 			tracker.SetLatestBlockNumber(ups, 1000+i, 1700000024+(i-2)*12)
 		}
 

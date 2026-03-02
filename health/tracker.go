@@ -821,7 +821,7 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 // ------------------------------------
 
 const blockTimeEMAAlpha = 0.1
-const blockTimeMinSamples = 5 // minimum samples before the EMA is considered stable
+const blockTimeMinSamples = 10 // minimum samples before the EMA is considered stable
 
 // updateBlockTimeSample computes a per-block time sample and folds it into the EMA.
 // The first valid sample becomes the initial EMA value; subsequent samples smooth it.
