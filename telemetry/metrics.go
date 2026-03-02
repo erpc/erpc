@@ -209,11 +209,38 @@ var (
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user", "agent_name"})
 
+	MetricHTTPIngressInflight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "http_ingress_inflight",
+		Help:      "Current number of HTTP ingress requests in flight.",
+	}, []string{"route", "method"})
+
+	MetricHTTPIngressPreForwardDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "http_ingress_pre_forward_duration_seconds",
+		Help:      "Time spent in HTTP ingress before request forwarding/dispatch.",
+		Buckets:   []float64{0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	}, []string{"route", "outcome"})
+
 	MetricRateLimitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "rate_limits_total",
 		Help:      "Unified rate limiting events (remote limits and budget decisions).",
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user", "agent_name", "budget", "scope", "auth", "origin"})
+
+	MetricRateLimiterPermitEvaluationDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_permit_evaluation_duration_seconds",
+		Help:      "Duration of rate limiter permit evaluation per rule.",
+		Buckets:   []float64{0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2},
+	}, []string{"budget", "method", "scope", "outcome"})
+
+	MetricRateLimiterPermitWaitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_permit_wait_duration_seconds",
+		Help:      "Time spent waiting on the backing rate limiter cache per rule evaluation.",
+		Buckets:   []float64{0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2},
+	}, []string{"budget", "method", "scope", "outcome"})
 
 	MetricRateLimiterBudgetMaxCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -315,19 +342,19 @@ var (
 		Namespace: "erpc",
 		Name:      "cors_requests_total",
 		Help:      "Total number of CORS requests received.",
-	}, []string{"project", "origin"})
+	}, []string{"path", "origin"})
 
 	MetricCORSPreflightRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cors_preflight_requests_total",
 		Help:      "Total number of CORS preflight requests received.",
-	}, []string{"project", "origin"})
+	}, []string{"path", "origin"})
 
 	MetricCORSDisallowedOriginTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cors_disallowed_origin_total",
 		Help:      "Total number of CORS requests from disallowed origins.",
-	}, []string{"project", "origin"})
+	}, []string{"path", "origin"})
 
 	MetricRistrettoCacheCurrentCost = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -576,6 +603,27 @@ var (
 		Namespace: "erpc",
 		Name:      "shared_state_poll_lock_total",
 		Help:      "Outcomes of distributed poll lock attempts for cross-instance polling coordination.",
+	}, []string{"outcome"})
+
+	MetricSharedStatePollLockWaitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "shared_state_poll_lock_wait_duration_seconds",
+		Help:      "Time spent waiting for poll-lock acquisition attempts.",
+		Buckets:   []float64{0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	}, []string{"outcome"})
+
+	MetricSharedStatePollLockHoldDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "shared_state_poll_lock_hold_duration_seconds",
+		Help:      "Time poll locks are held before unlock completion.",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+	}, []string{"outcome"})
+
+	MetricSharedStatePollLockFallbackDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "shared_state_poll_lock_fallback_duration_seconds",
+		Help:      "Time spent in fallback paths when poll-lock coordination does not proceed directly.",
+		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
 	}, []string{"outcome"})
 )
 

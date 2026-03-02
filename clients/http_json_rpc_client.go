@@ -475,11 +475,21 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		defer cleanup()
 	}
 
-	bodyStr := string(bodyBytes)
-	searcher := ast.NewSearcher(bodyStr)
+	bodyView := util.B2Str(bodyBytes)
+	searcher := ast.NewSearcher(bodyView)
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
+	bodyText := ""
+	bodyTextCopied := false
+	bodyTextCopy := func() string {
+		if !bodyTextCopied {
+			// Copy out of pooled memory for any value that can outlive cleanup().
+			bodyText = string(bodyBytes)
+			bodyTextCopied = true
+		}
+		return bodyText
+	}
 
 	if c.isLogLevelTrace {
 		if len(bodyBytes) > 20*1024 {
@@ -492,7 +502,8 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	rootNode, err := searcher.GetByPath()
 	if err != nil {
 		jrResp := &common.JsonRpcResponse{}
-		err = jrResp.ParseError(bodyStr)
+		// ParseError may retain the original string as an error message; force copy here.
+		err = jrResp.ParseError(string(bodyBytes))
 		if err != nil {
 			for _, req := range requests {
 				req.err <- err
@@ -531,7 +542,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 				id = jrResp.ID()
 			}
 			if id == nil {
-				c.logger.Warn().Msgf("unexpected response received without ID: %s", bodyStr)
+				c.logger.Warn().Msgf("unexpected response received without ID: %s", bodyTextCopy())
 			} else if req, ok := requests[id]; ok {
 				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
 				if err != nil {
@@ -565,7 +576,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 			anyMissingId = true
 		}
 		if anyMissingId {
-			c.logger.Error().Str("response", string(bodyBytes)).Msgf("some requests did not receive a response (matching ID)")
+			c.logger.Error().Str("response", bodyTextCopy()).Msgf("some requests did not receive a response (matching ID)")
 		}
 	} else if rootNode.TypeSafe() == ast.V_OBJECT {
 		// Single object response
@@ -595,7 +606,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	} else {
 		// Unexpected response type
 		for _, req := range requests {
-			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", bodyStr), c.upstream)
+			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", bodyTextCopy()), c.upstream)
 		}
 	}
 }

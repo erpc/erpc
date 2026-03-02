@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -435,6 +436,79 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.NotPanics(t, func() {
 			_ = evaluator.AcquirePermit(&logger, ups1, "method1")
 		}, "Evaluator should still function after concurrent operations")
+	})
+
+	t.Run("AcquirePermitNotBlockedByLongEvaluation", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
+
+		includeAllFn, err := common.CompileFunction(`
+			(upstreams) => upstreams
+		`)
+		require.NoError(t, err)
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     common.Duration(1 * time.Hour),
+			EvalPerMethod:    false,
+			EvalFunction:     includeAllFn,
+			ResampleExcluded: true,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
+			ResampleCount:    2,
+		}
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+		evaluator.appCtx = ctx
+
+		require.NoError(t, evaluator.evaluateUpstreams())
+		require.NoError(t, evaluator.AcquirePermit(&logger, ups1, "method1"))
+
+		evalStarted := make(chan struct{})
+		releaseEval := make(chan struct{})
+
+		evaluator.config.EvalFunction = sobek.Callable(func(this sobek.Value, args ...sobek.Value) (sobek.Value, error) {
+			close(evalStarted)
+			<-releaseEval
+			return evaluator.runtime.ToValue([]metricData{}), nil
+		})
+
+		evalDone := make(chan error, 1)
+		go func() {
+			evalDone <- evaluator.evaluateUpstreams()
+		}()
+
+		select {
+		case <-evalStarted:
+		case <-time.After(1 * time.Second):
+			t.Fatal("evaluation did not reach EvalFunction")
+		}
+
+		permitDone := make(chan error, 1)
+		go func() {
+			permitDone <- evaluator.AcquirePermit(&logger, ups1, "method1")
+		}()
+
+		select {
+		case err = <-permitDone:
+			assert.NoError(t, err, "permit should use previous state while evaluation is in progress")
+		case <-time.After(150 * time.Millisecond):
+			t.Fatal("AcquirePermit blocked while policy evaluation was still running")
+		}
+
+		close(releaseEval)
+		require.NoError(t, <-evalDone)
+
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.Error(t, err, "upstream should be excluded after evaluation commits")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamExcludedByPolicy), "should return policy exclusion error")
+		assert.True(t, mt.IsCordoned(ups1, "method1"), "upstream should be cordoned after exclusion")
 	})
 
 	t.Run("MetricsUpdate", func(t *testing.T) {

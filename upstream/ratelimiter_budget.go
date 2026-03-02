@@ -31,6 +31,13 @@ type RateLimitRule struct {
 	Config *common.RateLimitRuleConfig
 }
 
+func normalizeRateLimitMethodLabel(method string) string {
+	if method == "" {
+		return "*"
+	}
+	return method
+}
+
 func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, error) {
 	b.rulesMu.RLock()
 	defer b.rulesMu.RUnlock()
@@ -62,7 +69,11 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 	}
 	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d", prev, newMaxCount)
 	rule.Config.MaxCount = newMaxCount
-	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString()).Set(float64(newMaxCount))
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(
+		b.Id,
+		normalizeRateLimitMethodLabel(rule.Config.Method),
+		rule.Config.ScopeString(),
+	).Set(float64(newMaxCount))
 	return nil
 }
 
@@ -173,8 +184,22 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 // evaluateRule checks a single rate limit rule against the cache.
 // Returns true if allowed, false if over limit.
 func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string) bool {
+	evalStartedAt := time.Now()
+	scope := rule.Config.ScopeString()
+	methodPattern := normalizeRateLimitMethodLabel(rule.Config.Method)
+	observeEvaluation := func(outcome string) {
+		telemetry.ObserverHandle(
+			telemetry.MetricRateLimiterPermitEvaluationDuration,
+			b.Id,
+			methodPattern,
+			scope,
+			outcome,
+		).Observe(time.Since(evalStartedAt).Seconds())
+	}
+
 	cache := b.getCache()
 	if cache == nil {
+		observeEvaluation("no_cache_fail_open")
 		return true // Fail-open when no cache is available
 	}
 
@@ -214,24 +239,45 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 
 	var statuses []*pb.RateLimitResponse_DescriptorStatus
 	var timedOut bool
+	var waitDuration time.Duration
 	if b.maxTimeout > 0 {
-		statuses, timedOut = b.doLimitWithTimeout(ctx, cache, rlReq, limits, method, userLabel, networkLabel)
+		statuses, timedOut, waitDuration = b.doLimitWithTimeout(ctx, cache, rlReq, limits, method, userLabel, networkLabel)
 	} else {
+		waitStartedAt := time.Now()
 		statuses = cache.DoLimit(ctx, rlReq, limits)
+		waitDuration = time.Since(waitStartedAt)
 	}
 
 	if timedOut {
+		telemetry.ObserverHandle(
+			telemetry.MetricRateLimiterPermitWaitDuration,
+			b.Id,
+			methodPattern,
+			scope,
+			"timeout_fail_open",
+		).Observe(waitDuration.Seconds())
+		observeEvaluation("timeout_fail_open")
 		doSpan.SetAttributes(attribute.String("result", "timeout_fail_open"))
 		doSpan.End()
 		return true // fail-open
 	}
 
+	outcome := "ok"
 	isOverLimit := len(statuses) > 0 && statuses[0].Code == pb.RateLimitResponse_OVER_LIMIT
 	if isOverLimit {
+		outcome = "over_limit"
 		doSpan.SetAttributes(attribute.String("result", "over_limit"))
 	} else {
 		doSpan.SetAttributes(attribute.String("result", "ok"))
 	}
+	telemetry.ObserverHandle(
+		telemetry.MetricRateLimiterPermitWaitDuration,
+		b.Id,
+		methodPattern,
+		scope,
+		outcome,
+	).Observe(waitDuration.Seconds())
+	observeEvaluation(outcome)
 	doSpan.End()
 
 	return !isOverLimit
@@ -260,7 +306,8 @@ func (b *RateLimiterBudget) doLimitWithTimeout(
 	rlReq *pb.RateLimitRequest,
 	limits []*config.RateLimit,
 	method, userLabel, networkLabel string,
-) ([]*pb.RateLimitResponse_DescriptorStatus, bool) {
+) ([]*pb.RateLimitResponse_DescriptorStatus, bool, time.Duration) {
+	waitStartedAt := time.Now()
 	resultCh := make(chan []*pb.RateLimitResponse_DescriptorStatus, 1)
 	go func() {
 		resultCh <- cache.DoLimit(ctx, rlReq, limits)
@@ -275,7 +322,7 @@ func (b *RateLimiterBudget) doLimitWithTimeout(
 			default:
 			}
 		}
-		return statuses, false
+		return statuses, false, time.Since(waitStartedAt)
 
 	case <-timer.C:
 		b.logger.Warn().
@@ -294,6 +341,6 @@ func (b *RateLimiterBudget) doLimitWithTimeout(
 			"limit_timeout",
 		).Inc()
 
-		return nil, true
+		return nil, true, time.Since(waitStartedAt)
 	}
 }

@@ -1466,7 +1466,15 @@ func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream 
 
 	// Store errors for reporting and for NextUpstream to skip permanent errors.
 	if err != nil {
-		r.ErrorsByUpstream.Store(upstream, err)
+		storedErr := err
+		// Single-upstream block-unavailable has nowhere to fail over; mark non-retryable
+		// toward network so failsafe does not spin retries until timeout.
+		if len(r.upstreamList) == 1 && HasErrorCode(err, ErrCodeUpstreamBlockUnavailable) {
+			if retryableErr, ok := err.(RetryableError); ok {
+				storedErr = retryableErr.WithRetryableTowardNetwork(false)
+			}
+		}
+		r.ErrorsByUpstream.Store(upstream, storedErr)
 	} else if resp != nil && resp.IsResultEmptyish(ctx) {
 		jr, jrErr := resp.JsonRpcResponse(ctx)
 		if jr == nil {

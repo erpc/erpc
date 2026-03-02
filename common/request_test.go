@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -455,5 +456,92 @@ func TestNormalizedRequestForwardBody_MarshalsWhenNoRawBody(t *testing.T) {
 	expected := `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`
 	if string(forwardBody) != expected {
 		t.Fatalf("unexpected marshaled body, expected %s got %s", expected, string(forwardBody))
+	}
+}
+
+func TestMarkUpstreamCompleted_SingleUpstreamBlockUnavailable_DisablesNetworkRetry(t *testing.T) {
+	ctx := context.Background()
+	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+
+	up1 := newMockUpstream("upstream1")
+	req.SetUpstreams([]Upstream{up1})
+
+	selected, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("expected upstream selection to succeed: %v", err)
+	}
+
+	req.MarkUpstreamCompleted(
+		ctx,
+		selected,
+		nil,
+		NewErrUpstreamBlockUnavailable(selected.Id(), 1000, 995, 900),
+	)
+
+	stored, ok := req.ErrorsByUpstream.Load(selected)
+	if !ok {
+		t.Fatalf("expected stored error for upstream")
+	}
+	storedErr, ok := stored.(error)
+	if !ok {
+		t.Fatalf("expected stored value to be an error")
+	}
+	if !HasErrorCode(storedErr, ErrCodeUpstreamBlockUnavailable) {
+		t.Fatalf("expected ErrCodeUpstreamBlockUnavailable, got: %v", storedErr)
+	}
+	if IsRetryableTowardNetwork(storedErr) {
+		t.Fatalf("single-upstream block-unavailable should not be retryable toward network")
+	}
+	if !IsRetryableTowardsUpstream(storedErr) {
+		t.Fatalf("block-unavailable should remain retryable toward upstream")
+	}
+
+	exhaustedErr := NewErrUpstreamsExhausted(
+		req,
+		&req.ErrorsByUpstream,
+		"project",
+		"evm:1",
+		"eth_call",
+		10*time.Millisecond,
+		1,
+		0,
+		0,
+		1,
+	)
+	if IsRetryableTowardNetwork(exhaustedErr) {
+		t.Fatalf("single-upstream exhausted error should not be retryable toward network")
+	}
+}
+
+func TestMarkUpstreamCompleted_MultiUpstreamBlockUnavailable_RemainsNetworkRetryable(t *testing.T) {
+	ctx := context.Background()
+	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+
+	up1 := newMockUpstream("upstream1")
+	up2 := newMockUpstream("upstream2")
+	req.SetUpstreams([]Upstream{up1, up2})
+
+	selected, err := req.NextUpstream()
+	if err != nil {
+		t.Fatalf("expected upstream selection to succeed: %v", err)
+	}
+
+	req.MarkUpstreamCompleted(
+		ctx,
+		selected,
+		nil,
+		NewErrUpstreamBlockUnavailable(selected.Id(), 1000, 995, 900),
+	)
+
+	stored, ok := req.ErrorsByUpstream.Load(selected)
+	if !ok {
+		t.Fatalf("expected stored error for upstream")
+	}
+	storedErr, ok := stored.(error)
+	if !ok {
+		t.Fatalf("expected stored value to be an error")
+	}
+	if !IsRetryableTowardNetwork(storedErr) {
+		t.Fatalf("multi-upstream block-unavailable should remain retryable toward network")
 	}
 }

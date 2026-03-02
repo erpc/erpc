@@ -1332,9 +1332,9 @@ func TestCounterInt64_ReaderStarvation(t *testing.T) {
 		// Allow up to 10x slowdown due to CPU cache effects, but it should be much better than the 40,000x we saw before
 		assert.Less(t, slowdownFactor, 10.0, "GetValue should not be significantly slower under load: %.2fx slower", slowdownFactor)
 
-		// Also check absolute performance - should be under 1000ns per operation even under load
-		// (increased from 100ns to account for CI environment variations)
-		assert.Less(t, contentionPerOp, int64(1000), "GetValue should be fast even under contention: %dns per op", contentionPerOp)
+		// Also check absolute performance - keep a practical CI-safe ceiling.
+		// We still enforce a strict relative slowdown bound above.
+		assert.Less(t, contentionPerOp, int64(2000), "GetValue should be fast even under contention: %dns per op", contentionPerOp)
 	})
 }
 

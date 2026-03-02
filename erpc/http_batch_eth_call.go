@@ -50,9 +50,9 @@ type ethCallBatchCandidate struct {
 }
 
 type ethCallBatchProbe struct {
-	Method    string        `json:"method"`
-	Params    []interface{} `json:"params"`
-	NetworkId string        `json:"networkId"`
+	Method    string            `json:"method"`
+	Params    []json.RawMessage `json:"params"`
+	NetworkId string            `json:"networkId"`
 }
 
 var (
@@ -96,7 +96,7 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 		if err := common.SonicCfg.Unmarshal(raw, &probe); err != nil {
 			return nil, err
 		}
-		if strings.ToLower(probe.Method) != "eth_call" {
+		if !strings.EqualFold(probe.Method, "eth_call") {
 			return nil, nil
 		}
 
@@ -113,9 +113,11 @@ func detectEthCallBatchInfo(requests []json.RawMessage, architecture, chainId st
 			return nil, nil
 		}
 
-		param := interface{}("latest")
+		var param interface{} = "latest"
 		if len(probe.Params) >= 2 {
-			param = probe.Params[1]
+			if err := common.SonicCfg.Unmarshal(probe.Params[1], &param); err != nil {
+				return nil, err
+			}
 		}
 		bref, err := evm.NormalizeBlockParam(param)
 		if err != nil {

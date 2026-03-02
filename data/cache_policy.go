@@ -263,3 +263,17 @@ func (p *CachePolicy) GetTTL() *time.Duration {
 func (p *CachePolicy) Finality() common.DataFinalityState {
 	return p.config.Finality
 }
+
+func (p *CachePolicy) NetworkPattern() string {
+	return p.config.Network
+}
+
+func (p *CachePolicy) MethodPattern() string {
+	return p.config.Method
+}
+
+func (p *CachePolicy) AppliesToGet() bool {
+	return p.config.AppliesTo == "" ||
+		p.config.AppliesTo == common.CachePolicyAppliesToBoth ||
+		p.config.AppliesTo == common.CachePolicyAppliesToGet
+}

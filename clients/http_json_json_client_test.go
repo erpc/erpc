@@ -375,6 +375,67 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		assert.Contains(t, results[2].(string), "no response received for request")
 	})
 
+	t.Run("MixedBatchResponseWithMissingAndUnknownIDs", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			BodyString(`[
+				{"jsonrpc":"2.0","id":1,"result":"0x1"},
+				{"jsonrpc":"2.0","result":"0xignored"},
+				{"jsonrpc":"2.0","id":99,"result":"0x99"},
+				{"jsonrpc":"2.0","id":2,"result":"0x2"}
+			]`)
+
+		ups := common.NewFakeUpstream("rpc1")
+		ups.Config().Type = common.UpstreamTypeEvm
+		ups.Config().Endpoint = "http://rpc1.localhost:8545"
+		ups.Config().JsonRpc = &common.JsonRpcUpstreamConfig{
+			SupportsBatch: &common.TRUE,
+			BatchMaxSize:  3,
+			BatchMaxWait:  common.Duration(50 * time.Millisecond),
+		}
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", ups, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil, &noopErrorExtractor{})
+		assert.NoError(t, err)
+
+		var wg sync.WaitGroup
+		results := make([]string, 3)
+		errs := make([]error, 3)
+		for i := 0; i < 3; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
+				resp, err := client.SendRequest(context.Background(), req)
+				if err != nil {
+					errs[id-1] = err
+					return
+				}
+				jr, jErr := resp.JsonRpcResponse()
+				if jErr != nil {
+					errs[id-1] = jErr
+					resp.Release()
+					return
+				}
+				results[id-1] = jr.GetResultString()
+				resp.Release()
+			}(i + 1)
+		}
+		wg.Wait()
+
+		assert.NoError(t, errs[0])
+		assert.Equal(t, `"0x1"`, results[0])
+		assert.NoError(t, errs[1])
+		assert.Equal(t, `"0x2"`, results[1])
+		assert.Error(t, errs[2])
+		assert.Contains(t, errs[2].Error(), "no response received for request")
+	})
+
 	t.Run("BatchRequestTimeout", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

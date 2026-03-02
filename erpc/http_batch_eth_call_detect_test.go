@@ -99,6 +99,20 @@ func TestDetectEthCallBatchInfo(t *testing.T) {
 			wantBlock:    "latest",
 		},
 		{
+			name:         "success explicit null block param",
+			requests:     []json.RawMessage{buildRaw(t, "eth_call", []interface{}{callObj, nil}, "evm:1"), buildRaw(t, "eth_call", []interface{}{callObj, nil}, "evm:1")},
+			wantNetwork:  "evm:1",
+			wantBlockRef: "latest",
+			wantBlock:    nil,
+		},
+		{
+			name:         "success ignores params beyond index 1",
+			requests:     []json.RawMessage{buildRaw(t, "eth_call", []interface{}{callObj, "0x1", map[string]interface{}{"ignored": true}}, "evm:1"), buildRaw(t, "eth_call", []interface{}{callObj, "0x1", "ignored"}, "evm:1")},
+			wantNetwork:  "evm:1",
+			wantBlockRef: "1",
+			wantBlock:    "0x1",
+		},
+		{
 			name: "mixed requireCanonical - one false one true",
 			requests: []json.RawMessage{
 				buildRaw(t, "eth_call", []interface{}{callObj, map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": false}}, "evm:1"),
@@ -133,6 +147,15 @@ func TestDetectEthCallBatchInfo(t *testing.T) {
 			wantNetwork:  "evm:1",
 			wantBlockRef: "0x1234567890123456789012345678901234567890123456789012345678901234",
 			wantBlock:    map[string]interface{}{"blockHash": "0x1234567890123456789012345678901234567890123456789012345678901234", "requireCanonical": true},
+		},
+		{
+			name: "invalid params payload type",
+			requests: []json.RawMessage{
+				json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":{"bad":"shape"},"networkId":"evm:1"}`),
+				buildRaw(t, "eth_call", []interface{}{callObj, "latest"}, "evm:1"),
+			},
+			wantNil: true,
+			wantErr: true,
 		},
 	}
 

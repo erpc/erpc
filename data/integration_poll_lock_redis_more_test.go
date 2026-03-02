@@ -14,7 +14,9 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,7 +58,7 @@ func (c *lockOverrideConnector) PublishCounterInt64(ctx context.Context, key str
 }
 
 type blockingUnlockLock struct {
-	inner       DistributedLock
+	inner        DistributedLock
 	unlockCalled chan struct{}
 	allowUnlock  chan struct{}
 }
@@ -122,6 +124,17 @@ func metricValue(t *testing.T, outcome string) float64 {
 	return promUtil.ToFloat64(m)
 }
 
+func histogramCountByOutcome(t *testing.T, hv *prometheus.HistogramVec, outcome string) uint64 {
+	t.Helper()
+	obs, err := hv.GetMetricWithLabelValues(outcome)
+	require.NoError(t, err)
+	m, ok := obs.(prometheus.Metric)
+	require.True(t, ok)
+	pbMetric := &dto.Metric{}
+	require.NoError(t, m.Write(pbMetric))
+	return pbMetric.GetHistogram().GetSampleCount()
+}
+
 func TestIntegrationPollLock_ContentionWait_GetsFresh_Redis(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -144,6 +157,9 @@ func TestIntegrationPollLock_ContentionWait_GetsFresh_Redis(t *testing.T) {
 
 	beforeContention := metricValue(t, "contention")
 	beforeAcquired := metricValue(t, "acquired")
+	beforeWaitAcquired := histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockWaitDuration, "acquired")
+	beforeHoldReleased := histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockHoldDuration, "released")
+	beforeFallbackFresh := histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "contention_fresh")
 
 	var callsA atomic.Int32
 	fnA := func(ctx context.Context) (int64, error) {
@@ -188,6 +204,9 @@ func TestIntegrationPollLock_ContentionWait_GetsFresh_Redis(t *testing.T) {
 
 	assert.GreaterOrEqual(t, metricDelta(t, "acquired", beforeAcquired), 1.0)
 	assert.GreaterOrEqual(t, metricDelta(t, "contention", beforeContention), 1.0)
+	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockWaitDuration, "acquired")-beforeWaitAcquired, uint64(1))
+	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockHoldDuration, "released")-beforeHoldReleased, uint64(1))
+	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "contention_fresh")-beforeFallbackFresh, uint64(1))
 }
 
 func TestIntegrationPollLock_UnchangedValue_PublishesFreshness_Redis(t *testing.T) {
@@ -282,6 +301,7 @@ func TestIntegrationPollLock_ContentionWait_Timeout_Redis(t *testing.T) {
 
 	beforeTimeout := metricValue(t, "contention_timeout")
 	beforeContention := metricValue(t, "contention")
+	beforeFallbackTimeout := histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "contention_timeout")
 
 	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer callCancel()
@@ -309,6 +329,7 @@ func TestIntegrationPollLock_ContentionWait_Timeout_Redis(t *testing.T) {
 
 	assert.GreaterOrEqual(t, metricDelta(t, "contention", beforeContention), 1.0)
 	assert.GreaterOrEqual(t, metricDelta(t, "contention_timeout", beforeTimeout), 1.0)
+	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "contention_timeout")-beforeFallbackTimeout, uint64(1))
 
 	close(hold)
 }
@@ -338,6 +359,8 @@ func TestIntegrationPollLock_Unavailable_FallsBackToLocalRefresh(t *testing.T) {
 	forceStale(counter)
 
 	beforeUnavailable := metricValue(t, "unavailable")
+	beforeWaitUnavailable := histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockWaitDuration, "unavailable")
+	beforeFallbackLocalRefresh := histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "local_refresh")
 
 	var calls atomic.Int32
 	val, err := counter.TryUpdateIfStale(ctx, 5*time.Second, func(ctx context.Context) (int64, error) {
@@ -349,6 +372,8 @@ func TestIntegrationPollLock_Unavailable_FallsBackToLocalRefresh(t *testing.T) {
 	assert.Equal(t, int64(7), val)
 	assert.Equal(t, int32(1), calls.Load())
 	assert.GreaterOrEqual(t, metricDelta(t, "unavailable", beforeUnavailable), 1.0)
+	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockWaitDuration, "unavailable")-beforeWaitUnavailable, uint64(1))
+	assert.GreaterOrEqual(t, histogramCountByOutcome(t, telemetry.MetricSharedStatePollLockFallbackDuration, "local_refresh")-beforeFallbackLocalRefresh, uint64(1))
 }
 
 func TestIntegrationPollLock_SkippedFresh_AsyncUnlock_NoBlock(t *testing.T) {

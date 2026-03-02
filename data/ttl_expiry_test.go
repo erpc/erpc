@@ -250,18 +250,8 @@ func TestConnectorTTLExpiry(t *testing.T) {
 
 					// Get through reverse index - should only get the second one
 					result, err = conn.Get(ctx, ConnectorReverseIndex, wildcardPk, rk, nil)
-					if tc.name == "Redis" {
-						// Redis might still return the first one's reference in reverse index
-						// but the actual key lookup will fail, resulting in overall failure
-						if err != nil {
-							assert.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
-						} else {
-							assert.Equal(t, value2, result)
-						}
-					} else {
-						assert.NoError(t, err)
-						assert.Equal(t, value2, result)
-					}
+					assert.NoError(t, err)
+					assert.Equal(t, value2, result)
 				})
 			}
 

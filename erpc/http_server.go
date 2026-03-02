@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -394,7 +395,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		responses := make([]interface{}, len(requests))
-		var wg sync.WaitGroup
 
 		headers := r.Header
 		queryArgs := r.URL.Query()
@@ -436,171 +436,209 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					common.NewBatchUpstreamSelectionCache(),
 				)
 			}
+			ingressRoute := "proxy"
+			if isAdmin {
+				ingressRoute = "admin"
+			}
 
-			for i, reqBody := range requests {
-				wg.Add(1)
-				go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
-					defer func() {
-						defer wg.Done()
-						if rec := recover(); rec != nil {
-							telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-								"request-handler",
-								fmt.Sprintf("project:%s network:%s", architecture, chainId),
-								common.ErrorFingerprint(rec),
-							).Inc()
-							lg.Error().
-								Interface("panic", rec).
-								Str("stack", string(debug.Stack())).
-								Msgf("unexpected server panic on per-request handler")
-							err := fmt.Errorf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
-							responses[index] = processErrorBody(&lg, &startedAt, nil, err, s.serverCfg.IncludeErrorDetails)
-						}
-					}()
+			processRequest := func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
+				reqArchitecture := architecture
+				reqChainId := chainId
 
-					nq := common.NewNormalizedRequest(rawReq)
-					// Help GC: drop reference to the rawReq slice copy in the parent slice as soon as possible
-					rawReq = nil
-					requestCtx := common.StartRequestSpan(requestSpanBaseCtx, nq)
+				defer func() {
+					if rec := recover(); rec != nil {
+						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+							"request-handler",
+							fmt.Sprintf("project:%s network:%s", reqArchitecture, reqChainId),
+							common.ErrorFingerprint(rec),
+						).Inc()
+						lg.Error().
+							Interface("panic", rec).
+							Str("stack", string(debug.Stack())).
+							Msgf("unexpected server panic on per-request handler")
+						err := fmt.Errorf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
+						responses[index] = processErrorBody(&lg, &startedAt, nil, err, s.serverCfg.IncludeErrorDetails)
+					}
+				}()
 
-					// Resolve and set real client IP before any rate limiting/auth checks
-					clientIP := s.resolveRealClientIP(r)
-					nq.SetClientIP(clientIP)
-
-					// Validate the raw JSON-RPC payload early
-					if err := nq.Validate(); err != nil {
-						responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
-						common.EndRequestSpan(requestCtx, nil, responses[index])
+				preForwardStartedAt := time.Now()
+				preForwardObserved := false
+				observePreForward := func(outcome string) {
+					if preForwardObserved {
 						return
 					}
-
-					method, _ := nq.Method()
-					rlg := lg.With().Str("method", method).Logger()
-
-					var ap *auth.AuthPayload
-					var err error
-
-					if project != nil {
-						ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
-					} else if isAdmin {
-						ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
+					preForwardObserved = true
+					telemetry.ObserverHandle(
+						telemetry.MetricHTTPIngressPreForwardDuration,
+						ingressRoute,
+						outcome,
+					).Observe(time.Since(preForwardStartedAt).Seconds())
+				}
+				defer func() {
+					if !preForwardObserved {
+						observePreForward("rejected")
 					}
+				}()
+
+				nq := common.NewNormalizedRequest(rawReq)
+				requestCtx := common.StartRequestSpan(requestSpanBaseCtx, nq)
+
+				// Resolve and set real client IP before any rate limiting/auth checks
+				clientIP := s.resolveRealClientIP(r)
+				nq.SetClientIP(clientIP)
+
+				// Validate the raw JSON-RPC payload early
+				if err := nq.Validate(); err != nil {
+					responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
+				}
+
+				method, _ := nq.Method()
+				rlg := lg.With().Str("method", method).Logger()
+
+				var ap *auth.AuthPayload
+				var err error
+
+				if project != nil {
+					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
+				} else if isAdmin {
+					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
+				}
+				if err != nil {
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
+				}
+
+				if isAdmin {
+					_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
 					if err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
+				} else {
+					user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
+					if err != nil {
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+						common.EndRequestSpan(requestCtx, nil, err)
+						return
+					}
+					if user != nil {
+						rlg = rlg.With().Str("userId", user.Id).Logger()
+					}
+					nq.SetUser(user)
+				}
 
-					if isAdmin {
-						_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
+				if isAdmin {
+					if s.adminCfg != nil {
+						observePreForward("admin_handled")
+						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 							common.EndRequestSpan(requestCtx, nil, err)
 							return
 						}
+						responses[index] = resp
+						common.EndRequestSpan(requestCtx, resp, nil)
+						return
 					} else {
-						user, err := project.AuthenticateConsumer(requestCtx, nq, method, ap)
-						if err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if user != nil {
-							rlg = rlg.With().Str("userId", user.Id).Logger()
-						}
-						nq.SetUser(user)
-					}
-
-					if isAdmin {
-						if s.adminCfg != nil {
-							resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
-							if err != nil {
-								responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
-								common.EndRequestSpan(requestCtx, nil, err)
-								return
-							}
-							responses[index] = resp
-							common.EndRequestSpan(requestCtx, resp, nil)
-							return
-						} else {
-							responses[index] = processErrorBody(
-								&rlg,
-								&startedAt,
-								nq,
-								common.NewErrAuthUnauthorized(
-									"",
-									"admin is not enabled for this project",
-								),
-								s.serverCfg.IncludeErrorDetails,
-							)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-					}
-
-					var networkId string
-
-					if architecture == "" || chainId == "" {
-						var req map[string]interface{}
-						if err := common.SonicCfg.Unmarshal(nq.Body(), &req); err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
-							common.EndRequestSpan(requestCtx, nil, err)
-							return
-						}
-						if networkIdFromBody, ok := req["networkId"].(string); ok {
-							networkId = networkIdFromBody
-							parts := strings.Split(networkId, ":")
-							if len(parts) == 2 {
-								architecture = parts[0]
-								chainId = parts[1]
-							}
-						}
-					} else {
-						networkId = fmt.Sprintf("%s:%s", architecture, chainId)
-					}
-
-					if architecture == "" || chainId == "" {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
-							"architecture and chain must be provided in URL (for example /<project>/evm/42161) or in request body (for example \"networkId\":\"evm:42161\") or configureed via domain aliasing",
-						)), s.serverCfg.IncludeErrorDetails)
-						common.EndRequestSpan(requestCtx, nil, err)
+						adminErr := common.NewErrAuthUnauthorized(
+							"",
+							"admin is not enabled for this project",
+						)
+						responses[index] = processErrorBody(
+							&rlg,
+							&startedAt,
+							nq,
+							adminErr,
+							s.serverCfg.IncludeErrorDetails,
+						)
+						common.EndRequestSpan(requestCtx, nil, adminErr)
 						return
 					}
+				}
 
-					nw, err := project.GetNetwork(httpCtx, networkId)
-					if err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
-						common.EndRequestSpan(requestCtx, nil, err)
+				var networkId string
+
+				if reqArchitecture == "" || reqChainId == "" {
+					networkIdFromBody, extractErr := extractNetworkIdFromRequestBody(nq.Body())
+					if extractErr != nil {
+						invalidReqErr := common.NewErrInvalidRequest(extractErr)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, invalidReqErr, &common.TRUE)
+						common.EndRequestSpan(requestCtx, nil, invalidReqErr)
 						return
 					}
-					nq.SetNetwork(nw)
-
-					nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
-					// Configure how to store User-Agent (raw vs simplified) based on project config
-					uaMode := common.UserAgentTrackingModeSimplified
-					if project != nil && project.Config.UserAgentMode != "" {
-						uaMode = project.Config.UserAgentMode
-					}
-					nq.EnrichFromHttp(headers, queryArgs, uaMode)
-					rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
-
-					resp, err := project.Forward(requestCtx, networkId, nq)
-					if err != nil {
-						// If an error occurred but a response was produced (e.g., lastValidResponse),
-						// release it now since we are not going to write it.
-						if resp != nil {
-							go resp.Release()
+					if networkIdFromBody != "" {
+						networkId = networkIdFromBody
+						parts := strings.Split(networkId, ":")
+						if len(parts) == 2 {
+							reqArchitecture = parts[0]
+							reqChainId = parts[1]
 						}
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
-						common.EndRequestSpan(requestCtx, nil, err)
-						return
 					}
+				}
 
-					responses[index] = resp
-					common.EndRequestSpan(requestCtx, resp, nil)
-				}(i, reqBody, headers, queryArgs)
+				if reqArchitecture == "" || reqChainId == "" {
+					missingNetworkErr := common.NewErrInvalidRequest(fmt.Errorf(
+						"architecture and chain must be provided in URL (for example /<project>/evm/42161) or in request body (for example \"networkId\":\"evm:42161\") or configured via domain aliasing",
+					))
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, missingNetworkErr, s.serverCfg.IncludeErrorDetails)
+					common.EndRequestSpan(requestCtx, nil, missingNetworkErr)
+					return
+				}
+				if networkId == "" {
+					networkId = fmt.Sprintf("%s:%s", reqArchitecture, reqChainId)
+				}
+
+				nw, err := project.GetNetwork(httpCtx, networkId)
+				if err != nil {
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
+				}
+				nq.SetNetwork(nw)
+
+				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
+				// Configure how to store User-Agent (raw vs simplified) based on project config
+				uaMode := common.UserAgentTrackingModeSimplified
+				if project != nil && project.Config.UserAgentMode != "" {
+					uaMode = project.Config.UserAgentMode
+				}
+				nq.EnrichFromHttp(headers, queryArgs, uaMode)
+				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
+
+				observePreForward("forwarded")
+				resp, err := project.Forward(requestCtx, networkId, nq)
+				if err != nil {
+					// If an error occurred but a response was produced (e.g., lastValidResponse),
+					// release it now since we are not going to write it.
+					if resp != nil {
+						go resp.Release()
+					}
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
+					common.EndRequestSpan(requestCtx, nil, err)
+					return
+				}
+
+				responses[index] = resp
+				common.EndRequestSpan(requestCtx, resp, nil)
 			}
 
-			wg.Wait()
+			if len(requests) == 1 {
+				processRequest(0, requests[0], headers, queryArgs)
+			} else {
+				var wg sync.WaitGroup
+				for i, reqBody := range requests {
+					wg.Add(1)
+					go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
+						defer wg.Done()
+						processRequest(index, rawReq, headers, queryArgs)
+					}(i, reqBody, headers, queryArgs)
+				}
+				wg.Wait()
+			}
 		}
 
 		httpCtx, writeResponseSpan := common.StartDetailSpan(httpCtx, "HttpServer.WriteResponse")
@@ -673,6 +711,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inflight := telemetry.GaugeHandle(
+			telemetry.MetricHTTPIngressInflight,
+			httpIngressRouteLabel(r),
+			r.Method,
+		)
+		inflight.Inc()
+		defer inflight.Dec()
+
 		// Extract trace context from request headers and start a new span
 		httpCtx, span := common.StartHTTPServerSpan(r.Context(), r)
 		defer span.End()
@@ -731,6 +777,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		handleRequest(httpCtx, r, w, writeFatalError)
 	})
+}
+
+func httpIngressRouteLabel(r *http.Request) string {
+	ps := path.Clean(r.URL.Path)
+	if ps == "/admin" {
+		return "admin"
+	}
+	if (ps == "/" || ps == ".") && r.Method != http.MethodPost && r.Method != http.MethodOptions {
+		return "healthcheck"
+	}
+	if strings.HasSuffix(ps, "/healthcheck") {
+		return "healthcheck"
+	}
+	return "proxy"
 }
 
 func (s *HttpServer) parseUrlPath(
@@ -1591,6 +1651,33 @@ func (s *HttpServer) isTrustedForwarder(ip net.IP) bool {
 }
 
 // no header allowlist; headers are explicitly configured in server.trustedIPHeaders
+
+func extractNetworkIdFromRequestBody(rawReq json.RawMessage) (string, error) {
+	if len(rawReq) == 0 {
+		return "", nil
+	}
+
+	node, err := sonic.Get(rawReq, "networkId")
+	if err != nil {
+		var syntaxErr ast.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			return "", syntaxErr
+		}
+		// Missing field or incompatible path; keep fallback behavior (no networkId from body).
+		return "", nil
+	}
+
+	if node.Type() != ast.V_STRING {
+		return "", nil
+	}
+
+	networkId, err := node.String()
+	if err != nil {
+		return "", fmt.Errorf("networkId field present but could not be extracted: %w", err)
+	}
+
+	return networkId, nil
+}
 
 func parseRemoteIP(remoteAddr string) net.IP {
 	host := remoteAddr

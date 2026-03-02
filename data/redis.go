@@ -22,9 +22,35 @@ import (
 const (
 	RedisDriverName         = "redis"
 	redisReverseIndexPrefix = "rvi"
+	redisReverseLookupMiss  = 0
+	redisReverseLookupHit   = 1
+	redisReverseLookupStale = 2
 )
 
 var _ Connector = &RedisConnector{}
+
+var redisReverseLookupScript = redis.NewScript(`
+local resolvedPartitionKey = redis.call("GET", KEYS[1])
+if not resolvedPartitionKey then
+	return {0}
+end
+
+local resolvedKey = resolvedPartitionKey .. ":" .. ARGV[1]
+local value = redis.call("GET", resolvedKey)
+if value then
+	return {1, resolvedPartitionKey, value}
+end
+
+-- Best-effort stale pointer cleanup; lookup still returns miss if DEL fails.
+redis.pcall("DEL", KEYS[1])
+return {2, resolvedPartitionKey}
+`)
+
+type redisReverseLookupResult struct {
+	status               int
+	resolvedPartitionKey string
+	value                []byte
+}
 
 // zerologAdapter adapts zerolog to work with go-redis internal logger
 type zerologAdapter struct {
@@ -276,6 +302,113 @@ func (r *RedisConnector) checkReady() error {
 	return nil
 }
 
+func redisWildcardPartitionKey(partitionKey string) (string, bool) {
+	parts := strings.SplitAfterN(partitionKey, ":", 3)
+	if len(parts) < 2 {
+		return "", false
+	}
+
+	return parts[0] + parts[1] + "*", true
+}
+
+func redisReverseIndexKey(wildcardPartitionKey, rangeKey string) string {
+	return fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
+}
+
+func parseRedisReverseLookupResult(result []interface{}) (redisReverseLookupResult, error) {
+	if len(result) == 0 {
+		return redisReverseLookupResult{}, fmt.Errorf("empty reverse lookup response")
+	}
+
+	status, err := redisScriptValueAsInt(result[0])
+	if err != nil {
+		return redisReverseLookupResult{}, fmt.Errorf("invalid reverse lookup status: %w", err)
+	}
+
+	lookup := redisReverseLookupResult{status: status}
+	switch status {
+	case redisReverseLookupMiss:
+		return lookup, nil
+	case redisReverseLookupHit:
+		if len(result) != 3 {
+			return redisReverseLookupResult{}, fmt.Errorf("invalid reverse lookup hit response length: %d", len(result))
+		}
+
+		resolvedPartitionKey, err := redisScriptValueAsString(result[1])
+		if err != nil {
+			return redisReverseLookupResult{}, fmt.Errorf("invalid reverse lookup partition key: %w", err)
+		}
+
+		value, err := redisScriptValueAsBytes(result[2])
+		if err != nil {
+			return redisReverseLookupResult{}, fmt.Errorf("invalid reverse lookup value: %w", err)
+		}
+
+		lookup.resolvedPartitionKey = resolvedPartitionKey
+		lookup.value = value
+		return lookup, nil
+	case redisReverseLookupStale:
+		if len(result) != 2 {
+			return redisReverseLookupResult{}, fmt.Errorf("invalid reverse lookup stale response length: %d", len(result))
+		}
+
+		resolvedPartitionKey, err := redisScriptValueAsString(result[1])
+		if err != nil {
+			return redisReverseLookupResult{}, fmt.Errorf("invalid reverse lookup stale partition key: %w", err)
+		}
+
+		lookup.resolvedPartitionKey = resolvedPartitionKey
+		return lookup, nil
+	default:
+		return redisReverseLookupResult{}, fmt.Errorf("unknown reverse lookup status: %d", status)
+	}
+}
+
+func redisScriptValueAsInt(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int64:
+		return int(v), nil
+	case int:
+		return v, nil
+	case string:
+		i, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	case []byte:
+		i, err := strconv.Atoi(string(v))
+		if err != nil {
+			return 0, err
+		}
+		return i, nil
+	default:
+		return 0, fmt.Errorf("unsupported type %T", value)
+	}
+}
+
+func redisScriptValueAsString(value interface{}) (string, error) {
+	switch v := value.(type) {
+	case string:
+		return v, nil
+	case []byte:
+		return string(v), nil
+	default:
+		return "", fmt.Errorf("unsupported type %T", value)
+	}
+}
+
+func redisScriptValueAsBytes(value interface{}) ([]byte, error) {
+	switch v := value.(type) {
+	case string:
+		return []byte(v), nil
+	case []byte:
+		return append([]byte(nil), v...), nil
+	default:
+		return nil, fmt.Errorf("unsupported type %T", value)
+	}
+}
+
 // Set stores a key-value pair in Redis with an optional TTL. Returns early if Redis is not ready.
 func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Set")
@@ -295,11 +428,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 	}
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	if len(value) < 1024 {
-		r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing value to Redis")
-	} else {
-		r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing value to Redis")
-	}
+	r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing value to Redis")
 
 	ctx, cancel := context.WithTimeout(ctx, r.setTimeout)
 	defer cancel()
@@ -322,10 +451,9 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string,
 	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
 		// Maintain a reverse index for fast wildcard lookups (idx_reverse) similar to Memory connector.
 		// Only index EVM partition keys that are not already wildcarded.
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
-			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
+		wildcardPartitionKey, ok := redisWildcardPartitionKey(partitionKey)
+		if ok {
+			reverseKey := redisReverseIndexKey(wildcardPartitionKey, rangeKey)
 			// Best-effort: log on error but do not fail the primary SET.
 			if err := r.client.Set(ctx, reverseKey, partitionKey, duration).Err(); err != nil {
 				r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to SET reverse index in Redis")
@@ -355,41 +483,88 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	// If the caller specifies the special index "idx_reverse" and the partitionKey contains a wildcard
 	// we attempt to resolve the concrete partition key through the reverse index (to avoid SCAN).
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
-		revKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, partitionKey, rangeKey)
+		revKey := redisReverseIndexKey(partitionKey, rangeKey)
+		legacyReverseLookup := func() ([]byte, error) {
+			reverseCtx, reverseCancel := context.WithTimeout(ctx, r.getTimeout)
+			resolvedPartitionKey, getReverseErr := r.client.Get(reverseCtx, revKey).Result()
+			reverseCancel()
+			if getReverseErr == redis.Nil {
+				return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
+			}
+			if getReverseErr != nil {
+				r.logger.Warn().Err(getReverseErr).Str("key", revKey).Msg("failed to GET reverse index in Redis fallback")
+				r.markConnectionAsLostIfNecessary(getReverseErr)
+				return nil, getReverseErr
+			}
+
+			resolvedKey := fmt.Sprintf("%s:%s", resolvedPartitionKey, rangeKey)
+			valueCtx, valueCancel := context.WithTimeout(ctx, r.getTimeout)
+			value, valueErr := r.client.Get(valueCtx, resolvedKey).Bytes()
+			valueCancel()
+			if valueErr == redis.Nil {
+				cleanupCtx, cleanupCancel := context.WithTimeout(ctx, r.getTimeout)
+				_, _ = r.client.Del(cleanupCtx, revKey).Result()
+				cleanupCancel()
+				return nil, common.NewErrRecordNotFound(resolvedPartitionKey, rangeKey, RedisDriverName)
+			}
+			if valueErr != nil {
+				r.logger.Warn().Err(valueErr).Str("key", resolvedKey).Msg("failed to GET resolved reverse index key in Redis fallback")
+				r.markConnectionAsLostIfNecessary(valueErr)
+				return nil, valueErr
+			}
+
+			r.logger.Debug().Str("key", resolvedKey).Int("len", len(value)).Msg("received item from Redis (legacy reverse index fallback)")
+			if common.IsTracingDetailed {
+				span.SetAttributes(
+					attribute.Int("value_size", len(value)),
+				)
+			}
+
+			return value, nil
+		}
 		lookupCtx, lookupCancel := context.WithTimeout(ctx, r.getTimeout)
-		revPartitionKey, revErr := r.client.Get(lookupCtx, revKey).Result()
+		lookupResult, revErr := redisReverseLookupScript.Run(lookupCtx, r.client, []string{revKey}, rangeKey).Slice()
 		lookupCancel()
 		if revErr != nil {
-			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to GET reverse index in Redis")
+			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to resolve reverse index in Redis")
 			r.markConnectionAsLostIfNecessary(revErr)
-			common.SetTraceSpanError(span, revErr)
-		}
-		// Replace wildcard partitionKey with the resolved concrete value if found
-		// otherwise we will continue with the original partitionKey for lookup.
-		if revPartitionKey != "" {
-			partitionKey = revPartitionKey
+			fallbackValue, fallbackErr := legacyReverseLookup()
+			if fallbackErr == nil {
+				return fallbackValue, nil
+			}
+			common.SetTraceSpanError(span, fallbackErr)
+			return nil, fallbackErr
+		} else {
+			reverseLookup, parseErr := parseRedisReverseLookupResult(lookupResult)
+			if parseErr != nil {
+				r.logger.Warn().Err(parseErr).Str("key", revKey).Msg("failed to parse reverse index lookup response")
+				fallbackValue, fallbackErr := legacyReverseLookup()
+				if fallbackErr == nil {
+					return fallbackValue, nil
+				}
+				common.SetTraceSpanError(span, fallbackErr)
+				return nil, fallbackErr
+			} else if reverseLookup.status == redisReverseLookupHit {
+				resolvedKey := fmt.Sprintf("%s:%s", reverseLookup.resolvedPartitionKey, rangeKey)
+				r.logger.Debug().Str("key", resolvedKey).Int("len", len(reverseLookup.value)).Msg("received item from Redis")
 
-			// Verify the resolved key still exists and hasn't expired
-			// This handles the edge case where reverse index points to an expired key
-			resolvedKey := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-			ttlCtx, ttlCancel := context.WithTimeout(ctx, r.getTimeout)
-			ttl, ttlErr := r.client.TTL(ttlCtx, resolvedKey).Result()
-			ttlCancel()
+				if common.IsTracingDetailed {
+					span.SetAttributes(
+						attribute.Int("value_size", len(reverseLookup.value)),
+					)
+				}
 
-			if ttlErr != nil {
-				r.logger.Debug().Err(ttlErr).Str("key", resolvedKey).Msg("failed to check TTL for resolved key")
-			} else if ttl == -2*time.Second {
-				// Key doesn't exist (Redis returns -2 when key doesn't exist); treat as a miss
-				r.logger.Debug().Str("key", resolvedKey).Msg("resolved key from reverse index no longer exists")
+				return reverseLookup.value, nil
+			} else if reverseLookup.status == redisReverseLookupMiss {
+				r.logger.Trace().Str("key", revKey).Msg("reverse index miss in Redis")
 				err := common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
 				common.SetTraceSpanError(span, err)
 				return nil, err
-			} else if ttl == -1*time.Second {
-				// Key exists but has no TTL (persistent key), which is fine
-				r.logger.Trace().Str("key", resolvedKey).Msg("resolved key has no TTL (persistent)")
-			} else if ttl > 0 {
-				// Key exists and has TTL, which is fine
-				r.logger.Trace().Str("key", resolvedKey).Dur("ttl", ttl).Msg("resolved key still valid")
+			} else if reverseLookup.status == redisReverseLookupStale {
+				// Keep backward-compatible behavior: stale reverse index resolves to a cache miss.
+				err := common.NewErrRecordNotFound(reverseLookup.resolvedPartitionKey, rangeKey, RedisDriverName)
+				common.SetTraceSpanError(span, err)
+				return nil, err
 			}
 		}
 	}
@@ -412,11 +587,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
-	if len(value) < 1024 {
-		r.logger.Debug().Str("key", key).Int("len", len(value)).Msg("received item from Redis")
-	} else {
-		r.logger.Debug().Str("key", key).Int("len", len(value)).Msg("received item from Redis")
-	}
+	r.logger.Debug().Str("key", key).Int("len", len(value)).Msg("received item from Redis")
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
@@ -673,10 +844,9 @@ func (r *RedisConnector) Delete(ctx context.Context, partitionKey, rangeKey stri
 
 	// Clean up reverse index if it exists
 	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
-		parts := strings.SplitAfterN(partitionKey, ":", 3)
-		if len(parts) >= 2 {
-			wildcardPartitionKey := parts[0] + parts[1] + "*"
-			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
+		wildcardPartitionKey, ok := redisWildcardPartitionKey(partitionKey)
+		if ok {
+			reverseKey := redisReverseIndexKey(wildcardPartitionKey, rangeKey)
 			// Best-effort: log on error but do not fail the primary DELETE
 			if err := r.client.Del(ctx, reverseKey).Err(); err != nil {
 				r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to DELETE reverse index in Redis")

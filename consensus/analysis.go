@@ -9,6 +9,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const cachedHashGenericError = "error:generic"
+
 // responseGroup holds all responses that share the same hash.
 type responseGroup struct {
 	Hash    string
@@ -345,7 +347,7 @@ func errorToConsensusHash(err error) string {
 			return string(base.Code)
 		}
 	}
-	return "error:generic"
+	return cachedHashGenericError
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.
@@ -359,6 +361,10 @@ func resultToJsonRpcResponse(result *common.NormalizedResponse, exec failsafe.Ex
 
 // classifyAndHashResponse computes and caches the response type, hash, and size for a result.
 func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.NormalizedResponse], config *config) {
+	if responseAnalysisCached(r) {
+		return
+	}
+
 	if r.Err != nil {
 		// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
 		// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
@@ -369,7 +375,7 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 		}
 		r.CachedHash, _ = resultOrErrorToHash(r, exec, config)
 		if r.CachedHash == "" {
-			r.CachedHash = "error:generic"
+			r.CachedHash = cachedHashGenericError
 		}
 		r.CachedResponseSize = 0
 		return
@@ -379,7 +385,7 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 	jr := resultToJsonRpcResponse(r.Result, exec)
 	if jr == nil {
 		r.CachedResponseType = ResponseTypeInfrastructureError
-		r.CachedHash = "error:generic"
+		r.CachedHash = cachedHashGenericError
 		return
 	}
 
@@ -397,7 +403,26 @@ func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.Norm
 	r.CachedHash, _ = resultOrErrorToHash(r, exec, config)
 	if r.CachedHash == "" {
 		r.CachedResponseType = ResponseTypeInfrastructureError
-		r.CachedHash = "error:generic"
+		r.CachedHash = cachedHashGenericError
+	}
+}
+
+// responseAnalysisCached reports whether classifyAndHashResponse already populated stable cached fields.
+func responseAnalysisCached(r *execResult) bool {
+	if r == nil || r.CachedHash == "" {
+		return false
+	}
+
+	switch r.CachedResponseType {
+	case ResponseTypeNonEmpty, ResponseTypeEmpty:
+		return r.Err == nil && r.Result != nil
+	case ResponseTypeConsensusError:
+		return r.Err != nil
+	case ResponseTypeInfrastructureError:
+		// Infra classification can come from an actual error or a malformed success result.
+		return r.Err != nil || r.Result == nil || r.CachedHash == cachedHashGenericError
+	default:
+		return false
 	}
 }
 

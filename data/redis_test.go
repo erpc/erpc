@@ -717,6 +717,145 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	require.Equal(t, value, got)
 }
 
+func TestRedisReverseIndexLookup_ScriptFailureFallback(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+
+	cfg := &common.RedisConnectorConfig{
+		Addr:        m.Addr(),
+		InitTimeout: common.Duration(2 * time.Second),
+		GetTimeout:  common.Duration(2 * time.Second),
+		SetTimeout:  common.Duration(2 * time.Second),
+	}
+	err = cfg.SetDefaults()
+	require.NoError(t, err)
+
+	connector, err := NewRedisConnector(ctx, &logger, "test-reverse-index-script-fallback", cfg)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	rangeKey := "eth_getTransactionReceipt:script-fallback"
+	concretePartitionKey := "evm:123:latest"
+	wildcardPartitionKey := "evm:123:*"
+	value := []byte("tx-receipt-value")
+
+	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, nil)
+	require.NoError(t, err)
+
+	origScript := redisReverseLookupScript
+	redisReverseLookupScript = redis.NewScript(`return redis.call("NONEXISTENT_COMMAND", KEYS[1])`)
+	t.Cleanup(func() {
+		redisReverseLookupScript = origScript
+	})
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKey, rangeKey, nil)
+	require.NoError(t, err)
+	require.Equal(t, value, got)
+}
+
+func TestRedisReverseIndexLookup_ExpiryCleansReverseIndex(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+
+	cfg := &common.RedisConnectorConfig{
+		Addr:        m.Addr(),
+		InitTimeout: common.Duration(2 * time.Second),
+		GetTimeout:  common.Duration(2 * time.Second),
+		SetTimeout:  common.Duration(2 * time.Second),
+	}
+	err = cfg.SetDefaults()
+	require.NoError(t, err)
+
+	connector, err := NewRedisConnector(ctx, &logger, "test-reverse-index-expiry-cleanup", cfg)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	rangeKey := "eth_getLogs:request-hash-expiry"
+	concretePartitionKey := "evm:1:latest"
+	wildcardPartitionKey := "evm:1:*"
+	resolvedKey := fmt.Sprintf("%s:%s", concretePartitionKey, rangeKey)
+	reverseKey := redisReverseIndexKey(wildcardPartitionKey, rangeKey)
+	value := []byte("log-value")
+	ttl := 2 * time.Second
+
+	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, &ttl)
+	require.NoError(t, err)
+	require.True(t, m.Exists(resolvedKey), "resolved key should exist before expiry")
+	require.True(t, m.Exists(reverseKey), "reverse index key should exist before expiry")
+
+	m.FastForward(ttl + 10*time.Millisecond)
+
+	require.False(t, m.Exists(resolvedKey), "resolved key should expire")
+	require.False(t, m.Exists(reverseKey), "reverse index key should expire with resolved key")
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKey, rangeKey, nil)
+	require.Error(t, err)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
+	require.Nil(t, got)
+}
+
+func TestRedisReverseIndexLookup_StalePointerCleanup(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+
+	cfg := &common.RedisConnectorConfig{
+		Addr:        m.Addr(),
+		InitTimeout: common.Duration(2 * time.Second),
+		GetTimeout:  common.Duration(2 * time.Second),
+		SetTimeout:  common.Duration(2 * time.Second),
+	}
+	err = cfg.SetDefaults()
+	require.NoError(t, err)
+
+	connector, err := NewRedisConnector(ctx, &logger, "test-reverse-index-stale-cleanup", cfg)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	rangeKey := "eth_call:request-hash-stale"
+	concretePartitionKey := "evm:10:42"
+	wildcardPartitionKey := "evm:10:*"
+	resolvedKey := fmt.Sprintf("%s:%s", concretePartitionKey, rangeKey)
+	reverseKey := redisReverseIndexKey(wildcardPartitionKey, rangeKey)
+	value := []byte("stale-value")
+	ttl := 2 * time.Second
+
+	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, &ttl)
+	require.NoError(t, err)
+	require.True(t, m.Exists(resolvedKey), "resolved key should exist before expiry")
+	require.True(t, m.Exists(reverseKey), "reverse index key should exist before expiry")
+
+	// Force a stale-pointer scenario: keep reverse index alive after resolved key expires.
+	m.SetTTL(reverseKey, 10*time.Second)
+	m.FastForward(ttl + 10*time.Millisecond)
+
+	require.False(t, m.Exists(resolvedKey), "resolved key should expire")
+	require.True(t, m.Exists(reverseKey), "reverse index key should still exist and be stale")
+
+	got, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKey, rangeKey, nil)
+	require.Error(t, err)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
+	require.Nil(t, got)
+	require.False(t, m.Exists(reverseKey), "stale reverse index key should be cleaned up on lookup")
+}
+
 func TestRedisConnector_ChainIsolation(t *testing.T) {
 	// Setup Redis connector
 	m, err := miniredis.Run()

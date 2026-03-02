@@ -185,7 +185,11 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 			if rule.PerIP {
 				scope = append(scope, "ip")
 			}
-			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetCfg.Id, rule.Method, strings.Join(scope, ",")).Set(float64(rule.MaxCount))
+			telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(
+				budgetCfg.Id,
+				normalizeRateLimitMethodLabel(rule.Method),
+				strings.Join(scope, ","),
+			).Set(float64(rule.MaxCount))
 		}
 
 		r.budgetsLimiters.Store(budgetCfg.Id, budget)

@@ -10,6 +10,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -23,8 +24,11 @@ import (
 
 type EvmJsonRpcCache struct {
 	projectId string
-	policies  []*data.CachePolicy
-	logger    *zerolog.Logger
+	// policies is kept for backward compatibility with tests that initialize the cache struct directly.
+	policies []*data.CachePolicy
+	// policySnapshot is immutable and swapped atomically on SetPolicies.
+	policySnapshot atomic.Pointer[cachePolicySnapshot]
+	logger         *zerolog.Logger
 
 	// Envelope controls whether values are wrapped with a metadata header on write.
 	envelopeEnabled bool
@@ -80,10 +84,10 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	cache := &EvmJsonRpcCache{
-		policies:        policies,
 		logger:          logger,
 		envelopeEnabled: cfg.Envelope != nil && *cfg.Envelope,
 	}
+	cache.setPolicySnapshot(policies)
 
 	// Initialize compression if configured
 	if cfg.Compression != nil && cfg.Compression.Enabled != nil && *cfg.Compression.Enabled {
@@ -149,9 +153,10 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	lg := c.logger.With().Str("projectId", projectId).Logger()
 	lg.Debug().Msgf("cloning EvmJsonRpcCache for project")
-	return &EvmJsonRpcCache{
+	snapshot := c.currentPolicySnapshot()
+	cloned := &EvmJsonRpcCache{
 		logger:               &lg,
-		policies:             c.policies,
+		policies:             snapshot.policies,
 		projectId:            projectId,
 		envelopeEnabled:      c.envelopeEnabled,
 		compressionEnabled:   c.compressionEnabled,
@@ -160,10 +165,35 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		encoderPool:          c.encoderPool,
 		decoderPool:          c.decoderPool,
 	}
+	cloned.policySnapshot.Store(snapshot)
+	return cloned
 }
 
 func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
-	c.policies = policies
+	c.setPolicySnapshot(policies)
+}
+
+func (c *EvmJsonRpcCache) setPolicySnapshot(policies []*data.CachePolicy) {
+	snapshot := newCachePolicySnapshot(policies)
+	c.policySnapshot.Store(snapshot)
+}
+
+func (c *EvmJsonRpcCache) currentPolicySnapshot() *cachePolicySnapshot {
+	snapshot := c.policySnapshot.Load()
+	if snapshot != nil {
+		return snapshot
+	}
+
+	// Legacy fallback for tests that build EvmJsonRpcCache with struct literals.
+	snapshot = newCachePolicySnapshot(c.policies)
+	if c.policySnapshot.CompareAndSwap(nil, snapshot) {
+		return snapshot
+	}
+	snapshot = c.policySnapshot.Load()
+	if snapshot == nil {
+		return newCachePolicySnapshot(c.policies)
+	}
+	return snapshot
 }
 
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -798,7 +828,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 
 func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
-	for _, policy := range c.policies {
+	for _, policy := range c.currentPolicySnapshot().policies {
 		// Add debug logging for complex param matching
 		if c.logger.GetLevel() <= zerolog.TraceLevel {
 			c.logger.Trace().
@@ -822,9 +852,11 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 }
 
 func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
+	snapshot := c.currentPolicySnapshot()
 	var policies []*data.CachePolicy
 	visitedConnectorsMap := make(map[data.Connector]bool)
-	for _, policy := range c.policies {
+	for _, indexedPolicy := range snapshot.getLookup.candidatesFor(networkId, method) {
+		policy := indexedPolicy.policy
 		// Add debug logging for complex param matching
 		if c.logger.GetLevel() <= zerolog.TraceLevel {
 			c.logger.Trace().
