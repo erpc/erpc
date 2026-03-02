@@ -51,11 +51,11 @@ type NetworkMetadata struct {
 
 	// Dynamic block time EMA. Callers should use GetNetworkBlockTime which
 	// only returns the EMA once enough samples have been collected.
-	evmBlockTime           atomic.Int64 // current EMA value in nanoseconds
-	evmBlockTimeSamples    atomic.Int64 // number of samples folded into the EMA
-	evmBlockTimeMu         sync.Mutex   // protects ref fields below + EMA read-modify-write
-	evmBlockTimeRefBlock   int64        // block number from last valid (block, timestamp) pair
-	evmBlockTimeRefTimestamp int64      // timestamp from that same block
+	evmBlockTime             atomic.Int64 // current EMA value in nanoseconds
+	evmBlockTimeSamples      atomic.Int64 // number of samples folded into the EMA
+	evmBlockTimeMu           sync.Mutex   // protects ref fields below + EMA read-modify-write
+	evmBlockTimeRefBlock     int64        // block number from last valid (block, timestamp) pair
+	evmBlockTimeRefTimestamp int64        // timestamp from that same block
 }
 
 type Timer struct {
@@ -333,10 +333,10 @@ func (t *Tracker) getRollbackGauge(up common.Upstream) prometheus.Gauge {
 // NewTracker constructs a new Tracker, using sync.Map for concurrency.
 func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Duration) *Tracker {
 	return &Tracker{
-		logger:              logger,
-		projectId:           projectId,
-		windowSize:          windowSize,
-		upstreamsByNetwork:  make(map[string][]upstreamKey),
+		logger:             logger,
+		projectId:          projectId,
+		windowSize:         windowSize,
+		upstreamsByNetwork: make(map[string][]upstreamKey),
 	}
 }
 
@@ -760,8 +760,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 				"evm_state_poller",
 			).Set(float64(distance))
 
-			// EMA block time tracking — ref state is managed internally under its own mutex,
-			// so concurrent callers can't interleave ref reads/writes.
 			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
 		}
 	}
