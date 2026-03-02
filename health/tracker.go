@@ -49,8 +49,10 @@ type NetworkMetadata struct {
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
-	// Dynamic block time EMA. 0 = no samples yet, falls back to KnownBlockTimes.
+	// Dynamic block time EMA. Callers should use GetNetworkBlockTime which
+	// only returns the EMA once enough samples have been collected.
 	evmBlockTime         atomic.Int64 // current EMA value in nanoseconds
+	evmBlockTimeSamples  atomic.Int64 // number of samples folded into the EMA
 	evmBlockTimeRefBlock atomic.Int64 // block number from last valid (block, timestamp) pair
 	evmBlockTimeMu       sync.Mutex   // protects EMA read-modify-write
 }
@@ -819,6 +821,7 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 // ------------------------------------
 
 const blockTimeEMAAlpha = 0.1
+const blockTimeMinSamples = 5 // minimum samples before the EMA is considered stable
 
 // updateBlockTimeSample computes a per-block time sample and folds it into the EMA.
 // The first valid sample becomes the initial EMA value; subsequent samples smooth it.
@@ -851,6 +854,7 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 		newEMA = int64(blockTimeEMAAlpha*float64(sampleNs) + (1-blockTimeEMAAlpha)*float64(current))
 	}
 	ntwMeta.evmBlockTime.Store(newEMA)
+	ntwMeta.evmBlockTimeSamples.Add(1)
 
 	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
 		t.projectId, netLabel,
@@ -858,12 +862,15 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 }
 
 // GetNetworkBlockTime returns the dynamic EMA-based block time for a network.
-// Returns 0 if no samples have been collected yet.
+// Returns 0 until at least blockTimeMinSamples have been collected so the
+// EMA has had a chance to stabilize across multiple blocks.
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
-	if v := ntwMeta.evmBlockTime.Load(); v > 0 {
-		return time.Duration(v)
+	if ntwMeta.evmBlockTimeSamples.Load() >= blockTimeMinSamples {
+		if v := ntwMeta.evmBlockTime.Load(); v > 0 {
+			return time.Duration(v)
+		}
 	}
 
 	return 0
