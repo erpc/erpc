@@ -223,8 +223,6 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	} else {
 		e.networkLabel = cfg.NetworkId()
 	}
-
-	// debounceInterval is intentionally NOT set here — see resolveDebounce().
 }
 
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
@@ -1430,4 +1428,3 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 	}
 	return l, nil
 }
-
