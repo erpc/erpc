@@ -832,6 +832,9 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 type EvmUpstreamConfig struct {
 	ChainId                            int64                       `yaml:"chainId" json:"chainId"`
 	StatePollerInterval                Duration                    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	// StatePollerDebounce overrides the debounce interval for the state poller.
+	// When 0 (default), the interval is dynamically inferred from the chain's
+	// observed block time using an EMA, falling back to 1s until enough samples arrive.
 	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
