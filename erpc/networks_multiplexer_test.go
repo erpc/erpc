@@ -342,6 +342,125 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		assert.Equal(t, int32(2), upstreamRequestCount.Load(), "request after window should hit upstream again")
 	})
 
+	t.Run("PostCompletionWindow_BypassesUseUpstreamDirective", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var rpc1Calls atomic.Int32
+		var rpc2Calls atomic.Int32
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				if r.URL == nil || r.URL.Host != "rpc1.localhost" {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				if strings.Contains(body, "eth_getBalance") {
+					rpc1Calls.Add(1)
+					return true
+				}
+				return false
+			}).
+			Persist().
+			Reply(200).
+			Delay(100 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1111",
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				if r.URL == nil || r.URL.Host != "rpc2.localhost" {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				if strings.Contains(body, "eth_getBalance") {
+					rpc2Calls.Add(1)
+					return true
+				}
+				return false
+			}).
+			Persist().
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x2222",
+			})
+
+		network := setupTestNetwork(t, ctx,
+			[]*common.UpstreamConfig{
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc1",
+					Endpoint: "http://rpc1.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Type:     common.UpstreamTypeEvm,
+					Id:       "rpc2",
+					Endpoint: "http://rpc2.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			},
+		)
+
+		requestBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1234567890123456789012345678901234567890","0x10"]}`)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				defer wg.Done()
+				req := common.NewNormalizedRequest(requestBody)
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+				jrr, jrrErr := resp.JsonRpcResponse(ctx)
+				require.NoError(t, jrrErr)
+				assert.Contains(t, jrr.GetResultString(), "0x1111")
+				resp.Release()
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), rpc1Calls.Load(), "initial burst should multiplex to rpc1 once")
+		assert.Equal(t, int32(0), rpc2Calls.Load(), "rpc2 should not be called before directive-targeted request")
+
+		time.Sleep(networkPostCompletionCoalescingWindow / 4)
+
+		req := common.NewNormalizedRequest(requestBody)
+		req.SetDirectives(&common.RequestDirectives{UseUpstream: "rpc2"})
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		jrr, jrrErr := resp.JsonRpcResponse(ctx)
+		require.NoError(t, jrrErr)
+		assert.Contains(t, jrr.GetResultString(), "0x2222", "directive-targeted request must bypass coalesced response")
+		resp.Release()
+
+		assert.Equal(t, int32(1), rpc1Calls.Load(), "directive-targeted request should not reuse post-completion cache from rpc1")
+		assert.Equal(t, int32(1), rpc2Calls.Load(), "directive-targeted request should call rpc2")
+	})
+
 	t.Run("SlowUpstream_FollowersWaitAndReceive", func(t *testing.T) {
 		// Test with a slower upstream to ensure followers wait properly
 		util.ResetGock()
