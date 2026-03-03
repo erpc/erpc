@@ -1003,6 +1003,29 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			attribute.Int("execution.retries", int(resp.Retries())),
 			attribute.Int("execution.hedges", int(resp.Hedges())),
 		)
+
+		if resp.Hedges() > 0 {
+			finality := req.Finality(ctx)
+			upstreamID := "unknown"
+			if ups := resp.Upstream(); ups != nil {
+				upstreamID = ups.Id()
+			}
+
+			labels := []string{
+				n.projectId,
+				n.Label(),
+				upstreamID,
+				method,
+				finality.String(),
+				req.UserId(),
+				req.AgentName(),
+			}
+			if resp.Attempts() > 1 {
+				telemetry.CounterHandle(telemetry.MetricNetworkHedgeWonTotal, labels...).Inc()
+			} else {
+				telemetry.CounterHandle(telemetry.MetricNetworkHedgeLostTotal, labels...).Inc()
+			}
+		}
 	}
 
 	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
@@ -1329,6 +1352,10 @@ func (n *Network) recordHedgeDiscard(
 	telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardsTotal,
 		n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", attempts),
 		fmt.Sprintf("%d", hedges), finality.String(),
+		req.UserId(), req.AgentName(),
+	).Inc()
+	telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardTotal,
+		n.projectId, n.Label(), u.Id(), method, finality.String(),
 		req.UserId(), req.AgentName(),
 	).Inc()
 	common.SetTraceSpanError(span, common.NewErrUpstreamHedgeCancelled(u.Id(), err))

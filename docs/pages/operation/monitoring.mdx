@@ -126,6 +126,9 @@ Here is a list of some of the most important metrics:
 | erpc_network_request_duration_seconds | Histogram | End-to-end network request duration. |
 | erpc_network_upstream_calls_per_request | Histogram | Upstream amplification per network request (how many upstream calls each request triggered). |
 | erpc_network_attempt_reason_total | Counter | Non-baseline attempt causes (`retry`, `hedge`, `consensus`, `batch_fallback`, `fail_open`, `fire_and_forget`). |
+| erpc_network_hedge_won_total | Counter | Requests where a hedged attempt won the race. |
+| erpc_network_hedge_lost_total | Counter | Requests where the primary attempt won despite active hedges. |
+| erpc_network_hedge_discard_total | Counter | Hedged attempts discarded because another in-flight attempt won. |
 | erpc_http_ingress_inflight | Gauge | Inflight HTTP ingress request count by route/method. |
 | erpc_http_ingress_pre_forward_duration_seconds | Histogram | Time spent in ingress before forwarding/dispatch. |
 | erpc_rate_limits_total | Counter | Unified rate-limit events (remote + local decisions). |
@@ -191,6 +194,11 @@ sum(rate(erpc_network_attempt_reason_total{}[5m])) by (project,network,reason,va
 
 # Retry pressure by method for canary/control comparison
 sum(rate(erpc_network_attempt_reason_total{reason="retry"}[5m])) by (category,variant,release)
+
+# Hedge race outcomes by network
+sum(rate(erpc_network_hedge_won_total{}[5m])) by (network)
+sum(rate(erpc_network_hedge_lost_total{}[5m])) by (network)
+sum(rate(erpc_network_hedge_discard_total{}[5m])) by (network)
 
 # Local (non-remote) rate-limiting events by project/network
 sum(rate(erpc_rate_limits_total{scope!="remote"}[5m])) by (project,network)
