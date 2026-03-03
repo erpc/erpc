@@ -609,6 +609,12 @@ export interface RetryPolicyConfig {
    * When set, empty result retries wait this long instead of using the normal error delay/backoff.
    */
   emptyResultDelay?: Duration;
+  /**
+   * BlockUnavailableDelay is the fixed delay before retrying when all upstreams failed because the
+   * requested block is not yet available (ErrUpstreamBlockUnavailable). This gives upstream nodes
+   * time to receive and index the block before the retry. Typical values: 500ms-2s for fast chains.
+   */
+  blockUnavailableDelay?: Duration;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
