@@ -106,6 +106,38 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 		require.Equal(t, before+2, after)
 	})
 
+	t.Run("uses canonical network id for fallback metrics", func(t *testing.T) {
+		telemetry.MetricMulticall3FallbackTotal.Reset()
+
+		responses := make([]interface{}, 1)
+		resp := common.NewNormalizedResponse()
+		forwardBatchProject = func(ctx context.Context, project *PreparedProject, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return resp, nil
+		}
+
+		project := &PreparedProject{Config: &common.ProjectConfig{Id: "prjB"}}
+		network := &Network{projectId: "prjB", networkId: "evm:111", networkLabel: "alias-mainnet"}
+
+		server.forwardEthCallBatchCandidates(
+			&startedAt,
+			project,
+			network,
+			[]ethCallBatchCandidate{makeCandidate(0)},
+			responses,
+			"reason_x",
+			multicallFallbackModeFull,
+		)
+
+		idSeries := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjB", "evm:111", "reason_x"),
+		)
+		labelSeries := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjB", "alias-mainnet", "reason_x"),
+		)
+		require.Equal(t, float64(1), idSeries)
+		require.Equal(t, float64(0), labelSeries)
+	})
+
 	t.Run("panic recovery in forward goroutine", func(t *testing.T) {
 		responses := make([]interface{}, 2)
 		var callCount int32
