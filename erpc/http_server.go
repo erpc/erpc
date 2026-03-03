@@ -442,9 +442,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				for _, key := range s.serverCfg.ForwardHeaders {
-					if value := headers.Get(key); value != "" {
-						nq.ForwardHeaders.Add(key, value)
+				if project != nil {
+					for _, key := range project.Config.ForwardHeaders {
+						if value := headers.Get(key); value != "" {
+							nq.ForwardHeaders.Add(key, value)
+						}
 					}
 				}
 
@@ -453,8 +455,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				shouldHandleMethod := true
 
-				if s.serverCfg.IgnoreMethods != nil {
-					for _, m := range s.serverCfg.IgnoreMethods {
+				if project != nil && project.Config.IgnoreMethods != nil {
+					for _, m := range project.Config.IgnoreMethods {
 						match, err := common.WildcardMatch(m, method)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
@@ -468,8 +470,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					}
 				}
 
-				if s.serverCfg.AllowMethods != nil {
-					for _, m := range s.serverCfg.AllowMethods {
+				if project != nil && project.Config.AllowMethods != nil {
+					for _, m := range project.Config.AllowMethods {
 						match, err := common.WildcardMatch(m, method)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)

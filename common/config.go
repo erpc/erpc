@@ -107,9 +107,6 @@ type ServerConfig struct {
 	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
-	ForwardHeaders      []string          `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
-	IgnoreMethods       []string          `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
-	AllowMethods        []string          `yaml:"allowMethods,omitempty" json:"allowMethods"`
 }
 
 type HealthCheckConfig struct {
@@ -430,7 +427,10 @@ type ProjectConfig struct {
 	ScoreMetricsMode      string                              `yaml:"scoreMetricsMode,omitempty" json:"scoreMetricsMode"`
 	DeprecatedHealthCheck *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 	// Configure user agent tracking at the project level
-	UserAgentMode UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
+	UserAgentMode  UserAgentTrackingMode `yaml:"userAgentMode,omitempty" json:"userAgentMode"`
+	ForwardHeaders []string              `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
+	IgnoreMethods  []string              `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
+	AllowMethods   []string              `yaml:"allowMethods,omitempty" json:"allowMethods"`
 }
 
 // UserAgentTrackingMode controls how user agents are recorded for metrics/labels
