@@ -231,6 +231,8 @@ type CompressionConfig struct {
 }
 
 type CacheMethodConfig struct {
+	// Profile references a reusable workload profile from network.methods.profiles.
+	Profile   string          `yaml:"profile,omitempty" json:"profile,omitempty"`
 	ReqRefs   [][]interface{} `yaml:"reqRefs" json:"reqRefs"`
 	RespRefs  [][]interface{} `yaml:"respRefs" json:"respRefs"`
 	Finalized bool            `yaml:"finalized" json:"finalized"`
@@ -247,6 +249,8 @@ type CacheMethodConfig struct {
 	// EnforceBlockAvailability controls whether per-upstream block availability bounds (upper/lower)
 	// are enforced for this method at the network level. When nil or true, enforcement is enabled.
 	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
+	// Multiplex controls method-level request coalescing. When nil, network-level multiplexing applies.
+	Multiplex *bool `yaml:"multiplex,omitempty" json:"multiplex,omitempty"`
 }
 
 type CachePolicyConfig struct {
@@ -1447,8 +1451,37 @@ type DeprecatedProjectHealthCheckConfig struct {
 }
 
 type MethodsConfig struct {
-	PreserveDefaultMethods bool                          `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
-	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
+	PreserveDefaultMethods bool                                    `yaml:"preserveDefaultMethods,omitempty" json:"preserveDefaultMethods"`
+	Profiles               map[string]*MethodWorkloadProfileConfig `yaml:"profiles,omitempty" json:"profiles,omitempty"`
+	Definitions            map[string]*CacheMethodConfig           `yaml:"definitions,omitempty" json:"definitions"`
+
+	generatedFailsafeRules []*FailsafeConfig `yaml:"-" json:"-"`
+}
+
+type MethodWorkloadProfileConfig struct {
+	Cache     *MethodCacheProfileConfig     `yaml:"cache,omitempty" json:"cache,omitempty"`
+	Failsafe  []*FailsafeConfig             `yaml:"failsafe,omitempty" json:"failsafe,omitempty"`
+	Routing   *MethodRoutingProfileConfig   `yaml:"routing,omitempty" json:"routing,omitempty"`
+	Multiplex *MethodMultiplexProfileConfig `yaml:"multiplex,omitempty" json:"multiplex,omitempty"`
+}
+
+type MethodCacheProfileConfig struct {
+	ReqRefs                  [][]interface{} `yaml:"reqRefs,omitempty" json:"reqRefs,omitempty"`
+	RespRefs                 [][]interface{} `yaml:"respRefs,omitempty" json:"respRefs,omitempty"`
+	Finalized                *bool           `yaml:"finalized,omitempty" json:"finalized,omitempty"`
+	Realtime                 *bool           `yaml:"realtime,omitempty" json:"realtime,omitempty"`
+	Stateful                 *bool           `yaml:"stateful,omitempty" json:"stateful,omitempty"`
+	TranslateLatestTag       *bool           `yaml:"translateLatestTag,omitempty" json:"translateLatestTag,omitempty"`
+	TranslateFinalizedTag    *bool           `yaml:"translateFinalizedTag,omitempty" json:"translateFinalizedTag,omitempty"`
+	EnforceBlockAvailability *bool           `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
+}
+
+type MethodRoutingProfileConfig struct {
+	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
+}
+
+type MethodMultiplexProfileConfig struct {
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 type NetworkConfig struct {
@@ -1887,24 +1920,49 @@ type EvmIntegrityConfig struct {
 }
 
 type SelectionPolicyConfig struct {
-	EvalInterval     Duration       `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
-	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
-	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
-	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
-	ResampleInterval Duration       `yaml:"resampleInterval,omitempty" json:"resampleInterval" tstype:"Duration"`
-	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount"`
+	EvalInterval     Duration                     `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
+	EvalFunction     sobek.Callable               `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
+	Rules            []*SelectionPolicyRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
+	EvalPerMethod    bool                         `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	ResampleExcluded bool                         `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
+	ResampleInterval Duration                     `yaml:"resampleInterval,omitempty" json:"resampleInterval" tstype:"Duration"`
+	ResampleCount    int                          `yaml:"resampleCount,omitempty" json:"resampleCount"`
 
-	evalFunctionOriginal string `yaml:"-" json:"-"`
+	evalFunctionOriginal  string `yaml:"-" json:"-"`
+	evalFunctionIsDefault bool   `yaml:"-" json:"-"`
+}
+
+type SelectionPolicyRuleAction string
+
+const (
+	SelectionPolicyRuleActionInclude SelectionPolicyRuleAction = "include"
+	SelectionPolicyRuleActionExclude SelectionPolicyRuleAction = "exclude"
+)
+
+type SelectionPolicyRuleConfig struct {
+	Name                  string                    `yaml:"name,omitempty" json:"name,omitempty"`
+	MatchMethod           string                    `yaml:"matchMethod,omitempty" json:"matchMethod,omitempty"`
+	MatchUpstreamID       string                    `yaml:"matchUpstreamId,omitempty" json:"matchUpstreamId,omitempty"`
+	MatchUpstreamGroup    string                    `yaml:"matchUpstreamGroup,omitempty" json:"matchUpstreamGroup,omitempty"`
+	MaxErrorRate          *float64                  `yaml:"maxErrorRate,omitempty" json:"maxErrorRate,omitempty"`
+	MaxBlockHeadLag       *float64                  `yaml:"maxBlockHeadLag,omitempty" json:"maxBlockHeadLag,omitempty"`
+	MaxFinalizationLag    *float64                  `yaml:"maxFinalizationLag,omitempty" json:"maxFinalizationLag,omitempty"`
+	MaxP90ResponseSeconds *float64                  `yaml:"maxP90ResponseSeconds,omitempty" json:"maxP90ResponseSeconds,omitempty"`
+	MaxP95ResponseSeconds *float64                  `yaml:"maxP95ResponseSeconds,omitempty" json:"maxP95ResponseSeconds,omitempty"`
+	MaxP99ResponseSeconds *float64                  `yaml:"maxP99ResponseSeconds,omitempty" json:"maxP99ResponseSeconds,omitempty"`
+	MaxThrottledRate      *float64                  `yaml:"maxThrottledRate,omitempty" json:"maxThrottledRate,omitempty"`
+	Action                SelectionPolicyRuleAction `yaml:"action,omitempty" json:"action,omitempty"`
 }
 
 func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawSelectionPolicyConfig struct {
-		EvalInterval     Duration `yaml:"evalInterval"`
-		EvalPerMethod    bool     `yaml:"evalPerMethod"`
-		EvalFunction     string   `yaml:"evalFunction"`
-		ResampleInterval Duration `yaml:"resampleInterval"`
-		ResampleCount    int      `yaml:"resampleCount"`
-		ResampleExcluded bool     `yaml:"resampleExcluded"`
+		EvalInterval     Duration                     `yaml:"evalInterval"`
+		EvalPerMethod    bool                         `yaml:"evalPerMethod"`
+		EvalFunction     string                       `yaml:"evalFunction"`
+		Rules            []*SelectionPolicyRuleConfig `yaml:"rules"`
+		ResampleInterval Duration                     `yaml:"resampleInterval"`
+		ResampleCount    int                          `yaml:"resampleCount"`
+		ResampleExcluded bool                         `yaml:"resampleExcluded"`
 	}
 	raw := rawSelectionPolicyConfig{}
 
@@ -1914,6 +1972,7 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 	*c = SelectionPolicyConfig{
 		EvalInterval:     raw.EvalInterval,
 		EvalFunction:     nil,
+		Rules:            raw.Rules,
 		EvalPerMethod:    raw.EvalPerMethod,
 		ResampleInterval: raw.ResampleInterval,
 		ResampleCount:    raw.ResampleCount,
@@ -1924,12 +1983,45 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 		evalFunction, err := CompileFunction(raw.EvalFunction)
 		c.EvalFunction = evalFunction
 		c.evalFunctionOriginal = raw.EvalFunction
+		c.evalFunctionIsDefault = false
 		if err != nil {
 			return fmt.Errorf("failed to compile selectionPolicy.evalFunction: %v", err)
 		}
 	}
 
 	return nil
+}
+
+func (c *SelectionPolicyConfig) UsesEvalFunction() bool {
+	if c == nil || c.EvalFunction == nil {
+		return false
+	}
+	// If evalFunction was auto-injected as default and declarative rules are provided,
+	// rules take precedence.
+	if c.evalFunctionIsDefault && len(c.Rules) > 0 {
+		return false
+	}
+	return true
+}
+
+func (c *SelectionPolicyConfig) EffectiveMode() string {
+	if c == nil {
+		return "disabled"
+	}
+	if c.UsesEvalFunction() {
+		if c.evalFunctionIsDefault {
+			return "evalFunction(default)"
+		}
+		return "evalFunction"
+	}
+	if len(c.Rules) > 0 {
+		return "rules"
+	}
+	return "disabled"
+}
+
+func (c *SelectionPolicyConfig) HasIgnoredRules() bool {
+	return c != nil && c.UsesEvalFunction() && len(c.Rules) > 0
 }
 
 func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
@@ -1944,9 +2036,11 @@ func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 		"evalInterval":     c.EvalInterval,
 		"evalPerMethod":    c.EvalPerMethod,
 		"evalFunction":     evf,
+		"rules":            c.Rules,
 		"resampleInterval": c.ResampleInterval,
 		"resampleCount":    c.ResampleCount,
 		"resampleExcluded": c.ResampleExcluded,
+		"mode":             c.EffectiveMode(),
 	})
 }
 

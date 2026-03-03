@@ -1524,7 +1524,8 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
-	if !n.cfg.MultiplexingEnabled() {
+	method, _ := req.Method()
+	if !n.isMultiplexingEnabledForMethod(method) {
 		return nil, nil, nil
 	}
 
@@ -1534,7 +1535,6 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		lg.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
 		return nil, nil, nil
 	}
-	method, _ := req.Method()
 
 	if resp, hit := n.loadPostCompletionCoalescedResult(ctx, req, method, mlxHash); hit {
 		lg.Trace().Str("hash", mlxHash).Object("response", resp).Msgf("served from post-completion coalescing window")
@@ -1904,6 +1904,18 @@ func isReadMethodEligibleForNegativeCache(method string) bool {
 		return false
 	}
 	return true
+}
+
+func (n *Network) isMultiplexingEnabledForMethod(method string) bool {
+	if n == nil || n.cfg == nil {
+		return true
+	}
+	if method != "" && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
+		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.Multiplex != nil {
+			return *mc.Multiplex
+		}
+	}
+	return n.cfg.MultiplexingEnabled()
 }
 
 func isNonceSensitiveReadMethod(method string) bool {

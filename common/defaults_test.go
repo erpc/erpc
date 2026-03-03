@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -33,11 +34,9 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &FailsafeConfig{
-			Timeout: &TimeoutPolicyConfig{
-				Duration: Duration(100 * time.Millisecond),
-			},
-		}, network.Failsafe[0])
+		assert.Equal(t, "*", network.Failsafe[0].MatchMethod)
+		assert.NotNil(t, network.Failsafe[0].Timeout)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Timeout.Duration)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -58,10 +57,12 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &HedgePolicyConfig{
-			Delay:    Duration(100 * time.Millisecond),
-			MaxCount: 10,
-		}, network.Failsafe[0].Hedge)
+		assert.Equal(t, "*", network.Failsafe[0].MatchMethod)
+		assert.NotNil(t, network.Failsafe[0].Hedge)
+		assert.Equal(t, Duration(100*time.Millisecond), network.Failsafe[0].Hedge.Delay)
+		assert.Equal(t, 10, network.Failsafe[0].Hedge.MaxCount)
+		assert.GreaterOrEqual(t, network.Failsafe[0].Hedge.MinDelay, Duration(100*time.Millisecond))
+		assert.Greater(t, network.Failsafe[0].Hedge.MaxDelay, Duration(0))
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -81,9 +82,13 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 
 		assert.NotNil(t, network.Failsafe)
 		assert.Len(t, network.Failsafe, 1)
-		assert.EqualValues(t, &CircuitBreakerPolicyConfig{
-			FailureThresholdCount: 10,
-		}, network.Failsafe[0].CircuitBreaker)
+		assert.Equal(t, "*", network.Failsafe[0].MatchMethod)
+		assert.NotNil(t, network.Failsafe[0].CircuitBreaker)
+		assert.Equal(t, uint(10), network.Failsafe[0].CircuitBreaker.FailureThresholdCount)
+		assert.Greater(t, network.Failsafe[0].CircuitBreaker.FailureThresholdCapacity, uint(0))
+		assert.Greater(t, network.Failsafe[0].CircuitBreaker.HalfOpenAfter, Duration(0))
+		assert.Greater(t, network.Failsafe[0].CircuitBreaker.SuccessThresholdCount, uint(0))
+		assert.Greater(t, network.Failsafe[0].CircuitBreaker.SuccessThresholdCapacity, uint(0))
 		assert.Nil(t, network.Failsafe[0].Timeout)
 		assert.Nil(t, network.Failsafe[0].Hedge)
 		assert.Nil(t, network.Failsafe[0].Retry)
@@ -482,6 +487,66 @@ func TestMethodsConfigStatefulMethodOverride(t *testing.T) {
 	if exists {
 		assert.True(t, method.Stateful, "Method 'eth_newFilter' should be marked as stateful even when user tries to override")
 	}
+}
+
+func TestNetworkConfigSetDefaults_MethodWorkloadProfiles(t *testing.T) {
+	network := &NetworkConfig{
+		Architecture: "evm",
+		Evm: &EvmNetworkConfig{
+			ChainId: 1,
+		},
+		Methods: &MethodsConfig{
+			Profiles: map[string]*MethodWorkloadProfileConfig{
+				"read-heavy": {
+					Routing: &MethodRoutingProfileConfig{
+						Requires: []string{"trace"},
+					},
+					Multiplex: &MethodMultiplexProfileConfig{
+						Enabled: util.BoolPtr(false),
+					},
+					Failsafe: []*FailsafeConfig{
+						{
+							Timeout: &TimeoutPolicyConfig{
+								Duration: Duration(3 * time.Second),
+							},
+						},
+					},
+				},
+			},
+			Definitions: map[string]*CacheMethodConfig{
+				"eth_getBalance": {
+					Profile: "read-heavy",
+				},
+			},
+		},
+	}
+
+	err := network.SetDefaults(nil, nil)
+	assert.NoError(t, err)
+
+	methodCfg, ok := network.Methods.Definitions["eth_getBalance"]
+	assert.True(t, ok)
+	if ok {
+		assert.Equal(t, []string{"trace"}, methodCfg.Requires)
+		if assert.NotNil(t, methodCfg.Multiplex) {
+			assert.False(t, *methodCfg.Multiplex)
+		}
+	}
+
+	foundProfileFailsafe := false
+	for _, fs := range network.Failsafe {
+		if fs == nil {
+			continue
+		}
+		if fs.MatchMethod == "eth_getBalance" {
+			foundProfileFailsafe = true
+			if assert.NotNil(t, fs.Timeout) {
+				assert.Equal(t, Duration(3*time.Second), fs.Timeout.Duration)
+			}
+			break
+		}
+	}
+	assert.True(t, foundProfileFailsafe, "profile-derived failsafe rule should be generated for eth_getBalance")
 }
 
 func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {

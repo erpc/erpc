@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,6 +78,7 @@ type ValidationReport struct {
 	Errors    []string            `json:"errors"`
 	Warnings  []string            `json:"warnings"`
 	Notices   []string            `json:"notices"`
+	Explain   []string            `json:"explain,omitempty"`
 	Resources ValidationResources `json:"resources"`
 }
 
@@ -128,6 +130,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 		Errors:   []string{},
 		Warnings: []string{},
 		Notices:  []string{},
+		Explain:  []string{},
 	}
 
 	// Build resources tree and totals
@@ -248,13 +251,81 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 		defaultsHasFailsafe := p.NetworkDefaults != nil && len(p.NetworkDefaults.Failsafe) > 0
 		if p.Networks != nil {
 			for _, nw := range p.Networks {
+				chainStr := "-"
+				if nw.Evm != nil {
+					chainStr = fmt.Sprintf("%d", nw.Evm.ChainId)
+				}
+				networkLabel := fmt.Sprintf("%s/%s", nw.Architecture, chainStr)
+				if nw.Alias != "" {
+					networkLabel = fmt.Sprintf("%s (%s)", networkLabel, nw.Alias)
+				}
+
 				hasNetworkFailsafe := len(nw.Failsafe) > 0
 				if !defaultsHasFailsafe && !hasNetworkFailsafe {
-					chainStr := "-"
-					if nw.Evm != nil {
-						chainStr = fmt.Sprintf("%d", nw.Evm.ChainId)
+					report.Notices = append(report.Notices, fmt.Sprintf("project=%s network=%s has no failsafe policies (defaults and per-network empty)", p.Id, networkLabel))
+				}
+
+				if nw.SelectionPolicy == nil {
+					report.Explain = append(report.Explain, fmt.Sprintf("project=%s network=%s selectionPolicy.path=<disabled>", p.Id, networkLabel))
+				} else {
+					mode := nw.SelectionPolicy.EffectiveMode()
+					path := "<disabled>"
+					switch mode {
+					case "rules":
+						path = "selectionPolicy.rules"
+					case "evalFunction", "evalFunction(default)":
+						path = "selectionPolicy.evalFunction"
 					}
-					report.Notices = append(report.Notices, fmt.Sprintf("project=%s network=%s/%s has no failsafe policies (defaults and per-network empty)", p.Id, nw.Architecture, chainStr))
+					entry := fmt.Sprintf("project=%s network=%s selectionPolicy.path=%s mode=%s", p.Id, networkLabel, path, mode)
+					if nw.SelectionPolicy.HasIgnoredRules() {
+						entry += " precedence=evalFunction>rules"
+					}
+					report.Explain = append(report.Explain, entry)
+				}
+
+				if nw.Methods != nil && nw.Methods.Definitions != nil {
+					methodNames := make([]string, 0)
+					for methodName, methodCfg := range nw.Methods.Definitions {
+						if methodCfg != nil && methodCfg.Profile != "" {
+							methodNames = append(methodNames, methodName)
+						}
+					}
+					sort.Strings(methodNames)
+
+					for _, methodName := range methodNames {
+						methodCfg := nw.Methods.Definitions[methodName]
+						profileName := methodCfg.Profile
+						profilePath := fmt.Sprintf("methods.definitions.%s.profile->methods.profiles.%s", methodName, profileName)
+						if nw.Methods.Profiles == nil {
+							report.Explain = append(report.Explain, fmt.Sprintf("project=%s network=%s method=%s profile.path=%s missing=true", p.Id, networkLabel, methodName, profilePath))
+							continue
+						}
+						profileCfg := nw.Methods.Profiles[profileName]
+						if profileCfg == nil {
+							report.Explain = append(report.Explain, fmt.Sprintf("project=%s network=%s method=%s profile.path=%s missing=true", p.Id, networkLabel, methodName, profilePath))
+							continue
+						}
+
+						components := make([]string, 0, 4)
+						if profileCfg.Cache != nil {
+							components = append(components, "cache")
+						}
+						if len(profileCfg.Failsafe) > 0 {
+							components = append(components, "failsafe")
+						}
+						if profileCfg.Routing != nil {
+							components = append(components, "routing")
+						}
+						if profileCfg.Multiplex != nil {
+							components = append(components, "multiplex")
+						}
+						if len(components) == 0 {
+							components = append(components, "empty")
+						}
+						report.Explain = append(report.Explain,
+							fmt.Sprintf("project=%s network=%s method=%s profile.path=%s components=%s", p.Id, networkLabel, methodName, profilePath, strings.Join(components, ",")),
+						)
+					}
 				}
 			}
 		}
@@ -770,6 +841,17 @@ func RenderValidationReportMarkdown(r *ValidationReport) string {
 		for _, n := range r.Notices {
 			sb.WriteString("- 💡 ")
 			sb.WriteString(n)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n")
+		sb.WriteString("\n</details>\n")
+	}
+	if len(r.Explain) > 0 {
+		sb.WriteString("\n<details><summary>Explain (" + strconv.Itoa(len(r.Explain)) + ")</summary>\n\n")
+		sb.WriteString("```\n")
+		for _, e := range r.Explain {
+			sb.WriteString("- 🧭 ")
+			sb.WriteString(e)
 			sb.WriteString("\n")
 		}
 		sb.WriteString("```\n")
