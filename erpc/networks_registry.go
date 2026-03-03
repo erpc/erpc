@@ -158,11 +158,13 @@ func NewNetwork(
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
 
-		bootstrapOnce:        sync.Once{},
-		inFlightRequests:     &sync.Map{},
-		failsafeExecutors:    failsafeExecutors,
-		initializer:          util.NewInitializer(appCtx, &lg, nil),
-		getSortedUpstreamsFn: defaultGetSortedUpstreamsForNetwork,
+		bootstrapOnce:         sync.Once{},
+		inFlightRequests:      &sync.Map{},
+		negativeResultCache:   &sync.Map{},
+		postCompletionResults: &sync.Map{},
+		failsafeExecutors:     failsafeExecutors,
+		initializer:           util.NewInitializer(appCtx, &lg, nil),
+		getSortedUpstreamsFn:  defaultGetSortedUpstreamsForNetwork,
 	}
 
 	if nwCfg.Architecture == "" {

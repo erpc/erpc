@@ -185,6 +185,24 @@ var (
 		Help:      "Total number of multiplexed requests for a network.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
+	MetricNetworkBurstCoalescedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_burst_coalesced_request_total",
+		Help:      "Total number of requests served from post-completion burst coalescing window.",
+	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
+
+	MetricNetworkDeterministicNegativeCacheSetTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_deterministic_negative_cache_set_total",
+		Help:      "Total number of deterministic negative cache writes for network requests.",
+	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
+
+	MetricNetworkDeterministicNegativeCacheHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_deterministic_negative_cache_hit_total",
+		Help:      "Total number of deterministic negative cache hits for network requests.",
+	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
+
 	MetricNetworkHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedged_request_total",

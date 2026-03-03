@@ -22,6 +22,8 @@ type Multiplexer struct {
 	// copyWg tracks followers that are actively copying the response.
 	// Cleanup waits for all followers to finish copying before releasing resources.
 	copyWg sync.WaitGroup
+	// followerCount tracks how many followers joined while the leader was in-flight.
+	followerCount int32
 	// closed is set when cleanup starts; prevents new followers from registering
 	closed bool
 }

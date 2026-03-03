@@ -274,6 +274,74 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 			numWaves, upstreamRequestCount.Load())
 	})
 
+	t.Run("PostCompletionWindow_CoalescesImmediateBurst", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var upstreamRequestCount atomic.Int32
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if strings.Contains(body, "eth_getBalance") {
+					upstreamRequestCount.Add(1)
+					return true
+				}
+				return false
+			}).
+			Persist().
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1",
+			})
+
+		network := setupTestNetworkForMultiplexer(t, ctx)
+		requestBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1234567890123456789012345678901234567890","0x10"]}`)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				defer wg.Done()
+				req := common.NewNormalizedRequest(requestBody)
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+				resp.Release()
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, int32(1), upstreamRequestCount.Load(), "initial burst should multiplex to a single upstream call")
+
+		time.Sleep(networkPostCompletionCoalescingWindow / 4)
+
+		req2 := common.NewNormalizedRequest(requestBody)
+		resp2, err := network.Forward(ctx, req2)
+		require.NoError(t, err)
+		require.NotNil(t, resp2)
+		resp2.Release()
+
+		assert.Equal(t, int32(1), upstreamRequestCount.Load(), "post-burst request inside window should be coalesced")
+
+		time.Sleep(networkPostCompletionCoalescingWindow + 30*time.Millisecond)
+
+		req3 := common.NewNormalizedRequest(requestBody)
+		resp3, err := network.Forward(ctx, req3)
+		require.NoError(t, err)
+		require.NotNil(t, resp3)
+		resp3.Release()
+
+		assert.Equal(t, int32(2), upstreamRequestCount.Load(), "request after window should hit upstream again")
+	})
+
 	t.Run("SlowUpstream_FollowersWaitAndReceive", func(t *testing.T) {
 		// Test with a slower upstream to ensure followers wait properly
 		util.ResetGock()

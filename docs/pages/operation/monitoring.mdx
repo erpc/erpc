@@ -123,6 +123,9 @@ Here is a list of some of the most important metrics:
 | erpc_network_successful_request_total | Counter | Total number of successful network requests. |
 | erpc_network_failed_request_total | Counter | Total number of failed network requests. |
 | erpc_network_multiplexed_request_total | Counter | Total number of requests served via multiplexing follower path. |
+| erpc_network_burst_coalesced_request_total | Counter | Requests served from short post-completion burst coalescing window. |
+| erpc_network_deterministic_negative_cache_set_total | Counter | Deterministic negative-cache writes for read requests. |
+| erpc_network_deterministic_negative_cache_hit_total | Counter | Deterministic negative-cache hits that avoided upstream calls. |
 | erpc_network_request_duration_seconds | Histogram | End-to-end network request duration. |
 | erpc_network_upstream_calls_per_request | Histogram | Upstream amplification per network request (how many upstream calls each request triggered). |
 | erpc_network_attempt_reason_total | Counter | Non-baseline attempt causes (`retry`, `hedge`, `consensus`, `batch_fallback`, `fail_open`, `fire_and_forget`). |
@@ -199,6 +202,13 @@ sum(rate(erpc_network_attempt_reason_total{reason="retry"}[5m])) by (category,va
 sum(rate(erpc_network_hedge_won_total{}[5m])) by (network)
 sum(rate(erpc_network_hedge_lost_total{}[5m])) by (network)
 sum(rate(erpc_network_hedge_discard_total{}[5m])) by (network)
+
+# Burst coalescing effectiveness by network
+sum(rate(erpc_network_burst_coalesced_request_total{}[5m])) by (network)
+
+# Deterministic negative-cache hit ratio by network
+sum(rate(erpc_network_deterministic_negative_cache_hit_total{}[5m])) by (network) /
+clamp_min(sum(rate(erpc_network_deterministic_negative_cache_set_total{}[5m])) by (network), 1)
 
 # Local (non-remote) rate-limiting events by project/network
 sum(rate(erpc_rate_limits_total{scope!="remote"}[5m])) by (project,network)

@@ -27,7 +27,11 @@ import (
 
 var networkCacheHitLogSampler = &zerolog.BasicSampler{N: 100}
 
-const maxConcurrentNetworkCacheWrites = 100
+const (
+	maxConcurrentNetworkCacheWrites       = 100
+	networkPostCompletionCoalescingWindow = 40 * time.Millisecond
+	networkDeterministicNegativeCacheTTL  = 200 * time.Millisecond
+)
 
 type FailsafeExecutor struct {
 	method                 string
@@ -113,6 +117,30 @@ type Network struct {
 	getSortedUpstreamsFn     getSortedUpstreamsForNetworkFn
 	cacheWriteSem            chan struct{}
 	cacheWriteSemInit        sync.Once
+	negativeResultCache      *sync.Map
+	postCompletionResults    *sync.Map
+}
+
+type deterministicNegativeCacheEntry struct {
+	err       error
+	expiresAt int64
+}
+
+type postCompletionResultEntry struct {
+	resp      *common.NormalizedResponse
+	expiresAt int64
+	released  int32
+}
+
+func (e *postCompletionResultEntry) release() {
+	if e == nil {
+		return
+	}
+	if atomic.CompareAndSwapInt32(&e.released, 0, 1) {
+		if e.resp != nil {
+			e.resp.Release()
+		}
+	}
 }
 
 type skipNetworkRateLimitKey struct{}
@@ -435,6 +463,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
+
+	if negErr, negHit := n.loadDeterministicNegativeCache(ctx, req, method); negHit {
+		if mlx != nil {
+			mlx.Close(ctx, nil, negErr)
+		}
+		forwardSpan.SetAttributes(attribute.Bool("negative_cache.hit", true))
+		common.SetTraceSpanError(forwardSpan, negErr)
+		return nil, negErr
+	}
+	forwardSpan.SetAttributes(attribute.Bool("negative_cache.hit", false))
 
 	// Get failsafe executor first to know if we need to filter upstreams by group
 	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
@@ -916,6 +954,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// For example if 1 upstream gives empty response another 3 give "reverted" error,
 		// we should still return reverted error, even though there was an empty response before.
 		if failsafeExecutor.consensusPolicyEnabled {
+			n.storeDeterministicNegativeCache(ctx, req, method, translatedErr)
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
@@ -940,6 +979,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			resp = lvr
 			req.SetLastUpstream(resp.Upstream())
 		} else {
+			n.storeDeterministicNegativeCache(ctx, req, method, translatedErr)
 			if mlx != nil {
 				mlx.Close(ctx, nil, translatedErr)
 			}
@@ -1086,6 +1126,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			return true
 		})
+	}
+
+	if resp != nil && !isEmpty && mlx != nil && atomic.LoadInt32(&mlx.followerCount) > 0 {
+		n.storePostCompletionCoalescedResult(ctx, req, method, resp)
 	}
 
 	if mlx != nil {
@@ -1470,6 +1514,12 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		lg.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
 		return nil, nil, nil
 	}
+	method, _ := req.Method()
+
+	if resp, hit := n.loadPostCompletionCoalescedResult(ctx, req, method, mlxHash); hit {
+		lg.Trace().Str("hash", mlxHash).Object("response", resp).Msgf("served from post-completion coalescing window")
+		return nil, resp, nil
+	}
 
 	// Try to atomically register as the leader or become a follower.
 	// Loop handles the edge case where we find a closed multiplexer during cleanup.
@@ -1496,9 +1546,9 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		}
 
 		inf.copyWg.Add(1)
+		atomic.AddInt32(&inf.followerCount, 1)
 		inf.mu.Unlock()
 
-		method, _ := req.Method()
 		finality := req.Finality(ctx)
 		telemetry.CounterHandle(telemetry.MetricNetworkMultiplexedRequests,
 			n.projectId, n.Label(), method, finality.String(), req.UserId(), req.AgentName(),
@@ -1558,6 +1608,110 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	}
 }
 
+func (n *Network) loadPostCompletionCoalescedResult(ctx context.Context, req *common.NormalizedRequest, method, hash string) (*common.NormalizedResponse, bool) {
+	if n == nil || n.postCompletionResults == nil || hash == "" {
+		return nil, false
+	}
+	if !n.shouldUsePostCompletionCoalescing(ctx, req, method) {
+		return nil, false
+	}
+
+	raw, ok := n.postCompletionResults.Load(hash)
+	if !ok {
+		return nil, false
+	}
+	entry, ok := raw.(*postCompletionResultEntry)
+	if !ok || entry == nil || entry.resp == nil {
+		n.postCompletionResults.Delete(hash)
+		if entry != nil {
+			entry.release()
+		}
+		return nil, false
+	}
+	if time.Now().UnixNano() > atomic.LoadInt64(&entry.expiresAt) {
+		n.postCompletionResults.Delete(hash)
+		entry.release()
+		return nil, false
+	}
+
+	entry.resp.AddRef()
+	defer entry.resp.DoneRef()
+
+	out, err := common.CopyResponseForRequest(ctx, entry.resp, req)
+	if err != nil {
+		n.postCompletionResults.Delete(hash)
+		entry.release()
+		return nil, false
+	}
+	if out == nil {
+		return nil, false
+	}
+
+	finality := req.Finality(ctx)
+	telemetry.CounterHandle(telemetry.MetricNetworkMultiplexedRequests,
+		n.projectId, n.Label(), method, finality.String(), req.UserId(), req.AgentName(),
+	).Inc()
+	telemetry.CounterHandle(telemetry.MetricNetworkBurstCoalescedRequests,
+		n.projectId, n.Label(), method, finality.String(), req.UserId(), req.AgentName(),
+	).Inc()
+
+	return out, true
+}
+
+func (n *Network) storePostCompletionCoalescedResult(ctx context.Context, req *common.NormalizedRequest, method string, resp *common.NormalizedResponse) {
+	if n == nil || n.postCompletionResults == nil || resp == nil {
+		return
+	}
+	if !n.shouldUsePostCompletionCoalescing(ctx, req, method) {
+		return
+	}
+	hash, err := req.CacheHash(ctx)
+	if err != nil || hash == "" {
+		return
+	}
+
+	stagedResp, copyErr := common.CopyResponseForRequest(ctx, resp, req)
+	if copyErr != nil || stagedResp == nil {
+		return
+	}
+
+	entry := &postCompletionResultEntry{
+		resp:      stagedResp,
+		expiresAt: time.Now().Add(networkPostCompletionCoalescingWindow).UnixNano(),
+	}
+
+	previous, loaded := n.postCompletionResults.Swap(hash, entry)
+	if loaded {
+		if oldEntry, ok := previous.(*postCompletionResultEntry); ok {
+			oldEntry.release()
+		}
+	}
+
+	time.AfterFunc(networkPostCompletionCoalescingWindow, func() {
+		raw, ok := n.postCompletionResults.Load(hash)
+		if ok && raw == entry {
+			n.postCompletionResults.Delete(hash)
+			entry.release()
+		}
+	})
+}
+
+func (n *Network) shouldUsePostCompletionCoalescing(ctx context.Context, req *common.NormalizedRequest, method string) bool {
+	if req == nil || method == "" {
+		return false
+	}
+	if !isReadMethodEligibleForNegativeCache(method) {
+		return false
+	}
+	if isNonceSensitiveReadMethod(method) {
+		return false
+	}
+	if hasPendingBlockReference(ctx, req) {
+		return false
+	}
+	return true
+}
+
 func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	// Mark as closed under lock to prevent new followers from registering
 	mlx.mu.Lock()
@@ -1579,7 +1733,161 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 	// caller will release it after writing the response. Releasing here would
 	// clear the JsonRpcResponse and break the leader response path.
 	mlx.resp = nil
+	mlx.err = nil
 	mlx.mu.Unlock()
+}
+
+func (n *Network) loadDeterministicNegativeCache(ctx context.Context, req *common.NormalizedRequest, method string) (error, bool) {
+	if n == nil || n.negativeResultCache == nil {
+		return nil, false
+	}
+	if !n.shouldUseDeterministicNegativeCache(ctx, req, method) {
+		return nil, false
+	}
+
+	key, ok := n.deterministicNegativeCacheKey(ctx, req, method)
+	if !ok {
+		return nil, false
+	}
+
+	raw, ok := n.negativeResultCache.Load(key)
+	if !ok {
+		return nil, false
+	}
+	entry, ok := raw.(*deterministicNegativeCacheEntry)
+	if !ok || entry == nil || entry.err == nil {
+		n.negativeResultCache.Delete(key)
+		return nil, false
+	}
+	if time.Now().UnixNano() > atomic.LoadInt64(&entry.expiresAt) {
+		n.negativeResultCache.Delete(key)
+		return nil, false
+	}
+
+	finality := req.Finality(ctx)
+	telemetry.CounterHandle(telemetry.MetricNetworkDeterministicNegativeCacheHitTotal,
+		n.projectId, n.Label(), method, finality.String(), req.UserId(), req.AgentName(),
+	).Inc()
+
+	return entry.err, true
+}
+
+func (n *Network) storeDeterministicNegativeCache(ctx context.Context, req *common.NormalizedRequest, method string, err error) {
+	if n == nil || n.negativeResultCache == nil || err == nil {
+		return
+	}
+	if !n.shouldUseDeterministicNegativeCache(ctx, req, method) {
+		return
+	}
+	if !shouldStoreDeterministicNegativeError(err) {
+		return
+	}
+
+	key, ok := n.deterministicNegativeCacheKey(ctx, req, method)
+	if !ok {
+		return
+	}
+
+	now := time.Now()
+	entry := &deterministicNegativeCacheEntry{
+		err:       err,
+		expiresAt: now.Add(networkDeterministicNegativeCacheTTL).UnixNano(),
+	}
+	n.negativeResultCache.Store(key, entry)
+
+	finality := req.Finality(ctx)
+	telemetry.CounterHandle(telemetry.MetricNetworkDeterministicNegativeCacheSetTotal,
+		n.projectId, n.Label(), method, finality.String(), req.UserId(), req.AgentName(),
+	).Inc()
+
+	time.AfterFunc(networkDeterministicNegativeCacheTTL, func() {
+		raw, ok := n.negativeResultCache.Load(key)
+		if ok && raw == entry {
+			n.negativeResultCache.Delete(key)
+		}
+	})
+}
+
+func (n *Network) deterministicNegativeCacheKey(ctx context.Context, req *common.NormalizedRequest, method string) (string, bool) {
+	hash, err := req.CacheHash(ctx)
+	if err != nil || hash == "" {
+		return "", false
+	}
+	finality := req.Finality(ctx)
+	return fmt.Sprintf("%s|%s|%s", method, finality.String(), hash), true
+}
+
+func (n *Network) shouldUseDeterministicNegativeCache(ctx context.Context, req *common.NormalizedRequest, method string) bool {
+	if req == nil || method == "" {
+		return false
+	}
+	if req.SkipCacheRead() {
+		return false
+	}
+	if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
+		return false
+	}
+	if !isReadMethodEligibleForNegativeCache(method) {
+		return false
+	}
+	if n != nil && n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
+		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.Stateful {
+			return false
+		}
+	}
+	if isNonceSensitiveReadMethod(method) {
+		return false
+	}
+	if hasPendingBlockReference(ctx, req) {
+		return false
+	}
+
+	finality := req.Finality(ctx)
+	return finality == common.DataFinalityStateFinalized
+}
+
+func hasPendingBlockReference(ctx context.Context, req *common.NormalizedRequest) bool {
+	if req == nil {
+		return false
+	}
+	if br := req.EvmBlockRef(); br != nil {
+		if s, ok := br.(string); ok && strings.EqualFold(s, "pending") {
+			return true
+		}
+	}
+	ref, _, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
+	return err == nil && strings.EqualFold(ref, "pending")
+}
+
+func shouldStoreDeterministicNegativeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if common.IsRetryableTowardNetwork(err) {
+		return false
+	}
+	return common.IsClientError(err) ||
+		common.HasErrorCode(err, common.ErrCodeEndpointExecutionException, common.ErrCodeEndpointUnsupported)
+}
+
+func isReadMethodEligibleForNegativeCache(method string) bool {
+	if method == "" {
+		return false
+	}
+	if evm.IsNonRetryableWriteMethod(method) || method == "eth_sendRawTransaction" {
+		return false
+	}
+	if strings.HasPrefix(method, "eth_send") ||
+		strings.HasPrefix(method, "engine_") ||
+		strings.HasPrefix(method, "personal_") ||
+		strings.HasPrefix(method, "wallet_") {
+		return false
+	}
+	return true
+}
+
+func isNonceSensitiveReadMethod(method string) bool {
+	return method == "eth_getTransactionCount" || strings.HasPrefix(method, "txpool_")
 }
 
 func (n *Network) shouldHandleMethod(req *common.NormalizedRequest, method string, upsList []common.Upstream) error {
