@@ -968,4 +968,137 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		d := tracker.GetNetworkBlockTime(networkId)
 		assert.Less(t, d.Seconds(), 6.0, "EMA should converge toward 2s after many samples")
 	})
+
+	t.Run("ConcurrentGoroutinesSafety", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.Bootstrap(context.Background())
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// Seed reference
+		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
+
+		// Blast updates from multiple goroutines — should not panic or race
+		var wg sync.WaitGroup
+		for g := 0; g < 10; g++ {
+			wg.Add(1)
+			go func(offset int64) {
+				defer wg.Done()
+				for i := int64(1); i <= 20; i++ {
+					block := 1000 + offset*20 + i
+					ts := int64(1700000000) + block*2
+					tracker.SetLatestBlockNumber(ups, block, ts)
+				}
+			}(int64(g))
+		}
+		wg.Wait()
+
+		// After 200 updates across goroutines, EMA should be non-zero
+		// (enough samples to pass minSamples=10)
+		d := tracker.GetNetworkBlockTime(networkId)
+		assert.Greater(t, d, time.Duration(0), "EMA should be set after concurrent updates")
+		assert.Less(t, d.Seconds(), 120.0, "EMA should be within sane bounds")
+	})
+
+	t.Run("OutOfOrderBlocksIgnored", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		baseBlock := int64(1000)
+		baseTs := int64(1700000000)
+		tracker.SetLatestBlockNumber(ups, baseBlock, baseTs)
+
+		// Feed 15 normal 12s samples to establish EMA
+		for i := int64(1); i <= 15; i++ {
+			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTs+i*12)
+		}
+
+		emaBefore := tracker.GetNetworkBlockTime(networkId)
+		assert.InDelta(t, 12.0, emaBefore.Seconds(), 0.5)
+
+		// Send stale out-of-order block (block 1005 which is < current ref 1015)
+		tracker.SetLatestBlockNumber(ups, 1005, baseTs+5*12)
+
+		emaAfter := tracker.GetNetworkBlockTime(networkId)
+		assert.Equal(t, emaBefore, emaAfter, "out-of-order block should not change EMA")
+	})
+
+	t.Run("BackwardsTimestampSkipped", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		baseBlock := int64(1000)
+		baseTs := int64(1700000000)
+		tracker.SetLatestBlockNumber(ups, baseBlock, baseTs)
+
+		// Feed 15 normal 2s samples
+		for i := int64(1); i <= 15; i++ {
+			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTs+i*2)
+		}
+
+		emaBefore := tracker.GetNetworkBlockTime(networkId)
+		assert.InDelta(t, 2.0, emaBefore.Seconds(), 0.2)
+
+		// Send block with backwards timestamp (higher block, earlier timestamp)
+		tracker.SetLatestBlockNumber(ups, baseBlock+16, baseTs) // timestamp same as base = timeDiff <=0
+
+		emaAfter := tracker.GetNetworkBlockTime(networkId)
+		assert.Equal(t, emaBefore, emaAfter, "backwards timestamp should not change EMA")
+
+		// But the reference should NOT advance (timeDiff <= 0 returns early),
+		// so the next valid block should still produce a sane sample
+		tracker.SetLatestBlockNumber(ups, baseBlock+17, baseTs+15*2+2+2) // continues from ref at block 1015
+		emaStillSane := tracker.GetNetworkBlockTime(networkId)
+		assert.InDelta(t, 2.0, emaStillSane.Seconds(), 0.5, "EMA should remain sane after skipped bad timestamp")
+	})
+
+	t.Run("LargeBlockGapNormalizesPerBlock", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		// Seed reference
+		tracker.SetLatestBlockNumber(ups, 1000, 1700000000)
+
+		// Jump 100 blocks in 200s → per-block time = 2s (within bounds)
+		tracker.SetLatestBlockNumber(ups, 1100, 1700000200)
+
+		// Continue with normal 2s blocks to fill minSamples
+		for i := int64(1); i <= 15; i++ {
+			tracker.SetLatestBlockNumber(ups, 1100+i, 1700000200+i*2)
+		}
+
+		d := tracker.GetNetworkBlockTime(networkId)
+		assert.InDelta(t, 2.0, d.Seconds(), 0.2, "large block gap should normalize to per-block time")
+	})
+
+	t.Run("ExactlyMinSamplesThreshold", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+
+		ups := common.NewFakeUpstream("ups1")
+		networkId := ups.NetworkId()
+
+		baseBlock := int64(1000)
+		baseTs := int64(1700000000)
+		tracker.SetLatestBlockNumber(ups, baseBlock, baseTs)
+
+		// Feed exactly minSamples-1 = 9 samples — should return 0
+		for i := int64(1); i <= 9; i++ {
+			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTs+i*3)
+		}
+		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId),
+			"at minSamples-1 should still return 0")
+
+		// The 10th sample crosses the threshold — should return non-zero
+		tracker.SetLatestBlockNumber(ups, baseBlock+10, baseTs+10*3)
+		d := tracker.GetNetworkBlockTime(networkId)
+		assert.Greater(t, d, time.Duration(0), "at exactly minSamples should return non-zero EMA")
+		assert.InDelta(t, 3.0, d.Seconds(), 0.3, "EMA should reflect 3s block time")
+	})
 }
