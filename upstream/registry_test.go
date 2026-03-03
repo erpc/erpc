@@ -532,6 +532,138 @@ func TestUpstreamsRegistry_RoundRobinStrategy(t *testing.T) {
 	assert.Len(t, seen, 3, "Round-robin should rotate through all upstreams")
 }
 
+func TestUpstreamsRegistry_LatencyAwareStrategy(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 5*time.Second, &ScoringConfig{
+		RoutingStrategy:   "latency-aware",
+		ScoreGranularity:  "method",
+		SwitchHysteresis:  -1,
+		MinSwitchInterval: -1,
+	})
+
+	method := "eth_call"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+
+	simulateRequestsWithLatency(metricsTracker, ups[0], method, 20, 0.020)
+	simulateRequestsWithLatency(metricsTracker, ups[1], method, 20, 0.350)
+	simulateRequestsWithLatency(metricsTracker, ups[2], method, 20, 0.120)
+
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.Len(t, ordered, 3)
+	assert.Equal(t, "rpc1", ordered[0].Id())
+	assert.Equal(t, "rpc3", ordered[1].Id())
+	assert.Equal(t, "rpc2", ordered[2].Id())
+}
+
+func TestUpstreamsRegistry_CostAwareStrategy(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 5*time.Second, &ScoringConfig{
+		RoutingStrategy:   "cost-aware",
+		ScoreGranularity:  "method",
+		SwitchHysteresis:  -1,
+		MinSwitchInterval: -1,
+	})
+
+	method := "eth_getLogs"
+	networkID := "evm:123"
+	l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(l, "rpc1", "rpc2", "rpc3")
+
+	// Similar latency profile; throttled rate should drive ordering.
+	simulateRequestsWithLatency(metricsTracker, ups[0], method, 20, 0.060)
+	simulateRequestsWithLatency(metricsTracker, ups[1], method, 20, 0.060)
+	simulateRequestsWithLatency(metricsTracker, ups[2], method, 20, 0.060)
+	simulateRequestsWithRateLimiting(metricsTracker, ups[0], method, 20, 1)
+	simulateRequestsWithRateLimiting(metricsTracker, ups[1], method, 20, 8)
+	simulateRequestsWithRateLimiting(metricsTracker, ups[2], method, 20, 0)
+
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.Len(t, ordered, 3)
+	assert.Equal(t, "rpc3", ordered[0].Id(), "lowest throttled pressure should be preferred")
+	assert.Equal(t, "rpc1", ordered[1].Id(), "medium throttled pressure should be second")
+	assert.Equal(t, "rpc2", ordered[2].Id(), "highest throttled pressure should be last")
+}
+
+func TestUpstreamsRegistry_RendezvousStrategyDeterministicDistribution(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+
+	registry, _ := createTestRegistry(ctx, "test-project", &logger, 5*time.Second, &ScoringConfig{
+		RoutingStrategy:  "rendezvous",
+		ScoreGranularity: "method",
+	})
+
+	networkID := "evm:123"
+	methods := []string{
+		"eth_call",
+		"eth_getBalance",
+		"eth_getLogs",
+		"eth_getBlockByNumber",
+		"eth_getTransactionByHash",
+		"eth_blockNumber",
+		"net_version",
+		"web3_clientVersion",
+		"eth_feeHistory",
+		"eth_chainId",
+		"eth_gasPrice",
+		"trace_block",
+	}
+
+	for _, method := range methods {
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+	}
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	firstByMethod := make(map[string]string, len(methods))
+	uniquePrimaries := map[string]struct{}{}
+	for _, method := range methods {
+		ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		require.NoError(t, err)
+		require.NotEmpty(t, ordered)
+		firstByMethod[method] = ordered[0].Id()
+		uniquePrimaries[ordered[0].Id()] = struct{}{}
+	}
+	assert.GreaterOrEqual(t, len(uniquePrimaries), 2, "rendezvous should distribute primaries across methods")
+
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+	for _, method := range methods {
+		ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		require.NoError(t, err)
+		require.NotEmpty(t, ordered)
+		assert.Equal(t, firstByMethod[method], ordered[0].Id(), "rendezvous ordering should be stable for method")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Edge Cases
 // ---------------------------------------------------------------------------

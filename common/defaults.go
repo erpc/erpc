@@ -570,6 +570,13 @@ func (m *MethodsConfig) SetDefaults() error {
 		}
 	}
 
+	for _, methodCfg := range m.Definitions {
+		if methodCfg == nil {
+			continue
+		}
+		methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
+	}
+
 	return nil
 }
 
@@ -1474,6 +1481,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if u.Group == "" {
 		u.Group = defaults.Group
 	}
+	if u.Capabilities == nil && defaults.Capabilities != nil {
+		u.Capabilities = append([]string{}, defaults.Capabilities...)
+	}
 	if u.Failsafe == nil && defaults.Failsafe != nil {
 		u.Failsafe = defaults.Failsafe
 	}
@@ -1666,6 +1676,7 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 			u.IgnoreMethods = []string{"*"}
 		}
 	}
+	u.Capabilities = NormalizeCapabilityTags(u.Capabilities)
 
 	return nil
 }
