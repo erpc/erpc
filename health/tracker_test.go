@@ -444,6 +444,74 @@ func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
 	assert.Equal(t, int64(0), metrics2Updated.FinalizationLag.Load(), "upstream2 should now be caught up in finalization")
 }
 
+func TestCordonStatePersistsAcrossResetWindows(t *testing.T) {
+	projectID := "test-project"
+	windowSize := 100 * time.Millisecond
+
+	tracker := NewTracker(&log.Logger, projectID, windowSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups := common.NewFakeUpstream("upstream-cordoned")
+	method := "eth_call"
+
+	// Ensure metrics bucket exists.
+	tracker.RecordUpstreamRequest(ups, method)
+	tracker.Cordon(ups, "*", "test-cordon")
+	assert.True(t, tracker.IsCordoned(ups, method), "upstream should be cordoned before reset")
+
+	time.Sleep(windowSize + 50*time.Millisecond)
+
+	assert.True(t, tracker.IsCordoned(ups, method), "cordon state must persist across window reset")
+
+	tracker.Uncordon(ups, "*", "test-uncordon")
+	assert.False(t, tracker.IsCordoned(ups, method), "upstream should be uncordoned explicitly")
+}
+
+func TestBlockHeadLagRollbackHysteresisConverges(t *testing.T) {
+	projectID := "test-project"
+	windowSize := 100 * time.Millisecond
+
+	tracker := NewTracker(&log.Logger, projectID, windowSize)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups1 := common.NewFakeUpstream("upstream-hysteresis-1")
+	ups2 := common.NewFakeUpstream("upstream-hysteresis-2")
+
+	// Ensure method buckets exist.
+	tracker.RecordUpstreamRequest(ups1, "method1")
+	tracker.RecordUpstreamRequest(ups2, "method1")
+
+	// Initial head: ups1=1000, ups2=999.
+	tracker.SetLatestBlockNumber(ups1, 1000, 0)
+	tracker.SetLatestBlockNumber(ups2, 999, 0)
+
+	metrics1 := tracker.GetUpstreamMethodMetrics(ups1, "method1")
+	metrics2 := tracker.GetUpstreamMethodMetrics(ups2, "method1")
+	assert.Equal(t, int64(0), metrics1.BlockHeadLag.Load())
+	assert.Equal(t, int64(1), metrics2.BlockHeadLag.Load())
+
+	// Small rollback (1 block) on both upstreams:
+	// first observation should be held by hysteresis.
+	tracker.SetLatestBlockNumber(ups1, 999, 0)
+	assert.Equal(t, int64(1), metrics1.BlockHeadLag.Load(), "first small rollback should be held by hysteresis")
+
+	// Second consistent observation confirms rollback and converges.
+	tracker.SetLatestBlockNumber(ups2, 998, 0)
+	assert.Equal(t, int64(0), metrics1.BlockHeadLag.Load(), "lag should converge after hysteresis confirmation")
+	assert.Equal(t, int64(1), metrics2.BlockHeadLag.Load(), "second upstream should remain one block behind")
+
+	// Large rollback should apply immediately once observed.
+	tracker.SetLatestBlockNumber(ups1, 900, 0)
+	tracker.SetLatestBlockNumber(ups2, 899, 0)
+	assert.Equal(t, int64(0), metrics1.BlockHeadLag.Load(), "leader lag should remain zero after large rollback")
+	assert.Equal(t, int64(1), metrics2.BlockHeadLag.Load(), "follower lag should be recomputed after large rollback")
+}
+
 func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 	t.Run("SetsTimestampAndRecordsDistance", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
