@@ -108,6 +108,8 @@ type ServerConfig struct {
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
 	ForwardHeaders      []string          `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
+	IgnoreMethods       []string          `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
+	AllowMethods        []string          `yaml:"allowMethods,omitempty" json:"allowMethods"`
 }
 
 type HealthCheckConfig struct {
