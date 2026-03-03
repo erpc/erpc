@@ -95,6 +95,18 @@ var (
 		Help:      "Whether upstream is un/cordoned (excluded from routing by selection policy).",
 	}, []string{"project", "vendor", "network", "upstream", "category", "reason"})
 
+	MetricUpstreamBrownoutState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_brownout_state",
+		Help:      "Temporary upstream brownout phase (closed or half_open) triggered by sustained remote rate limiting.",
+	}, []string{"project", "vendor", "network", "upstream", "phase"})
+
+	MetricUpstreamBrownoutTransitionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_brownout_transition_total",
+		Help:      "Total number of upstream brownout phase transitions.",
+	}, []string{"project", "vendor", "network", "upstream", "from_phase", "to_phase", "reason"})
+
 	MetricUpstreamStaleLatestBlock = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_stale_latest_block_total",

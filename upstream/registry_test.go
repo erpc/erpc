@@ -37,6 +37,15 @@ func getUpsByID(upsList []common.Upstream, ids ...string) []common.Upstream {
 	return ups
 }
 
+func hasUpstreamID(upsList []common.Upstream, id string) bool {
+	for _, ups := range upsList {
+		if ups.Id() == id {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Penalty Dimension Tests: each test isolates one penalty component
 // ---------------------------------------------------------------------------
@@ -208,6 +217,98 @@ func TestUpstreamsRegistry_ThrottlingOrdering(t *testing.T) {
 	}
 	assert.Less(t, i3, i2, "less throttled should rank before more throttled")
 	assert.Less(t, i2, i1, "medium throttled should rank before heavily throttled")
+}
+
+func TestUpstreamsRegistry_BrownoutStateMachine(t *testing.T) {
+	t.Setenv("ERPC_BROWNOUT_ENABLED", "true")
+	t.Setenv("ERPC_BROWNOUT_MIN_REQUESTS", "10")
+	t.Setenv("ERPC_BROWNOUT_MIN_REMOTE_RATE_LIMITED", "5")
+	t.Setenv("ERPC_BROWNOUT_THROTTLED_RATE_THRESHOLD", "0.5")
+	t.Setenv("ERPC_BROWNOUT_COOLDOWN", "80ms")
+	t.Setenv("ERPC_BROWNOUT_HALF_OPEN_DURATION", "80ms")
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	initial, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(initial, "rpc1", "rpc2", "rpc3")
+	require.Len(t, ups, 3)
+
+	// Trigger brownout for rpc1.
+	simulateRequestsWithRateLimiting(metricsTracker, ups[0], "*", 20, 16)
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	closed, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	assert.False(t, hasUpstreamID(closed, "rpc1"), "brownout-closed upstream should be excluded from routing")
+
+	// Cooldown elapsed -> half-open should include rpc1 again.
+	require.Eventually(t, func() bool {
+		if err := registry.RefreshUpstreamNetworkMethodScores(); err != nil {
+			return false
+		}
+		halfOpen, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		if err != nil {
+			return false
+		}
+		return hasUpstreamID(halfOpen, "rpc1")
+	}, 700*time.Millisecond, 25*time.Millisecond, "half-open upstream should rejoin routing for recovery probe")
+
+	// During half-open, sustained rate limiting should re-close rpc1.
+	simulateRequestsWithRateLimiting(metricsTracker, ups[0], "*", 12, 9)
+	require.Eventually(t, func() bool {
+		if err := registry.RefreshUpstreamNetworkMethodScores(); err != nil {
+			return false
+		}
+		reclosed, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		if err != nil {
+			return false
+		}
+		return !hasUpstreamID(reclosed, "rpc1")
+	}, 300*time.Millisecond, 20*time.Millisecond, "failed half-open should move upstream back to brownout-closed")
+}
+
+func TestUpstreamsRegistry_BrownoutFailOpenWhenAllWouldBeExcluded(t *testing.T) {
+	t.Setenv("ERPC_BROWNOUT_ENABLED", "true")
+	t.Setenv("ERPC_BROWNOUT_MIN_REQUESTS", "10")
+	t.Setenv("ERPC_BROWNOUT_MIN_REMOTE_RATE_LIMITED", "5")
+	t.Setenv("ERPC_BROWNOUT_THROTTLED_RATE_THRESHOLD", "0.5")
+	t.Setenv("ERPC_BROWNOUT_COOLDOWN", "100ms")
+	t.Setenv("ERPC_BROWNOUT_HALF_OPEN_DURATION", "100ms")
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	initial, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(initial, "rpc1", "rpc2", "rpc3")
+	require.Len(t, ups, 3)
+
+	for _, up := range ups {
+		simulateRequestsWithRateLimiting(metricsTracker, up, "*", 20, 16)
+	}
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+	require.NoError(t, err)
+	require.NotEmpty(t, ordered, "brownout fail-open should keep at least one upstream routable")
 }
 
 func TestUpstreamsRegistry_MixedLatencyAndErrors(t *testing.T) {

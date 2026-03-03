@@ -132,6 +132,8 @@ Here is a list of some of the most important metrics:
 | erpc_network_hedge_won_total | Counter | Requests where a hedged attempt won the race. |
 | erpc_network_hedge_lost_total | Counter | Requests where the primary attempt won despite active hedges. |
 | erpc_network_hedge_discard_total | Counter | Hedged attempts discarded because another in-flight attempt won. |
+| erpc_upstream_brownout_state | Gauge | Brownout phase (`closed` / `half_open`) for upstreams temporarily sidelined after sustained remote 429/capacity pressure. |
+| erpc_upstream_brownout_transition_total | Counter | Brownout phase transitions (`open->closed`, `closed->half_open`, `half_open->open`, `half_open->closed`). |
 | erpc_http_ingress_inflight | Gauge | Inflight HTTP ingress request count by route/method. |
 | erpc_http_ingress_pre_forward_duration_seconds | Histogram | Time spent in ingress before forwarding/dispatch. |
 | erpc_rate_limits_total | Counter | Unified rate-limit events (remote + local decisions). |
@@ -219,6 +221,12 @@ sum(rate(erpc_rate_limits_total{origin="auth"}[5m])) by (project,auth)
 # Remote rate limiting from upstreams
 sum(rate(erpc_rate_limits_total{scope="remote"}[5m])) by (upstream)
 
+# Brownout-closed upstreams by network
+sum(erpc_upstream_brownout_state{phase="closed"}) by (project,network)
+
+# Brownout transitions by destination phase/reason
+sum(rate(erpc_upstream_brownout_transition_total[5m])) by (project,network,to_phase,reason)
+
 # Block lag by network and upstream
 max(erpc_upstream_block_head_lag) by (network,upstream)
 
@@ -247,4 +255,26 @@ erpc_network_latest_block_timestamp_distance_seconds{network=~"${network:regex}"
 
 # Alert if block timestamp is too far behind (> 30 seconds)
 erpc_network_latest_block_timestamp_distance_seconds > 30
+```
+
+#### 429 incident runbook snippet
+
+Use this quick sequence during sustained upstream 429/capacity incidents:
+
+1. Confirm pressure source:
+
+```promql
+sum(rate(erpc_rate_limits_total{scope="remote"}[5m])) by (project,network,upstream)
+```
+
+2. Confirm brownout containment is active:
+
+```promql
+sum(erpc_upstream_brownout_state{phase="closed"}) by (project,network,upstream)
+```
+
+3. Confirm half-open recovery quality:
+
+```promql
+sum(rate(erpc_upstream_brownout_transition_total{from_phase="half_open"}[5m])) by (project,network,to_phase,reason)
 ```
