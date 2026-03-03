@@ -438,6 +438,20 @@ var (
 		Buckets:   prometheus.LinearBuckets(1, 1, 10),
 	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality"})
 
+	MetricConsensusParticipantsStarted = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "consensus_participants_started",
+		Help:      "Number of upstream participants started for each consensus round.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10),
+	}, []string{"project", "network", "category", "finality"})
+
+	MetricConsensusParticipantsUsed = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "consensus_participants_used",
+		Help:      "Number of participant responses used to decide each consensus round.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10),
+	}, []string{"project", "network", "category", "finality"})
+
 	MetricConsensusAgreementCount = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "consensus_agreement_count",

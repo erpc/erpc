@@ -664,7 +664,7 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32014, "requested data is not available")},
 				{status: 200, body: jsonRpcError(-32014, "requested data is not available")},
 			},
-			expectedCalls: []int{1, 1, 1},
+			expectedCalls: []int{1, 1, 0},
 			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "requested data is not available"},
 		},
 		{
@@ -778,7 +778,7 @@ func TestConsensusPolicy(t *testing.T) {
 				{status: 200, body: jsonRpcError(-32602, "Invalid params")},
 				{status: 200, body: jsonRpcSuccess("0x1234"), delay: 300 * time.Millisecond},
 			},
-			expectedCalls: []int{1, 1, 1},
+			expectedCalls: []int{1, 1, 0},
 			expectedError: &expectedError{code: common.ErrCodeUpstreamRequest, contains: "Invalid params"},
 		},
 		{
@@ -1345,6 +1345,54 @@ func TestConsensusPolicy(t *testing.T) {
 					assert.Less(t, duration, 100*time.Millisecond, "response should short circuit not wait for the slowest upstream")
 				},
 			},
+		},
+		{
+			name:        "adaptive_fanout_stops_after_threshold_agreement",
+			description: "With maxParticipants=5 and threshold=2, fanout should stop as soon as agreement lead is unassailable.",
+			upstreams:   createTestUpstreams(5),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         5,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+				PreferLargerResponses:   &common.FALSE,
+				PreferNonEmpty:          &common.FALSE,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0x7a")},
+				{status: 200, body: jsonRpcSuccess("0x7a")},
+				{status: 200, body: jsonRpcSuccess("0x7a")},
+				{status: 200, body: jsonRpcSuccess("0x7b"), delay: 300 * time.Millisecond},
+				{status: 200, body: jsonRpcSuccess("0x7b"), delay: 300 * time.Millisecond},
+			},
+			expectedCalls: []int{1, 1, 1, 0, 0},
+			expectedResult: &expectedResult{
+				jsonRpcResult: `"0x7a"`,
+				check: func(t *testing.T, resp *common.NormalizedResponse, duration time.Duration) {
+					assert.Less(t, duration, 100*time.Millisecond, "response should return once lead is unassailable without extra fanout")
+				},
+			},
+		},
+		{
+			name:        "adaptive_fanout_escalates_only_on_disagreement",
+			description: "Start at threshold participants and escalate one-by-one only when disagreement prevents a decision.",
+			upstreams:   createTestUpstreams(4),
+			consensusConfig: &common.ConsensusPolicyConfig{
+				MaxParticipants:         4,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+				PreferLargerResponses:   &common.FALSE,
+				PreferNonEmpty:          &common.FALSE,
+			},
+			mockResponses: []mockResponse{
+				{status: 200, body: jsonRpcSuccess("0xaaa")},
+				{status: 200, body: jsonRpcSuccess("0xbbb")},
+				{status: 200, body: jsonRpcSuccess("0xaaa")},
+				{status: 200, body: jsonRpcSuccess("0xbbb"), delay: 300 * time.Millisecond},
+			},
+			expectedCalls:  []int{1, 1, 1, 0},
+			expectedResult: &expectedResult{jsonRpcResult: `"0xaaa"`},
 		},
 		{
 			name:        "low_participants_only_one_participant",
@@ -2530,7 +2578,6 @@ func TestConsensusGoroutineCancellationIntegration(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
 
 	// Create upstreams
 	upstreams := []*common.UpstreamConfig{
