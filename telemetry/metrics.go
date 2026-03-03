@@ -284,6 +284,18 @@ var (
 		Help:      "Total number of cache set skips.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "user"})
 
+	MetricNetworkCacheWriteDroppedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_cache_write_dropped_total",
+		Help:      "Total number of network-level cache writes dropped due to backpressure.",
+	}, []string{"project", "network", "category"})
+
+	MetricNetworkCacheWriteQueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_cache_write_queue_depth",
+		Help:      "Current queue depth for network-level async cache writes.",
+	}, []string{"project", "network"})
+
 	MetricCacheEnvelopeWrapFailureTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_envelope_wrap_failure_total",

@@ -26,6 +26,8 @@ import (
 
 var networkCacheHitLogSampler = &zerolog.BasicSampler{N: 100}
 
+const maxConcurrentNetworkCacheWrites = 100
+
 type FailsafeExecutor struct {
 	method                 string
 	finalities             []common.DataFinalityState
@@ -52,6 +54,25 @@ func logCacheHit(lg *zerolog.Logger, resp *common.NormalizedResponse) {
 	sampled.Debug().Msg("response served from cache")
 }
 
+func (n *Network) getCacheWriteSem() chan struct{} {
+	n.cacheWriteSemInit.Do(func() {
+		if n.cacheWriteSem == nil {
+			n.cacheWriteSem = make(chan struct{}, maxConcurrentNetworkCacheWrites)
+		}
+	})
+	return n.cacheWriteSem
+}
+
+func (n *Network) observeCacheWriteQueueDepth(sem chan struct{}) {
+	if sem == nil {
+		return
+	}
+	telemetry.MetricNetworkCacheWriteQueueDepth.WithLabelValues(
+		n.projectId,
+		n.Label(),
+	).Set(float64(len(sem)))
+}
+
 type getSortedUpstreamsForNetworkFn func(
 	ctx context.Context,
 	registry *upstream.UpstreamsRegistry,
@@ -76,6 +97,8 @@ type Network struct {
 	selectionPolicyEvaluator *PolicyEvaluator
 	initializer              *util.Initializer
 	getSortedUpstreamsFn     getSortedUpstreamsForNetworkFn
+	cacheWriteSem            chan struct{}
+	cacheWriteSemInit        sync.Once
 }
 
 type skipNetworkRateLimitKey struct{}
@@ -898,35 +921,52 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if resp != nil {
 		if n.cacheDal != nil {
-			// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
-			// TODO For other architectures we might need a different approach
-			_, _ = resp.JsonRpcResponse(ctx)
-			resp.AddRef()
+			sem := n.getCacheWriteSem()
+			select {
+			case sem <- struct{}{}:
+				n.observeCacheWriteQueueDepth(sem)
+				// Force-materialize jrr so the goroutine reads only via atomic pointer (no locks needed).
+				// TODO For other architectures we might need a different approach
+				_, _ = resp.JsonRpcResponse(ctx)
+				resp.AddRef()
 
-			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
-				defer (func() {
-					if rec := recover(); rec != nil {
-						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-							"cache-set",
-							fmt.Sprintf("network:%s method:%s", n.networkId, method),
-							common.ErrorFingerprint(rec),
-						).Inc()
-						lg.Error().
-							Interface("panic", rec).
-							Str("stack", string(debug.Stack())).
-							Msgf("unexpected panic on cache-set")
+				go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
+					defer func() {
+						<-sem
+						n.observeCacheWriteQueueDepth(sem)
+					}()
+					defer (func() {
+						if rec := recover(); rec != nil {
+							telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+								"cache-set",
+								fmt.Sprintf("network:%s method:%s", n.networkId, method),
+								common.ErrorFingerprint(rec),
+							).Inc()
+							lg.Error().
+								Interface("panic", rec).
+								Str("stack", string(debug.Stack())).
+								Msgf("unexpected panic on cache-set")
+						}
+					})()
+					defer resp.DoneRef()
+
+					timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
+					defer timeoutCtxCancel()
+					tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
+					err := n.cacheDal.Set(tracedCtx, req, resp)
+					if err != nil {
+						lg.Warn().Err(err).Msgf("could not store response in cache")
 					}
-				})()
-				defer resp.DoneRef()
-
-				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
-				defer timeoutCtxCancel()
-				tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
-				err := n.cacheDal.Set(tracedCtx, req, resp)
-				if err != nil {
-					lg.Warn().Err(err).Msgf("could not store response in cache")
-				}
-			})(resp, forwardSpan)
+				})(resp, forwardSpan)
+			default:
+				n.observeCacheWriteQueueDepth(sem)
+				telemetry.MetricNetworkCacheWriteDroppedTotal.WithLabelValues(
+					n.projectId,
+					n.Label(),
+					method,
+				).Inc()
+				lg.Warn().Msg("skipping cache-set due to backpressure")
+			}
 		}
 
 		// Use the counters embedded earlier in the response
