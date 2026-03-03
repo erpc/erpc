@@ -46,10 +46,13 @@ projects:
           # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
           # DEFAULT: 30s.
           statePollerInterval: 30s
-          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-          statePollerDebounce: 5s
+          # (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+          # When omitted, the interval is dynamically inferred from the chain's observed block
+          # time using an EMA (exponential moving average). This skips redundant RPC calls when
+          # request traffic already keeps the block number fresh via response enrichment.
+          # Only set this if you need to override the automatic behavior.
+          # DEFAULT: dynamic (inferred from observed block time)
+          # statePollerDebounce: 2s
           # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
           # DEFAULT: archive
           nodeType: full
@@ -175,10 +178,10 @@ export default createConfig({
             // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
             // DEFAULT: 30s.
             statePollerInterval: "30s",
-            // (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-            // This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-            // DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-            statePollerDebounce: "5s",
+            // (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+            // When omitted, dynamically inferred from observed block time using an EMA.
+            // DEFAULT: dynamic (inferred from observed block time)
+            // statePollerDebounce: "2s",
             // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
             // DEFAULT: archive
             nodeType: "full",
@@ -586,10 +589,11 @@ projects:
           # The consequence of this is all data will be considered "unfinalized" or "unknown" despite their block numbers (and where if theye're actually finalized or not).
           # DEFAULT: 30s.
           statePollerInterval: 30s
-          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-          statePollerDebounce: 5s
+          # (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+          # When omitted, the interval is dynamically inferred from the chain's observed block
+          # time using an EMA (exponential moving average).
+          # DEFAULT: dynamic (inferred from observed block time)
+          # statePollerDebounce: 2s
           # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
           # DEFAULT: archive
           nodeType: full
@@ -628,10 +632,10 @@ export default createConfig({
             // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
             // DEFAULT: 30s.
             statePollerInterval: "30s",
-            // (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
-            // This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
-            // DEFAULT: 5s (or equal to block time if the chainId is a known chain)
-            statePollerDebounce: "5s",
+            // (OPTIONAL) statePollerDebounce overrides the debounce interval for block polling.
+            // When omitted, dynamically inferred from observed block time using an EMA.
+            // DEFAULT: dynamic (inferred from observed block time)
+            // statePollerDebounce: "2s",
             // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
             // DEFAULT: archive
             nodeType: "full",
