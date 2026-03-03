@@ -1166,3 +1166,22 @@ func TestMulticall3AggregationConfigBypassContracts(t *testing.T) {
 		})
 	})
 }
+
+func TestServerConfig_MaxBatchConcurrencyDefaultsAndValidation(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		cfg := &ServerConfig{}
+		require.NoError(t, cfg.SetDefaults())
+		require.NotNil(t, cfg.MaxBatchConcurrency)
+		assert.Equal(t, 32, *cfg.MaxBatchConcurrency)
+	})
+
+	t.Run("invalid non-positive value", func(t *testing.T) {
+		cfg := &ServerConfig{}
+		require.NoError(t, cfg.SetDefaults())
+		v := 0
+		cfg.MaxBatchConcurrency = &v
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "server.maxBatchConcurrency must be > 0")
+	})
+}

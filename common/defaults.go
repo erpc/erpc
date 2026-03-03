@@ -676,6 +676,9 @@ func (s *ServerConfig) SetDefaults() error {
 		d := Duration(120 * time.Second)
 		s.WriteTimeout = &d
 	}
+	if s.MaxBatchConcurrency == nil {
+		s.MaxBatchConcurrency = util.IntPtr(32)
+	}
 	if s.EnableGzip == nil {
 		s.EnableGzip = util.BoolPtr(true)
 	}

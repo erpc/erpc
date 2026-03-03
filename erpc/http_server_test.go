@@ -479,6 +479,34 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		assert.True(t, successes > 0, "Expected some successes")
 	})
 }
+
+func TestHttpServer_BatchWorkerConcurrency(t *testing.T) {
+	t.Run("default and clamped to batch size", func(t *testing.T) {
+		srv := &HttpServer{}
+		assert.Equal(t, 1, srv.batchWorkerConcurrency(1))
+		assert.Equal(t, 10, srv.batchWorkerConcurrency(10))
+		assert.Equal(t, defaultBatchWorkerConcurrency, srv.batchWorkerConcurrency(100))
+	})
+
+	t.Run("uses configured maxBatchConcurrency", func(t *testing.T) {
+		srv := &HttpServer{
+			serverCfg: &common.ServerConfig{
+				MaxBatchConcurrency: util.IntPtr(8),
+			},
+		}
+		assert.Equal(t, 8, srv.batchWorkerConcurrency(100))
+		assert.Equal(t, 4, srv.batchWorkerConcurrency(4))
+	})
+
+	t.Run("invalid configured value falls back to default", func(t *testing.T) {
+		srv := &HttpServer{
+			serverCfg: &common.ServerConfig{
+				MaxBatchConcurrency: util.IntPtr(0),
+			},
+		}
+		assert.Equal(t, defaultBatchWorkerConcurrency, srv.batchWorkerConcurrency(100))
+	})
+}
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test with background goroutines in short mode")

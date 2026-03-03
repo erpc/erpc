@@ -100,6 +100,7 @@ type ServerConfig struct {
 	MaxTimeout          *Duration         `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
 	ReadTimeout         *Duration         `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
 	WriteTimeout        *Duration         `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
+	MaxBatchConcurrency *int              `yaml:"maxBatchConcurrency,omitempty" json:"maxBatchConcurrency"`
 	EnableGzip          *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	TLS                 *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
 	Aliasing            *AliasingConfig   `yaml:"aliasing" json:"aliasing"`
@@ -1579,10 +1580,10 @@ type EvmNetworkConfig struct {
 	// GetLogsMaxResponseBytes caps the decompressed upstream response size for eth_getLogs.
 	// When exceeded, the request is treated as "too large" and split/retried with smaller sub-requests.
 	// Default is set in SetDefaults(). Set to 0 to disable (not recommended in production).
-	GetLogsMaxResponseBytes int64 `yaml:"getLogsMaxResponseBytes,omitempty" json:"getLogsMaxResponseBytes,omitempty"`
-	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
-	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
-	GetLogsCacheChunkSize       *int64              `yaml:"getLogsCacheChunkSize,omitempty" json:"getLogsCacheChunkSize"`
+	GetLogsMaxResponseBytes int64  `yaml:"getLogsMaxResponseBytes,omitempty" json:"getLogsMaxResponseBytes,omitempty"`
+	GetLogsSplitOnError     *bool  `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
+	GetLogsSplitConcurrency int    `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	GetLogsCacheChunkSize   *int64 `yaml:"getLogsCacheChunkSize,omitempty" json:"getLogsCacheChunkSize"`
 	// GetLogsCacheChunkConcurrency controls the base concurrency for cache-chunked eth_getLogs sub-requests.
 	// The effective concurrency is max(GetLogsCacheChunkConcurrency, GetLogsSplitConcurrency) to ensure
 	// recursive splits within cache chunks are not throttled below the split concurrency.
