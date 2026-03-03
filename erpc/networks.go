@@ -1700,6 +1700,12 @@ func (n *Network) shouldUsePostCompletionCoalescing(ctx context.Context, req *co
 	if req == nil || method == "" {
 		return false
 	}
+	if req.SkipCacheRead() {
+		return false
+	}
+	if dr := req.Directives(); dr != nil && dr.UseUpstream != "" {
+		return false
+	}
 	if !isReadMethodEligibleForNegativeCache(method) {
 		return false
 	}
