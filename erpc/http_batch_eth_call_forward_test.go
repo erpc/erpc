@@ -30,7 +30,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 	}
 
 	responses := make([]interface{}, 1)
-	server.forwardEthCallBatchCandidates(&startedAt, nil, nil, []ethCallBatchCandidate{makeCandidate(0)}, responses)
+	server.forwardEthCallBatchCandidates(&startedAt, nil, nil, []ethCallBatchCandidate{makeCandidate(0)}, responses, "test", multicallFallbackModeFull)
 	require.NotNil(t, responses[0])
 
 	origForward := forwardBatchProject
@@ -45,7 +45,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			return resp, errors.New("boom")
 		}
 
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses, "test", multicallFallbackModeFull)
 		require.NotNil(t, responses[0])
 	})
 
@@ -56,7 +56,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			return resp, nil
 		}
 
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses, "test", multicallFallbackModeFull)
 		require.Equal(t, resp, responses[0])
 	})
 
@@ -89,6 +89,8 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			network,
 			[]ethCallBatchCandidate{makeCandidate(0), makeCandidate(1)},
 			responses,
+			"test_reason",
+			multicallFallbackModeFull,
 		)
 
 		after := promUtil.ToFloat64(
@@ -116,7 +118,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 		}
 
 		// Create 2 candidates - one will panic, one will succeed
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0), makeCandidate(1)}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0), makeCandidate(1)}, responses, "test", multicallFallbackModeFull)
 
 		// Both responses should have been populated (panic recovered)
 		require.NotNil(t, responses[0], "first response should not be nil after panic")
@@ -141,7 +143,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			return nil, ctx.Err()
 		}
 
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{candidate}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{candidate}, responses, "test", multicallFallbackModeFull)
 		require.NotNil(t, responses[0], "response should be populated even with cancelled context")
 	})
 }

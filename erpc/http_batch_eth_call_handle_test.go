@@ -160,18 +160,21 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 		networkResponse   func() (*common.NormalizedResponse, error)
 		expectedProjCalls int
 		expectedNetCalls  int
+		expectNormalized  bool
 	}{
 		{
 			name:              "single candidate",
 			requests:          singleRequest,
 			networkResponse:   func() (*common.NormalizedResponse, error) { return nil, nil },
 			expectedProjCalls: 1,
+			expectNormalized:  true,
 		},
 		{
 			name:              "build error",
 			requests:          invalidRequests,
 			networkResponse:   func() (*common.NormalizedResponse, error) { return nil, nil },
 			expectedProjCalls: 2,
+			expectNormalized:  true,
 		},
 		{
 			name:     "forward error fallback",
@@ -183,13 +186,15 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 			},
 			expectedProjCalls: 2,
 			expectedNetCalls:  1,
+			expectNormalized:  true,
 		},
 		{
 			name:              "mc response nil",
 			requests:          validRequests,
 			networkResponse:   func() (*common.NormalizedResponse, error) { return nil, nil },
-			expectedProjCalls: 2,
+			expectedProjCalls: 0,
 			expectedNetCalls:  1,
+			expectNormalized:  false,
 		},
 		{
 			name:     "mc response error",
@@ -198,8 +203,9 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 				jrr := mustJsonRpcResponse(t, 1, nil, common.NewErrJsonRpcExceptionExternal(-32000, "boom", ""))
 				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
 			},
-			expectedProjCalls: 2,
+			expectedProjCalls: 0,
 			expectedNetCalls:  1,
+			expectNormalized:  false,
 		},
 		{
 			name:     "result unmarshal error",
@@ -208,8 +214,9 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 				jrr := mustJsonRpcResponse(t, 1, map[string]interface{}{"oops": "nope"}, nil)
 				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
 			},
-			expectedProjCalls: 2,
+			expectedProjCalls: 0,
 			expectedNetCalls:  1,
+			expectNormalized:  false,
 		},
 		{
 			name:     "result hex error",
@@ -218,8 +225,9 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 				jrr := mustJsonRpcResponse(t, 1, "0xzz", nil)
 				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
 			},
-			expectedProjCalls: 2,
+			expectedProjCalls: 0,
 			expectedNetCalls:  1,
+			expectNormalized:  false,
 		},
 		{
 			name:     "decode error",
@@ -228,8 +236,9 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 				jrr := mustJsonRpcResponse(t, 1, "0x01", nil)
 				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
 			},
-			expectedProjCalls: 2,
+			expectedProjCalls: 0,
 			expectedNetCalls:  1,
+			expectNormalized:  false,
 		},
 		{
 			name:     "length mismatch",
@@ -239,8 +248,9 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 				jrr := mustJsonRpcResponse(t, 1, resultHex, nil)
 				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
 			},
-			expectedProjCalls: 2,
+			expectedProjCalls: 0,
 			expectedNetCalls:  1,
+			expectNormalized:  false,
 		},
 	}
 
@@ -272,9 +282,9 @@ func TestHandleEthCallBatchAggregation_FallbackPaths(t *testing.T) {
 			assert.Equal(t, tt.expectedProjCalls, projCalls)
 			assert.Equal(t, tt.expectedNetCalls, netCalls)
 			mu.Unlock()
-			if len(responses) > 0 {
+			if len(responses) > 0 && responses[0] != nil {
 				_, ok := responses[0].(*common.NormalizedResponse)
-				assert.True(t, ok)
+				assert.Equal(t, tt.expectNormalized, ok)
 			}
 		})
 	}
@@ -339,6 +349,7 @@ func TestHandleEthCallBatchAggregation_SuccessAndFailureResults(t *testing.T) {
 	cfg := baseBatchConfig()
 	server, project, ctx, cleanup := setupBatchHandler(t, cfg)
 	defer cleanup()
+	projCalls := 0
 
 	results := []evm.Multicall3Result{
 		{Success: true, ReturnData: []byte{0xaa}},
@@ -351,13 +362,17 @@ func TestHandleEthCallBatchAggregation_SuccessAndFailureResults(t *testing.T) {
 			jrr := mustJsonRpcResponse(t, 1, resultHex, nil)
 			return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
 		},
-		nil,
+		func(ctx context.Context, project *PreparedProject, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			projCalls++
+			return fallbackResponse(t, req), nil
+		},
 		nil,
 	)
 
 	handled, responses := runHandle(t, ctx, server, project, defaultBatchInfo(), validBatchRequests(t), nil)
 	require.True(t, handled)
 	require.Len(t, responses, 2)
+	assert.Equal(t, 1, projCalls, "only failed subcall should be retried via fallback")
 
 	resp0, ok := responses[0].(*common.NormalizedResponse)
 	require.True(t, ok)
@@ -367,11 +382,13 @@ func TestHandleEthCallBatchAggregation_SuccessAndFailureResults(t *testing.T) {
 	require.NoError(t, common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &decodedHex))
 	assert.Equal(t, "0x"+hex.EncodeToString(results[0].ReturnData), decodedHex)
 
-	errResp, ok := responses[1].(*HttpJsonRpcErrorResponse)
+	resp1, ok := responses[1].(*common.NormalizedResponse)
 	require.True(t, ok)
-	errMap, ok := errResp.Error.(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "0x"+hex.EncodeToString(results[1].ReturnData), errMap["data"])
+	jrr1, err := resp1.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	var decodedHex1 string
+	require.NoError(t, common.SonicCfg.Unmarshal(jrr1.GetResultBytes(), &decodedHex1))
+	assert.Equal(t, "0xfeed", decodedHex1)
 }
 
 func TestHandleEthCallBatchAggregation_PanicRecovery(t *testing.T) {

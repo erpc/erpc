@@ -563,6 +563,12 @@ var (
 		Help:      "Total number of multicall3 fallbacks to individual requests.",
 	}, []string{"project", "network", "reason"})
 
+	MetricMulticall3FallbackReasonMatrixTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "multicall3_fallback_reason_matrix_total",
+		Help:      "Multicall3 fallback/terminal decisions by reason and mode (full, partial, terminal).",
+	}, []string{"project", "network", "reason", "mode"})
+
 	MetricMulticall3CacheHitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "multicall3_cache_hits_total",

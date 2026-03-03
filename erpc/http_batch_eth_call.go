@@ -34,6 +34,10 @@ const (
 	requireCanonicalUnset = 0
 	requireCanonicalTrue  = 1
 	requireCanonicalFalse = 2
+
+	multicallFallbackModeFull     = "full"
+	multicallFallbackModePartial  = "partial"
+	multicallFallbackModeTerminal = "terminal"
 )
 
 type ethCallBatchInfo struct {
@@ -175,10 +179,12 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 	network *Network,
 	candidates []ethCallBatchCandidate,
 	responses []interface{},
+	reason string,
+	mode string,
 ) {
+	projectId := ""
+	networkLabel := ""
 	if len(candidates) > 0 {
-		projectId := ""
-		networkLabel := ""
 		method := ""
 		if project != nil && project.Config != nil {
 			projectId = project.Config.Id
@@ -186,6 +192,14 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 		if network != nil {
 			networkLabel = network.Label()
 		}
+		if reason == "" {
+			reason = "unspecified"
+		}
+		if mode == "" {
+			mode = multicallFallbackModeFull
+		}
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkLabel, reason).Inc()
+		telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(projectId, networkLabel, reason, mode).Inc()
 		if candidates[0].req != nil {
 			method, _ = candidates[0].req.Method()
 		}
@@ -203,6 +217,7 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 		for _, cand := range candidates {
 			responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, err, s.serverCfg.IncludeErrorDetails)
 			common.EndRequestSpan(cand.ctx, nil, err)
+			telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "error").Inc()
 		}
 		return
 	}
@@ -228,6 +243,7 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 						Msg("panic in forwardEthCallBatchCandidates goroutine")
 					responses[c.index] = processErrorBody(&c.logger, startedAt, c.req, panicErr, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(c.ctx, nil, panicErr)
+					telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "error").Inc()
 				}
 			}()
 			resp, err := forwardBatchProject(withSkipNetworkRateLimit(c.ctx), project, network, c.req)
@@ -237,11 +253,13 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 				}
 				responses[c.index] = processErrorBody(&c.logger, startedAt, c.req, err, s.serverCfg.IncludeErrorDetails)
 				common.EndRequestSpan(c.ctx, nil, err)
+				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "error").Inc()
 				return
 			}
 
 			responses[c.index] = resp
 			common.EndRequestSpan(c.ctx, resp, nil)
+			telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "success").Inc()
 		}(cand)
 	}
 	wg.Wait()
@@ -430,7 +448,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 	}
 
 	if len(candidates) < 2 {
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
+		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses, "single_candidate", multicallFallbackModeFull)
 		return true
 	}
 
@@ -439,14 +457,28 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 		reqs[i] = cand.req
 	}
 
+	propagateTerminal := func(reason string, terminalErr error) bool {
+		telemetry.MetricMulticall3AggregationTotal.WithLabelValues(projectId, batchInfo.networkId, "error").Inc()
+		telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+			projectId,
+			batchInfo.networkId,
+			reason,
+			multicallFallbackModeTerminal,
+		).Inc()
+		for _, cand := range candidates {
+			responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, terminalErr, s.serverCfg.IncludeErrorDetails)
+			common.EndRequestSpan(cand.ctx, nil, terminalErr)
+		}
+		return true
+	}
+
 	mcReq, calls, err := evm.BuildMulticall3Request(reqs, batchInfo.blockParam)
 	if err != nil {
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "build_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
 			Msg("multicall3 build failed, falling back")
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
+		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses, "build_failed", multicallFallbackModeFull)
 		return true
 	}
 
@@ -461,99 +493,97 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			mcResp.Release()
 		}
 		if evm.ShouldFallbackMulticall3(mcErr) {
-			telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "forward_failed").Inc()
 			baseLogger.Debug().Err(mcErr).
 				Int("candidateCount", len(candidates)).
 				Str("networkId", batchInfo.networkId).
 				Msg("multicall3 request failed, falling back")
-			s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
+			s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses, "forward_failed", multicallFallbackModeFull)
 			return true
 		}
-		// Non-recoverable error - don't fallback, propagate to all candidates
-		telemetry.MetricMulticall3AggregationTotal.WithLabelValues(projectId, batchInfo.networkId, "error").Inc()
-		for _, cand := range candidates {
-			responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, mcErr, s.serverCfg.IncludeErrorDetails)
-			common.EndRequestSpan(cand.ctx, nil, mcErr)
-		}
-		return true
+		return propagateTerminal("forward_terminal", mcErr)
 	}
 	if mcResp == nil {
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "nil_response").Inc()
 		baseLogger.Debug().
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
-			Msg("multicall3 response missing, falling back")
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
-		return true
+			Msg("multicall3 response missing, treating as terminal")
+		return propagateTerminal("nil_response", common.NewErrInternalServerError(errors.New("multicall3 response missing")))
 	}
 
 	jrr, err := mcResp.JsonRpcResponse(mcCtx)
-	if err != nil || jrr == nil || jrr.Error != nil {
+	if err != nil || jrr == nil {
 		mcResp.Release()
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "invalid_response").Inc()
-		logEvent := baseLogger.Debug().Err(err).
+		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
 			Bool("missingResponse", jrr == nil).
-			Bool("hasRpcError", jrr != nil && jrr.Error != nil)
-		if jrr != nil && jrr.Error != nil {
-			logEvent = logEvent.Int("rpcErrorCode", jrr.Error.Code).
-				Str("rpcErrorMessage", jrr.Error.Message)
+			Msg("multicall3 response invalid, treating as terminal")
+		return propagateTerminal("invalid_response", common.NewErrInternalServerError(fmt.Errorf("invalid multicall3 response: %w", err)))
+	}
+	if jrr.Error != nil {
+		mcErr = common.NewErrEndpointExecutionException(jrr.Error)
+		if evm.ShouldFallbackMulticall3(mcErr) {
+			mcResp.Release()
+			baseLogger.Debug().
+				Int("candidateCount", len(candidates)).
+				Int("rpcErrorCode", jrr.Error.Code).
+				Str("rpcErrorMessage", jrr.Error.Message).
+				Str("networkId", batchInfo.networkId).
+				Msg("multicall3 rpc error recoverable, falling back")
+			s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses, "rpc_error_recoverable", multicallFallbackModeFull)
+			return true
 		}
-		logEvent.Msg("multicall3 response invalid, falling back")
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
-		return true
+		mcResp.Release()
+		baseLogger.Debug().
+			Int("candidateCount", len(candidates)).
+			Int("rpcErrorCode", jrr.Error.Code).
+			Str("rpcErrorMessage", jrr.Error.Message).
+			Str("networkId", batchInfo.networkId).
+			Msg("multicall3 rpc error terminal, not falling back")
+		return propagateTerminal("rpc_error_terminal", mcErr)
 	}
 
 	var resultHex string
 	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &resultHex); err != nil {
 		mcResp.Release()
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "unmarshal_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
-			Msg("multicall3 result unmarshal failed, falling back")
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
-		return true
+			Msg("multicall3 result unmarshal failed, treating as terminal")
+		return propagateTerminal("unmarshal_failed", common.NewErrInternalServerError(fmt.Errorf("multicall3 result unmarshal failed: %w", err)))
 	}
 	resultBytes, err := common.HexToBytes(resultHex)
 	if err != nil {
 		mcResp.Release()
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "hex_decode_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
-			Msg("multicall3 result decode failed, falling back")
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
-		return true
+			Msg("multicall3 result decode failed, treating as terminal")
+		return propagateTerminal("hex_decode_failed", common.NewErrInternalServerError(fmt.Errorf("multicall3 result decode failed: %w", err)))
 	}
 
 	decoded, err := evm.DecodeMulticall3Aggregate3Result(resultBytes)
 	if err != nil {
 		mcResp.Release()
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "abi_decode_failed").Inc()
 		baseLogger.Debug().Err(err).
 			Int("candidateCount", len(candidates)).
 			Str("networkId", batchInfo.networkId).
-			Msg("multicall3 result parsing failed, falling back")
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
-		return true
+			Msg("multicall3 result parsing failed, treating as terminal")
+		return propagateTerminal("abi_decode_failed", common.NewErrInternalServerError(fmt.Errorf("multicall3 result parsing failed: %w", err)))
 	}
 	if len(decoded) != len(calls) {
 		mcResp.Release()
-		// Length mismatch is a critical issue - use separate metric and Error level logging
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, batchInfo.networkId, "length_mismatch").Inc()
 		baseLogger.Error().
 			Int("candidateCount", len(candidates)).
 			Int("decodedCount", len(decoded)).
 			Int("callCount", len(calls)).
 			Str("networkId", batchInfo.networkId).
-			Msg("CRITICAL: multicall3 result length mismatch - possible data corruption, falling back")
-		s.forwardEthCallBatchCandidates(startedAt, project, network, candidates, responses)
-		return true
+			Msg("CRITICAL: multicall3 result length mismatch - possible data corruption, terminal")
+		return propagateTerminal("length_mismatch", common.NewErrInternalServerError(fmt.Errorf("multicall3 result length mismatch decoded=%d calls=%d", len(decoded), len(calls))))
 	}
 
 	shouldCache := !mcResp.FromCache() && cacheDal != nil && !cacheDal.IsObjectNull()
+	failedCandidates := make([]ethCallBatchCandidate, 0, len(decoded))
 	for i, result := range decoded {
 		cand := candidates[i]
 		if result.Success {
@@ -619,21 +649,22 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			}
 			continue
 		}
+		failedCandidates = append(failedCandidates, cand)
+	}
 
-		dataHex := "0x" + hex.EncodeToString(result.ReturnData)
-		callErr := common.NewErrEndpointExecutionException(
-			common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorEvmReverted,
-				"execution reverted",
-				nil,
-				map[string]interface{}{
-					"data": dataHex,
-				},
-			),
+	if len(failedCandidates) > 0 {
+		telemetry.MetricMulticall3AggregationTotal.WithLabelValues(projectId, batchInfo.networkId, "partial_fallback").Inc()
+		mcResp.Release()
+		s.forwardEthCallBatchCandidates(
+			startedAt,
+			project,
+			network,
+			failedCandidates,
+			responses,
+			"subcall_failed",
+			multicallFallbackModePartial,
 		)
-		responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, callErr, s.serverCfg.IncludeErrorDetails)
-		common.EndRequestSpan(cand.ctx, nil, callErr)
+		return true
 	}
 
 	// Aggregation succeeded
