@@ -107,6 +107,7 @@ type ServerConfig struct {
 	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+	ForwardHeaders      []string          `yaml:"forwardHeaders,omitempty" json:"forwardHeaders"`
 }
 
 type HealthCheckConfig struct {

@@ -290,9 +290,10 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 type NormalizedRequest struct {
 	sync.RWMutex
 
-	network  Network
-	cacheDal CacheDAL
-	body     []byte
+	network        Network
+	cacheDal       CacheDAL
+	body           []byte
+	ForwardHeaders http.Header
 
 	method         string
 	directives     *RequestDirectives
@@ -846,6 +847,7 @@ func (r *NormalizedRequest) RLockWithTrace(ctx context.Context) {
 	r.RLock()
 }
 
+// TODO Here's the important part
 // Extract and prepare the request for forwarding.
 func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequest, error) {
 	if len(ctx) > 0 {

@@ -425,6 +425,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}()
 
 				nq := common.NewNormalizedRequest(rawReq)
+				for _, key := range s.serverCfg.ForwardHeaders {
+					if value := headers.Get(key); value != "" {
+						nq.ForwardHeaders.Add(key, value)
+					}
+				}
+
 				// Help GC: drop reference to the rawReq slice copy in the parent slice as soon as possible
 				rawReq = nil
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
