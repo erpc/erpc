@@ -847,7 +847,6 @@ func (r *NormalizedRequest) RLockWithTrace(ctx context.Context) {
 	r.RLock()
 }
 
-// TODO Here's the important part
 // Extract and prepare the request for forwarding.
 func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequest, error) {
 	if len(ctx) > 0 {
