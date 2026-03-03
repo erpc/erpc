@@ -13,7 +13,7 @@ packages:
       # id_DurationString: "Duration"
       # id_ByteSizeString: "ByteSize"
     frontmatter: |
-      import type { 
+      import type {
         LogLevel,
         Duration,
         ByteSize,
@@ -24,7 +24,8 @@ packages:
         AuthType as TsAuthType,
         AuthStrategyConfig as TsAuthStrategyConfig,
         EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults,
-        SelectionPolicyEvalFunction
+        SelectionPolicyEvalFunction,
+        BoolOrString
       } from "./types"
     exclude_files:
       - "utils.go"

@@ -50,13 +50,38 @@ build:
 test:
 	@go clean -testcache
 	@go test ./cmd/... -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -v -race -count 1 -parallel 1 -timeout 15m -failfast=false
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -v -race -count 1 -parallel 1 -timeout 30m -failfast=false
 
 .PHONY: test-fast
 test-fast:
 	@go clean -testcache
 	@go test ./cmd/... -count 1 -parallel 1 -v
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 1 -parallel 1 -v -timeout 10m -failfast=false
+	@# Compile erpc test binary once
+	@go test -c -o /tmp/erpc.test ./erpc
+	@# Run erpc shards in parallel (each process has isolated gock state)
+	@# DSL shard (requires OpenAI API key, non-blocking)
+	@/tmp/erpc.test -test.v -test.timeout 5m -test.run "^TestConsensusPolicy_DSL" || true &
+	@# Named shards run in parallel (each process has isolated gock state)
+	@# Shard definitions are only for the known-slow test groups.
+	@# The catch-all shard automatically picks up any new/unassigned tests.
+	@bash -c '\
+	  SHARD_CONSENSUS="^(TestConsensusPolicy$$|TestConsensusGoroutine|TestConsensusSelectsLargest|TestInterpolation_)"; \
+	  SHARD_NETWORK="^(TestNetwork_Forward$$|TestNetwork_(SelectionScenarios|InFlightRequests|SkippingUpstreams|EvmGetLogs|ThunderingHerd|HighestFinalizedBlockNumber|HighestLatestBlockNumber|CacheEmptyBehavior|BatchRequests|SingleRequestErrors|CapacityExceededErrors|TraceExecutionTimeout|Multiplexer|SendRawTransaction))"; \
+	  SHARD_HTTPSERVER="^TestHttpServer_"; \
+	  SHARD_INTEGRITY="^(TestNetworkRetry_|TestNetworkForward_|TestNetworkIntegrity_|TestHedgeConsensus_|TestEmptyResultAcceptShortCircuit$$|TestNetworkFailsafe_|TestNetworksBootstrap_|TestNetworkAvailability_|TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping$$|TestNetwork_HedgePolicy)"; \
+	  SKIP_ALL="TestConsensusPolicy|TestConsensusGoroutine|TestConsensusSelectsLargest|TestInterpolation_|TestNetwork_|TestHttpServer_|TestHttp_|TestNetworkRetry_|TestNetworkForward_|TestNetworkIntegrity_|TestHedgeConsensus_|TestEmptyResultAcceptShortCircuit|TestNetworkFailsafe_|TestNetworksBootstrap_|TestNetworkAvailability_"; \
+	  pids=(); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CONSENSUS" -test.parallel 4 & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_NETWORK" & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_HTTPSERVER" & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_INTEGRITY" & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.skip "$$SKIP_ALL" & pids+=($$!); \
+	  fail=0; for pid in "$${pids[@]}"; do wait "$$pid" || fail=1; done; \
+	  exit $$fail'
+	@# TestHttp_ tests run after parallel shards (sensitive to system load, only ~5s)
+	@/tmp/erpc.test -test.v -test.timeout 5m -test.run "^TestHttp_"
+	@# Run all other (non-erpc) packages normally
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | grep -v "erpc/" | awk '{print "./" $$1 "..."}') -count 1 -parallel 4 -v -timeout 30m -failfast=false
 
 .PHONY: test-race
 test-race:

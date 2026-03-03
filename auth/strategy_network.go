@@ -19,7 +19,7 @@ var _ AuthStrategy = &NetworkStrategy{}
 
 func NewNetworkStrategy(cfg *common.NetworkStrategyConfig) (*NetworkStrategy, error) {
 	s := &NetworkStrategy{
-		cfg: cfg,
+		cfg:      cfg,
 		ipAsUser: cfg.IPAsUser,
 	}
 
@@ -83,7 +83,7 @@ func (s *NetworkStrategy) Authenticate(ctx context.Context, req *common.Normaliz
 	for _, cidr := range s.allowedCIDRs {
 		if cidr.Contains(clientIP) {
 			user := &common.User{Id: cidr.String()}
-			if (s.ipAsUser) {
+			if s.ipAsUser {
 				user.Id = clientIP.String()
 			}
 			if s.cfg.RateLimitBudget != "" {

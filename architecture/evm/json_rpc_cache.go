@@ -206,6 +206,10 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	var lastRejectConnectorId, lastRejectPolicyStr, lastRejectTTL string
 	for _, policy = range policies {
 		connector = policy.GetConnector()
+		if req.ShouldSkipCacheRead(connector.Id()) {
+			c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Msg("skipping cache connector due to skip-cache-read directive pattern")
+			continue
+		}
 		policyCtx, policySpan := common.StartDetailSpan(ctx, "Cache.GetForPolicy", trace.WithAttributes(
 			attribute.String("cache.policy_summary", policy.String()),
 			attribute.String("cache.connector_id", connector.Id()),

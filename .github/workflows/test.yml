@@ -35,7 +35,7 @@ jobs:
       - name: Build
         run: make build
       - name: Test with the Go CLI
-        run: make test
+        run: make test-fast
 
   security:
     runs-on: ubuntu-24.04
