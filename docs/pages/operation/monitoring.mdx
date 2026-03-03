@@ -94,6 +94,15 @@ metrics: {
 
 Setting fewer buckets or focusing on relevant latency ranges can significantly reduce the number of time series stored in your monitoring system.
 
+#### Experiment Dimensions
+
+For canary/control experiment tracking, eRPC emits two low-cardinality labels on experiment metrics:
+
+- `variant` from `ERPC_EXPERIMENT_VARIANT` (default: `default`)
+- `release` from `ERPC_RELEASE_LABEL` (fallbacks: `ERPC_RELEASE`, `ERPC_IMAGE_TAG`, default: `unknown`)
+
+Set these as deployment-level env vars (same values for all pods in a rollout) to avoid label explosion.
+
 Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up montoring.
 
 ### Available metrics
@@ -115,6 +124,8 @@ Here is a list of some of the most important metrics:
 | erpc_network_failed_request_total | Counter | Total number of failed network requests. |
 | erpc_network_multiplexed_request_total | Counter | Total number of requests served via multiplexing follower path. |
 | erpc_network_request_duration_seconds | Histogram | End-to-end network request duration. |
+| erpc_network_upstream_calls_per_request | Histogram | Upstream amplification per network request (how many upstream calls each request triggered). |
+| erpc_network_attempt_reason_total | Counter | Non-baseline attempt causes (`retry`, `hedge`, `consensus`, `batch_fallback`, `fail_open`, `fire_and_forget`). |
 | erpc_http_ingress_inflight | Gauge | Inflight HTTP ingress request count by route/method. |
 | erpc_http_ingress_pre_forward_duration_seconds | Histogram | Time spent in ingress before forwarding/dispatch. |
 | erpc_rate_limits_total | Counter | Unified rate-limit events (remote + local decisions). |
@@ -168,6 +179,16 @@ sum(rate(erpc_cache_get_success_hit_total{}[5m])) by (network) /
 
 # Cache miss rate for eth_getBlockByNumber
 rate(erpc_cache_get_success_miss_total{category="eth_getBlockByNumber"}[5m])
+
+# Average upstream calls per request (amplification) by variant/release
+sum(rate(erpc_network_upstream_calls_per_request_sum{}[5m])) by (project,network,variant,release) /
+sum(rate(erpc_network_upstream_calls_per_request_count{}[5m])) by (project,network,variant,release)
+
+# Attempt causes split by reason and experiment cohort
+sum(rate(erpc_network_attempt_reason_total{}[5m])) by (project,network,reason,variant,release)
+
+# Retry pressure by method for canary/control comparison
+sum(rate(erpc_network_attempt_reason_total{reason="retry"}[5m])) by (category,variant,release)
 
 # Local (non-remote) rate-limiting events by project/network
 sum(rate(erpc_rate_limits_total{scope!="remote"}[5m])) by (project,network)

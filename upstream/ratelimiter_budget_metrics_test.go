@@ -11,6 +11,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -117,6 +118,7 @@ func TestRateLimiterBudget_PermitTimingMetrics_Ok(t *testing.T) {
 
 func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 	budget := newTestBudget(t)
+	telemetry.MetricNetworkAttemptReasonTotal.Reset()
 	budget.maxTimeout = 10 * time.Millisecond
 	budget.registry.cacheMu.Lock()
 	budget.registry.envoyCache = &delayedRateLimitCache{
@@ -141,6 +143,16 @@ func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 		"",
 		"timeout_fail_open",
 	)
+	beforeFailOpen := promUtil.ToFloat64(
+		telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+			"n/a",
+			"n/a",
+			"eth_test",
+			telemetry.AttemptReasonFailOpen,
+			telemetry.MetricsVariantLabel(),
+			telemetry.MetricsReleaseLabel(),
+		),
+	)
 
 	ok, err := budget.TryAcquirePermit(context.Background(), "", nil, "eth_test", "", "", "", "")
 	require.NoError(t, err)
@@ -162,9 +174,20 @@ func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 		"",
 		"timeout_fail_open",
 	)
+	afterFailOpen := promUtil.ToFloat64(
+		telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+			"n/a",
+			"n/a",
+			"eth_test",
+			telemetry.AttemptReasonFailOpen,
+			telemetry.MetricsVariantLabel(),
+			telemetry.MetricsReleaseLabel(),
+		),
+	)
 
 	assert.GreaterOrEqual(t, afterEval-beforeEval, uint64(1))
 	assert.GreaterOrEqual(t, afterWait-beforeWait, uint64(1))
+	assert.Equal(t, beforeFailOpen+1, afterFailOpen)
 }
 
 func TestNormalizeRateLimitMethodLabel(t *testing.T) {

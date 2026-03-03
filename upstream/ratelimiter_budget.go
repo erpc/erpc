@@ -245,6 +245,7 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 	cache := b.getCache()
 	if cache == nil {
 		observeEvaluation("no_cache_fail_open")
+		telemetry.IncNetworkAttemptReason("", networkLabel, method, telemetry.AttemptReasonFailOpen)
 		return true // Fail-open when no cache is available
 	}
 
@@ -302,6 +303,7 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 			"timeout_fail_open",
 		).Observe(waitDuration.Seconds())
 		observeEvaluation("timeout_fail_open")
+		telemetry.IncNetworkAttemptReason("", networkLabel, method, telemetry.AttemptReasonFailOpen)
 		doSpan.SetAttributes(attribute.String("result", "timeout_fail_open"))
 		doSpan.End()
 		return true // fail-open

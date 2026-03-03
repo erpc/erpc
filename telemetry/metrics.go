@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -214,6 +215,19 @@ var (
 		Name:      "network_successful_request_total",
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "attempt", "finality", "emptyish", "user", "agent_name"})
+
+	MetricNetworkUpstreamCallsPerRequest = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "network_upstream_calls_per_request",
+		Help:      "Distribution of actual upstream calls required per network request.",
+		Buckets:   []float64{1, 2, 3, 4, 5, 8, 13, 21, 34},
+	}, []string{"project", "network", "category", "variant", "release"})
+
+	MetricNetworkAttemptReasonTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_attempt_reason_total",
+		Help:      "Total number of non-baseline attempt causes across network forwarding paths.",
+	}, []string{"project", "network", "category", "reason", "variant", "release"})
 
 	MetricHTTPIngressInflight = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
@@ -645,6 +659,30 @@ var (
 	}, []string{"outcome"})
 )
 
+const (
+	AttemptReasonRetry         = "retry"
+	AttemptReasonHedge         = "hedge"
+	AttemptReasonConsensus     = "consensus"
+	AttemptReasonBatchFallback = "batch_fallback"
+	AttemptReasonFailOpen      = "fail_open"
+	AttemptReasonFireAndForget = "fire_and_forget"
+)
+
+var (
+	metricsVariantLabel = sanitizeExperimentLabel(
+		os.Getenv("ERPC_EXPERIMENT_VARIANT"),
+		"default",
+	)
+	metricsReleaseLabel = sanitizeExperimentLabel(
+		firstNonEmpty(
+			os.Getenv("ERPC_RELEASE_LABEL"),
+			os.Getenv("ERPC_RELEASE"),
+			os.Getenv("ERPC_IMAGE_TAG"),
+		),
+		"unknown",
+	)
+)
+
 var DefaultHistogramBuckets = []float64{
 	0.05,
 	0.5,
@@ -801,4 +839,84 @@ func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
 
 	sort.Float64s(buckets)
 	return buckets, nil
+}
+
+func MetricsVariantLabel() string {
+	return metricsVariantLabel
+}
+
+func MetricsReleaseLabel() string {
+	return metricsReleaseLabel
+}
+
+func ObserveNetworkUpstreamCallsPerRequest(project, network, category string, calls int) {
+	if calls < 0 {
+		calls = 0
+	}
+	ObserverHandle(
+		MetricNetworkUpstreamCallsPerRequest,
+		metricLabelOrDefault(project, "n/a"),
+		metricLabelOrDefault(network, "n/a"),
+		metricLabelOrDefault(category, "n/a"),
+		metricsVariantLabel,
+		metricsReleaseLabel,
+	).Observe(float64(calls))
+}
+
+func IncNetworkAttemptReason(project, network, category, reason string) {
+	if strings.TrimSpace(reason) == "" {
+		return
+	}
+	CounterHandle(
+		MetricNetworkAttemptReasonTotal,
+		metricLabelOrDefault(project, "n/a"),
+		metricLabelOrDefault(network, "n/a"),
+		metricLabelOrDefault(category, "n/a"),
+		reason,
+		metricsVariantLabel,
+		metricsReleaseLabel,
+	).Inc()
+}
+
+func AddNetworkAttemptReason(project, network, category, reason string, count int) {
+	if count <= 0 || strings.TrimSpace(reason) == "" {
+		return
+	}
+	CounterHandle(
+		MetricNetworkAttemptReasonTotal,
+		metricLabelOrDefault(project, "n/a"),
+		metricLabelOrDefault(network, "n/a"),
+		metricLabelOrDefault(category, "n/a"),
+		reason,
+		metricsVariantLabel,
+		metricsReleaseLabel,
+	).Add(float64(count))
+}
+
+func metricLabelOrDefault(v, fallback string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func sanitizeExperimentLabel(v, fallback string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fallback
+	}
+	if len(v) > 128 {
+		v = v[:128]
+	}
+	return v
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
