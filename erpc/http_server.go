@@ -443,9 +443,19 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 
 				if project != nil {
-					for _, key := range project.Config.ForwardHeaders {
-						if value := headers.Get(key); value != "" {
-							nq.ForwardHeaders.Add(key, value)
+					for _, matchKey := range project.Config.ForwardHeaders {
+						for key, values := range headers {
+							matches, err := common.WildcardMatch(matchKey, key)
+							if err != nil {
+								responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
+								common.EndRequestSpan(requestCtx, nil, responses[index])
+								return
+							}
+							if matches {
+								for _, value := range values {
+									nq.ForwardHeaders.Add(matchKey, value)
+								}
+							}
 						}
 					}
 				}
