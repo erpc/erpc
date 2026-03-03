@@ -137,6 +137,7 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	323432:     "worldmobile-testnet",
 	869:        "worldmobilechain-mainnet",
 	666666666:  "degen-mainnet",
+	747474:     "katana-mainnet",
 }
 
 const DefaultAlchemyRecheckInterval = 24 * time.Hour
