@@ -68,6 +68,63 @@ database:
 	}
 }
 
+func TestLoadConfig_InvalidBlankUpstreamCapabilitiesRejected(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WriteString(`
+logLevel: debug
+projects:
+  - id: test-project
+    upstreams:
+      - endpoint: https://example.com
+        capabilities:
+          - "   "
+        evm:
+          chainId: 1
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+`)
+
+	_, err = LoadConfig(fs, cfg.Name(), &DefaultOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upstream.*.capabilities contains an empty capability tag")
+}
+
+func TestLoadConfig_InvalidBlankMethodRequiresRejected(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.WriteString(`
+logLevel: debug
+projects:
+  - id: test-project
+    upstreams:
+      - endpoint: https://example.com
+        evm:
+          chainId: 1
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        methods:
+          definitions:
+            eth_call:
+              requires:
+                - "   "
+`)
+
+	_, err = LoadConfig(fs, cfg.Name(), &DefaultOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network.*.methods.definitions.eth_call.requires contains an empty capability tag")
+}
+
 func TestFailsafeConfigBackwardCompatibility(t *testing.T) {
 	t.Run("NetworkDefaults old format with empty MatchMethod", func(t *testing.T) {
 		yamlData := `

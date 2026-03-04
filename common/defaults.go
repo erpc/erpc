@@ -619,22 +619,8 @@ func (m *MethodsConfig) SetDefaults() error {
 		}
 	}
 
-	for _, methodCfg := range m.Definitions {
-		if methodCfg == nil {
-			continue
-		}
-		methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
-	}
-
 	if err := m.applyWorkloadProfiles(); err != nil {
 		return err
-	}
-
-	for _, methodCfg := range m.Definitions {
-		if methodCfg == nil {
-			continue
-		}
-		methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
 	}
 
 	return nil
@@ -1829,8 +1815,6 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 			u.IgnoreMethods = []string{"*"}
 		}
 	}
-	u.Capabilities = NormalizeCapabilityTags(u.Capabilities)
-
 	return nil
 }
 
