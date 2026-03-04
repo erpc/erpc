@@ -128,19 +128,44 @@ type deterministicNegativeCacheEntry struct {
 }
 
 type postCompletionResultEntry struct {
+	mu        sync.RWMutex
 	resp      *common.NormalizedResponse
 	expiresAt int64
-	released  int32
+	released  bool
+}
+
+func (e *postCompletionResultEntry) acquireResponse() (*common.NormalizedResponse, bool) {
+	if e == nil {
+		return nil, false
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.released || e.resp == nil {
+		return nil, false
+	}
+
+	e.resp.AddRef()
+	return e.resp, true
 }
 
 func (e *postCompletionResultEntry) release() {
 	if e == nil {
 		return
 	}
-	if atomic.CompareAndSwapInt32(&e.released, 0, 1) {
-		if e.resp != nil {
-			e.resp.Release()
-		}
+
+	e.mu.Lock()
+	if e.released {
+		e.mu.Unlock()
+		return
+	}
+	e.released = true
+	resp := e.resp
+	e.resp = nil
+	e.mu.Unlock()
+
+	if resp != nil {
+		resp.Release()
 	}
 }
 
@@ -1715,7 +1740,7 @@ func (n *Network) loadPostCompletionCoalescedResult(ctx context.Context, req *co
 		return nil, false
 	}
 	entry, ok := raw.(*postCompletionResultEntry)
-	if !ok || entry == nil || entry.resp == nil {
+	if !ok || entry == nil {
 		n.postCompletionResults.Delete(hash)
 		if entry != nil {
 			entry.release()
@@ -1728,10 +1753,15 @@ func (n *Network) loadPostCompletionCoalescedResult(ctx context.Context, req *co
 		return nil, false
 	}
 
-	entry.resp.AddRef()
-	defer entry.resp.DoneRef()
+	resp, ok := entry.acquireResponse()
+	if !ok {
+		n.postCompletionResults.Delete(hash)
+		entry.release()
+		return nil, false
+	}
+	defer resp.DoneRef()
 
-	out, err := common.CopyResponseForRequest(ctx, entry.resp, req)
+	out, err := common.CopyResponseForRequest(ctx, resp, req)
 	if err != nil {
 		n.postCompletionResults.Delete(hash)
 		entry.release()
