@@ -3,8 +3,10 @@ package upstream
 import (
 	"context"
 	"errors"
+	"io"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
@@ -19,6 +21,80 @@ type mockUpstreamForRetry struct {
 	mock.Mock
 	common.Upstream
 }
+
+type stubAdaptiveQuantiles struct {
+	p50   time.Duration
+	p95   time.Duration
+	count int64
+}
+
+func (s *stubAdaptiveQuantiles) Add(float64) {}
+
+func (s *stubAdaptiveQuantiles) GetQuantile(qtile float64) time.Duration {
+	switch qtile {
+	case 0.50:
+		return s.p50
+	case 0.95:
+		return s.p95
+	default:
+		return s.p95
+	}
+}
+
+func (s *stubAdaptiveQuantiles) Reset() {}
+
+func (s *stubAdaptiveQuantiles) Count() int64 { return s.count }
+
+type stubAdaptiveTrackedMetrics struct {
+	quantiles common.QuantileTracker
+}
+
+func (s *stubAdaptiveTrackedMetrics) ErrorRate() float64 { return 0 }
+
+func (s *stubAdaptiveTrackedMetrics) GetResponseQuantiles() common.QuantileTracker {
+	return s.quantiles
+}
+
+type stubAdaptiveNetwork struct {
+	metrics common.TrackedMetrics
+}
+
+func (s *stubAdaptiveNetwork) Id() string { return "evm:123" }
+
+func (s *stubAdaptiveNetwork) Label() string { return "evm:123" }
+
+func (s *stubAdaptiveNetwork) ProjectId() string { return "test-project" }
+
+func (s *stubAdaptiveNetwork) Architecture() common.NetworkArchitecture {
+	return common.ArchitectureEvm
+}
+
+func (s *stubAdaptiveNetwork) Config() *common.NetworkConfig { return &common.NetworkConfig{} }
+
+func (s *stubAdaptiveNetwork) Logger() *zerolog.Logger {
+	l := zerolog.New(io.Discard)
+	return &l
+}
+
+func (s *stubAdaptiveNetwork) GetMethodMetrics(method string) common.TrackedMetrics {
+	return s.metrics
+}
+
+func (s *stubAdaptiveNetwork) Forward(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	return nil, nil
+}
+
+func (s *stubAdaptiveNetwork) GetFinality(context.Context, *common.NormalizedRequest, *common.NormalizedResponse) common.DataFinalityState {
+	return common.DataFinalityStateUnknown
+}
+
+func (s *stubAdaptiveNetwork) Cache() common.CacheDAL { return nil }
+
+func (s *stubAdaptiveNetwork) EvmHighestLatestBlockNumber(context.Context) int64 { return 0 }
+
+func (s *stubAdaptiveNetwork) EvmHighestFinalizedBlockNumber(context.Context) int64 { return 0 }
+
+func (s *stubAdaptiveNetwork) EvmLeaderUpstream(context.Context) common.Upstream { return nil }
 
 func (m *mockUpstreamForRetry) Config() *common.UpstreamConfig {
 	args := m.Called()
@@ -118,6 +194,40 @@ func createMockResponse(isEmpty bool, request *common.NormalizedRequest, upstrea
 	}
 
 	return resp
+}
+
+func TestShouldSuppressAdaptiveHedge_WarmupSamplesRequired(t *testing.T) {
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`))
+	req.SetNetwork(&stubAdaptiveNetwork{
+		metrics: &stubAdaptiveTrackedMetrics{
+			quantiles: &stubAdaptiveQuantiles{
+				p50:   20 * time.Millisecond,
+				p95:   30 * time.Millisecond,
+				count: 1,
+			},
+		},
+	})
+
+	suppress, reason := shouldSuppressAdaptiveHedge(context.Background(), req, "eth_getBalance")
+	assert.False(t, suppress)
+	assert.Equal(t, "insufficient_samples", reason)
+}
+
+func TestShouldSuppressAdaptiveHedge_StableAfterWarmup(t *testing.T) {
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`))
+	req.SetNetwork(&stubAdaptiveNetwork{
+		metrics: &stubAdaptiveTrackedMetrics{
+			quantiles: &stubAdaptiveQuantiles{
+				p50:   50 * time.Millisecond,
+				p95:   60 * time.Millisecond,
+				count: 50,
+			},
+		},
+	})
+
+	suppress, reason := shouldSuppressAdaptiveHedge(context.Background(), req, "eth_getBalance")
+	assert.True(t, suppress)
+	assert.Equal(t, "stable_latency", reason)
 }
 
 func TestRetryPolicy_EmptyResultWithConfidence(t *testing.T) {

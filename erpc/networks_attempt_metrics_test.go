@@ -125,3 +125,63 @@ func TestNetworkForward_AttemptReasonRetryAndUpstreamCallsMetric(t *testing.T) {
 	require.Equal(t, beforeCount+1, afterCount)
 	require.Equal(t, beforeSum+2, afterSum)
 }
+
+func TestNetworkForward_UpstreamCallsMetric_SelectionPolicySkipDoesNotCountAsCall(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	telemetry.MetricNetworkUpstreamCallsPerRequest.Reset()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkSimple(t, ctx,
+		&common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
+		&common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+			SelectionPolicy: &common.SelectionPolicyConfig{
+				EvalInterval: common.Duration(20 * time.Millisecond),
+				Rules: []*common.SelectionPolicyRuleConfig{
+					{
+						MatchUpstreamID: "*",
+						Action:          common.SelectionPolicyRuleActionExclude,
+					},
+				},
+			},
+		},
+	)
+
+	// Allow selection policy evaluator to apply rules.
+	time.Sleep(120 * time.Millisecond)
+
+	method := "eth_getBalance"
+	hLabels := []string{
+		"test",
+		network.Label(),
+		method,
+		telemetry.MetricsVariantLabel(),
+		telemetry.MetricsReleaseLabel(),
+	}
+	beforeCount, beforeSum := histogramCountAndSum(t, hLabels...)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`))
+	resp, err := network.Forward(ctx, req)
+	require.Error(t, err)
+	require.Nil(t, resp)
+
+	afterCount, afterSum := histogramCountAndSum(t, hLabels...)
+	require.GreaterOrEqual(t, afterCount, beforeCount)
+	require.Equal(t, beforeSum, afterSum)
+}

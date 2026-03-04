@@ -444,6 +444,32 @@ func TestFinalizationLagPersistsAcrossResets(t *testing.T) {
 	assert.Equal(t, int64(0), metrics2Updated.FinalizationLag.Load(), "upstream2 should now be caught up in finalization")
 }
 
+func TestSetLatestBlockNumber_ConsidersMetadataOnlyUpstreamsForNetworkHead(t *testing.T) {
+	projectID := "test-project"
+	windowSize := 100 * time.Millisecond
+
+	tracker := NewTracker(&log.Logger, projectID, windowSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	ups1 := common.NewFakeUpstream("upstream-indexed")
+	ups2 := common.NewFakeUpstream("upstream-metadata-only")
+
+	// Create metrics/index only for upstream1.
+	tracker.RecordUpstreamRequest(ups1, "eth_call")
+
+	tracker.SetLatestBlockNumber(ups1, 1000, 0)
+	tracker.SetLatestBlockNumber(ups2, 1200, 0)
+
+	networkMeta := tracker.getMetadata(metadataKey{nil, ups1.NetworkId()})
+	assert.Equal(t, int64(1200), networkMeta.evmLatestBlockNumber.Load(), "network head should include metadata-only upstream values")
+
+	metricsUps1 := tracker.GetUpstreamMethodMetrics(ups1, "eth_call")
+	assert.Equal(t, int64(200), metricsUps1.BlockHeadLag.Load(), "indexed upstream lag should be recomputed from metadata-only network head")
+}
+
 func TestCordonStatePersistsAcrossResetWindows(t *testing.T) {
 	projectID := "test-project"
 	windowSize := 100 * time.Millisecond

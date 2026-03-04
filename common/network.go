@@ -52,6 +52,7 @@ func IsValidNetwork(network string) bool {
 type QuantileTracker interface {
 	Add(value float64)
 	GetQuantile(qtile float64) time.Duration
+	Count() int64
 	Reset()
 }
 

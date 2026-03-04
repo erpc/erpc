@@ -770,15 +770,16 @@ func (t *Tracker) getNetworkMaxValue(
 		}
 	}
 
-	if maxVal > 0 || len(seen) > 0 {
-		return maxVal
-	}
-
 	t.metadata.Range(func(key, value any) bool {
 		mk, ok := key.(metadataKey)
 		if !ok || mk.upstream == nil || mk.network != net {
 			return true
 		}
+		id := mk.upstream.Id()
+		if _, ok := seen[id]; ok {
+			return true
+		}
+		seen[id] = struct{}{}
 		meta := value.(*NetworkMetadata)
 		v := getUpstreamValue(meta)
 		if v > maxVal {

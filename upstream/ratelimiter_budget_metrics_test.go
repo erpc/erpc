@@ -119,6 +119,7 @@ func TestRateLimiterBudget_PermitTimingMetrics_Ok(t *testing.T) {
 func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 	budget := newTestBudget(t)
 	telemetry.MetricNetworkAttemptReasonTotal.Reset()
+	projectID := "project-a"
 	budget.maxTimeout = 10 * time.Millisecond
 	budget.registry.cacheMu.Lock()
 	budget.registry.envoyCache = &delayedRateLimitCache{
@@ -145,7 +146,7 @@ func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 	)
 	beforeFailOpen := promUtil.ToFloat64(
 		telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
-			"n/a",
+			projectID,
 			"n/a",
 			"eth_test",
 			telemetry.AttemptReasonFailOpen,
@@ -154,7 +155,7 @@ func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 		),
 	)
 
-	ok, err := budget.TryAcquirePermit(context.Background(), "", nil, "eth_test", "", "", "", "")
+	ok, err := budget.TryAcquirePermit(context.Background(), projectID, nil, "eth_test", "", "", "", "")
 	require.NoError(t, err)
 	assert.True(t, ok)
 
@@ -176,7 +177,7 @@ func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 	)
 	afterFailOpen := promUtil.ToFloat64(
 		telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
-			"n/a",
+			projectID,
 			"n/a",
 			"eth_test",
 			telemetry.AttemptReasonFailOpen,

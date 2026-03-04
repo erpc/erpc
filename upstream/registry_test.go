@@ -277,6 +277,63 @@ func TestUpstreamsRegistry_BrownoutStateMachine(t *testing.T) {
 	}, 300*time.Millisecond, 20*time.Millisecond, "failed half-open should move upstream back to brownout-closed")
 }
 
+func TestUpstreamsRegistry_BrownoutHalfOpenSuccess_DoesNotImmediatelyReclose(t *testing.T) {
+	t.Setenv("ERPC_BROWNOUT_ENABLED", "true")
+	t.Setenv("ERPC_BROWNOUT_MIN_REQUESTS", "10")
+	t.Setenv("ERPC_BROWNOUT_MIN_REMOTE_RATE_LIMITED", "5")
+	t.Setenv("ERPC_BROWNOUT_THROTTLED_RATE_THRESHOLD", "0.5")
+	t.Setenv("ERPC_BROWNOUT_COOLDOWN", "80ms")
+	t.Setenv("ERPC_BROWNOUT_HALF_OPEN_DURATION", "80ms")
+
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := log.Logger
+	registry, metricsTracker := createTestRegistry(ctx, "test-project", &logger, 10*time.Second)
+
+	method := "eth_call"
+	networkID := "evm:123"
+	initial, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+	ups := getUpsByID(initial, "rpc1", "rpc2", "rpc3")
+	require.Len(t, ups, 3)
+
+	// Trigger initial brownout close.
+	simulateRequestsWithRateLimiting(metricsTracker, ups[0], "*", 20, 16)
+	require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+
+	require.Eventually(t, func() bool {
+		closed, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		if err != nil {
+			return false
+		}
+		return !hasUpstreamID(closed, "rpc1")
+	}, 300*time.Millisecond, 20*time.Millisecond, "rpc1 should enter brownout-closed first")
+
+	// Wait through half-open and successful recovery without adding new throttling.
+	require.Eventually(t, func() bool {
+		if err := registry.RefreshUpstreamNetworkMethodScores(); err != nil {
+			return false
+		}
+		registry.brownoutMu.RLock()
+		st := registry.brownoutStates["rpc1"]
+		registry.brownoutMu.RUnlock()
+		return st == nil || st.Phase == brownoutPhaseOpen
+	}, 1200*time.Millisecond, 25*time.Millisecond, "rpc1 should recover to open after half-open")
+
+	// Keep refreshing with identical cumulative counters; rpc1 should stay routable.
+	for i := 0; i < 4; i++ {
+		require.NoError(t, registry.RefreshUpstreamNetworkMethodScores())
+		ordered, err := registry.GetSortedUpstreams(ctx, networkID, method)
+		require.NoError(t, err)
+		assert.True(t, hasUpstreamID(ordered, "rpc1"), "rpc1 should remain open without new rate-limited traffic")
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestUpstreamsRegistry_BrownoutFailOpenWhenAllWouldBeExcluded(t *testing.T) {
 	t.Setenv("ERPC_BROWNOUT_ENABLED", "true")
 	t.Setenv("ERPC_BROWNOUT_MIN_REQUESTS", "10")

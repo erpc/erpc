@@ -176,7 +176,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 
 	// Single rule: evaluate directly without goroutine overhead
 	if len(rules) == 1 {
-		allowed := b.evaluateRule(ctx, rules[0], method, clientIP, userLabel, networkLabel)
+		allowed := b.evaluateRule(ctx, projectId, rules[0], method, clientIP, userLabel, networkLabel)
 		if !allowed {
 			telemetry.CounterHandle(
 				telemetry.MetricRateLimitsTotal,
@@ -198,7 +198,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 				resultCh <- ruleResult{rule: r, allowed: true}
 				return
 			}
-			allowed := b.evaluateRule(ctx, r, method, clientIP, userLabel, networkLabel)
+			allowed := b.evaluateRule(ctx, projectId, r, method, clientIP, userLabel, networkLabel)
 			if !allowed {
 				blocked.Store(true)
 			}
@@ -228,7 +228,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 
 // evaluateRule checks a single rate limit rule against the cache.
 // Returns true if allowed, false if over limit.
-func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string) bool {
+func (b *RateLimiterBudget) evaluateRule(ctx context.Context, projectId string, rule *RateLimitRule, method, clientIP, userLabel, networkLabel string) bool {
 	evalStartedAt := time.Now()
 	scope := rule.Config.ScopeString()
 	methodPattern := normalizeRateLimitMethodLabel(rule.Config.Method)
@@ -245,7 +245,7 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 	cache := b.getCache()
 	if cache == nil {
 		observeEvaluation("no_cache_fail_open")
-		telemetry.IncNetworkAttemptReason("", networkLabel, method, telemetry.AttemptReasonFailOpen)
+		telemetry.IncNetworkAttemptReason(projectId, networkLabel, method, telemetry.AttemptReasonFailOpen)
 		return true // Fail-open when no cache is available
 	}
 
@@ -303,7 +303,7 @@ func (b *RateLimiterBudget) evaluateRule(ctx context.Context, rule *RateLimitRul
 			"timeout_fail_open",
 		).Observe(waitDuration.Seconds())
 		observeEvaluation("timeout_fail_open")
-		telemetry.IncNetworkAttemptReason("", networkLabel, method, telemetry.AttemptReasonFailOpen)
+		telemetry.IncNetworkAttemptReason(projectId, networkLabel, method, telemetry.AttemptReasonFailOpen)
 		doSpan.SetAttributes(attribute.String("result", "timeout_fail_open"))
 		doSpan.End()
 		return true // fail-open

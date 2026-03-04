@@ -1325,9 +1325,30 @@ func (u *UpstreamsRegistry) evaluateBrownoutStates(allUpstreams []*Upstream, now
 
 		switch st.Phase {
 		case brownoutPhaseOpen:
-			if u.shouldEnterBrownout(requests, remoteRateLimited) {
+			evalRequests := requests
+			evalRemoteRateLimited := remoteRateLimited
+			if st.HalfOpenBaseRequests > 0 || st.HalfOpenBaseRateLimits > 0 {
+				// Keep brownout baseline after half-open success so historical incident
+				// counters do not immediately re-close the upstream.
+				if requests < st.HalfOpenBaseRequests || remoteRateLimited < st.HalfOpenBaseRateLimits {
+					// Metrics window reset or counter rollback: rebase safely.
+					st.HalfOpenBaseRequests = requests
+					st.HalfOpenBaseRateLimits = remoteRateLimited
+				}
+				evalRequests = requests - st.HalfOpenBaseRequests
+				evalRemoteRateLimited = remoteRateLimited - st.HalfOpenBaseRateLimits
+				if evalRequests < 0 {
+					evalRequests = 0
+				}
+				if evalRemoteRateLimited < 0 {
+					evalRemoteRateLimited = 0
+				}
+			}
+			if u.shouldEnterBrownout(evalRequests, evalRemoteRateLimited) {
 				st.Phase = brownoutPhaseClosed
 				st.Until = now.Add(u.brownoutCfg.Cooldown)
+				st.HalfOpenBaseRequests = 0
+				st.HalfOpenBaseRateLimits = 0
 				u.emitBrownoutTransition(ups, prevPhase, st.Phase, brownoutReasonSustainedRemoteRateLimited)
 			}
 		case brownoutPhaseClosed:
@@ -1357,8 +1378,8 @@ func (u *UpstreamsRegistry) evaluateBrownoutStates(allUpstreams []*Upstream, now
 			} else if !now.Before(st.Until) {
 				st.Phase = brownoutPhaseOpen
 				st.Until = time.Time{}
-				st.HalfOpenBaseRequests = 0
-				st.HalfOpenBaseRateLimits = 0
+				st.HalfOpenBaseRequests = requests
+				st.HalfOpenBaseRateLimits = remoteRateLimited
 				u.emitBrownoutTransition(ups, prevPhase, st.Phase, "half_open_succeeded")
 			}
 		}
@@ -1376,7 +1397,7 @@ func (u *UpstreamsRegistry) evaluateBrownoutStates(allUpstreams []*Upstream, now
 				Msg("upstream brownout phase changed")
 		}
 
-		if st.Phase == brownoutPhaseOpen {
+		if st.Phase == brownoutPhaseOpen && st.HalfOpenBaseRequests == 0 && st.HalfOpenBaseRateLimits == 0 {
 			delete(u.brownoutStates, ups.Id())
 			continue
 		}

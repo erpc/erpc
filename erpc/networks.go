@@ -659,6 +659,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
 			return nil, err
 		}
+		upstreamCalls.Add(1)
 
 		resp, err = n.doForward(ctx, u, req, false)
 
@@ -854,8 +855,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if reason := classifyAttemptReason(failsafeExecutor.consensusPolicyEnabled, retries, hedges); reason != "" {
 					telemetry.IncNetworkAttemptReason(n.projectId, n.Label(), method, reason)
 				}
-				upstreamCalls.Add(1)
-
 				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, retries)
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
@@ -1065,7 +1064,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			attribute.Int("execution.hedges", int(resp.Hedges())),
 		)
 
-		if resp.Hedges() > 0 {
+		hedgeWon := resp.Hedges() > 0
+		hedgeObserved := hedgeWon || requestObservedHedgeCancellation(req)
+		if hedgeObserved {
 			finality := req.Finality(ctx)
 			upstreamID := "unknown"
 			if ups := resp.Upstream(); ups != nil {
@@ -1081,7 +1082,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				req.UserId(),
 				req.AgentName(),
 			}
-			if resp.Attempts() > 1 {
+			if hedgeWon {
 				telemetry.CounterHandle(telemetry.MetricNetworkHedgeWonTotal, labels...).Inc()
 			} else {
 				telemetry.CounterHandle(telemetry.MetricNetworkHedgeLostTotal, labels...).Inc()
@@ -1164,6 +1165,25 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	return resp, nil
+}
+
+func requestObservedHedgeCancellation(req *common.NormalizedRequest) bool {
+	if req == nil {
+		return false
+	}
+	observed := false
+	req.ErrorsByUpstream.Range(func(_, value any) bool {
+		err, ok := value.(error)
+		if !ok {
+			return true
+		}
+		if common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
+			observed = true
+			return false
+		}
+		return true
+	})
+	return observed
 }
 
 func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
