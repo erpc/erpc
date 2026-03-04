@@ -690,280 +690,309 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Track time from failsafe executor start to first callback invocation
 	failsafeStartTime := time.Now()
 
-	resp, execErr := failsafeExecutor.executor.
-		WithContext(ectx).
-		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			lg.Trace().
-				Int("attempt", exec.Attempts()).
-				Int("retry", exec.Retries()).
-				Int("hedge", exec.Hedges()).
-				Dur("failsafe_init_latency", time.Since(failsafeStartTime)).
-				Msgf("execution attempt for network forwarding")
+	executeForward := func() (*common.NormalizedResponse, error) {
+		return failsafeExecutor.executor.
+			WithContext(ectx).
+			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				lg.Trace().
+					Int("attempt", exec.Attempts()).
+					Int("retry", exec.Retries()).
+					Int("hedge", exec.Hedges()).
+					Dur("failsafe_init_latency", time.Since(failsafeStartTime)).
+					Msgf("execution attempt for network forwarding")
 
-			execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
-				trace.WithAttributes(
-					attribute.String("network.id", n.networkId),
-					attribute.String("request.method", method),
-					attribute.Int("execution.attempt", exec.Attempts()),
-					attribute.Int("execution.retry", exec.Retries()),
-					attribute.Int("execution.hedge", exec.Hedges()),
-				),
-			)
-			defer execSpan.End()
+				execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
+					trace.WithAttributes(
+						attribute.String("network.id", n.networkId),
+						attribute.String("request.method", method),
+						attribute.Int("execution.attempt", exec.Attempts()),
+						attribute.Int("execution.retry", exec.Retries()),
+						attribute.Int("execution.hedge", exec.Hedges()),
+					),
+				)
+				defer execSpan.End()
 
-			// Use a local variable to avoid overwriting the captured req variable
-			// which can cause issues when multiple executions run concurrently (e.g., consensus)
-			// Be defensive about the type assertion to avoid panics if the context value was not set properly.
-			var effectiveReq *common.NormalizedRequest
-			if or := execSpanCtx.Value(common.RequestContextKey); or != nil {
-				if r, ok := or.(*common.NormalizedRequest); ok && r != nil {
-					effectiveReq = r
+				// Use a local variable to avoid overwriting the captured req variable
+				// which can cause issues when multiple executions run concurrently (e.g., consensus)
+				// Be defensive about the type assertion to avoid panics if the context value was not set properly.
+				var effectiveReq *common.NormalizedRequest
+				if or := execSpanCtx.Value(common.RequestContextKey); or != nil {
+					if r, ok := or.(*common.NormalizedRequest); ok && r != nil {
+						effectiveReq = r
+					} else {
+						effectiveReq = req
+					}
 				} else {
 					effectiveReq = req
 				}
-			} else {
-				effectiveReq = req
-			}
 
-			if common.IsTracingDetailed {
-				execSpan.SetAttributes(
-					attribute.String("request.id", fmt.Sprintf("%v", effectiveReq.ID())),
-				)
-			}
-
-			if ctxErr := execSpanCtx.Err(); ctxErr != nil {
-				cause := context.Cause(execSpanCtx)
-				if cause != nil {
-					common.SetTraceSpanError(execSpan, cause)
-					return nil, cause
-				} else {
-					common.SetTraceSpanError(execSpan, ctxErr)
-					return nil, ctxErr
+				if common.IsTracingDetailed {
+					execSpan.SetAttributes(
+						attribute.String("request.id", fmt.Sprintf("%v", effectiveReq.ID())),
+					)
 				}
-			}
-			if failsafeExecutor.timeout != nil {
-				var cancelFn context.CancelFunc
-				execSpanCtx, cancelFn = context.WithTimeout(
-					execSpanCtx,
-					// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
-					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-					//      A small slack ensures context carries timeout deadline (used when calling upstreams),
-					//      but allow the failsafe execution to fail with timeout first for proper error handling.
-					*failsafeExecutor.timeout+networkFailsafeTimeoutSlack,
-				)
 
-				defer cancelFn()
-			}
+				if ctxErr := execSpanCtx.Err(); ctxErr != nil {
+					cause := context.Cause(execSpanCtx)
+					if cause != nil {
+						common.SetTraceSpanError(execSpan, cause)
+						return nil, cause
+					} else {
+						common.SetTraceSpanError(execSpan, ctxErr)
+						return nil, ctxErr
+					}
+				}
+				if failsafeExecutor.timeout != nil {
+					var cancelFn context.CancelFunc
+					execSpanCtx, cancelFn = context.WithTimeout(
+						execSpanCtx,
+						// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
+						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
+						//      A small slack ensures context carries timeout deadline (used when calling upstreams),
+						//      but allow the failsafe execution to fail with timeout first for proper error handling.
+						*failsafeExecutor.timeout+networkFailsafeTimeoutSlack,
+					)
 
-			// Try all upstreams in a single execution before returning to failsafe.
-			// This ensures delays (emptyResultDelay, blockUnavailableDelay) only
-			// fire after a full round of upstream attempts.
-			//
-			// MarkUpstreamCompleted releases empty-result and error upstreams from
-			// ConsumedUpstreams, so they're available for the next failsafe retry.
-			// Because UpstreamIdx wraps via modular arithmetic, NextUpstream can
-			// re-select freed upstreams within the same execution. The `attempted`
-			// set below detects this and breaks the loop, ensuring each upstream
-			// is called at most once per execution.
-			//
-			// Exception: consensus requires each execution to represent exactly one
-			// upstream's response so the policy can compare N independent results.
-			// Without this cap, one fast execution could consume multiple upstreams
-			// (reserve → try → release empty → reserve next) before other consensus
-			// goroutines get their first upstream, skewing the vote.
-			var bestResp *common.NormalizedResponse
-			var lastErr error
-			maxLoopIterations := effectiveReq.UpstreamsCount()
-			if failsafeExecutor.consensusPolicyEnabled {
-				maxLoopIterations = 1
-			}
-			attempted := make(map[string]struct{}, maxLoopIterations)
+					defer cancelFn()
+				}
 
-			for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
-				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
-				if ctxErr := loopCtx.Err(); ctxErr != nil {
-					cause := context.Cause(loopCtx)
+				// Try all upstreams in a single execution before returning to failsafe.
+				// This ensures delays (emptyResultDelay, blockUnavailableDelay) only
+				// fire after a full round of upstream attempts.
+				//
+				// MarkUpstreamCompleted releases empty-result and error upstreams from
+				// ConsumedUpstreams, so they're available for the next failsafe retry.
+				// Because UpstreamIdx wraps via modular arithmetic, NextUpstream can
+				// re-select freed upstreams within the same execution. The `attempted`
+				// set below detects this and breaks the loop, ensuring each upstream
+				// is called at most once per execution.
+				//
+				// Exception: consensus requires each execution to represent exactly one
+				// upstream's response so the policy can compare N independent results.
+				// Without this cap, one fast execution could consume multiple upstreams
+				// (reserve → try → release empty → reserve next) before other consensus
+				// goroutines get their first upstream, skewing the vote.
+				var bestResp *common.NormalizedResponse
+				var lastErr error
+				maxLoopIterations := effectiveReq.UpstreamsCount()
+				if failsafeExecutor.consensusPolicyEnabled {
+					maxLoopIterations = 1
+				}
+				attempted := make(map[string]struct{}, maxLoopIterations)
+
+				for loopIteration := 0; loopIteration < maxLoopIterations; loopIteration++ {
+					loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
+					if ctxErr := loopCtx.Err(); ctxErr != nil {
+						cause := context.Cause(loopCtx)
+						if cause == nil {
+							cause = ctxErr
+						}
+						common.SetTraceSpanError(loopSpan, cause)
+						loopSpan.End()
+						return nil, cause
+					}
+
+					u, selErr := effectiveReq.NextUpstream()
+					if selErr != nil {
+						loopSpan.SetAttributes(
+							attribute.Bool("upstreams_exhausted", true),
+							attribute.String("error", selErr.Error()),
+						)
+						loopSpan.End()
+						break
+					}
+
+					if _, seen := attempted[u.Id()]; seen {
+						// Already tried in this execution — MarkUpstreamCompleted freed
+						// it from ConsumedUpstreams (retryable error or empty result) and
+						// UpstreamIdx wrapped around. Release the reservation so the
+						// upstream is available for the next failsafe retry round.
+						effectiveReq.ConsumedUpstreams.Delete(u)
+						loopSpan.SetAttributes(attribute.Bool("duplicate_selection", true))
+						loopSpan.End()
+						break
+					}
+					attempted[u.Id()] = struct{}{}
+
+					loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
+					if common.IsTracingDetailed {
+						loopSpan.SetAttributes(
+							attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
+						)
+					}
+					if eu, ok := u.(common.EvmUpstream); ok {
+						if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+							loopSpan.SetAttributes(
+								attribute.Int64("upstream.latest_block", sp.LatestBlock()),
+								attribute.Int64("upstream.finalized_block", sp.FinalizedBlock()),
+							)
+						}
+					}
+
+					ulg := lg.With().Str("upstreamId", u.Id()).Logger()
+					ulg.Debug().
+						Interface("id", effectiveReq.ID()).
+						Str("ptr", fmt.Sprintf("%p", effectiveReq)).
+						Str("selectedUpstream", u.Id()).
+						Msg("selected upstream from list")
+
+					// Pre-forward: block availability gating → skip to next upstream
+					if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
+						n.handleBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
+						loopSpan.End()
+						continue
+					}
+
+					hedges := exec.Hedges()
+					attempts := exec.Attempts()
+					retries := exec.Retries()
+					if hedges > 0 {
+						finality := effectiveReq.Finality(loopCtx)
+						telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
+							n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges),
+							finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
+						).Inc()
+					}
+					if reason := classifyAttemptReason(failsafeExecutor.consensusPolicyEnabled, retries, hedges); reason != "" {
+						telemetry.IncNetworkAttemptReason(n.projectId, n.Label(), method, reason)
+					}
+					r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, retries)
+					if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
+						ulg.Error().Err(e).Msgf("failed to normalize response")
+						err = e
+					}
+					effectiveReq.MarkUpstreamCompleted(loopCtx, u, r, err)
+
+					// Hedge cancelled → this execution lost the race, bail out
+					if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
+						n.recordHedgeDiscard(loopCtx, loopSpan, &ulg, u, effectiveReq, method, err, attempts, hedges)
+						loopSpan.End()
+						return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
+					}
+
+					if r != nil {
+						r.SetUpstream(u)
+						r.WithRequest(effectiveReq)
+					}
+
+					// Return immediately when the result is usable:
+					//  - Non-empty success always qualifies.
+					//  - Emptyish success qualifies when the method is in
+					//    emptyResultAccept and consensus is not required,
+					//    because failsafe would accept the empty result anyway
+					//    so trying more upstreams just wastes time on slow ones.
+					//  - Otherwise emptyish results continue to the next upstream.
+					if err == nil && r != nil && !r.IsObjectNull() {
+						emptyish := r.IsResultEmptyish()
+						acceptEmpty := !emptyish ||
+							(!failsafeExecutor.consensusPolicyEnabled &&
+								slices.Contains(failsafeExecutor.emptyResultAccept, method))
+						if acceptEmpty {
+							r.SetAttempts(exec.Attempts())
+							r.SetRetries(exec.Retries())
+							r.SetHedges(exec.Hedges())
+							loopSpan.SetStatus(codes.Ok, "")
+							if emptyish {
+								loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
+							}
+							loopSpan.End()
+							return r, nil
+						}
+					}
+
+					// Deterministic errors: client faults and execution reverts are the
+					// same on every upstream — no point trying others.
+					if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+						common.SetTraceSpanError(loopSpan, err)
+						loopSpan.End()
+						return nil, err
+					}
+
+					// Track best result and continue to next upstream.
+					if err != nil {
+						lastErr = err
+						common.SetTraceSpanError(loopSpan, err)
+					} else if r != nil {
+						bestResp = r
+						loopSpan.SetStatus(codes.Ok, "")
+					}
+					loopSpan.End()
+				}
+
+				// Check context after the loop — handles single-upstream case where
+				// the loop cap is reached before a new iteration can check ctx.
+				if ctxErr := execSpanCtx.Err(); ctxErr != nil {
+					cause := context.Cause(execSpanCtx)
 					if cause == nil {
 						cause = ctxErr
 					}
-					common.SetTraceSpanError(loopSpan, cause)
-					loopSpan.End()
 					return nil, cause
 				}
 
-				u, selErr := effectiveReq.NextUpstream()
-				if selErr != nil {
-					loopSpan.SetAttributes(
-						attribute.Bool("upstreams_exhausted", true),
-						attribute.String("error", selErr.Error()),
-					)
-					loopSpan.End()
-					break
+				// All upstreams tried. Return the best result for failsafe to evaluate
+				// delays and retries. Prefer a valid response over an error so the
+				// delay function can detect empty results and apply emptyResultDelay.
+				if bestResp != nil {
+					bestResp.SetAttempts(exec.Attempts())
+					bestResp.SetRetries(exec.Retries())
+					bestResp.SetHedges(exec.Hedges())
+					return bestResp, nil
 				}
 
-				if _, seen := attempted[u.Id()]; seen {
-					// Already tried in this execution — MarkUpstreamCompleted freed
-					// it from ConsumedUpstreams (retryable error or empty result) and
-					// UpstreamIdx wrapped around. Release the reservation so the
-					// upstream is available for the next failsafe retry round.
-					effectiveReq.ConsumedUpstreams.Delete(u)
-					loopSpan.SetAttributes(attribute.Bool("duplicate_selection", true))
-					loopSpan.End()
-					break
-				}
-				attempted[u.Id()] = struct{}{}
-
-				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
-				if common.IsTracingDetailed {
-					loopSpan.SetAttributes(
-						attribute.Float64("upstream.score", n.upstreamsRegistry.GetUpstreamScore(u.Id(), n.networkId, method)),
-					)
-				}
-				if eu, ok := u.(common.EvmUpstream); ok {
-					if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-						loopSpan.SetAttributes(
-							attribute.Int64("upstream.latest_block", sp.LatestBlock()),
-							attribute.Int64("upstream.finalized_block", sp.FinalizedBlock()),
-						)
-					}
+				// For consensus, return the raw upstream error so the consensus
+				// policy receives the actual error type (e.g. server error, missing
+				// data) rather than a wrapped ErrUpstreamsExhausted. The retry
+				// policy around consensus can then evaluate the raw error directly.
+				if failsafeExecutor.consensusPolicyEnabled && lastErr != nil {
+					return nil, lastErr
 				}
 
-				ulg := lg.With().Str("upstreamId", u.Id()).Logger()
-				ulg.Debug().
-					Interface("id", effectiveReq.ID()).
-					Str("ptr", fmt.Sprintf("%p", effectiveReq)).
-					Str("selectedUpstream", u.Id()).
-					Msg("selected upstream from list")
+				// Wrap all errors as ErrUpstreamsExhausted. The delay function
+				// uses HasErrorCode which traverses child errors, so it can still
+				// detect blockUnavailable / missingData inside the wrapper.
+				exhaustedErr := common.NewErrUpstreamsExhausted(
+					effectiveReq,
+					&effectiveReq.ErrorsByUpstream,
+					n.projectId,
+					n.networkId,
+					method,
+					time.Since(startTime),
+					exec.Attempts(),
+					exec.Retries(),
+					exec.Hedges(),
+					len(upsList),
+				)
+				common.SetTraceSpanError(execSpan, exhaustedErr)
+				return nil, exhaustedErr
+			})
+	}
 
-				// Pre-forward: block availability gating → skip to next upstream
-				if skipErr, isRetryable := n.checkUpstreamBlockAvailability(loopCtx, u, effectiveReq, method); skipErr != nil {
-					n.handleBlockSkip(loopCtx, loopSpan, &ulg, u, effectiveReq, method, skipErr, isRetryable)
-					loopSpan.End()
-					continue
-				}
+	type forwardExecOutcome struct {
+		resp *common.NormalizedResponse
+		err  error
+	}
 
-				hedges := exec.Hedges()
-				attempts := exec.Attempts()
-				retries := exec.Retries()
-				if hedges > 0 {
-					finality := effectiveReq.Finality(loopCtx)
-					telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
-						n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", hedges),
-						finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
-					).Inc()
-				}
-				if reason := classifyAttemptReason(failsafeExecutor.consensusPolicyEnabled, retries, hedges); reason != "" {
-					telemetry.IncNetworkAttemptReason(n.projectId, n.Label(), method, reason)
-				}
-				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, retries)
-				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
-					ulg.Error().Err(e).Msgf("failed to normalize response")
-					err = e
-				}
-				effectiveReq.MarkUpstreamCompleted(loopCtx, u, r, err)
+	execDone := make(chan forwardExecOutcome, 1)
+	go func() {
+		r, e := executeForward()
+		execDone <- forwardExecOutcome{resp: r, err: e}
+	}()
 
-				// Hedge cancelled → this execution lost the race, bail out
-				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
-					n.recordHedgeDiscard(loopCtx, loopSpan, &ulg, u, effectiveReq, method, err, attempts, hedges)
-					loopSpan.End()
-					return nil, common.NewErrUpstreamHedgeCancelled(u.Id(), err)
-				}
-
-				if r != nil {
-					r.SetUpstream(u)
-					r.WithRequest(effectiveReq)
-				}
-
-				// Return immediately when the result is usable:
-				//  - Non-empty success always qualifies.
-				//  - Emptyish success qualifies when the method is in
-				//    emptyResultAccept and consensus is not required,
-				//    because failsafe would accept the empty result anyway
-				//    so trying more upstreams just wastes time on slow ones.
-				//  - Otherwise emptyish results continue to the next upstream.
-				if err == nil && r != nil && !r.IsObjectNull() {
-					emptyish := r.IsResultEmptyish()
-					acceptEmpty := !emptyish ||
-						(!failsafeExecutor.consensusPolicyEnabled &&
-							slices.Contains(failsafeExecutor.emptyResultAccept, method))
-					if acceptEmpty {
-						r.SetAttempts(exec.Attempts())
-						r.SetRetries(exec.Retries())
-						r.SetHedges(exec.Hedges())
-						loopSpan.SetStatus(codes.Ok, "")
-						if emptyish {
-							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
-						}
-						loopSpan.End()
-						return r, nil
-					}
-				}
-
-				// Deterministic errors: client faults and execution reverts are the
-				// same on every upstream — no point trying others.
-				if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-					common.SetTraceSpanError(loopSpan, err)
-					loopSpan.End()
-					return nil, err
-				}
-
-				// Track best result and continue to next upstream.
-				if err != nil {
-					lastErr = err
-					common.SetTraceSpanError(loopSpan, err)
-				} else if r != nil {
-					bestResp = r
-					loopSpan.SetStatus(codes.Ok, "")
-				}
-				loopSpan.End()
-			}
-
-			// Check context after the loop — handles single-upstream case where
-			// the loop cap is reached before a new iteration can check ctx.
-			if ctxErr := execSpanCtx.Err(); ctxErr != nil {
-				cause := context.Cause(execSpanCtx)
-				if cause == nil {
-					cause = ctxErr
-				}
-				return nil, cause
-			}
-
-			// All upstreams tried. Return the best result for failsafe to evaluate
-			// delays and retries. Prefer a valid response over an error so the
-			// delay function can detect empty results and apply emptyResultDelay.
-			if bestResp != nil {
-				bestResp.SetAttempts(exec.Attempts())
-				bestResp.SetRetries(exec.Retries())
-				bestResp.SetHedges(exec.Hedges())
-				return bestResp, nil
-			}
-
-			// For consensus, return the raw upstream error so the consensus
-			// policy receives the actual error type (e.g. server error, missing
-			// data) rather than a wrapped ErrUpstreamsExhausted. The retry
-			// policy around consensus can then evaluate the raw error directly.
-			if failsafeExecutor.consensusPolicyEnabled && lastErr != nil {
-				return nil, lastErr
-			}
-
-			// Wrap all errors as ErrUpstreamsExhausted. The delay function
-			// uses HasErrorCode which traverses child errors, so it can still
-			// detect blockUnavailable / missingData inside the wrapper.
-			exhaustedErr := common.NewErrUpstreamsExhausted(
-				effectiveReq,
-				&effectiveReq.ErrorsByUpstream,
-				n.projectId,
-				n.networkId,
-				method,
-				time.Since(startTime),
-				exec.Attempts(),
-				exec.Retries(),
-				exec.Hedges(),
-				len(upsList),
-			)
-			common.SetTraceSpanError(execSpan, exhaustedErr)
-			return nil, exhaustedErr
-		})
+	var execErr error
+	select {
+	case out := <-execDone:
+		resp = out.resp
+		execErr = out.err
+	case <-ctx.Done():
+		cause := context.Cause(ctx)
+		if cause == nil {
+			cause = ctx.Err()
+		}
+		if mlx != nil {
+			mlx.Close(ctx, nil, cause)
+		}
+		return nil, cause
+	}
 
 	req.RLockWithTrace(ctx)
 	defer req.RUnlock()

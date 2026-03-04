@@ -470,6 +470,50 @@ func TestSetLatestBlockNumber_ConsidersMetadataOnlyUpstreamsForNetworkHead(t *te
 	assert.Equal(t, int64(200), metricsUps1.BlockHeadLag.Load(), "indexed upstream lag should be recomputed from metadata-only network head")
 }
 
+func TestSetLatestBlockNumber_ConcurrentIndexSnapshots_NoMapIterationPanic(t *testing.T) {
+	projectID := "test-project"
+	windowSize := 100 * time.Millisecond
+
+	tracker := NewTracker(&log.Logger, projectID, windowSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tracker.Bootstrap(ctx)
+
+	upstreams := []common.Upstream{
+		common.NewFakeUpstream("upstream-a"),
+		common.NewFakeUpstream("upstream-b"),
+		common.NewFakeUpstream("upstream-c"),
+		common.NewFakeUpstream("upstream-d"),
+	}
+	for _, ups := range upstreams {
+		tracker.RecordUpstreamRequest(ups, "eth_call")
+	}
+
+	const workers = 16
+	const iterations = 200
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				ups := upstreams[(worker+j)%len(upstreams)]
+				tracker.SetLatestBlockNumber(ups, int64(1000+worker+j), 0)
+			}
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	networkMeta := tracker.getMetadata(metadataKey{nil, upstreams[0].NetworkId()})
+	assert.Greater(t, networkMeta.evmLatestBlockNumber.Load(), int64(0))
+}
+
 func TestCordonStatePersistsAcrossResetWindows(t *testing.T) {
 	projectID := "test-project"
 	windowSize := 100 * time.Millisecond

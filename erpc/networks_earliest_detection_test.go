@@ -554,11 +554,11 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 		Post("").
 		Persist().
 		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			if !strings.Contains(body, "eth_getBlockByNumber") {
+			body := strings.ToLower(util.SafeReadBody(r))
+			if !strings.Contains(body, "eth_getblockbynumber") {
 				return false
 			}
-			if strings.Contains(body, "0x0") || strings.Contains(body, "0x1C9C380") {
+			if strings.Contains(body, "0x0") || strings.Contains(body, "0x1c9c380") {
 				return false
 			}
 			return true
@@ -577,8 +577,8 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 		Post("").
 		Persist().
 		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "0x1C9C380")
+			body := strings.ToLower(util.SafeReadBody(r))
+			return strings.Contains(body, "eth_getblockbynumber") && strings.Contains(body, "0x1c9c380")
 		}).
 		Reply(200).
 		JSON(map[string]interface{}{

@@ -36,6 +36,7 @@ func TestNetworkForward_AttemptReasonRetryAndUpstreamCallsMetric(t *testing.T) {
 
 	telemetry.MetricNetworkAttemptReasonTotal.Reset()
 	telemetry.MetricNetworkUpstreamCallsPerRequest.Reset()
+	telemetry.ResetHandleCache()
 
 	// First call fails, second succeeds. With one upstream this forces a retry round.
 	gock.New("http://rpc1.localhost").
@@ -133,6 +134,7 @@ func TestNetworkForward_UpstreamCallsMetric_SelectionPolicySkipDoesNotCountAsCal
 	defer util.AssertNoPendingMocks(t, 0)
 
 	telemetry.MetricNetworkUpstreamCallsPerRequest.Reset()
+	telemetry.ResetHandleCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

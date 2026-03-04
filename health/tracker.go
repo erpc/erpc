@@ -652,6 +652,34 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 	return t.getNtwMetrics(networkKey{network, method})
 }
 
+func (t *Tracker) snapshotUpstreamKeysForNetwork(net string) []upstreamKey {
+	t.mu.RLock()
+	keys := t.upstreamsByNetwork[net]
+	if len(keys) == 0 {
+		t.mu.RUnlock()
+		return nil
+	}
+	out := make([]upstreamKey, len(keys))
+	copy(out, keys)
+	t.mu.RUnlock()
+	return out
+}
+
+func (t *Tracker) snapshotMetadataKeysForNetwork(net string) map[string]metadataKey {
+	t.mu.RLock()
+	keys := t.metadataKeysByNetwork[net]
+	if len(keys) == 0 {
+		t.mu.RUnlock()
+		return nil
+	}
+	out := make(map[string]metadataKey, len(keys))
+	for id, mk := range keys {
+		out[id] = mk
+	}
+	t.mu.RUnlock()
+	return out
+}
+
 // --------------------------------------------
 // Block Number & Lag Tracking
 // --------------------------------------------
@@ -667,9 +695,7 @@ func (t *Tracker) updateNetworkLagMetrics(
 	lg *zerolog.Logger,
 ) {
 	// Use the pre-built index to avoid ranging over ALL upstreams
-	t.mu.RLock()
-	relevantKeys := t.upstreamsByNetwork[net]
-	t.mu.RUnlock()
+	relevantKeys := t.snapshotUpstreamKeysForNetwork(net)
 
 	if len(relevantKeys) == 0 {
 		// Fallback only if index not ready - this should be rare
@@ -731,9 +757,7 @@ func (t *Tracker) updateSingleUpstreamLag(
 	setLag func(*TrackedMetrics, int64),
 ) {
 	// Use the pre-built index when available
-	t.mu.RLock()
-	relevantKeys := t.upstreamsByNetwork[net]
-	t.mu.RUnlock()
+	relevantKeys := t.snapshotUpstreamKeysForNetwork(net)
 
 	if len(relevantKeys) == 0 {
 		// Fallback for safety if index not yet populated
@@ -768,9 +792,7 @@ func (t *Tracker) getNetworkMaxValue(
 	maxVal := int64(0)
 	seen := make(map[string]struct{})
 
-	t.mu.RLock()
-	relevantKeys := t.upstreamsByNetwork[net]
-	t.mu.RUnlock()
+	relevantKeys := t.snapshotUpstreamKeysForNetwork(net)
 
 	for _, k := range relevantKeys {
 		if k.ups == nil {
@@ -788,9 +810,7 @@ func (t *Tracker) getNetworkMaxValue(
 		}
 	}
 
-	t.mu.RLock()
-	networkMetadata := t.metadataKeysByNetwork[net]
-	t.mu.RUnlock()
+	networkMetadata := t.snapshotMetadataKeysForNetwork(net)
 
 	for id, mk := range networkMetadata {
 		if _, ok := seen[id]; ok {
