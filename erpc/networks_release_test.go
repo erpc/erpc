@@ -13,10 +13,12 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,6 +111,86 @@ func TestNetworkForward_CacheSetDoesNotBlockForward(t *testing.T) {
 
 	// Allow background cache-set to finish
 	time.Sleep(3 * time.Second)
+}
+
+func TestNetworkForward_CacheSetBackpressureSkipsWrites(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	cacheCfg := &common.CacheConfig{
+		Connectors: []*common.ConnectorConfig{
+			{
+				Id:     "slow-mock",
+				Driver: "mock",
+				Mock: &common.MockConnectorConfig{
+					MemoryConnectorConfig: common.MemoryConnectorConfig{
+						MaxItems: 100_000, MaxTotalSize: "1GB",
+					},
+					SetDelay: 2 * time.Second,
+				},
+			},
+		},
+		Policies: []*common.CachePolicyConfig{
+			{
+				Network:   "*",
+				Method:    "*",
+				TTL:       common.Duration(5 * time.Minute),
+				Connector: "slow-mock",
+			},
+		},
+	}
+	cacheCfg.SetDefaults()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkSimple(t, ctx, nil, nil)
+	network.cacheWriteSem = make(chan struct{}, 1)
+	network.cacheWriteSem <- struct{}{}
+	defer func() {
+		select {
+		case <-network.cacheWriteSem:
+		default:
+		}
+	}()
+
+	cacheDal, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+	require.NoError(t, err)
+	network.cacheDal = cacheDal.WithProjectId("test")
+
+	gock.New("http://rpc1.localhost").
+		Post("/").
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBalance")
+		}).
+		Times(1).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0xdeadbeef",
+		})
+
+	beforeDrops := testutil.ToFloat64(
+		telemetry.MetricNetworkCacheWriteDroppedTotal.WithLabelValues(network.projectId, network.Label(), "eth_getBalance"),
+	)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+	req.SetNetwork(network)
+	start := time.Now()
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Less(t, time.Since(start), 1*time.Second, "forward should not block when cache write queue is full")
+
+	afterDrops := testutil.ToFloat64(
+		telemetry.MetricNetworkCacheWriteDroppedTotal.WithLabelValues(network.projectId, network.Label(), "eth_getBalance"),
+	)
+	assert.Greater(t, afterDrops, beforeDrops, "cache write backpressure should increment dropped metric")
+
+	resp.Release()
 }
 
 // TestNetworkForward_DoubleReleaseIsSafe proves that calling Release() twice
