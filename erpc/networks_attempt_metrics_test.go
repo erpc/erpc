@@ -163,10 +163,18 @@ func TestNetworkForward_UpstreamCallsMetric_SelectionPolicySkipDoesNotCountAsCal
 		},
 	)
 
-	// Allow selection policy evaluator to apply rules.
-	time.Sleep(120 * time.Millisecond)
-
 	method := "eth_getBalance"
+	require.Eventually(t, func() bool {
+		if network.selectionPolicyEvaluator == nil {
+			return false
+		}
+		upstreams := network.upstreamsRegistry.GetNetworkUpstreams(ctx, network.networkId)
+		if len(upstreams) == 0 {
+			return false
+		}
+		return network.selectionPolicyEvaluator.AcquirePermit(network.logger, upstreams[0], method) != nil
+	}, time.Second, 20*time.Millisecond, "selection policy exclusion should become active")
+
 	hLabels := []string{
 		"test",
 		network.Label(),
@@ -182,6 +190,6 @@ func TestNetworkForward_UpstreamCallsMetric_SelectionPolicySkipDoesNotCountAsCal
 	require.Nil(t, resp)
 
 	afterCount, afterSum := histogramCountAndSum(t, hLabels...)
-	require.GreaterOrEqual(t, afterCount, beforeCount)
+	require.Equal(t, beforeCount+1, afterCount)
 	require.Equal(t, beforeSum, afterSum)
 }

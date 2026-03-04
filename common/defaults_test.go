@@ -564,6 +564,74 @@ func TestNetworkConfigSetDefaults_MethodWorkloadProfiles(t *testing.T) {
 	assert.Less(t, profileIndex, wildcardIndex, "profile-derived failsafe must take precedence over wildcard defaults")
 }
 
+func TestNetworkConfigSetDefaults_MethodWorkloadProfiles_ExplicitRulePrecedence(t *testing.T) {
+	network := &NetworkConfig{
+		Architecture: "evm",
+		Evm: &EvmNetworkConfig{
+			ChainId: 1,
+		},
+		Failsafe: []*FailsafeConfig{
+			{
+				MatchMethod: "eth_getBalance",
+				Timeout: &TimeoutPolicyConfig{
+					Duration: Duration(1 * time.Second),
+				},
+			},
+			{
+				MatchMethod: "*",
+				Timeout: &TimeoutPolicyConfig{
+					Duration: Duration(9 * time.Second),
+				},
+			},
+		},
+		Methods: &MethodsConfig{
+			Profiles: map[string]*MethodWorkloadProfileConfig{
+				"read-heavy": {
+					Failsafe: []*FailsafeConfig{
+						{
+							Timeout: &TimeoutPolicyConfig{
+								Duration: Duration(3 * time.Second),
+							},
+						},
+					},
+				},
+			},
+			Definitions: map[string]*CacheMethodConfig{
+				"eth_getBalance": {
+					Profile: "read-heavy",
+				},
+			},
+		},
+	}
+
+	err := network.SetDefaults(nil, nil)
+	assert.NoError(t, err)
+
+	explicitIndex := -1
+	profileIndex := -1
+	wildcardIndex := -1
+	for i, fs := range network.Failsafe {
+		if fs == nil || fs.Timeout == nil {
+			continue
+		}
+		if fs.MatchMethod == "eth_getBalance" && fs.Timeout.Duration == Duration(1*time.Second) {
+			explicitIndex = i
+		}
+		if fs.MatchMethod == "eth_getBalance" && fs.Timeout.Duration == Duration(3*time.Second) {
+			profileIndex = i
+		}
+		if fs.MatchMethod == "*" && wildcardIndex == -1 {
+			wildcardIndex = i
+		}
+	}
+
+	assert.NotEqual(t, -1, explicitIndex, "explicit method rule should be preserved")
+	assert.NotEqual(t, -1, profileIndex, "profile-derived method rule should be present")
+	assert.NotEqual(t, -1, wildcardIndex, "wildcard rule should be present")
+	assert.Less(t, explicitIndex, profileIndex, "explicit rule should take precedence over profile-generated rule")
+	assert.Less(t, profileIndex, wildcardIndex, "profile-generated rule should precede wildcard/default rule")
+}
+
 func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 	// This test suite covers the fix for the bug where user-defined matchMethod
 	// patterns were being incorrectly overwritten when no matching default was found.

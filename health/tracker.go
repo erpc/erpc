@@ -153,8 +153,9 @@ type Tracker struct {
 	upsMetrics sync.Map // map[upsKey]*TrackedMetrics
 	ntwMetrics sync.Map // map[ntwKey]*TrackedMetrics
 
-	upstreamsByNetwork map[string][]upstreamKey // Track which upstreams belong to each network
-	mu                 sync.RWMutex             // Protect the map
+	upstreamsByNetwork    map[string][]upstreamKey          // Track which upstreams belong to each network
+	metadataKeysByNetwork map[string]map[string]metadataKey // network -> upstreamId -> metadata key
+	mu                    sync.RWMutex                      // Protect index maps
 
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
@@ -357,6 +358,7 @@ func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Durati
 		projectId:                   projectId,
 		windowSize:                  windowSize,
 		upstreamsByNetwork:          make(map[string][]upstreamKey),
+		metadataKeysByNetwork:       make(map[string]map[string]metadataKey),
 		latestRollbackCandidates:    make(map[string]rollbackCandidate),
 		finalizedRollbackCandidates: make(map[string]rollbackCandidate),
 	}
@@ -412,12 +414,28 @@ func (t *Tracker) getNtwKeys(up common.Upstream, method string) []networkKey {
 
 // getMetadata fetches or creates *NetworkMetadata from sync.Map
 func (t *Tracker) getMetadata(mtdKey metadataKey) *NetworkMetadata {
+	var meta *NetworkMetadata
 	if v, ok := t.metadata.Load(mtdKey); ok {
-		return v.(*NetworkMetadata)
+		meta = v.(*NetworkMetadata)
+	} else {
+		nm := &NetworkMetadata{}
+		actual, _ := t.metadata.LoadOrStore(mtdKey, nm)
+		meta = actual.(*NetworkMetadata)
 	}
-	nm := &NetworkMetadata{}
-	actual, _ := t.metadata.LoadOrStore(mtdKey, nm)
-	return actual.(*NetworkMetadata)
+
+	if mtdKey.upstream != nil && mtdKey.network != "" {
+		upstreamID := mtdKey.upstream.Id()
+		if upstreamID != "" {
+			t.mu.Lock()
+			if _, ok := t.metadataKeysByNetwork[mtdKey.network]; !ok {
+				t.metadataKeysByNetwork[mtdKey.network] = make(map[string]metadataKey)
+			}
+			t.metadataKeysByNetwork[mtdKey.network][upstreamID] = mtdKey
+			t.mu.Unlock()
+		}
+	}
+
+	return meta
 }
 
 // getUpsMetrics fetches or creates *TrackedMetrics from sync.Map
@@ -770,23 +788,25 @@ func (t *Tracker) getNetworkMaxValue(
 		}
 	}
 
-	t.metadata.Range(func(key, value any) bool {
-		mk, ok := key.(metadataKey)
-		if !ok || mk.upstream == nil || mk.network != net {
-			return true
-		}
-		id := mk.upstream.Id()
+	t.mu.RLock()
+	networkMetadata := t.metadataKeysByNetwork[net]
+	t.mu.RUnlock()
+
+	for id, mk := range networkMetadata {
 		if _, ok := seen[id]; ok {
-			return true
+			continue
 		}
 		seen[id] = struct{}{}
-		meta := value.(*NetworkMetadata)
-		v := getUpstreamValue(meta)
-		if v > maxVal {
-			maxVal = v
+		v, ok := t.metadata.Load(mk)
+		if !ok {
+			continue
 		}
-		return true
-	})
+		meta := v.(*NetworkMetadata)
+		mv := getUpstreamValue(meta)
+		if mv > maxVal {
+			maxVal = mv
+		}
+	}
 
 	return maxVal
 }

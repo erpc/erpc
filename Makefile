@@ -123,9 +123,15 @@ test:
 .PHONY: test-fallback-config
 test-fallback-config:
 	@go clean -testcache
+	@go test ./erpc -list '^TestPolicyEvaluator$$' | grep -q '^TestPolicyEvaluator$$'
 	@go test ./erpc -run 'TestPolicyEvaluator/DefaultPolicy' -count=1
+	@go test ./erpc -list '^TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound$$' | grep -q '^TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound$$'
 	@go test ./erpc -run '^TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound$$' -count=1
+	@go test ./erpc -list '^TestHandleEthCallBatchAggregation_FallbackPaths$$' | grep -q '^TestHandleEthCallBatchAggregation_FallbackPaths$$'
 	@go test ./erpc -run '^TestHandleEthCallBatchAggregation_FallbackPaths$$' -count=1
+	@go test ./architecture/evm -list '^TestShouldFallbackMulticall3$$' | grep -q '^TestShouldFallbackMulticall3$$'
+	@go test ./architecture/evm -list '^TestBatcherFlushFallbackOnMulticall3Unavailable$$' | grep -q '^TestBatcherFlushFallbackOnMulticall3Unavailable$$'
+	@go test ./architecture/evm -list '^TestBatcher_FallbackIndividual_PanicRecovery$$' | grep -q '^TestBatcher_FallbackIndividual_PanicRecovery$$'
 	@go test ./architecture/evm -run 'TestShouldFallbackMulticall3|TestBatcherFlushFallbackOnMulticall3Unavailable|TestBatcher_FallbackIndividual_PanicRecovery' -count=1
 
 .PHONY: test-fast
