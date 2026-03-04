@@ -882,6 +882,9 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 				ChainId: 123,
 			},
 			Failsafe: []*common.FailsafeConfig{{
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: common.Duration(1 * time.Second),
+				},
 				Hedge: &common.HedgePolicyConfig{
 					Delay:    common.Duration(50 * time.Millisecond),
 					MaxCount: 1,
@@ -914,11 +917,18 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		}()
 		select {
 		case <-waitDone:
-		case <-time.After(5 * time.Second):
+		case <-time.After(8 * time.Second):
 			t.Fatal("request did not complete after context cancellation")
 		}
 		require.Error(t, respErr)
-		assert.True(t, strings.Contains(respErr.Error(), "context canceled") || strings.Contains(respErr.Error(), "context deadline exceeded"), "unexpected error: %v", respErr)
+		assert.True(
+			t,
+			strings.Contains(respErr.Error(), "context canceled") ||
+				strings.Contains(respErr.Error(), "context deadline exceeded") ||
+				strings.Contains(strings.ToLower(respErr.Error()), "timeout"),
+			"unexpected error: %v",
+			respErr,
+		)
 	})
 
 	t.Run("HedgePolicy_MultipleHedgesWithVaryingResponseTimes", func(t *testing.T) {

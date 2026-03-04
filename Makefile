@@ -7,6 +7,7 @@ help:
 	@echo " build                         Build the eRPC server"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
+	@echo " test-fallback-config          Run fallback-path regression suite"
 	@echo " test-parallel                 Run unit tests with higher parallelism (defaults: TEST_PARALLEL=8 TEST_P=8)"
 	@echo " test-parallel-max             Run unit tests with aggressive parallelism (defaults: TEST_PARALLEL=16 TEST_P=16)"
 	@echo " agent-context                 Print repo + impact context for autonomous loops"
@@ -118,6 +119,20 @@ test:
 	@go clean -testcache
 	@go test ./cmd/... -count 1 -parallel $(TEST_PARALLEL) -p $(TEST_P)
 	@go test $(GO_TEST_PACKAGES) -covermode=atomic -v -race -count 1 -parallel $(TEST_PARALLEL) -p $(TEST_P) -timeout 15m -failfast=false
+
+.PHONY: test-fallback-config
+test-fallback-config:
+	@go clean -testcache
+	@go test ./erpc -list '^TestPolicyEvaluator$$' | grep -q '^TestPolicyEvaluator$$'
+	@go test ./erpc -run 'TestPolicyEvaluator/DefaultPolicy' -count=1
+	@go test ./erpc -list '^TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound$$' | grep -q '^TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound$$'
+	@go test ./erpc -run '^TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound$$' -count=1
+	@go test ./erpc -list '^TestHandleEthCallBatchAggregation_FallbackPaths$$' | grep -q '^TestHandleEthCallBatchAggregation_FallbackPaths$$'
+	@go test ./erpc -run '^TestHandleEthCallBatchAggregation_FallbackPaths$$' -count=1
+	@go test ./architecture/evm -list '^TestShouldFallbackMulticall3$$' | grep -q '^TestShouldFallbackMulticall3$$'
+	@go test ./architecture/evm -list '^TestBatcherFlushFallbackOnMulticall3Unavailable$$' | grep -q '^TestBatcherFlushFallbackOnMulticall3Unavailable$$'
+	@go test ./architecture/evm -list '^TestBatcher_FallbackIndividual_PanicRecovery$$' | grep -q '^TestBatcher_FallbackIndividual_PanicRecovery$$'
+	@go test ./architecture/evm -run 'TestShouldFallbackMulticall3|TestBatcherFlushFallbackOnMulticall3Unavailable|TestBatcher_FallbackIndividual_PanicRecovery' -count=1
 
 .PHONY: test-fast
 test-fast:

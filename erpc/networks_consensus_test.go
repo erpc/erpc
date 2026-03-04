@@ -1100,8 +1100,8 @@ func TestConsensusPolicy(t *testing.T) {
 			requestParams: []interface{}{"0x1", false},
 			mockResponses: []mockResponse{
 				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x1", "hash": "0xaaa111", "timestamp": "0x1", "gasLimit": "0x1", "gasUsed": "0x1"})},
-				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x2", "hash": "0xbbb222", "timestamp": "0x2", "gasLimit": "0x1", "gasUsed": "0x1"})},
-				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x3", "hash": "0xccc333", "timestamp": "0x3", "gasLimit": "0x1", "gasUsed": "0x1"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x1", "hash": "0xbbb222", "timestamp": "0x2", "gasLimit": "0x1", "gasUsed": "0x1"})},
+				{status: 200, body: jsonRpcSuccess(map[string]interface{}{"number": "0x1", "hash": "0xccc333", "timestamp": "0x3", "gasLimit": "0x1", "gasUsed": "0x1"})},
 			},
 			expectedCalls: []int{1, 1, 1},
 			expectedError: &expectedError{code: common.ErrCodeConsensusDispute, contains: "not enough agreement"},

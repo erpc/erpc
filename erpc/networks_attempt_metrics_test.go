@@ -36,6 +36,7 @@ func TestNetworkForward_AttemptReasonRetryAndUpstreamCallsMetric(t *testing.T) {
 
 	telemetry.MetricNetworkAttemptReasonTotal.Reset()
 	telemetry.MetricNetworkUpstreamCallsPerRequest.Reset()
+	telemetry.ResetHandleCache()
 
 	// First call fails, second succeeds. With one upstream this forces a retry round.
 	gock.New("http://rpc1.localhost").
@@ -167,7 +168,6 @@ func TestNetwork_RecordHedgeRaceOutcome_UsesWinningExecutionType(t *testing.T) {
 	require.Equal(t, float64(1), promUtil.ToFloat64(telemetry.MetricNetworkHedgeWonTotal.WithLabelValues(labels...)))
 	require.Equal(t, float64(1), promUtil.ToFloat64(telemetry.MetricNetworkHedgeLostTotal.WithLabelValues(labels...)))
 }
-
 func TestNetworkForward_UpstreamCallsMetric_SelectionPolicySkipDoesNotCountAsCall(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -175,13 +175,13 @@ func TestNetworkForward_UpstreamCallsMetric_SelectionPolicySkipDoesNotCountAsCal
 	defer util.AssertNoPendingMocks(t, 0)
 
 	telemetry.MetricNetworkUpstreamCallsPerRequest.Reset()
+	telemetry.ResetHandleCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	evalFn, err := common.CompileFunction(`() => []`)
 	require.NoError(t, err)
-
 	network := setupTestNetworkSimple(t, ctx,
 		&common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,

@@ -3,6 +3,7 @@ package health
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DataDog/sketches-go/ddsketch"
@@ -11,9 +12,10 @@ import (
 )
 
 type QuantileTracker struct {
-	logger *zerolog.Logger
-	mu     sync.RWMutex
-	sketch *ddsketch.DDSketch
+	logger      *zerolog.Logger
+	mu          sync.RWMutex
+	sketch      *ddsketch.DDSketch
+	sampleCount atomic.Int64
 }
 
 func NewQuantileTracker(logger *zerolog.Logger) *QuantileTracker {
@@ -31,7 +33,9 @@ func (q *QuantileTracker) Add(value float64) {
 	err := q.sketch.Add(value)
 	if err != nil {
 		q.logger.Warn().Err(err).Float64("value", value).Msg("failed to add value to quantile tracker")
+		return
 	}
+	q.sampleCount.Add(1)
 }
 
 func (q *QuantileTracker) Reset() {
@@ -39,6 +43,11 @@ func (q *QuantileTracker) Reset() {
 	defer q.mu.Unlock()
 	// Re-init the sketch
 	q.sketch, _ = ddsketch.NewDefaultDDSketch(0.01)
+	q.sampleCount.Store(0)
+}
+
+func (q *QuantileTracker) Count() int64 {
+	return q.sampleCount.Load()
 }
 
 func (q *QuantileTracker) MarshalJSON() ([]byte, error) {

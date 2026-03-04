@@ -446,7 +446,6 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		assert.Equal(t, int32(0), rpc2Calls.Load(), "rpc2 should not be called before directive-targeted request")
 
 		time.Sleep(networkPostCompletionCoalescingWindow / 4)
-
 		req := common.NewNormalizedRequest(requestBody)
 		req.SetDirectives(&common.RequestDirectives{UseUpstream: "rpc2"})
 		resp, err := network.Forward(ctx, req)
@@ -514,7 +513,6 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 
 		assert.Equal(t, int32(2), rpc1Calls.Load(), "skip-cache-read request must bypass post-completion coalesced result")
 	})
-
 	t.Run("SlowUpstream_FollowersWaitAndReceive", func(t *testing.T) {
 		// Test with a slower upstream to ensure followers wait properly
 		util.ResetGock()

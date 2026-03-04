@@ -85,7 +85,7 @@ func logHttpRequestBody(lg *zerolog.Logger, body []byte) {
 	event.
 		Int("body_size_bytes", len(body)).
 		Bool("body_truncated", truncated).
-		Str("body_preview", string(preview)).
+		Bytes("body_preview", preview).
 		Msg("received http request")
 }
 
