@@ -984,6 +984,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		resp = out.resp
 		execErr = out.err
 	case <-ctx.Done():
+		// Forward is still running in background; drain its outcome to avoid
+		// leaking a completed response when cancellation wins this select race.
+		go func() {
+			out := <-execDone
+			if out.resp != nil {
+				out.resp.Release()
+			}
+		}()
 		cause := context.Cause(ctx)
 		if cause == nil {
 			cause = ctx.Err()
