@@ -30,12 +30,15 @@ var (
 	errPanicInConsensus  = errors.New("panic in consensus execution")
 )
 
-// drainResponsesInBackground spawns a goroutine to drain remaining responses from the channel
-// and release any results to avoid memory retention. This is called when short-circuiting
+// drainResponsesInBackground drains a fixed number of responses from the channel
+// and releases any results to avoid memory retention. This is called when short-circuiting
 // or when the context is cancelled.
-func drainResponsesInBackground(responseChan <-chan *execResult, startIdx, maxToSpawn int) {
+func drainResponsesInBackground(responseChan <-chan *execResult, count int) {
+	if count <= 0 {
+		return
+	}
 	go func() {
-		for j := startIdx; j < maxToSpawn; j++ {
+		for j := 0; j < count; j++ {
 			er := <-responseChan
 			if er != nil && er.Result != nil {
 				if releasable, ok := any(er.Result).(interface{ Release() }); ok && releasable != nil {
@@ -216,18 +219,73 @@ func (e *executor) executeConsensus(
 
 	var shortCircuited bool
 
-	// Spawn only as many participants as configured by policy
+	// Cap total participants by policy
 	maxToSpawn := e.maxParticipants
 	if maxToSpawn <= 0 {
 		maxToSpawn = 1
 	}
+	// Start with the minimum participant set needed for a decisive outcome under normal conditions.
+	// Additional participants are spawned only when disagreement/insufficient agreement is observed.
+	initialToSpawn := e.initialParticipantsCount(maxToSpawn)
+
 	responseChan := make(chan *execResult, maxToSpawn)
-	// Prepare and retain per-attempt executions so we can cancel losers explicitly
+	// Prepare and retain per-attempt executions so we can cancel losers explicitly.
 	attempts := make([]policy.ExecutionInternal[*common.NormalizedResponse], maxToSpawn)
-	for i := 0; i < maxToSpawn; i++ {
-		attempts[i] = parentExecution.CopyForCancellableWithValue(common.RequestContextKey, originalReq).(policy.ExecutionInternal[*common.NormalizedResponse])
-		go e.executeParticipant(cancellableCtx, lg, attempts[i], labels, innerFn, i, responseChan)
+
+	startedParticipants := 0
+	completedParticipants := 0
+	spawnParticipant := func(index int) {
+		var startedSignal chan struct{}
+		if e.config.fireAndForget {
+			startedSignal = make(chan struct{}, 1)
+		}
+		attempts[index] = parentExecution.CopyForCancellableWithValue(common.RequestContextKey, originalReq).(policy.ExecutionInternal[*common.NormalizedResponse])
+		startedParticipants++
+		go e.executeParticipant(cancellableCtx, lg, attempts[index], labels, innerFn, index, responseChan, startedSignal)
+		if startedSignal != nil {
+			<-startedSignal
+		}
 	}
+	for startedParticipants < initialToSpawn {
+		spawnParticipant(startedParticipants)
+	}
+	escalationDelay := e.consensusEscalationDelay()
+	var escalationTimer *time.Timer
+	var escalationTimerC <-chan time.Time
+	stopEscalationTimer := func() {
+		if escalationTimer == nil {
+			return
+		}
+		if !escalationTimer.Stop() {
+			select {
+			case <-escalationTimer.C:
+			default:
+			}
+		}
+		escalationTimer = nil
+		escalationTimerC = nil
+	}
+	refreshEscalationTimer := func() {
+		if startedParticipants >= maxToSpawn || completedParticipants >= startedParticipants {
+			stopEscalationTimer()
+			return
+		}
+		if escalationTimer == nil {
+			escalationTimer = time.NewTimer(escalationDelay)
+			escalationTimerC = escalationTimer.C
+			return
+		}
+		if !escalationTimer.Stop() {
+			select {
+			case <-escalationTimer.C:
+			default:
+			}
+		}
+		escalationTimer.Reset(escalationDelay)
+		escalationTimerC = escalationTimer.C
+	}
+	defer stopEscalationTimer()
+	refreshEscalationTimer()
 
 	responses := make([]*execResult, 0, maxToSpawn)
 	var shortCircuitReason string
@@ -235,9 +293,10 @@ func (e *executor) executeConsensus(
 	var winner *failsafeCommon.PolicyResult[*common.NormalizedResponse]
 
 collectLoop:
-	for i := 0; i < maxToSpawn; i++ {
+	for completedParticipants < startedParticipants {
 		select {
 		case resp := <-responseChan:
+			completedParticipants++
 			if resp != nil {
 				responses = append(responses, resp)
 				if !shortCircuited {
@@ -246,77 +305,97 @@ collectLoop:
 					if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
 						shortCircuited = true
 						shortCircuitReason = reason
+						remainingStarted := startedParticipants - completedParticipants
+						remainingUnstarted := maxToSpawn - startedParticipants
+						remaining := remainingStarted + remainingUnstarted
 
 						// In fire-and-forget mode, let remaining requests complete in background
 						// without cancelling them. This is useful for write operations like
 						// eth_sendRawTransaction where we want to broadcast to all nodes.
 						if e.config.fireAndForget {
-							remaining := maxToSpawn - i - 1
 							lg.Debug().
 								Str("reason", reason).
 								Int("remaining", remaining).
+								Int("remainingStarted", remainingStarted).
+								Int("remainingUnstarted", remainingUnstarted).
 								Msg("fire-and-forget mode: letting remaining requests complete in background")
 							telemetry.AddNetworkAttemptReason(
 								labels.projectId,
 								labels.networkId,
 								labels.category,
 								telemetry.AttemptReasonFireAndForget,
-								remaining,
+								remainingStarted,
 							)
 
 							// Drain remaining responses in background without cancelling
 							// The HTTP requests will complete naturally
-							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
+							drainResponsesInBackground(responseChan, remainingStarted)
 						} else {
 							// Normal mode: cancel remaining requests immediately to save resources
 							cancelRemaining()
 							// Explicitly cancel all outstanding attempt executions to abort in-flight work
-							for ai := range attempts {
+							for ai := 0; ai < startedParticipants; ai++ {
 								if attempts[ai] != nil {
 									attempts[ai].Cancel(nil)
 								}
 							}
-							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
+							drainResponsesInBackground(responseChan, remainingStarted)
 						}
 						break collectLoop
 					}
 				}
 			}
+
+			// No short-circuit yet and current wave is exhausted: escalate by one participant.
+			if !shortCircuited && completedParticipants == startedParticipants && startedParticipants < maxToSpawn {
+				spawnParticipant(startedParticipants)
+			}
+			refreshEscalationTimer()
 		case <-ctx.Done():
 			lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
 			// Record collection phase cancellation
 			telemetry.MetricConsensusCancellations.
 				WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).
 				Inc()
+			remainingStarted := startedParticipants - completedParticipants
+			remainingUnstarted := maxToSpawn - startedParticipants
+			remaining := remainingStarted + remainingUnstarted
 
 			// In fire-and-forget mode, let remaining requests complete in background
 			// even when parent context is cancelled. This is critical for transaction
 			// broadcasting where we want all nodes to receive the transaction regardless
 			// of whether the client's HTTP connection dropped.
 			if e.config.fireAndForget {
-				remaining := maxToSpawn - i
 				lg.Debug().
 					Int("remaining", remaining).
+					Int("remainingStarted", remainingStarted).
+					Int("remainingUnstarted", remainingUnstarted).
 					Msg("fire-and-forget mode: letting remaining requests complete despite parent cancellation")
 				telemetry.AddNetworkAttemptReason(
 					labels.projectId,
 					labels.networkId,
 					labels.category,
 					telemetry.AttemptReasonFireAndForget,
-					remaining,
+					remainingStarted,
 				)
-				drainResponsesInBackground(responseChan, i, maxToSpawn)
+				drainResponsesInBackground(responseChan, remainingStarted)
 			} else {
 				// Normal mode: cancel remaining requests to save resources
 				cancelRemaining()
-				for ai := range attempts {
+				for ai := 0; ai < startedParticipants; ai++ {
 					if attempts[ai] != nil {
 						attempts[ai].Cancel(nil)
 					}
 				}
-				drainResponsesInBackground(responseChan, i, maxToSpawn)
+				drainResponsesInBackground(responseChan, remainingStarted)
 			}
 			break collectLoop
+		case <-escalationTimerC:
+			// Timeout while waiting for in-flight participants: escalate fanout by one.
+			if startedParticipants < maxToSpawn && completedParticipants < startedParticipants {
+				spawnParticipant(startedParticipants)
+			}
+			refreshEscalationTimer()
 		}
 	}
 
@@ -327,6 +406,8 @@ collectLoop:
 
 	collectionSpan.SetAttributes(
 		attribute.Bool("short_circuited", shortCircuited),
+		attribute.Int("participants.started", startedParticipants),
+		attribute.Int("participants.used", len(responses)),
 		attribute.Int("responses.collected", len(responses)),
 	)
 
@@ -349,6 +430,12 @@ collectLoop:
 			labels.finalityStr,
 		).
 		Observe(float64(len(responses)))
+	telemetry.MetricConsensusParticipantsStarted.
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
+		Observe(float64(startedParticipants))
+	telemetry.MetricConsensusParticipantsUsed.
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
+		Observe(float64(len(responses)))
 	if shortCircuited {
 		reason := shortCircuitReason
 		if reason == "" {
@@ -362,6 +449,36 @@ collectLoop:
 	return winner, analysis
 }
 
+func (e *executor) initialParticipantsCount(maxToSpawn int) int {
+	if e.config.fireAndForget {
+		// Fire-and-forget broadcasts (e.g. eth_sendRawTransaction) must fan out to all
+		// configured participants so background delivery can continue after early return.
+		return maxToSpawn
+	}
+	initial := e.config.agreementThreshold
+	if initial <= 0 {
+		initial = 1
+	}
+	if initial > maxToSpawn {
+		initial = maxToSpawn
+	}
+	return initial
+}
+
+func (e *executor) consensusEscalationDelay() time.Duration {
+	if e.config.timeout > 0 {
+		delay := e.config.timeout / 4
+		if delay < 25*time.Millisecond {
+			return 25 * time.Millisecond
+		}
+		if delay > 200*time.Millisecond {
+			return 200 * time.Millisecond
+		}
+		return delay
+	}
+	return 50 * time.Millisecond
+}
+
 // executeParticipant runs a single upstream request within a goroutine.
 func (e *executor) executeParticipant(
 	ctx context.Context,
@@ -371,6 +488,7 @@ func (e *executor) executeParticipant(
 	innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse],
 	index int,
 	responseChan chan<- *execResult,
+	startedSignal chan<- struct{},
 ) {
 	// Panic recovery
 	defer func() {
@@ -392,6 +510,10 @@ func (e *executor) executeParticipant(
 			Inc()
 		responseChan <- nil
 		return
+	}
+
+	if startedSignal != nil {
+		startedSignal <- struct{}{}
 	}
 
 	// Execute using the pre-created cancellable attempt execution
