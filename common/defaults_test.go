@@ -632,6 +632,49 @@ func TestNetworkConfigSetDefaults_MethodWorkloadProfiles_ExplicitRulePrecedence(
 	assert.Less(t, profileIndex, wildcardIndex, "profile-generated rule should precede wildcard/default rule")
 }
 
+func TestMethodsSetDefaults_ProfileApplicationDoesNotMutateGlobalDefaultTemplates(t *testing.T) {
+	defaultMethod, ok := DefaultWithBlockCacheMethods["eth_getBalance"]
+	if !assert.True(t, ok) || !assert.NotNil(t, defaultMethod) {
+		return
+	}
+
+	original := cloneCacheMethodConfig(defaultMethod)
+	t.Cleanup(func() {
+		*defaultMethod = *original
+	})
+
+	methods := &MethodsConfig{
+		PreserveDefaultMethods: true,
+		Profiles: map[string]*MethodWorkloadProfileConfig{
+			"read-heavy": {
+				Multiplex: &MethodMultiplexProfileConfig{
+					Enabled: util.BoolPtr(false),
+				},
+			},
+		},
+		Definitions: map[string]*CacheMethodConfig{
+			"eth_getBalance": {
+				Profile: "read-heavy",
+			},
+		},
+	}
+
+	err := methods.SetDefaults()
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	methodCfg, exists := methods.Definitions["eth_getBalance"]
+	if !assert.True(t, exists) {
+		return
+	}
+	if assert.NotNil(t, methodCfg.Multiplex) {
+		assert.False(t, *methodCfg.Multiplex)
+	}
+
+	assert.Nil(t, DefaultWithBlockCacheMethods["eth_getBalance"].Multiplex, "default method template must remain immutable")
+}
+
 func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
 	// This test suite covers the fix for the bug where user-defined matchMethod
 	// patterns were being incorrectly overwritten when no matching default was found.

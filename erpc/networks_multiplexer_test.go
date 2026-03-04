@@ -445,6 +445,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		assert.Equal(t, int32(1), rpc1Calls.Load(), "initial burst should multiplex to rpc1 once")
 		assert.Equal(t, int32(0), rpc2Calls.Load(), "rpc2 should not be called before directive-targeted request")
 
+		time.Sleep(networkPostCompletionCoalescingWindow / 4)
 		req := common.NewNormalizedRequest(requestBody)
 		req.SetDirectives(&common.RequestDirectives{UseUpstream: "rpc2"})
 		resp, err := network.Forward(ctx, req)
@@ -459,6 +460,59 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		assert.Equal(t, int32(1), rpc2Calls.Load(), "directive-targeted request should call rpc2")
 	})
 
+	t.Run("PostCompletionWindow_BypassesSkipCacheReadDirective", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var rpc1Calls atomic.Int32
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				if r.URL == nil || r.URL.Host != "rpc1.localhost" {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				if strings.Contains(body, "eth_getBalance") {
+					rpc1Calls.Add(1)
+					return true
+				}
+				return false
+			}).
+			Persist().
+			Reply(200).
+			Delay(50 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1111",
+			})
+
+		network := setupTestNetworkForMultiplexer(t, ctx)
+		requestBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1234567890123456789012345678901234567890","0x10"]}`)
+
+		req1 := common.NewNormalizedRequest(requestBody)
+		resp1, err := network.Forward(ctx, req1)
+		require.NoError(t, err)
+		require.NotNil(t, resp1)
+		resp1.Release()
+		assert.Equal(t, int32(1), rpc1Calls.Load(), "first request should hit upstream")
+
+		time.Sleep(networkPostCompletionCoalescingWindow / 4)
+
+		req2 := common.NewNormalizedRequest(requestBody)
+		req2.SetDirectives(&common.RequestDirectives{SkipCacheRead: true})
+		resp2, err := network.Forward(ctx, req2)
+		require.NoError(t, err)
+		require.NotNil(t, resp2)
+		resp2.Release()
+
+		assert.Equal(t, int32(2), rpc1Calls.Load(), "skip-cache-read request must bypass post-completion coalesced result")
+	})
 	t.Run("SlowUpstream_FollowersWaitAndReceive", func(t *testing.T) {
 		// Test with a slower upstream to ensure followers wait properly
 		util.ResetGock()

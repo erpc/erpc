@@ -88,3 +88,13 @@ func (q *QuantileTracker) GetQuantile(qtile float64) time.Duration {
 	}
 	return time.Duration(seconds * float64(time.Second))
 }
+
+func (q *QuantileTracker) GetSampleCount() uint64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	count := q.sketch.GetCount()
+	if count <= 0 {
+		return 0
+	}
+	return uint64(count)
+}

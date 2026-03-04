@@ -45,6 +45,13 @@ func (s *stubAdaptiveQuantiles) Reset() {}
 
 func (s *stubAdaptiveQuantiles) Count() int64 { return s.count }
 
+func (s *stubAdaptiveQuantiles) GetSampleCount() uint64 {
+	if s.count <= 0 {
+		return 0
+	}
+	return uint64(s.count)
+}
+
 type stubAdaptiveTrackedMetrics struct {
 	quantiles common.QuantileTracker
 }
@@ -213,7 +220,7 @@ func TestShouldSuppressAdaptiveHedge_WarmupSamplesRequired(t *testing.T) {
 	assert.Equal(t, "insufficient_samples", reason)
 }
 
-func TestShouldSuppressAdaptiveHedge_StableAfterWarmup(t *testing.T) {
+func TestShouldSuppressAdaptiveHedge_StableAfterWarmup_LegacyStub(t *testing.T) {
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`))
 	req.SetNetwork(&stubAdaptiveNetwork{
 		metrics: &stubAdaptiveTrackedMetrics{

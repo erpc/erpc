@@ -1101,30 +1101,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			attribute.Int("execution.hedges", int(resp.Hedges())),
 		)
 
-		hedgeWon := resp.Hedges() > 0
-		hedgeObserved := hedgeWon || requestObservedHedgeCancellation(req)
-		if hedgeObserved {
-			finality := req.Finality(ctx)
-			upstreamID := "unknown"
-			if ups := resp.Upstream(); ups != nil {
-				upstreamID = ups.Id()
-			}
-
-			labels := []string{
-				n.projectId,
-				n.Label(),
-				upstreamID,
-				method,
-				finality.String(),
-				req.UserId(),
-				req.AgentName(),
-			}
-			if hedgeWon {
-				telemetry.CounterHandle(telemetry.MetricNetworkHedgeWonTotal, labels...).Inc()
-			} else {
-				telemetry.CounterHandle(telemetry.MetricNetworkHedgeLostTotal, labels...).Inc()
-			}
-		}
+		n.recordHedgeRaceOutcome(ctx, req, resp, method)
 	}
 
 	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
@@ -1455,6 +1432,45 @@ func (n *Network) handleBlockSkip(
 			}
 		}
 	}
+}
+
+func (n *Network) recordHedgeRaceOutcome(
+	ctx context.Context,
+	req *common.NormalizedRequest,
+	resp *common.NormalizedResponse,
+	method string,
+) {
+	if req == nil || resp == nil {
+		return
+	}
+
+	hedgeWon := resp.Hedges() > 0 && resp.WinningHedge()
+	hedgeObserved := resp.Hedges() > 0 || requestObservedHedgeCancellation(req)
+	if !hedgeObserved {
+		return
+	}
+
+	finality := req.Finality(ctx)
+	upstreamID := "unknown"
+	if ups := resp.Upstream(); ups != nil {
+		upstreamID = ups.Id()
+	}
+
+	labels := []string{
+		n.projectId,
+		n.Label(),
+		upstreamID,
+		method,
+		finality.String(),
+		req.UserId(),
+		req.AgentName(),
+	}
+
+	if hedgeWon {
+		telemetry.CounterHandle(telemetry.MetricNetworkHedgeWonTotal, labels...).Inc()
+		return
+	}
+	telemetry.CounterHandle(telemetry.MetricNetworkHedgeLostTotal, labels...).Inc()
 }
 
 // recordHedgeDiscard handles telemetry when a hedged request is discarded because another hedge won.
