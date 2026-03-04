@@ -303,6 +303,33 @@ func TestValidateBlock_RequestNumberMismatch_Fails(t *testing.T) {
 	assert.Contains(t, err.Error(), "response block number mismatch")
 }
 
+func TestValidateBlock_RequestNumberUppercasePrefixMismatch_Fails(t *testing.T) {
+	ctx := context.Background()
+
+	blockJSON := `{
+		"number": "0x101",
+		"hash": "0xabc123",
+		"transactions": [],
+		"transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+	}`
+
+	jrpcResp, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte(blockJSON), nil)
+	assert.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrpcResp)
+
+	dirs := &common.RequestDirectives{
+		ValidateTransactionsRoot: true,
+	}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0X100",false]}`))
+	req.SetDirectives(dirs)
+	resp.WithRequest(req)
+
+	err = validateBlock(ctx, nil, dirs, req, resp)
+	assert.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointContentValidation))
+	assert.Contains(t, err.Error(), "response block number mismatch")
+}
+
 func TestValidateBlock_RequestHashMismatch_Fails(t *testing.T) {
 	ctx := context.Background()
 
@@ -328,6 +355,31 @@ func TestValidateBlock_RequestHashMismatch_Fails(t *testing.T) {
 	assert.Error(t, err)
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointContentValidation))
 	assert.Contains(t, err.Error(), "response block hash mismatch")
+}
+
+func TestValidateBlock_RequestHashUppercasePrefix_Matches(t *testing.T) {
+	ctx := context.Background()
+
+	blockJSON := `{
+		"number": "0x100",
+		"hash": "0xaaaa",
+		"transactions": [],
+		"transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+	}`
+
+	jrpcResp, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte(blockJSON), nil)
+	assert.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrpcResp)
+
+	dirs := &common.RequestDirectives{
+		ValidateTransactionsRoot: true,
+	}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByHash","params":["0XAAAA",false]}`))
+	req.SetDirectives(dirs)
+	resp.WithRequest(req)
+
+	err = validateBlock(ctx, nil, dirs, req, resp)
+	assert.NoError(t, err)
 }
 
 func TestUpstreamPostForward_IdentityValidationRunsWithNilDirectives(t *testing.T) {

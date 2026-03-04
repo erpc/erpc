@@ -596,15 +596,16 @@ func validateRequestedBlockIdentity(ctx context.Context, u common.Upstream, rq *
 	if !ok || reqBlockRef == "" {
 		return nil
 	}
+	reqBlockRefLower := strings.ToLower(reqBlockRef)
 
 	switch strings.ToLower(method) {
 	case "eth_getblockbynumber":
 		// Tags ("latest", "finalized", ...) are dynamic; only enforce numeric block requests.
-		if !strings.HasPrefix(strings.ToLower(reqBlockRef), "0x") {
+		if !strings.HasPrefix(reqBlockRefLower, "0x") {
 			return nil
 		}
 
-		reqBlockNumber, err := common.HexToInt64(reqBlockRef)
+		reqBlockNumber, err := common.HexToInt64(reqBlockRefLower)
 		if err != nil {
 			return nil
 		}
@@ -615,7 +616,7 @@ func validateRequestedBlockIdentity(ctx context.Context, u common.Upstream, rq *
 			)
 		}
 
-		respBlockNumber, err := common.HexToInt64(block.Number)
+		respBlockNumber, err := common.HexToInt64(strings.ToLower(block.Number))
 		if err != nil {
 			return common.NewErrEndpointContentValidation(
 				fmt.Errorf("invalid response block number hex: %w", err),
@@ -630,7 +631,7 @@ func validateRequestedBlockIdentity(ctx context.Context, u common.Upstream, rq *
 		}
 
 	case "eth_getblockbyhash":
-		reqHash := strings.ToLower(strings.TrimPrefix(reqBlockRef, "0x"))
+		reqHash := strings.TrimPrefix(reqBlockRefLower, "0x")
 		if reqHash == "" {
 			return nil
 		}
@@ -641,7 +642,7 @@ func validateRequestedBlockIdentity(ctx context.Context, u common.Upstream, rq *
 			)
 		}
 
-		respHash := strings.ToLower(strings.TrimPrefix(block.Hash, "0x"))
+		respHash := strings.TrimPrefix(strings.ToLower(block.Hash), "0x")
 		if respHash != reqHash {
 			return common.NewErrEndpointContentValidation(
 				fmt.Errorf("response block hash mismatch: requested %s got %s", reqBlockRef, block.Hash),
