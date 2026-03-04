@@ -33,6 +33,7 @@ import (
 // Only compress responses larger than 1KB to save CPU on small responses
 const compressionThreshold = 1024
 const maxHttpRequestLogBodyBytes = 1024
+const defaultBatchWorkerConcurrency = 32
 
 var httpRequestLogSampler = &zerolog.BasicSampler{N: 100}
 
@@ -86,6 +87,20 @@ func logHttpRequestBody(lg *zerolog.Logger, body []byte) {
 		Bool("body_truncated", truncated).
 		Str("body_preview", string(preview)).
 		Msg("received http request")
+}
+
+func (s *HttpServer) batchWorkerConcurrency(batchSize int) int {
+	if batchSize <= 1 {
+		return 1
+	}
+	maxWorkers := defaultBatchWorkerConcurrency
+	if s != nil && s.serverCfg != nil && s.serverCfg.MaxBatchConcurrency != nil && *s.serverCfg.MaxBatchConcurrency > 0 {
+		maxWorkers = *s.serverCfg.MaxBatchConcurrency
+	}
+	if maxWorkers > batchSize {
+		return batchSize
+	}
+	return maxWorkers
 }
 
 func NewHttpServer(
@@ -662,14 +677,37 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			if len(requests) == 1 {
 				processRequest(0, requests[0], headers, queryArgs)
 			} else {
-				var wg sync.WaitGroup
-				for i, reqBody := range requests {
-					wg.Add(1)
-					go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
-						defer wg.Done()
-						processRequest(index, rawReq, headers, queryArgs)
-					}(i, reqBody, headers, queryArgs)
+				type batchJob struct {
+					index int
+					body  json.RawMessage
 				}
+				workers := s.batchWorkerConcurrency(len(requests))
+				jobs := make(chan batchJob)
+				var wg sync.WaitGroup
+				for i := 0; i < workers; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for job := range jobs {
+							if httpCtx.Err() != nil {
+								continue
+							}
+							processRequest(job.index, job.body, headers, queryArgs)
+						}
+					}()
+				}
+			enqueueLoop:
+				for i, reqBody := range requests {
+					select {
+					case <-httpCtx.Done():
+						break enqueueLoop
+					case jobs <- batchJob{
+						index: i,
+						body:  reqBody,
+					}:
+					}
+				}
+				close(jobs)
 				wg.Wait()
 			}
 		}

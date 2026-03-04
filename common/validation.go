@@ -90,6 +90,9 @@ func (s *ServerConfig) Validate() error {
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
 	}
+	if s.MaxBatchConcurrency != nil && *s.MaxBatchConcurrency <= 0 {
+		return fmt.Errorf("server.maxBatchConcurrency must be > 0")
+	}
 
 	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field
 	for _, entry := range s.TrustedIPForwarders {
