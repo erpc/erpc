@@ -1991,7 +1991,20 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		return fmt.Errorf("failed to set defaults for methods: %w", err)
 	}
 	if len(n.Methods.generatedFailsafeRules) > 0 {
-		n.Failsafe = append(n.Failsafe, n.Methods.generatedFailsafeRules...)
+		// Keep user-defined specific/pattern rules first, then generated profile rules,
+		// then wildcard/default rules so profiles override defaults without shadowing explicit config.
+		merged := make([]*FailsafeConfig, 0, len(n.Methods.generatedFailsafeRules)+len(n.Failsafe))
+		wildcards := make([]*FailsafeConfig, 0, len(n.Failsafe))
+		for _, fs := range n.Failsafe {
+			if fs == nil || fs.MatchMethod == "" || fs.MatchMethod == "*" {
+				wildcards = append(wildcards, fs)
+				continue
+			}
+			merged = append(merged, fs)
+		}
+		merged = append(merged, n.Methods.generatedFailsafeRules...)
+		merged = append(merged, wildcards...)
+		n.Failsafe = merged
 	}
 	var failsafeDefaults []*FailsafeConfig
 	if defaults != nil {

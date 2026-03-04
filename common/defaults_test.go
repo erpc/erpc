@@ -495,6 +495,14 @@ func TestNetworkConfigSetDefaults_MethodWorkloadProfiles(t *testing.T) {
 		Evm: &EvmNetworkConfig{
 			ChainId: 1,
 		},
+		Failsafe: []*FailsafeConfig{
+			{
+				MatchMethod: "*",
+				Timeout: &TimeoutPolicyConfig{
+					Duration: Duration(9 * time.Second),
+				},
+			},
+		},
 		Methods: &MethodsConfig{
 			Profiles: map[string]*MethodWorkloadProfileConfig{
 				"read-heavy": {
@@ -534,19 +542,26 @@ func TestNetworkConfigSetDefaults_MethodWorkloadProfiles(t *testing.T) {
 	}
 
 	foundProfileFailsafe := false
-	for _, fs := range network.Failsafe {
+	profileIndex := -1
+	wildcardIndex := -1
+	for i, fs := range network.Failsafe {
 		if fs == nil {
 			continue
 		}
 		if fs.MatchMethod == "eth_getBalance" {
 			foundProfileFailsafe = true
+			profileIndex = i
 			if assert.NotNil(t, fs.Timeout) {
 				assert.Equal(t, Duration(3*time.Second), fs.Timeout.Duration)
 			}
-			break
+		}
+		if fs.MatchMethod == "*" && wildcardIndex == -1 {
+			wildcardIndex = i
 		}
 	}
 	assert.True(t, foundProfileFailsafe, "profile-derived failsafe rule should be generated for eth_getBalance")
+	assert.NotEqual(t, -1, wildcardIndex, "wildcard failsafe rule should be present")
+	assert.Less(t, profileIndex, wildcardIndex, "profile-derived failsafe must take precedence over wildcard defaults")
 }
 
 func TestSetDefaults_NetworkConfig_FailsafeMatchMethod(t *testing.T) {
