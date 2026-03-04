@@ -435,13 +435,10 @@ func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Netw
 		return rs, re
 	}
 
-	// Only run validation when directives are set (avoids JSON parsing overhead otherwise).
-	// Always-on integrity checks piggyback on the same parse as directive-gated checks.
-	dirs := rq.Directives()
-	if dirs == nil {
-		return rs, re
-	}
-	if err := validateBlock(ctx, u, dirs, rq, rs); err != nil {
+	// Always run validation:
+	// - always-on request/response identity checks
+	// - directive-gated checks when directives are present
+	if err := validateBlock(ctx, u, rq.Directives(), rq, rs); err != nil {
 		return rs, err
 	}
 
@@ -480,11 +477,16 @@ type blockValidationBlockLite struct {
 
 // validateBlock validates eth_getBlockByNumber/Hash responses.
 // It runs always-on integrity checks first (fundamental request/response invariants),
-// then directive-gated checks. Callers must ensure dirs is non-nil.
+// then directive-gated checks.
 func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rq *common.NormalizedRequest, rs *common.NormalizedResponse) error {
 	jrr, err := rs.JsonRpcResponse(ctx)
 	if err != nil {
 		return err
+	}
+
+	// Always-on checks must run even when no directives were attached.
+	if dirs == nil {
+		dirs = &common.RequestDirectives{}
 	}
 
 	var block blockValidationBlockLite

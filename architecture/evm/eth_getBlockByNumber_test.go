@@ -330,6 +330,32 @@ func TestValidateBlock_RequestHashMismatch_Fails(t *testing.T) {
 	assert.Contains(t, err.Error(), "response block hash mismatch")
 }
 
+func TestUpstreamPostForward_IdentityValidationRunsWithNilDirectives(t *testing.T) {
+	ctx := context.Background()
+
+	blockJSON := `{
+		"number": "0x101",
+		"hash": "0xabc123",
+		"transactions": [],
+		"transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+	}`
+
+	jrpcResp, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte(blockJSON), nil)
+	assert.NoError(t, err)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+	// Intentionally leave directives unset (nil).
+
+	resp := common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jrpcResp)
+
+	_, err = upstreamPostForward_eth_getBlockByNumber(ctx, &testNetwork{}, nil, req, resp, nil)
+	assert.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointContentValidation))
+	assert.Contains(t, err.Error(), "response block number mismatch")
+}
+
 func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 	t.Run("TaggedBlockWithEnforcementDisabled_ReturnsNull", func(t *testing.T) {
 		// Create a request with a block tag ("pending") and directive disabled
