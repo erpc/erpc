@@ -183,14 +183,14 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 	mode string,
 ) {
 	projectId := ""
-	networkLabel := ""
+	networkId := ""
 	if len(candidates) > 0 {
 		method := ""
 		if project != nil && project.Config != nil {
 			projectId = project.Config.Id
 		}
 		if network != nil {
-			networkLabel = network.Label()
+			networkId = network.Id()
 		}
 		if reason == "" {
 			reason = "unspecified"
@@ -198,14 +198,14 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 		if mode == "" {
 			mode = multicallFallbackModeFull
 		}
-		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkLabel, reason).Inc()
-		telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(projectId, networkLabel, reason, mode).Inc()
+		telemetry.MetricMulticall3FallbackTotal.WithLabelValues(projectId, networkId, reason).Inc()
+		telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(projectId, networkId, reason, mode).Inc()
 		if candidates[0].req != nil {
 			method, _ = candidates[0].req.Method()
 		}
 		telemetry.AddNetworkAttemptReason(
 			projectId,
-			networkLabel,
+			networkId,
 			method,
 			telemetry.AttemptReasonBatchFallback,
 			len(candidates),
@@ -217,7 +217,7 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 		for _, cand := range candidates {
 			responses[cand.index] = processErrorBody(&cand.logger, startedAt, cand.req, err, s.serverCfg.IncludeErrorDetails)
 			common.EndRequestSpan(cand.ctx, nil, err)
-			telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "error").Inc()
+			telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "error").Inc()
 		}
 		return
 	}
@@ -243,7 +243,7 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 						Msg("panic in forwardEthCallBatchCandidates goroutine")
 					responses[c.index] = processErrorBody(&c.logger, startedAt, c.req, panicErr, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(c.ctx, nil, panicErr)
-					telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "error").Inc()
+					telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "error").Inc()
 				}
 			}()
 			resp, err := forwardBatchProject(withSkipNetworkRateLimit(c.ctx), project, network, c.req)
@@ -253,13 +253,13 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 				}
 				responses[c.index] = processErrorBody(&c.logger, startedAt, c.req, err, s.serverCfg.IncludeErrorDetails)
 				common.EndRequestSpan(c.ctx, nil, err)
-				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "error").Inc()
+				telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "error").Inc()
 				return
 			}
 
 			responses[c.index] = resp
 			common.EndRequestSpan(c.ctx, resp, nil)
-			telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkLabel, "success").Inc()
+			telemetry.MetricMulticall3FallbackRequestsTotal.WithLabelValues(projectId, networkId, "success").Inc()
 		}(cand)
 	}
 	wg.Wait()

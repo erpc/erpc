@@ -62,6 +62,8 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 
 	t.Run("records batch fallback attempt reason", func(t *testing.T) {
 		telemetry.MetricNetworkAttemptReasonTotal.Reset()
+		telemetry.MetricMulticall3FallbackTotal.Reset()
+		telemetry.MetricMulticall3FallbackReasonMatrixTotal.Reset()
 
 		responses := make([]interface{}, 2)
 		resp := common.NewNormalizedResponse()
@@ -70,9 +72,9 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 		}
 
 		project := &PreparedProject{Config: &common.ProjectConfig{Id: "prjA"}}
-		network := &Network{projectId: "prjA", networkId: "evm:1", networkLabel: "evm:1"}
+		network := &Network{projectId: "prjA", networkId: "evm:1", networkLabel: "mainnet"}
 
-		before := promUtil.ToFloat64(
+		beforeByID := promUtil.ToFloat64(
 			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
 				"prjA",
 				"evm:1",
@@ -80,6 +82,38 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 				telemetry.AttemptReasonBatchFallback,
 				telemetry.MetricsVariantLabel(),
 				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		beforeByLabel := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"eth_call",
+				telemetry.AttemptReasonBatchFallback,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		beforeFallbackTotalByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "evm:1", "test_reason"),
+		)
+		beforeFallbackTotalByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "mainnet", "test_reason"),
+		)
+		beforeFallbackReasonByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"evm:1",
+				"test_reason",
+				multicallFallbackModeFull,
+			),
+		)
+		beforeFallbackReasonByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"test_reason",
+				multicallFallbackModeFull,
 			),
 		)
 
@@ -93,7 +127,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			multicallFallbackModeFull,
 		)
 
-		after := promUtil.ToFloat64(
+		afterByID := promUtil.ToFloat64(
 			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
 				"prjA",
 				"evm:1",
@@ -103,7 +137,45 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 				telemetry.MetricsReleaseLabel(),
 			),
 		)
-		require.Equal(t, before+2, after)
+		afterByLabel := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"eth_call",
+				telemetry.AttemptReasonBatchFallback,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		afterFallbackTotalByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "evm:1", "test_reason"),
+		)
+		afterFallbackTotalByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "mainnet", "test_reason"),
+		)
+		afterFallbackReasonByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"evm:1",
+				"test_reason",
+				multicallFallbackModeFull,
+			),
+		)
+		afterFallbackReasonByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"test_reason",
+				multicallFallbackModeFull,
+			),
+		)
+
+		require.Equal(t, beforeByID+2, afterByID)
+		require.Equal(t, beforeByLabel, afterByLabel)
+		require.Equal(t, beforeFallbackTotalByID+1, afterFallbackTotalByID)
+		require.Equal(t, beforeFallbackTotalByLabel, afterFallbackTotalByLabel)
+		require.Equal(t, beforeFallbackReasonByID+1, afterFallbackReasonByID)
+		require.Equal(t, beforeFallbackReasonByLabel, afterFallbackReasonByLabel)
 	})
 
 	t.Run("panic recovery in forward goroutine", func(t *testing.T) {
