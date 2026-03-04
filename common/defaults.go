@@ -542,19 +542,7 @@ func (m *MethodsConfig) SetDefaults() error {
 		// If no definitions provided or PreserveDefaultMethods is false, use all defaults
 		mergedMethods := map[string]*CacheMethodConfig{}
 
-		// Merge all default methods into a single map
-		for name, method := range DefaultStaticCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultRealtimeCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultWithBlockCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultSpecialCacheMethods {
-			mergedMethods[name] = method
-		}
+		mergeDefaultCacheMethods(mergedMethods)
 
 		// Mark default stateful methods
 		for _, mn := range DefaultStatefulMethodNames {
@@ -577,18 +565,7 @@ func (m *MethodsConfig) SetDefaults() error {
 		// User provided some definitions and wants to preserve defaults
 		// First copy all defaults
 		mergedMethods := map[string]*CacheMethodConfig{}
-		for name, method := range DefaultStaticCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultRealtimeCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultWithBlockCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultSpecialCacheMethods {
-			mergedMethods[name] = method
-		}
+		mergeDefaultCacheMethods(mergedMethods)
 
 		// Mark default stateful methods
 		for _, mn := range DefaultStatefulMethodNames {
@@ -638,6 +615,56 @@ func (m *MethodsConfig) SetDefaults() error {
 	}
 
 	return nil
+}
+
+func mergeDefaultCacheMethods(dst map[string]*CacheMethodConfig) {
+	for name, method := range DefaultStaticCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+	for name, method := range DefaultRealtimeCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+	for name, method := range DefaultWithBlockCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+	for name, method := range DefaultSpecialCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+}
+
+func cloneCacheMethodConfig(in *CacheMethodConfig) *CacheMethodConfig {
+	if in == nil {
+		return nil
+	}
+
+	out := &CacheMethodConfig{
+		Profile:   in.Profile,
+		ReqRefs:   cloneInterfaceMatrix(in.ReqRefs),
+		RespRefs:  cloneInterfaceMatrix(in.RespRefs),
+		Finalized: in.Finalized,
+		Realtime:  in.Realtime,
+		Stateful:  in.Stateful,
+		Requires:  append([]string(nil), in.Requires...),
+	}
+
+	if in.TranslateLatestTag != nil {
+		v := *in.TranslateLatestTag
+		out.TranslateLatestTag = &v
+	}
+	if in.TranslateFinalizedTag != nil {
+		v := *in.TranslateFinalizedTag
+		out.TranslateFinalizedTag = &v
+	}
+	if in.EnforceBlockAvailability != nil {
+		v := *in.EnforceBlockAvailability
+		out.EnforceBlockAvailability = &v
+	}
+	if in.Multiplex != nil {
+		v := *in.Multiplex
+		out.Multiplex = &v
+	}
+
+	return out
 }
 
 func (m *MethodsConfig) applyWorkloadProfiles() error {
