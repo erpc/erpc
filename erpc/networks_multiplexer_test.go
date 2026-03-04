@@ -589,6 +589,10 @@ func TestNetwork_Multiplexer_MethodLevelDisable(t *testing.T) {
 	if !ok || cfg == nil {
 		cfg = &common.CacheMethodConfig{}
 		network.cfg.Methods.Definitions["eth_getBalance"] = cfg
+	} else {
+		cfgCopy := *cfg
+		cfg = &cfgCopy
+		network.cfg.Methods.Definitions["eth_getBalance"] = cfg
 	}
 	cfg.Multiplex = util.BoolPtr(false)
 

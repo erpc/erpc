@@ -1415,6 +1415,15 @@ func (r *SelectionPolicyRuleConfig) Validate() error {
 	if action != "" && action != string(SelectionPolicyRuleActionInclude) && action != string(SelectionPolicyRuleActionExclude) {
 		return fmt.Errorf("action must be either 'include' or 'exclude'")
 	}
+	if err := ValidatePattern(r.MatchMethod); err != nil {
+		return fmt.Errorf("matchMethod is invalid: %w", err)
+	}
+	if err := ValidatePattern(r.MatchUpstreamID); err != nil {
+		return fmt.Errorf("matchUpstreamId is invalid: %w", err)
+	}
+	if err := ValidatePattern(r.MatchUpstreamGroup); err != nil {
+		return fmt.Errorf("matchUpstreamGroup is invalid: %w", err)
+	}
 	checkNonNegative := func(name string, v *float64) error {
 		if v != nil && *v < 0 {
 			return fmt.Errorf("%s must be greater than or equal to 0", name)
