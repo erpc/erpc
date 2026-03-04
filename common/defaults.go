@@ -33,6 +33,53 @@ func MatchFinalities(finalities1, finalities2 []DataFinalityState) bool {
 	return false
 }
 
+func applyNetworkFailsafeDefaults(failsafes []*FailsafeConfig, defaults []*FailsafeConfig) error {
+	if len(failsafes) == 0 {
+		return nil
+	}
+
+	for i, fs := range failsafes {
+		if fs == nil {
+			continue
+		}
+		if len(defaults) == 0 {
+			if err := fs.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+			}
+			continue
+		}
+
+		// Find matching default by method/finality.
+		// If no explicit match is found, apply base defaults with wildcard method.
+		defaultFs := &FailsafeConfig{
+			MatchMethod: "*",
+		}
+		for _, dfs := range defaults {
+			if dfs == nil {
+				continue
+			}
+			methodMatch := true
+			if dfs.MatchMethod != "" && fs.MatchMethod != "" {
+				methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
+			} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
+				methodMatch = false
+			}
+
+			finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
+			if methodMatch && finalityMatch {
+				defaultFs = dfs
+				break
+			}
+		}
+
+		if err := fs.SetDefaults(defaultFs); err != nil {
+			return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
 type connectorScope string
 
 const (
@@ -489,23 +536,13 @@ func (c *CacheConfig) SetDefaults() error {
 }
 
 func (m *MethodsConfig) SetDefaults() error {
+	m.generatedFailsafeRules = nil
+
 	if m.Definitions == nil || (len(m.Definitions) == 0 && !m.PreserveDefaultMethods) {
 		// If no definitions provided or PreserveDefaultMethods is false, use all defaults
 		mergedMethods := map[string]*CacheMethodConfig{}
 
-		// Merge all default methods into a single map
-		for name, method := range DefaultStaticCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultRealtimeCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultWithBlockCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultSpecialCacheMethods {
-			mergedMethods[name] = method
-		}
+		mergeDefaultCacheMethods(mergedMethods)
 
 		// Mark default stateful methods
 		for _, mn := range DefaultStatefulMethodNames {
@@ -528,18 +565,7 @@ func (m *MethodsConfig) SetDefaults() error {
 		// User provided some definitions and wants to preserve defaults
 		// First copy all defaults
 		mergedMethods := map[string]*CacheMethodConfig{}
-		for name, method := range DefaultStaticCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultRealtimeCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultWithBlockCacheMethods {
-			mergedMethods[name] = method
-		}
-		for name, method := range DefaultSpecialCacheMethods {
-			mergedMethods[name] = method
-		}
+		mergeDefaultCacheMethods(mergedMethods)
 
 		// Mark default stateful methods
 		for _, mn := range DefaultStatefulMethodNames {
@@ -577,7 +603,161 @@ func (m *MethodsConfig) SetDefaults() error {
 		methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
 	}
 
+	if err := m.applyWorkloadProfiles(); err != nil {
+		return err
+	}
+
+	for _, methodCfg := range m.Definitions {
+		if methodCfg == nil {
+			continue
+		}
+		methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
+	}
+
 	return nil
+}
+
+func mergeDefaultCacheMethods(dst map[string]*CacheMethodConfig) {
+	for name, method := range DefaultStaticCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+	for name, method := range DefaultRealtimeCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+	for name, method := range DefaultWithBlockCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+	for name, method := range DefaultSpecialCacheMethods {
+		dst[name] = cloneCacheMethodConfig(method)
+	}
+}
+
+func cloneCacheMethodConfig(in *CacheMethodConfig) *CacheMethodConfig {
+	if in == nil {
+		return nil
+	}
+
+	out := &CacheMethodConfig{
+		Profile:   in.Profile,
+		ReqRefs:   cloneInterfaceMatrix(in.ReqRefs),
+		RespRefs:  cloneInterfaceMatrix(in.RespRefs),
+		Finalized: in.Finalized,
+		Realtime:  in.Realtime,
+		Stateful:  in.Stateful,
+		Requires:  append([]string(nil), in.Requires...),
+	}
+
+	if in.TranslateLatestTag != nil {
+		v := *in.TranslateLatestTag
+		out.TranslateLatestTag = &v
+	}
+	if in.TranslateFinalizedTag != nil {
+		v := *in.TranslateFinalizedTag
+		out.TranslateFinalizedTag = &v
+	}
+	if in.EnforceBlockAvailability != nil {
+		v := *in.EnforceBlockAvailability
+		out.EnforceBlockAvailability = &v
+	}
+	if in.Multiplex != nil {
+		v := *in.Multiplex
+		out.Multiplex = &v
+	}
+
+	return out
+}
+
+func (m *MethodsConfig) applyWorkloadProfiles() error {
+	if m == nil || len(m.Definitions) == 0 || len(m.Profiles) == 0 {
+		return nil
+	}
+
+	var generated []*FailsafeConfig
+
+	for methodName, methodCfg := range m.Definitions {
+		if methodCfg == nil || methodCfg.Profile == "" {
+			continue
+		}
+
+		profile, ok := m.Profiles[methodCfg.Profile]
+		if !ok || profile == nil {
+			return fmt.Errorf("methods.definitions.%s.profile '%s' does not exist in methods.profiles", methodName, methodCfg.Profile)
+		}
+
+		if profile.Cache != nil {
+			applyMethodCacheProfile(methodCfg, profile.Cache)
+		}
+		if profile.Routing != nil && len(methodCfg.Requires) == 0 && len(profile.Routing.Requires) > 0 {
+			methodCfg.Requires = append([]string(nil), profile.Routing.Requires...)
+		}
+		if profile.Multiplex != nil && profile.Multiplex.Enabled != nil && methodCfg.Multiplex == nil {
+			v := *profile.Multiplex.Enabled
+			methodCfg.Multiplex = &v
+		}
+		if len(profile.Failsafe) > 0 {
+			for _, fsCfg := range profile.Failsafe {
+				if fsCfg == nil {
+					continue
+				}
+				fs := fsCfg.Copy()
+				fs.MatchMethod = methodName
+				generated = append(generated, fs)
+			}
+		}
+	}
+
+	m.generatedFailsafeRules = generated
+	return nil
+}
+
+func applyMethodCacheProfile(dst *CacheMethodConfig, src *MethodCacheProfileConfig) {
+	if dst == nil || src == nil {
+		return
+	}
+
+	if len(dst.ReqRefs) == 0 && len(src.ReqRefs) > 0 {
+		dst.ReqRefs = cloneInterfaceMatrix(src.ReqRefs)
+	}
+	if len(dst.RespRefs) == 0 && len(src.RespRefs) > 0 {
+		dst.RespRefs = cloneInterfaceMatrix(src.RespRefs)
+	}
+	if src.Finalized != nil && !dst.Finalized {
+		dst.Finalized = *src.Finalized
+	}
+	if src.Realtime != nil && !dst.Realtime {
+		dst.Realtime = *src.Realtime
+	}
+	if src.Stateful != nil && !dst.Stateful {
+		dst.Stateful = *src.Stateful
+	}
+	if src.TranslateLatestTag != nil && dst.TranslateLatestTag == nil {
+		v := *src.TranslateLatestTag
+		dst.TranslateLatestTag = &v
+	}
+	if src.TranslateFinalizedTag != nil && dst.TranslateFinalizedTag == nil {
+		v := *src.TranslateFinalizedTag
+		dst.TranslateFinalizedTag = &v
+	}
+	if src.EnforceBlockAvailability != nil && dst.EnforceBlockAvailability == nil {
+		v := *src.EnforceBlockAvailability
+		dst.EnforceBlockAvailability = &v
+	}
+}
+
+func cloneInterfaceMatrix(in [][]interface{}) [][]interface{} {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([][]interface{}, len(in))
+	for i, row := range in {
+		if len(row) == 0 {
+			continue
+		}
+		copied := make([]interface{}, len(row))
+		copy(copied, row)
+		out[i] = copied
+	}
+	return out
 }
 
 func (c *CompressionConfig) SetDefaults() error {
@@ -1761,44 +1941,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 					n.Failsafe[i] = &FailsafeConfig{}
 					*n.Failsafe[i] = *fs
 				}
-			} else {
-				// Apply defaults to each failsafe config
-				for i, fs := range n.Failsafe {
-					// Find matching default by method/finality
-					defaultFs := &FailsafeConfig{
-						MatchMethod: "*",
-					}
-					for _, dfs := range defaults.Failsafe {
-						// Match method using wildcard (if both are specified)
-						methodMatch := true
-						if dfs.MatchMethod != "" && fs.MatchMethod != "" {
-							methodMatch, _ = WildcardMatch(dfs.MatchMethod, fs.MatchMethod)
-						} else if dfs.MatchMethod != "" || fs.MatchMethod != "" {
-							// If only one has a method specified, they don't match
-							methodMatch = false
-						}
-
-						// Match finality (empty array means any finality)
-						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
-
-						if methodMatch && finalityMatch {
-							defaultFs = dfs
-							break
-						}
-					}
-					if defaultFs != nil {
-						if err := fs.SetDefaults(defaultFs); err != nil {
-							return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-						}
-					}
-				}
-			}
-		} else if len(n.Failsafe) > 0 {
-			// Apply system default to each failsafe config
-			for i, fs := range n.Failsafe {
-				if err := fs.SetDefaults(nil); err != nil {
-					return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-				}
 			}
 		}
 		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
@@ -1856,13 +1998,6 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
 			}
 		}
-	} else if len(n.Failsafe) > 0 {
-		// Apply system default to each failsafe config
-		for i, fs := range n.Failsafe {
-			if err := fs.SetDefaults(nil); err != nil {
-				return fmt.Errorf("failed to set defaults for failsafe[%d]: %w", i, err)
-			}
-		}
 	}
 
 	if n.Architecture == "" {
@@ -1881,6 +2016,29 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	}
 	if err := n.Methods.SetDefaults(); err != nil {
 		return fmt.Errorf("failed to set defaults for methods: %w", err)
+	}
+	if len(n.Methods.generatedFailsafeRules) > 0 {
+		// Keep user-defined specific/pattern rules first, then generated profile rules,
+		// then wildcard/default rules so profiles override defaults without shadowing explicit config.
+		merged := make([]*FailsafeConfig, 0, len(n.Methods.generatedFailsafeRules)+len(n.Failsafe))
+		wildcards := make([]*FailsafeConfig, 0, len(n.Failsafe))
+		for _, fs := range n.Failsafe {
+			if fs == nil || fs.MatchMethod == "" || fs.MatchMethod == "*" {
+				wildcards = append(wildcards, fs)
+				continue
+			}
+			merged = append(merged, fs)
+		}
+		merged = append(merged, n.Methods.generatedFailsafeRules...)
+		merged = append(merged, wildcards...)
+		n.Failsafe = merged
+	}
+	var failsafeDefaults []*FailsafeConfig
+	if defaults != nil {
+		failsafeDefaults = defaults.Failsafe
+	}
+	if err := applyNetworkFailsafeDefaults(n.Failsafe, failsafeDefaults); err != nil {
+		return err
 	}
 
 	if n.Evm != nil {
@@ -2523,13 +2681,19 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
 		c.EvalInterval = Duration(1 * time.Minute)
 	}
-	if c.EvalFunction == nil {
+	// Precedence: evalFunction > rules > built-in default function.
+	// If rules are provided and evalFunction is absent, keep declarative mode.
+	if c.EvalFunction == nil && len(c.Rules) == 0 {
 		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
 			// This should never happen with the default function - it's a programming error
 			return fmt.Errorf("failed to compile default selection policy function: %w", err)
 		}
 		c.EvalFunction = evalFunction
+		c.evalFunctionIsDefault = true
+		if c.evalFunctionOriginal == "" {
+			c.evalFunctionOriginal = DefaultPolicyFunction
+		}
 	}
 	if c.ResampleExcluded {
 		if c.ResampleInterval == 0 {
@@ -2799,7 +2963,8 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 			ResampleInterval: Duration(5 * time.Minute),
 			ResampleCount:    10,
 
-			evalFunctionOriginal: DefaultPolicyFunction,
+			evalFunctionOriginal:  DefaultPolicyFunction,
+			evalFunctionIsDefault: true,
 		}
 
 		n.SelectionPolicy = selectionPolicy

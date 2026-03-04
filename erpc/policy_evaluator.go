@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -177,66 +178,17 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		p.logger.Debug().Str("method", method).Interface("upstreams", metricsData).Msg("evaluating selection policy function")
 	}
 
-	// Call user-defined evaluation function
-	p.evalMutex.Lock()
-	defer p.evalMutex.Unlock()
-
-	defer func() {
-		if rec := recover(); rec != nil {
-			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-				"selection-policy-eval",
-				fmt.Sprintf("network:%s method:%s", p.networkId, method),
-				common.ErrorFingerprint(rec),
-			).Inc()
-			p.logger.Error().
-				Str("method", method).
-				Interface("upstreams", metricsData).
-				Interface("panic", rec).
-				Str("stack", string(debug.Stack())).
-				Msg("unexpected panic in user-defined selection policy function")
-		}
-	}()
-
-	result, err := p.config.EvalFunction(nil, p.runtime.ToValue(metricsData), p.runtime.ToValue(method))
+	var (
+		selectedUpstreams map[string]bool
+		err               error
+	)
+	if p.config.UsesEvalFunction() {
+		selectedUpstreams, err = p.evaluateWithFunction(method, metricsData)
+	} else {
+		selectedUpstreams, err = p.evaluateWithRules(method, metricsData)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to evaluate selection policy: %w", err)
-	}
-
-	// Process results and update states
-	selectedUpstreams := make(map[string]bool)
-	exp := result.Export()
-
-	if p.logger.GetLevel() <= zerolog.TraceLevel {
-		p.logger.Trace().Str("method", method).Interface("result", exp).Msg("received evalFunction result for selection policy")
-	}
-
-	var arr []interface{}
-
-	if a, ok := exp.([]metricData); ok {
-		for _, v := range a {
-			arr = append(arr, v)
-		}
-	} else if !ok {
-		if a, ok := exp.([]interface{}); ok {
-			arr = a
-		} else {
-			return fmt.Errorf("unexpected return value from evalFunction, expected an array of upstreams: %v", result)
-		}
-	}
-
-	for _, v := range arr {
-		ups, ok := v.(metricData)
-		if !ok {
-			ups, ok = v.(map[string]interface{})
-			if !ok {
-				return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %+v raw value: %+v full result: %+v", ups, v, result)
-			}
-		}
-		if upstreamId, ok := ups["id"].(string); ok {
-			selectedUpstreams[upstreamId] = true
-		} else {
-			return fmt.Errorf("unexpected return value from evalFunction, expected a string 'id' key in each object of returned array: %+v raw value: %+v full result: %+v", ups, v, result)
-		}
+		return err
 	}
 
 	if p.logger.GetLevel() <= zerolog.TraceLevel {
@@ -260,6 +212,199 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 	}
 
 	return nil
+}
+
+func (p *PolicyEvaluator) evaluateWithFunction(method string, metricsData []metricData) (selectedUpstreams map[string]bool, err error) {
+	p.evalMutex.Lock()
+	defer p.evalMutex.Unlock()
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+				"selection-policy-eval",
+				fmt.Sprintf("network:%s method:%s", p.networkId, method),
+				common.ErrorFingerprint(rec),
+			).Inc()
+			p.logger.Error().
+				Str("method", method).
+				Interface("upstreams", metricsData).
+				Interface("panic", rec).
+				Str("stack", string(debug.Stack())).
+				Msg("unexpected panic in user-defined selection policy function")
+			err = fmt.Errorf("panic while evaluating selection policy: %v", rec)
+		}
+	}()
+
+	result, evalErr := p.config.EvalFunction(nil, p.runtime.ToValue(metricsData), p.runtime.ToValue(method))
+	if evalErr != nil {
+		return nil, fmt.Errorf("failed to evaluate selection policy: %w", evalErr)
+	}
+
+	exp := result.Export()
+	if p.logger.GetLevel() <= zerolog.TraceLevel {
+		p.logger.Trace().Str("method", method).Interface("result", exp).Msg("received evalFunction result for selection policy")
+	}
+
+	selectedUpstreams = make(map[string]bool)
+	var arr []interface{}
+
+	if a, ok := exp.([]metricData); ok {
+		for _, v := range a {
+			arr = append(arr, v)
+		}
+	} else if !ok {
+		if a, ok := exp.([]interface{}); ok {
+			arr = a
+		} else {
+			return nil, fmt.Errorf("unexpected return value from evalFunction, expected an array of upstreams: %v", result)
+		}
+	}
+
+	for _, v := range arr {
+		ups, ok := v.(metricData)
+		if !ok {
+			ups, ok = v.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %+v raw value: %+v full result: %+v", ups, v, result)
+			}
+		}
+		if upstreamId, ok := ups["id"].(string); ok {
+			selectedUpstreams[upstreamId] = true
+		} else {
+			return nil, fmt.Errorf("unexpected return value from evalFunction, expected a string 'id' key in each object of returned array: %+v raw value: %+v full result: %+v", ups, v, result)
+		}
+	}
+
+	return selectedUpstreams, err
+}
+
+func (p *PolicyEvaluator) evaluateWithRules(method string, metricsData []metricData) (map[string]bool, error) {
+	selectedUpstreams := make(map[string]bool, len(metricsData))
+	for _, md := range metricsData {
+		if upstreamID, ok := md["id"].(string); ok && upstreamID != "" {
+			selectedUpstreams[upstreamID] = true
+		}
+	}
+
+	for _, rule := range p.config.Rules {
+		if rule == nil {
+			continue
+		}
+		matchMethod := strings.TrimSpace(rule.MatchMethod)
+		if matchMethod == "" {
+			matchMethod = "*"
+		}
+		methodMatched, _ := common.WildcardMatch(matchMethod, method)
+		if !methodMatched {
+			continue
+		}
+
+		action := strings.ToLower(strings.TrimSpace(string(rule.Action)))
+		if action == "" {
+			action = string(common.SelectionPolicyRuleActionInclude)
+		}
+		exclude := action == string(common.SelectionPolicyRuleActionExclude)
+
+		for _, md := range metricsData {
+			upstreamID, _ := md["id"].(string)
+			if upstreamID == "" {
+				continue
+			}
+			if !matchesDeclarativeRule(md, rule) {
+				continue
+			}
+			selectedUpstreams[upstreamID] = !exclude
+		}
+	}
+
+	return selectedUpstreams, nil
+}
+
+func matchesDeclarativeRule(md metricData, rule *common.SelectionPolicyRuleConfig) bool {
+	if md == nil || rule == nil {
+		return false
+	}
+
+	if rule.MatchUpstreamID != "" {
+		id, _ := md["id"].(string)
+		if id == "" {
+			return false
+		}
+		matched, _ := common.WildcardMatch(rule.MatchUpstreamID, id)
+		if !matched {
+			return false
+		}
+	}
+	if rule.MatchUpstreamGroup != "" {
+		upstreamCfg, _ := md["config"].(*common.UpstreamConfig)
+		if upstreamCfg == nil {
+			return false
+		}
+		matched, _ := common.WildcardMatch(rule.MatchUpstreamGroup, upstreamCfg.Group)
+		if !matched {
+			return false
+		}
+	}
+
+	metrics, _ := md["metrics"].(map[string]interface{})
+	if !withinMax(metrics, "errorRate", rule.MaxErrorRate) {
+		return false
+	}
+	if !withinMax(metrics, "blockHeadLag", rule.MaxBlockHeadLag) {
+		return false
+	}
+	if !withinMax(metrics, "finalizationLag", rule.MaxFinalizationLag) {
+		return false
+	}
+	if !withinMax(metrics, "p90ResponseSeconds", rule.MaxP90ResponseSeconds) {
+		return false
+	}
+	if !withinMax(metrics, "p95ResponseSeconds", rule.MaxP95ResponseSeconds) {
+		return false
+	}
+	if !withinMax(metrics, "p99ResponseSeconds", rule.MaxP99ResponseSeconds) {
+		return false
+	}
+	if !withinMax(metrics, "throttledRate", rule.MaxThrottledRate) {
+		return false
+	}
+
+	return true
+}
+
+func withinMax(metrics map[string]interface{}, key string, threshold *float64) bool {
+	if threshold == nil {
+		return true
+	}
+	if metrics == nil {
+		return false
+	}
+
+	raw, ok := metrics[key]
+	if !ok {
+		return false
+	}
+
+	switch v := raw.(type) {
+	case float64:
+		return v <= *threshold
+	case float32:
+		return float64(v) <= *threshold
+	case int64:
+		return float64(v) <= *threshold
+	case int32:
+		return float64(v) <= *threshold
+	case int:
+		return float64(v) <= *threshold
+	case uint64:
+		return float64(v) <= *threshold
+	case uint32:
+		return float64(v) <= *threshold
+	case uint:
+		return float64(v) <= *threshold
+	default:
+		return false
+	}
 }
 
 func (p *PolicyEvaluator) getOrCreateStateEntries(method string, upsList []*upstream.Upstream) []stateEntry {

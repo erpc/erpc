@@ -1298,15 +1298,45 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return err
 		}
 	}
-	if n.Methods != nil && n.Methods.Definitions != nil {
-		for methodName, methodCfg := range n.Methods.Definitions {
-			if methodCfg == nil {
-				continue
+	if n.Methods != nil {
+		if n.Methods.Profiles != nil {
+			for profileName, profileCfg := range n.Methods.Profiles {
+				if profileName == "" {
+					return fmt.Errorf("network.*.methods.profiles has an empty profile name")
+				}
+				if profileCfg == nil {
+					return fmt.Errorf("network.*.methods.profiles.%s cannot be null", profileName)
+				}
+				if profileCfg.Routing != nil {
+					if err := validateCapabilityTags(
+						fmt.Sprintf("network.*.methods.profiles.%s.routing.requires", profileName),
+						profileCfg.Routing.Requires,
+					); err != nil {
+						return err
+					}
+					profileCfg.Routing.Requires = NormalizeCapabilityTags(profileCfg.Routing.Requires)
+				}
 			}
-			if err := validateCapabilityTags(fmt.Sprintf("network.*.methods.definitions.%s.requires", methodName), methodCfg.Requires); err != nil {
-				return err
+		}
+
+		if n.Methods.Definitions != nil {
+			for methodName, methodCfg := range n.Methods.Definitions {
+				if methodCfg == nil {
+					continue
+				}
+				if methodCfg.Profile != "" {
+					if n.Methods.Profiles == nil {
+						return fmt.Errorf("network.*.methods.definitions.%s.profile '%s' does not exist in methods.profiles", methodName, methodCfg.Profile)
+					}
+					if _, ok := n.Methods.Profiles[methodCfg.Profile]; !ok {
+						return fmt.Errorf("network.*.methods.definitions.%s.profile '%s' does not exist in methods.profiles", methodName, methodCfg.Profile)
+					}
+				}
+				if err := validateCapabilityTags(fmt.Sprintf("network.*.methods.definitions.%s.requires", methodName), methodCfg.Requires); err != nil {
+					return err
+				}
+				methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
 			}
-			methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
 		}
 	}
 	if n.RateLimitBudget != "" {
@@ -1354,8 +1384,16 @@ func (c *SelectionPolicyConfig) Validate() error {
 	if c.EvalInterval <= 0 {
 		return fmt.Errorf("selectionPolicy.evalInterval must be greater than 0")
 	}
-	if c.EvalFunction == nil {
-		return fmt.Errorf("selectionPolicy.evalFunction is required")
+	if !c.UsesEvalFunction() && len(c.Rules) == 0 {
+		return fmt.Errorf("selectionPolicy.evalFunction or selectionPolicy.rules is required")
+	}
+	for i, rule := range c.Rules {
+		if rule == nil {
+			return fmt.Errorf("selectionPolicy.rules[%d] cannot be null", i)
+		}
+		if err := rule.Validate(); err != nil {
+			return fmt.Errorf("selectionPolicy.rules[%d]: %w", i, err)
+		}
 	}
 	// ResampleInterval and ResampleCount are only required when ResampleExcluded is true
 	if c.ResampleExcluded {
@@ -1365,6 +1403,53 @@ func (c *SelectionPolicyConfig) Validate() error {
 		if c.ResampleCount <= 0 {
 			return fmt.Errorf("selectionPolicy.resampleCount must be greater than 0 when resampleExcluded is true")
 		}
+	}
+	return nil
+}
+
+func (r *SelectionPolicyRuleConfig) Validate() error {
+	if r == nil {
+		return fmt.Errorf("rule is required")
+	}
+	action := strings.ToLower(strings.TrimSpace(string(r.Action)))
+	if action != "" && action != string(SelectionPolicyRuleActionInclude) && action != string(SelectionPolicyRuleActionExclude) {
+		return fmt.Errorf("action must be either 'include' or 'exclude'")
+	}
+	if err := ValidatePattern(r.MatchMethod); err != nil {
+		return fmt.Errorf("matchMethod is invalid: %w", err)
+	}
+	if err := ValidatePattern(r.MatchUpstreamID); err != nil {
+		return fmt.Errorf("matchUpstreamId is invalid: %w", err)
+	}
+	if err := ValidatePattern(r.MatchUpstreamGroup); err != nil {
+		return fmt.Errorf("matchUpstreamGroup is invalid: %w", err)
+	}
+	checkNonNegative := func(name string, v *float64) error {
+		if v != nil && *v < 0 {
+			return fmt.Errorf("%s must be greater than or equal to 0", name)
+		}
+		return nil
+	}
+	if err := checkNonNegative("maxErrorRate", r.MaxErrorRate); err != nil {
+		return err
+	}
+	if err := checkNonNegative("maxBlockHeadLag", r.MaxBlockHeadLag); err != nil {
+		return err
+	}
+	if err := checkNonNegative("maxFinalizationLag", r.MaxFinalizationLag); err != nil {
+		return err
+	}
+	if err := checkNonNegative("maxP90ResponseSeconds", r.MaxP90ResponseSeconds); err != nil {
+		return err
+	}
+	if err := checkNonNegative("maxP95ResponseSeconds", r.MaxP95ResponseSeconds); err != nil {
+		return err
+	}
+	if err := checkNonNegative("maxP99ResponseSeconds", r.MaxP99ResponseSeconds); err != nil {
+		return err
+	}
+	if err := checkNonNegative("maxThrottledRate", r.MaxThrottledRate); err != nil {
+		return err
 	}
 	return nil
 }

@@ -604,6 +604,77 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 	})
 }
 
+func TestNetwork_Multiplexer_MethodLevelDisable(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var upstreamRequestCount atomic.Int32
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			if strings.Contains(body, "eth_getBalance") {
+				upstreamRequestCount.Add(1)
+				return true
+			}
+			return false
+		}).
+		Persist().
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0x1",
+		})
+
+	network := setupTestNetworkForMultiplexer(t, ctx)
+	if network.cfg.Methods == nil {
+		network.cfg.Methods = &common.MethodsConfig{}
+	}
+	if network.cfg.Methods.Definitions == nil {
+		network.cfg.Methods.Definitions = map[string]*common.CacheMethodConfig{}
+	}
+	cfg, ok := network.cfg.Methods.Definitions["eth_getBalance"]
+	if !ok || cfg == nil {
+		cfg = &common.CacheMethodConfig{}
+		network.cfg.Methods.Definitions["eth_getBalance"] = cfg
+	} else {
+		cfgCopy := *cfg
+		cfg = &cfgCopy
+		network.cfg.Methods.Definitions["eth_getBalance"] = cfg
+	}
+	cfg.Multiplex = util.BoolPtr(false)
+
+	numRequests := 8
+	var wg sync.WaitGroup
+	wg.Add(numRequests)
+
+	successCount := atomic.Int32{}
+	requestBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1234567890123456789012345678901234567890","latest"]}`)
+
+	for i := 0; i < numRequests; i++ {
+		go func() {
+			defer wg.Done()
+			req := common.NewNormalizedRequest(requestBody)
+			resp, err := network.Forward(ctx, req)
+			if err == nil && resp != nil {
+				successCount.Add(1)
+				resp.Release()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	assert.Equal(t, int32(numRequests), successCount.Load())
+	assert.Equal(t, int32(numRequests), upstreamRequestCount.Load(), "method-level multiplex=false should bypass coalescing")
+}
+
 // setupTestNetworkForMultiplexer creates a test network configured for multiplexer testing
 // without caching to ensure we're testing pure multiplexing behavior.
 func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network {
