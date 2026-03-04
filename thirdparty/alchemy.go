@@ -385,12 +385,19 @@ func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context) (map[int64]str
 		}
 	}
 
-	// Merge with defaults, API data takes precedence
-	for chainID, subdomain := range defaultAlchemyNetworkSubdomains {
-		if _, exists := newData[chainID]; !exists {
-			newData[chainID] = subdomain
-		}
-	}
+	return mergeAlchemyNetworkSubdomains(newData), nil
+}
 
-	return newData, nil
+func mergeAlchemyNetworkSubdomains(apiData map[int64]string) map[int64]string {
+	merged := make(map[int64]string, len(defaultAlchemyNetworkSubdomains)+len(apiData))
+	for chainID, subdomain := range defaultAlchemyNetworkSubdomains {
+		merged[chainID] = subdomain
+	}
+	for chainID, subdomain := range apiData {
+		if chainID == 0 || subdomain == "" {
+			continue
+		}
+		merged[chainID] = subdomain
+	}
+	return merged
 }
