@@ -172,6 +172,87 @@ func TestNetworkRetry_MissingDataError(t *testing.T) {
 	})
 }
 
+func TestNetworkRetry_BlockSanityValidation(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+	defer util.AssertNoPendingMocks(t, 0)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber")
+		}).
+		Times(1).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]interface{}{
+				"number":           "0x11",
+				"hash":             "0x1111",
+				"transactions":     []interface{}{},
+				"transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+			},
+		})
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber")
+		}).
+		Times(1).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]interface{}{
+				"number":           "0x10",
+				"hash":             "0x2222",
+				"transactions":     []interface{}{},
+				"transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+			},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkForMissingDataRetry(t, ctx,
+		&common.DirectiveDefaultsConfig{
+			RetryEmpty: util.BoolPtr(true),
+		},
+		&common.RetryPolicyConfig{
+			MaxAttempts: 3,
+		},
+	)
+
+	upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`))
+	req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// Must fail over to rpc2 within the same execution (no network retry round).
+	assert.Equal(t, 1, resp.Attempts())
+	assert.Equal(t, 0, resp.Retries())
+	assert.Equal(t, "rpc2", resp.UpstreamId())
+
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+
+	var block struct {
+		Number string `json:"number"`
+	}
+	err = common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &block)
+	require.NoError(t, err)
+	assert.Equal(t, "0x10", strings.ToLower(block.Number))
+}
+
 func TestNetworkRetry_ServerSideException(t *testing.T) {
 	t.Run("HTTP500_ShouldRetryWithOtherUpstreams", func(t *testing.T) {
 		util.ResetGock()

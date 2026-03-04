@@ -441,7 +441,7 @@ func upstreamPostForward_eth_getBlockByNumber(ctx context.Context, n common.Netw
 	if dirs == nil {
 		return rs, re
 	}
-	if err := validateBlock(ctx, u, dirs, rs); err != nil {
+	if err := validateBlock(ctx, u, dirs, rq, rs); err != nil {
 		return rs, err
 	}
 
@@ -479,9 +479,9 @@ type blockValidationBlockLite struct {
 }
 
 // validateBlock validates eth_getBlockByNumber/Hash responses.
-// It runs always-on integrity checks first (fundamental Ethereum invariants),
+// It runs always-on integrity checks first (fundamental request/response invariants),
 // then directive-gated checks. Callers must ensure dirs is non-nil.
-func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rs *common.NormalizedResponse) error {
+func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestDirectives, rq *common.NormalizedRequest, rs *common.NormalizedResponse) error {
 	jrr, err := rs.JsonRpcResponse(ctx)
 	if err != nil {
 		return err
@@ -490,6 +490,11 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 	var block blockValidationBlockLite
 	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &block); err != nil {
 		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid JSON result for block validation: %w", err), u)
+	}
+
+	// ── Always-on checks (cannot be disabled) ─────────────────────────────
+	if err := validateRequestedBlockIdentity(ctx, u, rq, &block); err != nil {
+		return err
 	}
 
 	// ── Directive-gated checks (opt-in via config/library) ───────────────
@@ -557,6 +562,89 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 			if err := validateBlockTransactions(u, dirs, &block, fullTxs); err != nil {
 				return err
 			}
+		}
+	}
+
+	return nil
+}
+
+func validateRequestedBlockIdentity(ctx context.Context, u common.Upstream, rq *common.NormalizedRequest, block *blockValidationBlockLite) error {
+	if rq == nil || block == nil {
+		return nil
+	}
+
+	method, err := rq.Method()
+	if err != nil {
+		return nil
+	}
+
+	jrq, err := rq.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return nil
+	}
+
+	jrq.RLock()
+	defer jrq.RUnlock()
+
+	if len(jrq.Params) == 0 {
+		return nil
+	}
+
+	reqBlockRef, ok := jrq.Params[0].(string)
+	if !ok || reqBlockRef == "" {
+		return nil
+	}
+
+	switch strings.ToLower(method) {
+	case "eth_getblockbynumber":
+		// Tags ("latest", "finalized", ...) are dynamic; only enforce numeric block requests.
+		if !strings.HasPrefix(strings.ToLower(reqBlockRef), "0x") {
+			return nil
+		}
+
+		reqBlockNumber, err := common.HexToInt64(reqBlockRef)
+		if err != nil {
+			return nil
+		}
+		if block.Number == "" {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("response block number mismatch: requested %s got empty number", reqBlockRef),
+				u,
+			)
+		}
+
+		respBlockNumber, err := common.HexToInt64(block.Number)
+		if err != nil {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("invalid response block number hex: %w", err),
+				u,
+			)
+		}
+		if respBlockNumber != reqBlockNumber {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("response block number mismatch: requested %s got %s", reqBlockRef, block.Number),
+				u,
+			)
+		}
+
+	case "eth_getblockbyhash":
+		reqHash := strings.ToLower(strings.TrimPrefix(reqBlockRef, "0x"))
+		if reqHash == "" {
+			return nil
+		}
+		if block.Hash == "" {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("response block hash mismatch: requested %s got empty hash", reqBlockRef),
+				u,
+			)
+		}
+
+		respHash := strings.ToLower(strings.TrimPrefix(block.Hash, "0x"))
+		if respHash != reqHash {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("response block hash mismatch: requested %s got %s", reqBlockRef, block.Hash),
+				u,
+			)
 		}
 	}
 
