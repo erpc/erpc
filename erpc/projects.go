@@ -154,6 +154,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 					cloneResp.SetAttempts(resp.Attempts())
 					cloneResp.SetRetries(resp.Retries())
 					cloneResp.SetHedges(resp.Hedges())
+					cloneResp.SetWinningHedge(resp.WinningHedge())
 					cloneResp.SetEvmBlockRef(resp.EvmBlockRef())
 					cloneResp.SetEvmBlockNumber(resp.EvmBlockNumber())
 					go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)

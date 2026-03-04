@@ -22,6 +22,27 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+const (
+	adaptiveHedgeStableP95Max         = 150 * time.Millisecond
+	adaptiveHedgeStableJitterMaxRatio = 0.20
+	adaptiveHedgeMinSampleCount       = uint64(scoreMinSamplesForConfidence)
+)
+
+var (
+	adaptiveHedgeHighRiskMethods = map[string]struct{}{
+		"eth_call":               {},
+		"eth_estimateGas":        {},
+		"eth_getLogs":            {},
+		"eth_sendRawTransaction": {},
+	}
+	adaptiveHedgeHighRiskMethodPrefixes = []string{
+		"trace_",
+		"debug_",
+		"arbtrace_",
+		"erigon_",
+	}
+)
+
 func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
 	var policies = map[string]failsafe.Policy[*common.NormalizedResponse]{}
@@ -327,18 +348,20 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, em
 
 		var req *common.NormalizedRequest
 		var method string
+		var reqID interface{}
 		r := event.Context().Value(common.RequestContextKey)
 		if r != nil {
 			var ok bool
 			req, ok = r.(*common.NormalizedRequest)
 			if ok && req != nil {
+				reqID = req.ID()
 				if req.IsCompositeRequest() {
 					span.SetAttributes(
 						attribute.Bool("hedge", false),
 						attribute.String("reason", "composite_request"),
 						attribute.String("composite_type", req.CompositeType()),
 					)
-					logger.Debug().Str("method", method).Interface("id", req.ID()).Str("compositeType", req.CompositeType()).Msgf("ignoring hedge for composite request")
+					logger.Debug().Str("method", method).Interface("id", reqID).Str("compositeType", req.CompositeType()).Msgf("ignoring hedge for composite request")
 					return false
 				}
 
@@ -350,8 +373,24 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, em
 						attribute.Bool("hedge", false),
 						attribute.String("reason", "write_method"),
 					)
-					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
+					logger.Debug().Str("method", method).Interface("id", reqID).Msgf("ignoring hedge for write request")
 					return false
+				}
+
+				if !consensusEnabled {
+					if suppress, reason := shouldSuppressAdaptiveHedge(ctx, req, method); suppress {
+						span.SetAttributes(
+							attribute.Bool("hedge", false),
+							attribute.String("reason", reason),
+							attribute.String("finality", req.Finality(ctx).String()),
+						)
+						logger.Debug().
+							Str("method", method).
+							Interface("id", reqID).
+							Str("reason", reason).
+							Msg("suppressing hedge for stable method/finality")
+						return false
+					}
 				}
 			}
 		}
@@ -362,7 +401,7 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, em
 			attribute.Int("attempts", event.Attempts()),
 			attribute.Int("hedges", event.Hedges()),
 		)
-		logger.Trace().Str("method", method).Interface("id", req.ID()).Msgf("attempting to hedge request")
+		logger.Trace().Str("method", method).Interface("id", reqID).Msgf("attempting to hedge request")
 
 		// Continue with the next hedge
 		return true
@@ -415,6 +454,66 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, em
 	})
 
 	return builder.Build(), nil
+}
+
+func shouldSuppressAdaptiveHedge(ctx context.Context, req *common.NormalizedRequest, method string) (bool, string) {
+	if req == nil || method == "" {
+		return false, "missing_context"
+	}
+
+	if isAdaptiveHedgeHighRiskMethod(method) {
+		return false, "high_risk_method"
+	}
+
+	finality := req.Finality(ctx)
+	if finality == common.DataFinalityStateRealtime || finality == common.DataFinalityStateUnfinalized {
+		return false, "volatile_finality"
+	}
+
+	ntw := req.Network()
+	if ntw == nil {
+		return false, "missing_network"
+	}
+
+	mt := ntw.GetMethodMetrics(method)
+	if mt == nil {
+		return false, "missing_method_metrics"
+	}
+
+	qt := mt.GetResponseQuantiles()
+	if qt == nil {
+		return false, "missing_quantiles"
+	}
+	if qt.GetSampleCount() < adaptiveHedgeMinSampleCount {
+		return false, "insufficient_samples"
+	}
+
+	p50 := qt.GetQuantile(0.50)
+	p95 := qt.GetQuantile(0.95)
+	if p50 <= 0 || p95 <= 0 || p95 < p50 {
+		return false, "insufficient_samples"
+	}
+
+	spreadRatio := float64(p95-p50) / float64(p95)
+	if p95 <= adaptiveHedgeStableP95Max && spreadRatio <= adaptiveHedgeStableJitterMaxRatio {
+		return true, "stable_latency"
+	}
+
+	return false, "unstable_latency"
+}
+
+func isAdaptiveHedgeHighRiskMethod(method string) bool {
+	if _, ok := adaptiveHedgeHighRiskMethods[method]; ok {
+		return true
+	}
+
+	for _, prefix := range adaptiveHedgeHighRiskMethodPrefixes {
+		if strings.HasPrefix(method, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {

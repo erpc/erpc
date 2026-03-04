@@ -197,6 +197,24 @@ var (
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
 	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user", "agent_name"})
 
+	MetricNetworkHedgeWonTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_hedge_won_total",
+		Help:      "Total number of requests where a hedged attempt won the race.",
+	}, []string{"project", "network", "upstream", "category", "finality", "user", "agent_name"})
+
+	MetricNetworkHedgeLostTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_hedge_lost_total",
+		Help:      "Total number of requests where primary attempt won despite active hedges.",
+	}, []string{"project", "network", "upstream", "category", "finality", "user", "agent_name"})
+
+	MetricNetworkHedgeDiscardTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_hedge_discard_total",
+		Help:      "Total number of hedged attempts discarded because another in-flight attempt won.",
+	}, []string{"project", "network", "upstream", "category", "finality", "user", "agent_name"})
+
 	MetricNetworkHedgeDelaySeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_hedge_delay_seconds",

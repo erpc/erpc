@@ -152,6 +152,190 @@ func TestNetwork_HedgePolicy(t *testing.T) {
 		assert.Contains(t, jrr.GetResultString(), "0x1111")
 	})
 
+	t.Run("AdaptiveSuppression_StableFinalizedMethodSkipsHedge", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","0x1"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Times(1).
+			Reply(200).
+			Delay(150 * time.Millisecond). // Would trigger hedge without adaptive suppression
+			JSON(map[string]interface{}{
+				"jsonrpc":  "2.0",
+				"id":       1,
+				"result":   "0x1111",
+				"fromHost": "rpc1",
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc":  "2.0",
+				"id":       1,
+				"result":   "0x2222",
+				"fromHost": "rpc2",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+			Delay:    common.Duration(50 * time.Millisecond),
+			MaxCount: 1,
+		})
+
+		mt := network.metricsTracker.GetNetworkMethodMetrics(network.Id(), "eth_getBalance")
+		for i := 0; i < 25; i++ {
+			mt.ResponseQuantiles.Add(0.04)
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, jrr.GetResultString(), "0x1111")
+	})
+
+	t.Run("AdaptiveSuppression_RealtimeFinalityStillHedges", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(200 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc":  "2.0",
+				"id":       1,
+				"result":   "0x1111",
+				"fromHost": "rpc1",
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(30 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc":  "2.0",
+				"id":       1,
+				"result":   "0x2222",
+				"fromHost": "rpc2",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+			Delay:    common.Duration(50 * time.Millisecond),
+			MaxCount: 1,
+		})
+
+		mt := network.metricsTracker.GetNetworkMethodMetrics(network.Id(), "eth_getBalance")
+		for i := 0; i < 25; i++ {
+			mt.ResponseQuantiles.Add(0.04)
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, jrr.GetResultString(), "0x2222")
+	})
+
+	t.Run("AdaptiveSuppression_HighRiskMethodStillHedges", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x70a082310000000000000000000000000000000000000000000000000000000000000001"},"0x1"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_call")
+			}).
+			Reply(200).
+			Delay(220 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc":  "2.0",
+				"id":       1,
+				"result":   "0x1111",
+				"fromHost": "rpc1",
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_call")
+			}).
+			Reply(200).
+			Delay(30 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc":  "2.0",
+				"id":       1,
+				"result":   "0x2222",
+				"fromHost": "rpc2",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+			Delay:    common.Duration(50 * time.Millisecond),
+			MaxCount: 1,
+		})
+
+		mt := network.metricsTracker.GetNetworkMethodMetrics(network.Id(), "eth_call")
+		for i := 0; i < 25; i++ {
+			mt.ResponseQuantiles.Add(0.04)
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, jrr.GetResultString(), "0x2222")
+	})
+
 	t.Run("QuantileBasedHedge_DynamicDelay", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

@@ -832,6 +832,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						r.SetAttempts(exec.Attempts())
 						r.SetRetries(exec.Retries())
 						r.SetHedges(exec.Hedges())
+						r.SetWinningHedge(exec.IsHedge())
 						loopSpan.SetStatus(codes.Ok, "")
 						if emptyish {
 							loopSpan.SetAttributes(attribute.Bool("emptyish_accepted", true))
@@ -877,6 +878,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				bestResp.SetAttempts(exec.Attempts())
 				bestResp.SetRetries(exec.Retries())
 				bestResp.SetHedges(exec.Hedges())
+				bestResp.SetWinningHedge(exec.IsHedge())
 				return bestResp, nil
 			}
 
@@ -1003,6 +1005,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			attribute.Int("execution.retries", int(resp.Retries())),
 			attribute.Int("execution.hedges", int(resp.Hedges())),
 		)
+
+		n.recordHedgeRaceOutcome(ctx, req, resp, method)
 	}
 
 	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
@@ -1312,6 +1316,39 @@ func (n *Network) handleBlockSkip(
 	}
 }
 
+func (n *Network) recordHedgeRaceOutcome(
+	ctx context.Context,
+	req *common.NormalizedRequest,
+	resp *common.NormalizedResponse,
+	method string,
+) {
+	if req == nil || resp == nil || resp.Hedges() <= 0 {
+		return
+	}
+
+	finality := req.Finality(ctx)
+	upstreamID := "unknown"
+	if ups := resp.Upstream(); ups != nil {
+		upstreamID = ups.Id()
+	}
+
+	labels := []string{
+		n.projectId,
+		n.Label(),
+		upstreamID,
+		method,
+		finality.String(),
+		req.UserId(),
+		req.AgentName(),
+	}
+
+	if resp.WinningHedge() {
+		telemetry.CounterHandle(telemetry.MetricNetworkHedgeWonTotal, labels...).Inc()
+		return
+	}
+	telemetry.CounterHandle(telemetry.MetricNetworkHedgeLostTotal, labels...).Inc()
+}
+
 // recordHedgeDiscard handles telemetry when a hedged request is discarded because another hedge won.
 func (n *Network) recordHedgeDiscard(
 	ctx context.Context,
@@ -1329,6 +1366,10 @@ func (n *Network) recordHedgeDiscard(
 	telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardsTotal,
 		n.projectId, n.Label(), u.Id(), method, fmt.Sprintf("%d", attempts),
 		fmt.Sprintf("%d", hedges), finality.String(),
+		req.UserId(), req.AgentName(),
+	).Inc()
+	telemetry.CounterHandle(telemetry.MetricNetworkHedgeDiscardTotal,
+		n.projectId, n.Label(), u.Id(), method, finality.String(),
 		req.UserId(), req.AgentName(),
 	).Inc()
 	common.SetTraceSpanError(span, common.NewErrUpstreamHedgeCancelled(u.Id(), err))
