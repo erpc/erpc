@@ -30,7 +30,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 	}
 
 	responses := make([]interface{}, 1)
-	server.forwardEthCallBatchCandidates(&startedAt, nil, nil, []ethCallBatchCandidate{makeCandidate(0)}, responses)
+	server.forwardEthCallBatchCandidates(&startedAt, nil, nil, []ethCallBatchCandidate{makeCandidate(0)}, responses, "test", multicallFallbackModeFull)
 	require.NotNil(t, responses[0])
 
 	origForward := forwardBatchProject
@@ -45,7 +45,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			return resp, errors.New("boom")
 		}
 
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses, "test", multicallFallbackModeFull)
 		require.NotNil(t, responses[0])
 	})
 
@@ -56,12 +56,14 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			return resp, nil
 		}
 
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses, "test", multicallFallbackModeFull)
 		require.Equal(t, resp, responses[0])
 	})
 
 	t.Run("records batch fallback attempt reason", func(t *testing.T) {
 		telemetry.MetricNetworkAttemptReasonTotal.Reset()
+		telemetry.MetricMulticall3FallbackTotal.Reset()
+		telemetry.MetricMulticall3FallbackReasonMatrixTotal.Reset()
 
 		responses := make([]interface{}, 2)
 		resp := common.NewNormalizedResponse()
@@ -70,9 +72,9 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 		}
 
 		project := &PreparedProject{Config: &common.ProjectConfig{Id: "prjA"}}
-		network := &Network{projectId: "prjA", networkId: "evm:1", networkLabel: "evm:1"}
+		network := &Network{projectId: "prjA", networkId: "evm:1", networkLabel: "mainnet"}
 
-		before := promUtil.ToFloat64(
+		beforeByID := promUtil.ToFloat64(
 			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
 				"prjA",
 				"evm:1",
@@ -80,6 +82,38 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 				telemetry.AttemptReasonBatchFallback,
 				telemetry.MetricsVariantLabel(),
 				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		beforeByLabel := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"eth_call",
+				telemetry.AttemptReasonBatchFallback,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		beforeFallbackTotalByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "evm:1", "test_reason"),
+		)
+		beforeFallbackTotalByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "mainnet", "test_reason"),
+		)
+		beforeFallbackReasonByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"evm:1",
+				"test_reason",
+				multicallFallbackModeFull,
+			),
+		)
+		beforeFallbackReasonByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"test_reason",
+				multicallFallbackModeFull,
 			),
 		)
 
@@ -89,9 +123,11 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			network,
 			[]ethCallBatchCandidate{makeCandidate(0), makeCandidate(1)},
 			responses,
+			"test_reason",
+			multicallFallbackModeFull,
 		)
 
-		after := promUtil.ToFloat64(
+		afterByID := promUtil.ToFloat64(
 			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
 				"prjA",
 				"evm:1",
@@ -101,7 +137,45 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 				telemetry.MetricsReleaseLabel(),
 			),
 		)
-		require.Equal(t, before+2, after)
+		afterByLabel := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"eth_call",
+				telemetry.AttemptReasonBatchFallback,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		afterFallbackTotalByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "evm:1", "test_reason"),
+		)
+		afterFallbackTotalByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackTotal.WithLabelValues("prjA", "mainnet", "test_reason"),
+		)
+		afterFallbackReasonByID := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"evm:1",
+				"test_reason",
+				multicallFallbackModeFull,
+			),
+		)
+		afterFallbackReasonByLabel := promUtil.ToFloat64(
+			telemetry.MetricMulticall3FallbackReasonMatrixTotal.WithLabelValues(
+				"prjA",
+				"mainnet",
+				"test_reason",
+				multicallFallbackModeFull,
+			),
+		)
+
+		require.Equal(t, beforeByID+2, afterByID)
+		require.Equal(t, beforeByLabel, afterByLabel)
+		require.Equal(t, beforeFallbackTotalByID+1, afterFallbackTotalByID)
+		require.Equal(t, beforeFallbackTotalByLabel, afterFallbackTotalByLabel)
+		require.Equal(t, beforeFallbackReasonByID+1, afterFallbackReasonByID)
+		require.Equal(t, beforeFallbackReasonByLabel, afterFallbackReasonByLabel)
 	})
 
 	t.Run("panic recovery in forward goroutine", func(t *testing.T) {
@@ -116,7 +190,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 		}
 
 		// Create 2 candidates - one will panic, one will succeed
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0), makeCandidate(1)}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0), makeCandidate(1)}, responses, "test", multicallFallbackModeFull)
 
 		// Both responses should have been populated (panic recovered)
 		require.NotNil(t, responses[0], "first response should not be nil after panic")
@@ -141,7 +215,7 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 			return nil, ctx.Err()
 		}
 
-		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{candidate}, responses)
+		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{candidate}, responses, "test", multicallFallbackModeFull)
 		require.NotNil(t, responses[0], "response should be populated even with cancelled context")
 	})
 }
