@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,7 +77,108 @@ const (
 	sortedMethodMaxPerNetwork = 4096
 	// Warn when writes to sorted upstream bookkeeping exceed this duration.
 	sortedMethodLockWarnDuration = 100 * time.Millisecond
+
+	brownoutReasonSustainedRemoteRateLimited = "sustained_remote_rate_limited"
+
+	defaultBrownoutEnabled                = true
+	defaultBrownoutMinRequests            = int64(20)
+	defaultBrownoutMinRemoteRateLimited   = int64(5)
+	defaultBrownoutThrottledRateThreshold = 0.25
+	defaultBrownoutCooldown               = 2 * time.Minute
+	defaultBrownoutHalfOpenDuration       = 45 * time.Second
 )
+
+type brownoutPhase string
+
+const (
+	brownoutPhaseOpen     brownoutPhase = "open"
+	brownoutPhaseClosed   brownoutPhase = "closed"
+	brownoutPhaseHalfOpen brownoutPhase = "half_open"
+)
+
+type brownoutConfig struct {
+	Enabled                bool
+	MinRequests            int64
+	MinRemoteRateLimited   int64
+	ThrottledRateThreshold float64
+	Cooldown               time.Duration
+	HalfOpenDuration       time.Duration
+}
+
+type brownoutState struct {
+	Phase                  brownoutPhase
+	Until                  time.Time
+	HalfOpenBaseRequests   int64
+	HalfOpenBaseRateLimits int64
+}
+
+func boolFromEnv(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func int64FromEnv(key string, fallback int64, min int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	if v < min {
+		return min
+	}
+	return v
+}
+
+func float64FromEnv(key string, fallback float64, min float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fallback
+	}
+	if v < min {
+		return min
+	}
+	return v
+}
+
+func durationFromEnv(key string, fallback time.Duration, min time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	if v < min {
+		return min
+	}
+	return v
+}
+
+func brownoutConfigFromEnv() brownoutConfig {
+	return brownoutConfig{
+		Enabled:                boolFromEnv("ERPC_BROWNOUT_ENABLED", defaultBrownoutEnabled),
+		MinRequests:            int64FromEnv("ERPC_BROWNOUT_MIN_REQUESTS", defaultBrownoutMinRequests, 1),
+		MinRemoteRateLimited:   int64FromEnv("ERPC_BROWNOUT_MIN_REMOTE_RATE_LIMITED", defaultBrownoutMinRemoteRateLimited, 1),
+		ThrottledRateThreshold: float64FromEnv("ERPC_BROWNOUT_THROTTLED_RATE_THRESHOLD", defaultBrownoutThrottledRateThreshold, 0),
+		Cooldown:               durationFromEnv("ERPC_BROWNOUT_COOLDOWN", defaultBrownoutCooldown, 100*time.Millisecond),
+		HalfOpenDuration:       durationFromEnv("ERPC_BROWNOUT_HALF_OPEN_DURATION", defaultBrownoutHalfOpenDuration, 100*time.Millisecond),
+	}
+}
 
 type methodUsageKey struct {
 	network string
@@ -125,6 +228,10 @@ type UpstreamsRegistry struct {
 	lastSwitchTime map[string]map[string]time.Time
 	// round-robin rotation counter per (network, method)
 	rotationCounters map[string]map[string]uint64
+
+	brownoutCfg    brownoutConfig
+	brownoutMu     sync.RWMutex
+	brownoutStates map[string]*brownoutState
 
 	onUpstreamRegistered func(ups *Upstream) error
 	scoreMetricsMode     telemetry.ScoreMetricsMode
@@ -184,6 +291,8 @@ func NewUpstreamsRegistry(
 		rotationCounters:       make(map[string]map[string]uint64),
 		upstreamsMu:            &sync.RWMutex{},
 		networkMu:              &sync.Map{},
+		brownoutCfg:            brownoutConfigFromEnv(),
+		brownoutStates:         make(map[string]*brownoutState),
 		initializer:            util.NewInitializer(appCtx, &lg, nil),
 		onUpstreamRegistered:   onRegistered,
 		scoreMetricsMode:       telemetry.ScoreModeCompact,
@@ -511,14 +620,14 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 		u.touchMethodUsage(now, networkId, method)
 		u.touchMethodUsage(now, defaultNetworkMethod, method)
 
-		return castToCommonUpstreams(methodUpsList), nil
+		return castToCommonUpstreams(u.filterAvailable(methodUpsList, method)), nil
 	}
 
 	now := time.Now()
 	u.touchMethodUsage(now, networkId, method)
 	u.touchMethodUsage(now, defaultNetworkMethod, method)
 
-	return castToCommonUpstreams(upsList), nil
+	return castToCommonUpstreams(u.filterAvailable(upsList, method)), nil
 }
 
 func (u *UpstreamsRegistry) RLockUpstreams() {
@@ -539,6 +648,8 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 
 	type key struct{ network, method string }
 	work := make(map[key][]*Upstream)
+	allUpstreams := make([]*Upstream, len(u.allUpstreams))
+	copy(allUpstreams, u.allUpstreams)
 	for networkId, methods := range u.sortedUpstreams {
 		for method := range methods {
 			var src []*Upstream
@@ -553,6 +664,7 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 		}
 	}
 	u.upstreamsMu.RUnlock()
+	u.evaluateBrownoutStates(allUpstreams, time.Now())
 
 	type pairResult struct {
 		network, method string
@@ -563,7 +675,7 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 		if len(upsList) == 0 {
 			continue
 		}
-		active := u.filterCordoned(upsList, km.method)
+		active := u.filterAvailable(upsList, km.method)
 		if len(active) == 0 {
 			continue
 		}
@@ -630,6 +742,8 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	}
 	type key struct{ network, method string }
 	work := make(map[key][]*Upstream)
+	allUpstreams := make([]*Upstream, len(u.allUpstreams))
+	copy(allUpstreams, u.allUpstreams)
 	for networkId, methods := range u.sortedUpstreams {
 		for method := range methods {
 			var src []*Upstream
@@ -653,6 +767,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 		}
 	}
 	u.upstreamsMu.Unlock()
+	u.evaluateBrownoutStates(allUpstreams, now)
 	if elapsed := time.Since(lockStarted); elapsed > sortedMethodLockWarnDuration {
 		telemetry.MetricUpstreamSortedMethodCacheLockWarningTotal.WithLabelValues(u.prjId).Inc()
 		u.logger.Warn().
@@ -683,7 +798,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 				continue
 			}
 			penalties := u.computePenalties(upsList, km.network, "*")
-			active := u.filterCordoned(upsList, "*")
+			active := u.filterAvailable(upsList, "*")
 			prev := prevPrimary[key{km.network, "*"}]
 			sorted := u.stickySort(active, penalties, km.network, "*", prev)
 			networkResults[km.network] = &networkResult{penalties, sorted}
@@ -698,7 +813,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 		// Per-method: compute penalty per (upstream, method) pair
 		for km, upsList := range work {
 			penalties := u.computePenalties(upsList, km.network, km.method)
-			active := u.filterCordoned(upsList, km.method)
+			active := u.filterAvailable(upsList, km.method)
 			sorted := u.stickySort(active, penalties, km.network, km.method, prevPrimary[km])
 			results = append(results, pairResult{km.network, km.method, penalties, sorted})
 		}
@@ -963,13 +1078,190 @@ func (u *UpstreamsRegistry) setLastSwitchTime(networkId, method string, t time.T
 	u.lastSwitchTime[networkId][method] = t
 }
 
-func (u *UpstreamsRegistry) filterCordoned(upsList []*Upstream, method string) []*Upstream {
-	active := make([]*Upstream, 0, len(upsList))
-	for _, ups := range upsList {
-		if !u.metricsTracker.IsCordoned(ups, method) {
-			active = append(active, ups)
+func (u *UpstreamsRegistry) shouldEnterBrownout(requests, remoteRateLimited int64) bool {
+	cfg := u.brownoutCfg
+	if !cfg.Enabled {
+		return false
+	}
+	if requests < cfg.MinRequests {
+		return false
+	}
+	if remoteRateLimited < cfg.MinRemoteRateLimited {
+		return false
+	}
+	if requests == 0 {
+		return false
+	}
+	return float64(remoteRateLimited)/float64(requests) >= cfg.ThrottledRateThreshold
+}
+
+func (u *UpstreamsRegistry) emitBrownoutTransition(ups *Upstream, from, to brownoutPhase, reason string) {
+	telemetry.MetricUpstreamBrownoutTransitionTotal.WithLabelValues(
+		u.prjId,
+		ups.VendorName(),
+		ups.NetworkLabel(),
+		ups.Id(),
+		string(from),
+		string(to),
+		reason,
+	).Inc()
+}
+
+func (u *UpstreamsRegistry) setBrownoutPhaseMetric(ups *Upstream, phase brownoutPhase) {
+	for _, p := range []brownoutPhase{brownoutPhaseClosed, brownoutPhaseHalfOpen} {
+		v := 0.0
+		if phase == p {
+			v = 1
+		}
+		telemetry.MetricUpstreamBrownoutState.WithLabelValues(
+			u.prjId,
+			ups.VendorName(),
+			ups.NetworkLabel(),
+			ups.Id(),
+			string(p),
+		).Set(v)
+	}
+}
+
+func (u *UpstreamsRegistry) evaluateBrownoutStates(allUpstreams []*Upstream, now time.Time) {
+	if !u.brownoutCfg.Enabled || len(allUpstreams) == 0 {
+		return
+	}
+
+	u.brownoutMu.Lock()
+	defer u.brownoutMu.Unlock()
+
+	for _, ups := range allUpstreams {
+		mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+		if mt == nil {
+			continue
+		}
+
+		requests := mt.RequestsTotal.Load()
+		remoteRateLimited := mt.RemoteRateLimitedTotal.Load()
+
+		st, ok := u.brownoutStates[ups.Id()]
+		if !ok {
+			st = &brownoutState{Phase: brownoutPhaseOpen}
+		}
+		prevPhase := st.Phase
+
+	switch st.Phase {
+	case brownoutPhaseOpen:
+		evalRequests := requests
+		evalRemoteRateLimited := remoteRateLimited
+		if st.HalfOpenBaseRequests > 0 || st.HalfOpenBaseRateLimits > 0 {
+			// Keep brownout baseline after half-open success so historical incident
+			// counters do not immediately re-close the upstream.
+			if requests < st.HalfOpenBaseRequests || remoteRateLimited < st.HalfOpenBaseRateLimits {
+				// Metrics window reset or counter rollback: rebase safely.
+				st.HalfOpenBaseRequests = requests
+				st.HalfOpenBaseRateLimits = remoteRateLimited
+			}
+			evalRequests = requests - st.HalfOpenBaseRequests
+			evalRemoteRateLimited = remoteRateLimited - st.HalfOpenBaseRateLimits
+			if evalRequests < 0 {
+				evalRequests = 0
+			}
+			if evalRemoteRateLimited < 0 {
+				evalRemoteRateLimited = 0
+			}
+		}
+		if u.shouldEnterBrownout(evalRequests, evalRemoteRateLimited) {
+			st.Phase = brownoutPhaseClosed
+			st.Until = now.Add(u.brownoutCfg.Cooldown)
+			st.HalfOpenBaseRequests = 0
+			st.HalfOpenBaseRateLimits = 0
+			u.emitBrownoutTransition(ups, prevPhase, st.Phase, brownoutReasonSustainedRemoteRateLimited)
+		}
+	case brownoutPhaseClosed:
+			if !now.Before(st.Until) {
+				st.Phase = brownoutPhaseHalfOpen
+				st.Until = now.Add(u.brownoutCfg.HalfOpenDuration)
+				st.HalfOpenBaseRequests = requests
+				st.HalfOpenBaseRateLimits = remoteRateLimited
+				u.emitBrownoutTransition(ups, prevPhase, st.Phase, "cooldown_elapsed")
+			}
+		case brownoutPhaseHalfOpen:
+			deltaRequests := requests - st.HalfOpenBaseRequests
+			deltaRemoteRateLimited := remoteRateLimited - st.HalfOpenBaseRateLimits
+			if deltaRequests < 0 {
+				deltaRequests = 0
+			}
+			if deltaRemoteRateLimited < 0 {
+				deltaRemoteRateLimited = 0
+			}
+
+		if u.shouldEnterBrownout(deltaRequests, deltaRemoteRateLimited) {
+			st.Phase = brownoutPhaseClosed
+			st.Until = now.Add(u.brownoutCfg.Cooldown)
+			st.HalfOpenBaseRequests = 0
+			st.HalfOpenBaseRateLimits = 0
+			u.emitBrownoutTransition(ups, prevPhase, st.Phase, brownoutReasonSustainedRemoteRateLimited)
+		} else if !now.Before(st.Until) {
+			st.Phase = brownoutPhaseOpen
+			st.Until = time.Time{}
+			st.HalfOpenBaseRequests = requests
+			st.HalfOpenBaseRateLimits = remoteRateLimited
+			u.emitBrownoutTransition(ups, prevPhase, st.Phase, "half_open_succeeded")
 		}
 	}
+
+		if st.Phase != prevPhase {
+			u.setBrownoutPhaseMetric(ups, st.Phase)
+			u.logger.Debug().
+				Str("projectId", u.prjId).
+				Str("upstreamId", ups.Id()).
+				Str("networkId", ups.NetworkId()).
+				Str("from", string(prevPhase)).
+				Str("to", string(st.Phase)).
+				Int64("requests", requests).
+				Int64("remoteRateLimited", remoteRateLimited).
+				Msg("upstream brownout phase changed")
+		}
+
+	if st.Phase == brownoutPhaseOpen && st.HalfOpenBaseRequests == 0 && st.HalfOpenBaseRateLimits == 0 {
+		delete(u.brownoutStates, ups.Id())
+		continue
+	}
+		u.brownoutStates[ups.Id()] = st
+	}
+}
+
+func (u *UpstreamsRegistry) isBrownoutClosed(upstreamId string) bool {
+	if !u.brownoutCfg.Enabled {
+		return false
+	}
+	u.brownoutMu.RLock()
+	defer u.brownoutMu.RUnlock()
+	st, ok := u.brownoutStates[upstreamId]
+	return ok && st != nil && st.Phase == brownoutPhaseClosed
+}
+
+func (u *UpstreamsRegistry) filterAvailable(upsList []*Upstream, method string) []*Upstream {
+	active := make([]*Upstream, 0, len(upsList))
+	filteredByBrownout := false
+	for _, ups := range upsList {
+		if u.metricsTracker.IsCordoned(ups, method) {
+			continue
+		}
+		if u.isBrownoutClosed(ups.Id()) {
+			filteredByBrownout = true
+			continue
+		}
+		active = append(active, ups)
+	}
+
+	// Fail-open for brownout only: never collapse to zero if upstreams are
+	// otherwise available and only excluded by temporary brownout state.
+	if len(active) == 0 && filteredByBrownout {
+		for _, ups := range upsList {
+			if !u.metricsTracker.IsCordoned(ups, method) {
+				active = append(active, ups)
+			}
+		}
+	}
+
 	return active
 }
 
