@@ -1146,14 +1146,35 @@ func (u *UpstreamsRegistry) evaluateBrownoutStates(allUpstreams []*Upstream, now
 		}
 		prevPhase := st.Phase
 
-		switch st.Phase {
-		case brownoutPhaseOpen:
-			if u.shouldEnterBrownout(requests, remoteRateLimited) {
-				st.Phase = brownoutPhaseClosed
-				st.Until = now.Add(u.brownoutCfg.Cooldown)
-				u.emitBrownoutTransition(ups, prevPhase, st.Phase, brownoutReasonSustainedRemoteRateLimited)
+	switch st.Phase {
+	case brownoutPhaseOpen:
+		evalRequests := requests
+		evalRemoteRateLimited := remoteRateLimited
+		if st.HalfOpenBaseRequests > 0 || st.HalfOpenBaseRateLimits > 0 {
+			// Keep brownout baseline after half-open success so historical incident
+			// counters do not immediately re-close the upstream.
+			if requests < st.HalfOpenBaseRequests || remoteRateLimited < st.HalfOpenBaseRateLimits {
+				// Metrics window reset or counter rollback: rebase safely.
+				st.HalfOpenBaseRequests = requests
+				st.HalfOpenBaseRateLimits = remoteRateLimited
 			}
-		case brownoutPhaseClosed:
+			evalRequests = requests - st.HalfOpenBaseRequests
+			evalRemoteRateLimited = remoteRateLimited - st.HalfOpenBaseRateLimits
+			if evalRequests < 0 {
+				evalRequests = 0
+			}
+			if evalRemoteRateLimited < 0 {
+				evalRemoteRateLimited = 0
+			}
+		}
+		if u.shouldEnterBrownout(evalRequests, evalRemoteRateLimited) {
+			st.Phase = brownoutPhaseClosed
+			st.Until = now.Add(u.brownoutCfg.Cooldown)
+			st.HalfOpenBaseRequests = 0
+			st.HalfOpenBaseRateLimits = 0
+			u.emitBrownoutTransition(ups, prevPhase, st.Phase, brownoutReasonSustainedRemoteRateLimited)
+		}
+	case brownoutPhaseClosed:
 			if !now.Before(st.Until) {
 				st.Phase = brownoutPhaseHalfOpen
 				st.Until = now.Add(u.brownoutCfg.HalfOpenDuration)
@@ -1171,20 +1192,20 @@ func (u *UpstreamsRegistry) evaluateBrownoutStates(allUpstreams []*Upstream, now
 				deltaRemoteRateLimited = 0
 			}
 
-			if u.shouldEnterBrownout(deltaRequests, deltaRemoteRateLimited) {
-				st.Phase = brownoutPhaseClosed
-				st.Until = now.Add(u.brownoutCfg.Cooldown)
-				st.HalfOpenBaseRequests = 0
-				st.HalfOpenBaseRateLimits = 0
-				u.emitBrownoutTransition(ups, prevPhase, st.Phase, brownoutReasonSustainedRemoteRateLimited)
-			} else if !now.Before(st.Until) {
-				st.Phase = brownoutPhaseOpen
-				st.Until = time.Time{}
-				st.HalfOpenBaseRequests = 0
-				st.HalfOpenBaseRateLimits = 0
-				u.emitBrownoutTransition(ups, prevPhase, st.Phase, "half_open_succeeded")
-			}
+		if u.shouldEnterBrownout(deltaRequests, deltaRemoteRateLimited) {
+			st.Phase = brownoutPhaseClosed
+			st.Until = now.Add(u.brownoutCfg.Cooldown)
+			st.HalfOpenBaseRequests = 0
+			st.HalfOpenBaseRateLimits = 0
+			u.emitBrownoutTransition(ups, prevPhase, st.Phase, brownoutReasonSustainedRemoteRateLimited)
+		} else if !now.Before(st.Until) {
+			st.Phase = brownoutPhaseOpen
+			st.Until = time.Time{}
+			st.HalfOpenBaseRequests = requests
+			st.HalfOpenBaseRateLimits = remoteRateLimited
+			u.emitBrownoutTransition(ups, prevPhase, st.Phase, "half_open_succeeded")
 		}
+	}
 
 		if st.Phase != prevPhase {
 			u.setBrownoutPhaseMetric(ups, st.Phase)
@@ -1199,10 +1220,10 @@ func (u *UpstreamsRegistry) evaluateBrownoutStates(allUpstreams []*Upstream, now
 				Msg("upstream brownout phase changed")
 		}
 
-		if st.Phase == brownoutPhaseOpen {
-			delete(u.brownoutStates, ups.Id())
-			continue
-		}
+	if st.Phase == brownoutPhaseOpen && st.HalfOpenBaseRequests == 0 && st.HalfOpenBaseRateLimits == 0 {
+		delete(u.brownoutStates, ups.Id())
+		continue
+	}
 		u.brownoutStates[ups.Id()] = st
 	}
 }
