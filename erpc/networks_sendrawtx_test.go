@@ -11,10 +11,12 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1566,6 +1568,16 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		defer cancel()
 
 		network := setupSendRawTxTestNetworkWithFireAndForget(t, ctx)
+		beforeFireAndForget := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"test",
+				network.Label(),
+				"eth_sendRawTransaction",
+				telemetry.AttemptReasonFireAndForget,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
 
 		// Time the request
 		start := time.Now()
@@ -1594,6 +1606,17 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		// All non-persistent sendRawTx mocks should be consumed, leaving only the persistent state poller mocks
 		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
 			"only persistent mocks should remain - all sendRawTx mocks should be consumed")
+		afterFireAndForget := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"test",
+				network.Label(),
+				"eth_sendRawTransaction",
+				telemetry.AttemptReasonFireAndForget,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		assert.GreaterOrEqual(t, afterFireAndForget, beforeFireAndForget+1)
 	})
 
 	t.Run("FireAndForgetReturnsFirstSuccessWhileOthersComplete", func(t *testing.T) {

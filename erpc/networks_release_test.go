@@ -121,13 +121,12 @@ func TestNetworkForward_CacheSetBackpressureSkipsWrites(t *testing.T) {
 	cacheCfg := &common.CacheConfig{
 		Connectors: []*common.ConnectorConfig{
 			{
-				Id:     "slow-mock",
+				Id:     "mock",
 				Driver: "mock",
 				Mock: &common.MockConnectorConfig{
 					MemoryConnectorConfig: common.MemoryConnectorConfig{
 						MaxItems: 100_000, MaxTotalSize: "1GB",
 					},
-					SetDelay: 2 * time.Second,
 				},
 			},
 		},
@@ -136,7 +135,7 @@ func TestNetworkForward_CacheSetBackpressureSkipsWrites(t *testing.T) {
 				Network:   "*",
 				Method:    "*",
 				TTL:       common.Duration(5 * time.Minute),
-				Connector: "slow-mock",
+				Connector: "mock",
 			},
 		},
 	}

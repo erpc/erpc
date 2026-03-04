@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -71,6 +72,19 @@ func (n *Network) observeCacheWriteQueueDepth(sem chan struct{}) {
 		n.projectId,
 		n.Label(),
 	).Set(float64(len(sem)))
+}
+
+func classifyAttemptReason(consensusEnabled bool, retries, hedges int) string {
+	switch {
+	case consensusEnabled:
+		return telemetry.AttemptReasonConsensus
+	case hedges > 0:
+		return telemetry.AttemptReasonHedge
+	case retries > 0:
+		return telemetry.AttemptReasonRetry
+	default:
+		return ""
+	}
 }
 
 type getSortedUpstreamsForNetworkFn func(
@@ -353,6 +367,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	method, _ := req.Method()
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
+	var upstreamCalls atomic.Int64
+	defer func() {
+		telemetry.ObserveNetworkUpstreamCallsPerRequest(
+			n.projectId,
+			n.Label(),
+			method,
+			int(upstreamCalls.Load()),
+		)
+	}()
 
 	// Start a span for network forwarding
 	ctx, forwardSpan := common.StartSpan(ctx, "Network.Forward",
@@ -574,11 +597,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Int("retry", retry).Msgf("trying to forward request to upstream")
 
-		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
-			return nil, err
-		}
+			if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
+				return nil, err
+			}
+			upstreamCalls.Add(1)
 
-		resp, err = n.doForward(ctx, u, req, false)
+			resp, err = n.doForward(ctx, u, req, false)
 
 		if err != nil && !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
@@ -761,6 +785,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
+				retries := exec.Retries()
 				if hedges > 0 {
 					finality := effectiveReq.Finality(loopCtx)
 					telemetry.CounterHandle(telemetry.MetricNetworkHedgedRequestTotal,
@@ -768,8 +793,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						finality.String(), effectiveReq.UserId(), effectiveReq.AgentName(),
 					).Inc()
 				}
+				if reason := classifyAttemptReason(failsafeExecutor.consensusPolicyEnabled, retries, hedges); reason != "" {
+					telemetry.IncNetworkAttemptReason(n.projectId, n.Label(), method, reason)
+				}
 
-				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, exec.Retries())
+				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, retries)
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e

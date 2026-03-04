@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
@@ -56,6 +58,50 @@ func TestForwardEthCallBatchCandidates(t *testing.T) {
 
 		server.forwardEthCallBatchCandidates(&startedAt, &PreparedProject{}, &Network{}, []ethCallBatchCandidate{makeCandidate(0)}, responses)
 		require.Equal(t, resp, responses[0])
+	})
+
+	t.Run("records batch fallback attempt reason", func(t *testing.T) {
+		telemetry.MetricNetworkAttemptReasonTotal.Reset()
+
+		responses := make([]interface{}, 2)
+		resp := common.NewNormalizedResponse()
+		forwardBatchProject = func(ctx context.Context, project *PreparedProject, network *Network, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			return resp, nil
+		}
+
+		project := &PreparedProject{Config: &common.ProjectConfig{Id: "prjA"}}
+		network := &Network{projectId: "prjA", networkId: "evm:1", networkLabel: "evm:1"}
+
+		before := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"prjA",
+				"evm:1",
+				"eth_call",
+				telemetry.AttemptReasonBatchFallback,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
+
+		server.forwardEthCallBatchCandidates(
+			&startedAt,
+			project,
+			network,
+			[]ethCallBatchCandidate{makeCandidate(0), makeCandidate(1)},
+			responses,
+		)
+
+		after := promUtil.ToFloat64(
+			telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+				"prjA",
+				"evm:1",
+				"eth_call",
+				telemetry.AttemptReasonBatchFallback,
+				telemetry.MetricsVariantLabel(),
+				telemetry.MetricsReleaseLabel(),
+			),
+		)
+		require.Equal(t, before+2, after)
 	})
 
 	t.Run("panic recovery in forward goroutine", func(t *testing.T) {

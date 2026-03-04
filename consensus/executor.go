@@ -251,10 +251,18 @@ collectLoop:
 						// without cancelling them. This is useful for write operations like
 						// eth_sendRawTransaction where we want to broadcast to all nodes.
 						if e.config.fireAndForget {
+							remaining := maxToSpawn - i - 1
 							lg.Debug().
 								Str("reason", reason).
-								Int("remaining", maxToSpawn-i-1).
+								Int("remaining", remaining).
 								Msg("fire-and-forget mode: letting remaining requests complete in background")
+							telemetry.AddNetworkAttemptReason(
+								labels.projectId,
+								labels.networkId,
+								labels.category,
+								telemetry.AttemptReasonFireAndForget,
+								remaining,
+							)
 
 							// Drain remaining responses in background without cancelling
 							// The HTTP requests will complete naturally
@@ -286,9 +294,17 @@ collectLoop:
 			// broadcasting where we want all nodes to receive the transaction regardless
 			// of whether the client's HTTP connection dropped.
 			if e.config.fireAndForget {
+				remaining := maxToSpawn - i
 				lg.Debug().
-					Int("remaining", maxToSpawn-i).
+					Int("remaining", remaining).
 					Msg("fire-and-forget mode: letting remaining requests complete despite parent cancellation")
+				telemetry.AddNetworkAttemptReason(
+					labels.projectId,
+					labels.networkId,
+					labels.category,
+					telemetry.AttemptReasonFireAndForget,
+					remaining,
+				)
 				drainResponsesInBackground(responseChan, i, maxToSpawn)
 			} else {
 				// Normal mode: cancel remaining requests to save resources

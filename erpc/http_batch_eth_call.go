@@ -176,6 +176,28 @@ func (s *HttpServer) forwardEthCallBatchCandidates(
 	candidates []ethCallBatchCandidate,
 	responses []interface{},
 ) {
+	if len(candidates) > 0 {
+		projectId := ""
+		networkLabel := ""
+		method := ""
+		if project != nil && project.Config != nil {
+			projectId = project.Config.Id
+		}
+		if network != nil {
+			networkLabel = network.Label()
+		}
+		if candidates[0].req != nil {
+			method, _ = candidates[0].req.Method()
+		}
+		telemetry.AddNetworkAttemptReason(
+			projectId,
+			networkLabel,
+			method,
+			telemetry.AttemptReasonBatchFallback,
+			len(candidates),
+		)
+	}
+
 	if project == nil || network == nil {
 		err := common.NewErrInvalidRequest(fmt.Errorf("network not available for batch eth_call fallback"))
 		for _, cand := range candidates {
