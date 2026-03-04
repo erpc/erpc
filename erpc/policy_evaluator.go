@@ -294,7 +294,10 @@ func (p *PolicyEvaluator) evaluateWithRules(method string, metricsData []metricD
 		if matchMethod == "" {
 			matchMethod = "*"
 		}
-		methodMatched, _ := common.WildcardMatch(matchMethod, method)
+		methodMatched, err := common.WildcardMatch(matchMethod, method)
+		if err != nil {
+			return nil, fmt.Errorf("selection policy rule has invalid matchMethod pattern %q: %w", matchMethod, err)
+		}
 		if !methodMatched {
 			continue
 		}
@@ -310,7 +313,11 @@ func (p *PolicyEvaluator) evaluateWithRules(method string, metricsData []metricD
 			if upstreamID == "" {
 				continue
 			}
-			if !matchesDeclarativeRule(md, rule) {
+			matched, err := matchesDeclarativeRule(md, rule)
+			if err != nil {
+				return nil, err
+			}
+			if !matched {
 				continue
 			}
 			selectedUpstreams[upstreamID] = !exclude
@@ -320,56 +327,62 @@ func (p *PolicyEvaluator) evaluateWithRules(method string, metricsData []metricD
 	return selectedUpstreams, nil
 }
 
-func matchesDeclarativeRule(md metricData, rule *common.SelectionPolicyRuleConfig) bool {
+func matchesDeclarativeRule(md metricData, rule *common.SelectionPolicyRuleConfig) (bool, error) {
 	if md == nil || rule == nil {
-		return false
+		return false, nil
 	}
 
 	if rule.MatchUpstreamID != "" {
 		id, _ := md["id"].(string)
 		if id == "" {
-			return false
+			return false, nil
 		}
-		matched, _ := common.WildcardMatch(rule.MatchUpstreamID, id)
+		matched, err := common.WildcardMatch(rule.MatchUpstreamID, id)
+		if err != nil {
+			return false, fmt.Errorf("selection policy rule has invalid matchUpstreamId pattern %q: %w", rule.MatchUpstreamID, err)
+		}
 		if !matched {
-			return false
+			return false, nil
 		}
 	}
 	if rule.MatchUpstreamGroup != "" {
 		upstreamCfg, _ := md["config"].(*common.UpstreamConfig)
 		if upstreamCfg == nil {
-			return false
+			return false, nil
 		}
-		matched, _ := common.WildcardMatch(rule.MatchUpstreamGroup, upstreamCfg.Group)
+		matched, err := common.WildcardMatch(rule.MatchUpstreamGroup, upstreamCfg.Group)
+		if err != nil {
+			return false, fmt.Errorf("selection policy rule has invalid matchUpstreamGroup pattern %q: %w", rule.MatchUpstreamGroup, err)
+		}
 		if !matched {
-			return false
+			return false, nil
 		}
 	}
 
 	metrics, _ := md["metrics"].(map[string]interface{})
 	if !withinMax(metrics, "errorRate", rule.MaxErrorRate) {
-		return false
+		return false, nil
 	}
 	if !withinMax(metrics, "blockHeadLag", rule.MaxBlockHeadLag) {
-		return false
+		return false, nil
 	}
 	if !withinMax(metrics, "finalizationLag", rule.MaxFinalizationLag) {
-		return false
+		return false, nil
 	}
 	if !withinMax(metrics, "p90ResponseSeconds", rule.MaxP90ResponseSeconds) {
-		return false
+		return false, nil
 	}
 	if !withinMax(metrics, "p95ResponseSeconds", rule.MaxP95ResponseSeconds) {
-		return false
+		return false, nil
 	}
 	if !withinMax(metrics, "p99ResponseSeconds", rule.MaxP99ResponseSeconds) {
-		return false
+		return false, nil
 	}
 	if !withinMax(metrics, "throttledRate", rule.MaxThrottledRate) {
-		return false
+		return false, nil
 	}
 
-	return true
+	return true, nil
 }
 
 func withinMax(metrics map[string]interface{}, key string, threshold *float64) bool {
