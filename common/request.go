@@ -119,7 +119,9 @@ type RequestDirectives struct {
 
 	// Instruct the proxy to skip cache reads for example to force freshness,
 	// or override some cache corruption.
-	SkipCacheRead bool `json:"skipCacheRead"`
+	// Accepts "true" to skip all, "false" or "" to skip none,
+	// or a connector ID pattern (e.g. "redis*", "memory*|dynamo*") to skip specific cache drivers.
+	SkipCacheRead string `json:"skipCacheRead"`
 
 	// Instruct the proxy to forward the request to a specific upstream(s) only.
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
@@ -518,7 +520,12 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 		r.directives.RetryPending = *directiveDefaults.RetryPending
 	}
 	if directiveDefaults.SkipCacheRead != nil {
-		r.directives.SkipCacheRead = *directiveDefaults.SkipCacheRead
+		switch v := directiveDefaults.SkipCacheRead.(type) {
+		case string:
+			r.directives.SkipCacheRead = v
+		default:
+			r.directives.SkipCacheRead = fmt.Sprintf("%v", v)
+		}
 	}
 	if directiveDefaults.UseUpstream != nil {
 		r.directives.UseUpstream = *directiveDefaults.UseUpstream
@@ -666,7 +673,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
 	if hv := headers.Get(headerDirectiveSkipCacheRead); hv != "" {
-		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(hv)) == "true"
+		r.directives.SkipCacheRead = strings.TrimSpace(hv)
 	}
 	if hv := headers.Get(headerDirectiveUseUpstream); hv != "" {
 		r.directives.UseUpstream = hv
@@ -749,7 +756,7 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 
 	if skipCacheRead := queryArgs.Get(queryDirectiveSkipCacheRead); skipCacheRead != "" {
-		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
+		r.directives.SkipCacheRead = strings.TrimSpace(skipCacheRead)
 	}
 
 	if skipInterpolation := queryArgs.Get(queryDirectiveSkipInterpolation); skipInterpolation != "" {
@@ -816,14 +823,25 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	}
 }
 
-func (r *NormalizedRequest) SkipCacheRead() bool {
-	if r == nil {
+// ShouldSkipCacheRead reports whether a cache read should be skipped for this request.
+// The directive may be "true" (skip all connectors) or a pattern (e.g. "redis-*") to skip only matching connectors.
+// connectorId is the cache connector being considered; pass "" when not evaluating a specific connector (e.g. before consulting any cache).
+func (r *NormalizedRequest) ShouldSkipCacheRead(connectorId string) bool {
+	if r == nil || r.directives == nil {
 		return false
 	}
-	if r.directives == nil {
+	v := r.directives.SkipCacheRead
+	if v == "" || strings.EqualFold(v, "false") {
 		return false
 	}
-	return r.directives.SkipCacheRead
+	if strings.EqualFold(v, "true") {
+		return true
+	}
+	if connectorId == "" {
+		return false
+	}
+	matched, _ := WildcardMatch(v, connectorId)
+	return matched
 }
 
 func (r *NormalizedRequest) Directives() *RequestDirectives {

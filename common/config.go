@@ -1514,11 +1514,11 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type DirectiveDefaultsConfig struct {
-	RetryEmpty        *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
-	RetryPending      *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
-	SkipCacheRead     *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
-	UseUpstream       *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
-	SkipInterpolation *bool   `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+	RetryEmpty        *bool       `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending      *bool       `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead     interface{} `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	UseUpstream       *string     `yaml:"useUpstream,omitempty" json:"useUpstream"`
+	SkipInterpolation *bool       `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
 
 	// Validation: Block Integrity
 	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
@@ -1559,6 +1559,29 @@ type DirectiveDefaultsConfig struct {
 	// Validation: Expected Ground Truths
 	ValidationExpectedBlockHash   *string `yaml:"validationExpectedBlockHash,omitempty" json:"validationExpectedBlockHash"`
 	ValidationExpectedBlockNumber *int64  `yaml:"validationExpectedBlockNumber,omitempty" json:"validationExpectedBlockNumber"`
+}
+
+func (d *DirectiveDefaultsConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type raw DirectiveDefaultsConfig
+	if err := unmarshal((*raw)(d)); err != nil {
+		return err
+	}
+	// Normalize SkipCacheRead: accept both bool and string from YAML, store as string.
+	if d.SkipCacheRead != nil {
+		d.SkipCacheRead = fmt.Sprintf("%v", d.SkipCacheRead)
+	}
+	return nil
+}
+
+func (d *DirectiveDefaultsConfig) UnmarshalJSON(data []byte) error {
+	type raw DirectiveDefaultsConfig
+	if err := sonic.Unmarshal(data, (*raw)(d)); err != nil {
+		return err
+	}
+	if d.SkipCacheRead != nil {
+		d.SkipCacheRead = fmt.Sprintf("%v", d.SkipCacheRead)
+	}
+	return nil
 }
 
 type EvmNetworkConfig struct {

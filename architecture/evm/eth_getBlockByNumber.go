@@ -192,7 +192,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			}
 			newReq := common.NewNormalizedRequestFromJsonRpcRequest(request)
 			dr := nq.Directives().Clone()
-			dr.SkipCacheRead = true
+			dr.SkipCacheRead = "true"
 			// In case a block number is extracted, it means the node actually has an older latest block.
 			// Therefore we exclude the current upstream from the request (as high likely it doesn't have this block).
 			// Otherwise we still allow the current upstream to be used in case json-rpc error was an intermittent issue.
@@ -250,7 +250,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			}
 			newReq2 := common.NewNormalizedRequestFromJsonRpcRequest(request)
 			dr := nq.Directives().Clone()
-			dr.SkipCacheRead = true
+			dr.SkipCacheRead = "true"
 			if respBlockNumber > 0 {
 				// In case a block number is extracted, it means the node actually has an older latest block.
 				// Therefore we exclude the current upstream from the request (as high likely it doesn't have this block).

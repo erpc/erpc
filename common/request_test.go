@@ -375,8 +375,8 @@ func TestHeaderOverridesConfigDefault_ValidateTransactionsRoot(t *testing.T) {
 		if dir == nil || dir.ValidateTransactionsRoot {
 			t.Fatalf("expected ValidateTransactionsRoot=false after header+query override, but got true")
 		}
-		if !dir.SkipCacheRead {
-			t.Fatalf("expected SkipCacheRead=true from header")
+		if dir.SkipCacheRead != "true" {
+			t.Fatalf("expected SkipCacheRead='true' from header, got '%s'", dir.SkipCacheRead)
 		}
 	})
 }

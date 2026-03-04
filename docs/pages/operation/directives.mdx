@@ -132,10 +132,16 @@ projects:
 To instruct eRPC to skip 'reading' responses from cache, and make actual calls to upstreams. This directive is "false" by default, which means cache will be used.
 Useful when you need to force-refresh some data or override an already cached response.
 
-* Header `X-ERPC-Skip-Cache-Read: true`
-* Or query parameter `?skip-cache-read=true`
+* Header `X-ERPC-Skip-Cache-Read: <value>`
+* Or query parameter `?skip-cache-read=<value>`
+
+The value can be:
+- `true` to skip all cache reads
+- `false` (default) to use cache normally
+- A connector ID pattern using [wildcard matching](/config/matcher) to skip specific cache drivers (e.g. `redis*`, `memory*|dynamo*`)
 
 ```bash
+# Skip all cache reads
 curl --location 'http://localhost:4000/main/evm/42161' \
 --header 'Content-Type: application/json' \
 --header 'X-ERPC-Skip-Cache-Read: true' \
@@ -148,7 +154,13 @@ curl --location 'http://localhost:4000/main/evm/42161' \
     "jsonrpc": "2.0"
 }'
 
-# OR
+# Skip only Redis cache connector(s)
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--header 'X-ERPC-Skip-Cache-Read: redis*' \
+--data '...'
+
+# OR via query parameter
 curl --location 'http://localhost:4000/main/evm/42161?skip-cache-read=true'
 # ...
 ```

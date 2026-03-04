@@ -324,7 +324,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
-	if n.cacheDal != nil && !req.SkipCacheRead() {
+	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {

@@ -253,7 +253,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		}
 
 		nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-		skipCache := false
+		skipCache := ""
 		if dirs := nrq.Directives(); dirs != nil {
 			skipCache = dirs.SkipCacheRead
 		}
@@ -413,7 +413,7 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	}
 
 	rq.SetCompositeType(common.CompositeTypeLogsSplitOnError)
-	skipCacheRead := false
+	skipCacheRead := ""
 	if dirs := rq.Directives(); dirs != nil {
 		skipCacheRead = dirs.SkipCacheRead
 	}
@@ -663,7 +663,7 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
-func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, bool, error) {
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead string) (*common.JsonRpcResponse, bool, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}

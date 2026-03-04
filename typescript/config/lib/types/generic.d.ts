@@ -68,4 +68,9 @@ export type AuthStrategyConfig = Omit<GenAuthStrategyConfig, "type" | "network" 
   * Network defaults override (chainId isn't needed for defaults config)
   */
 export type EvmNetworkConfigForDefaults = Omit<EvmNetworkConfig, "chainId">;
+/**
+ * Accepts both boolean (backward compat) and string (connector ID pattern) values.
+ * Examples: true, false, "redis*", "memory*|dynamo*"
+ */
+export type BoolOrString = boolean | string;
 //# sourceMappingURL=generic.d.ts.map
