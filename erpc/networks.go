@@ -31,6 +31,7 @@ const (
 	maxConcurrentNetworkCacheWrites       = 100
 	networkPostCompletionCoalescingWindow = 40 * time.Millisecond
 	networkDeterministicNegativeCacheTTL  = 200 * time.Millisecond
+	networkFailsafeTimeoutSlack           = 30 * time.Millisecond
 )
 
 type FailsafeExecutor struct {
@@ -746,9 +747,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					execSpanCtx,
 					// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
 					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-					//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
+					//      A small slack ensures context carries timeout deadline (used when calling upstreams),
 					//      but allow the failsafe execution to fail with timeout first for proper error handling.
-					*failsafeExecutor.timeout+5*time.Millisecond,
+					*failsafeExecutor.timeout+networkFailsafeTimeoutSlack,
 				)
 
 				defer cancelFn()
