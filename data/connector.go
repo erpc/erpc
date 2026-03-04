@@ -66,6 +66,8 @@ func NewConnector(
 		return NewPostgreSQLConnector(ctx, logger, cfg.Id, cfg.PostgreSQL)
 	case common.DriverGrpc:
 		return NewGrpcConnector(ctx, logger, cfg.Id, cfg.Grpc)
+	case common.DriverS3:
+		return NewS3Connector(ctx, logger, cfg.Id, cfg.S3)
 	}
 
 	if util.IsTest() && cfg.Driver == "mock" {

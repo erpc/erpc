@@ -418,7 +418,7 @@ func (c *ConnectorConfig) Validate() error {
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
 	}
-	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB, DriverGrpc}
+	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB, DriverGrpc, DriverS3}
 	if !slices.Contains(drivers, c.Driver) {
 		return fmt.Errorf("database.*.connector.driver '%s' is invalid must be one of: %v", c.Driver, drivers)
 	}
@@ -434,19 +434,25 @@ func (c *ConnectorConfig) Validate() error {
 	if c.Driver == DriverDynamoDB && c.DynamoDB == nil {
 		return fmt.Errorf("database.*.connector.dynamodb is required when driver is dynamodb")
 	}
+	if c.Driver == DriverS3 && c.S3 == nil {
+		return fmt.Errorf("database.*.connector.s3 is required when driver is s3")
+	}
 
 	// TODO switch to go-validator library :D
-	if c.Memory != nil && (c.Redis != nil || c.PostgreSQL != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.memory is mutually exclusive with database.*.connector.redis, database.*.connector.postgresql, and database.*.connector.dynamodb")
+	if c.Memory != nil && (c.Redis != nil || c.PostgreSQL != nil || c.DynamoDB != nil || c.S3 != nil) {
+		return fmt.Errorf("database.*.connector.memory is mutually exclusive with other connector configs")
 	}
-	if c.Redis != nil && (c.Memory != nil || c.PostgreSQL != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.redis is mutually exclusive with database.*.connector.memory, database.*.connector.postgresql, and database.*.connector.dynamodb")
+	if c.Redis != nil && (c.Memory != nil || c.PostgreSQL != nil || c.DynamoDB != nil || c.S3 != nil) {
+		return fmt.Errorf("database.*.connector.redis is mutually exclusive with other connector configs")
 	}
-	if c.PostgreSQL != nil && (c.Memory != nil || c.Redis != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.postgresql is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.dynamodb")
+	if c.PostgreSQL != nil && (c.Memory != nil || c.Redis != nil || c.DynamoDB != nil || c.S3 != nil) {
+		return fmt.Errorf("database.*.connector.postgresql is mutually exclusive with other connector configs")
 	}
-	if c.DynamoDB != nil && (c.Memory != nil || c.Redis != nil || c.PostgreSQL != nil) {
-		return fmt.Errorf("database.*.connector.dynamodb is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.postgresql")
+	if c.DynamoDB != nil && (c.Memory != nil || c.Redis != nil || c.PostgreSQL != nil || c.S3 != nil) {
+		return fmt.Errorf("database.*.connector.dynamodb is mutually exclusive with other connector configs")
+	}
+	if c.S3 != nil && (c.Memory != nil || c.Redis != nil || c.PostgreSQL != nil || c.DynamoDB != nil) {
+		return fmt.Errorf("database.*.connector.s3 is mutually exclusive with other connector configs")
 	}
 
 	if c.DynamoDB != nil {
@@ -469,7 +475,31 @@ func (c *ConnectorConfig) Validate() error {
 			return err
 		}
 	}
+	if c.S3 != nil {
+		if err := c.S3.Validate(); err != nil {
+			return err
+		}
+	}
 
+	return nil
+}
+
+func (s *S3ConnectorConfig) Validate() error {
+	if s.Bucket == "" {
+		return fmt.Errorf("database.*.connector.s3.bucket is required")
+	}
+	if s.Region == "" {
+		return fmt.Errorf("database.*.connector.s3.region is required")
+	}
+	if s.InitTimeout == 0 {
+		return fmt.Errorf("database.*.connector.s3.initTimeout is required")
+	}
+	if s.GetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.s3.getTimeout is required")
+	}
+	if s.SetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.s3.setTimeout is required")
+	}
 	return nil
 }
 
