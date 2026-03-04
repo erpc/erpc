@@ -400,6 +400,31 @@ func TestRetryPolicy_EdgeCases(t *testing.T) {
 		attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, mockResp, errors.New("some error"))
 		assert.Equal(t, 1, attempts, "Write methods should not be retried")
 	})
+
+	t.Run("NetworkScope_NonRetryableTowardNetwork_NoRetry", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts: 3,
+		}
+
+		nonRetryableErr := common.NewErrJsonRpcRequestPreparation(errors.New("invalid rpc payload"), nil)
+		attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, nil, nonRetryableErr)
+
+		assert.Equal(t, 1, attempts, "Network-scope non-retryable errors should not be retried")
+	})
+
+	t.Run("WriteMethodInContext_ErrorOnlyPath_NoRetry", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts: 3,
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"method":"eth_sendTransaction","params":[],"id":1,"jsonrpc":"2.0"}`))
+		ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
+
+		// Retryable generic error should still not retry for write methods.
+		attempts, _ := executeRetryPolicyWithContext(t, cfg, common.ScopeNetwork, nil, errors.New("transport timeout"), ctx)
+
+		assert.Equal(t, 1, attempts, "Write methods should not retry on error-only path")
+	})
 }
 
 func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {

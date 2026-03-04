@@ -551,16 +551,14 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 
 		// Must not retry any 'write' methods except eth_sendRawTransaction
 		// (idempotency for eth_sendRawTransaction is handled in post-forward hook)
-		if result != nil {
-			if req := result.Request(); req != nil {
-				if method, _ := req.Method(); method != "" && evm.IsNonRetryableWriteMethod(method) {
-					span.SetAttributes(
-						attribute.Bool("retry", false),
-						attribute.String("reason", "write_method"),
-						attribute.String("write_method", method),
-					)
-					return false
-				}
+		if req := extractRetryRequest(ctx, result, err); req != nil {
+			if method, _ := req.Method(); method != "" && evm.IsNonRetryableWriteMethod(method) {
+				span.SetAttributes(
+					attribute.Bool("retry", false),
+					attribute.String("reason", "write_method"),
+					attribute.String("write_method", method),
+				)
+				return false
 			}
 		}
 
@@ -576,29 +574,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		// which methods may return valid empty results, and has no bearing on
 		// whether transient upstream errors should be retried.
 		if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-			var req *common.NormalizedRequest
-			if result != nil {
-				req = result.Request()
-			}
-			if req == nil {
-				if exh, ok := err.(*common.ErrUpstreamsExhausted); ok {
-					req = exh.Request()
-				} else {
-					var exhErr *common.ErrUpstreamsExhausted
-					if errors.As(err, &exhErr) {
-						req = exhErr.Request()
-					}
-				}
-			}
-			if req == nil {
-				if or := ctx.Value(common.RequestContextKey); or != nil {
-					if r, ok := or.(*common.NormalizedRequest); ok {
-						req = r
-					}
-				}
-			}
-
-			if req != nil {
+			if req := extractRetryRequest(ctx, result, err); req != nil {
 				if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
 					span.SetAttributes(
 						attribute.Bool("retry", false),
@@ -634,6 +610,11 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				)
 				return true
 			}
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "not_retryable_to_network"),
+			)
+			return false
 		}
 
 		if scope == common.ScopeNetwork && result != nil && !result.IsObjectNull() {
@@ -779,6 +760,37 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 	})
 
 	return builder.Build(), nil
+}
+
+func extractRetryRequest(ctx context.Context, result *common.NormalizedResponse, err error) *common.NormalizedRequest {
+	if result != nil {
+		if req := result.Request(); req != nil {
+			return req
+		}
+	}
+
+	if err != nil {
+		if exh, ok := err.(*common.ErrUpstreamsExhausted); ok {
+			if req := exh.Request(); req != nil {
+				return req
+			}
+		} else {
+			var exhErr *common.ErrUpstreamsExhausted
+			if errors.As(err, &exhErr) && exhErr != nil {
+				if req := exhErr.Request(); req != nil {
+					return req
+				}
+			}
+		}
+	}
+
+	if originalReq := ctx.Value(common.RequestContextKey); originalReq != nil {
+		if req, ok := originalReq.(*common.NormalizedRequest); ok {
+			return req
+		}
+	}
+
+	return nil
 }
 
 func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
