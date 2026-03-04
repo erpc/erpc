@@ -61,7 +61,16 @@ func logHttpRequestBody(lg *zerolog.Logger, body []byte) {
 
 	sampled := lg.Sample(httpRequestLogSampler)
 	if len(body) == 0 {
-		sampled.Debug().Msg("received http request with empty body")
+		event := sampled.Debug()
+		if !event.Enabled() {
+			return
+		}
+		event.Msg("received http request with empty body")
+		return
+	}
+
+	event := sampled.Debug()
+	if !event.Enabled() {
 		return
 	}
 
@@ -72,7 +81,7 @@ func logHttpRequestBody(lg *zerolog.Logger, body []byte) {
 		truncated = true
 	}
 
-	sampled.Debug().
+	event.
 		Int("body_size_bytes", len(body)).
 		Bool("body_truncated", truncated).
 		Str("body_preview", string(preview)).
