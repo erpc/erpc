@@ -244,7 +244,7 @@ func TestShouldSuppressAdaptiveHedge_WarmupBoundaryBelowThreshold(t *testing.T) 
 			quantiles: &stubAdaptiveQuantiles{
 				p50:   20 * time.Millisecond,
 				p95:   30 * time.Millisecond,
-				count: 19,
+				count: int64(adaptiveHedgeMinSampleCount - 1),
 			},
 		},
 	})
@@ -261,7 +261,7 @@ func TestShouldSuppressAdaptiveHedge_WarmupBoundaryAtThreshold(t *testing.T) {
 			quantiles: &stubAdaptiveQuantiles{
 				p50:   50 * time.Millisecond,
 				p95:   60 * time.Millisecond,
-				count: 20,
+				count: int64(adaptiveHedgeMinSampleCount),
 			},
 		},
 	})

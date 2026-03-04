@@ -352,8 +352,12 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 	// Upstream runtime checks (chain id + block hash comparisons). Use a silent logger and short timeout per upstream
 	silent := zerolog.New(io.Discard)
 
-	// Histogram buckets (validate config value)
-	if err := telemetry.SetHistogramBuckets(cfg.Metrics.HistogramBuckets); err != nil {
+	// Histogram buckets: validate only, avoid mutating global metric vectors in analyzer path.
+	histogramBuckets := ""
+	if cfg.Metrics != nil {
+		histogramBuckets = cfg.Metrics.HistogramBuckets
+	}
+	if _, err := telemetry.ParseHistogramBuckets(histogramBuckets); err != nil {
 		report.Errors = append(report.Errors, fmt.Sprintf("invalid metrics histogramBuckets: %v", err))
 	}
 
