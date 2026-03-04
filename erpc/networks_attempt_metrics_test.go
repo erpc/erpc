@@ -125,3 +125,45 @@ func TestNetworkForward_AttemptReasonRetryAndUpstreamCallsMetric(t *testing.T) {
 	require.Equal(t, beforeCount+1, afterCount)
 	require.Equal(t, beforeSum+2, afterSum)
 }
+
+func TestNetwork_RecordHedgeRaceOutcome_UsesWinningExecutionType(t *testing.T) {
+	ctx := context.Background()
+	telemetry.MetricNetworkHedgeWonTotal.Reset()
+	telemetry.MetricNetworkHedgeLostTotal.Reset()
+
+	n := &Network{
+		projectId: "test",
+		networkId: "evm:123",
+	}
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`))
+
+	labels := []string{
+		"test",
+		n.Label(),
+		"unknown",
+		"eth_getBalance",
+		common.DataFinalityStateUnknown.String(),
+		"n/a",
+		"unknown",
+	}
+
+	respPrimaryWin := common.NewNormalizedResponse().
+		WithRequest(req).
+		SetAttempts(4).
+		SetRetries(2).
+		SetHedges(1).
+		SetWinningHedge(false)
+	n.recordHedgeRaceOutcome(ctx, req, respPrimaryWin, "eth_getBalance")
+	require.Equal(t, float64(0), promUtil.ToFloat64(telemetry.MetricNetworkHedgeWonTotal.WithLabelValues(labels...)))
+	require.Equal(t, float64(1), promUtil.ToFloat64(telemetry.MetricNetworkHedgeLostTotal.WithLabelValues(labels...)))
+
+	respHedgeWin := common.NewNormalizedResponse().
+		WithRequest(req).
+		SetAttempts(1).
+		SetRetries(0).
+		SetHedges(1).
+		SetWinningHedge(true)
+	n.recordHedgeRaceOutcome(ctx, req, respHedgeWin, "eth_getBalance")
+	require.Equal(t, float64(1), promUtil.ToFloat64(telemetry.MetricNetworkHedgeWonTotal.WithLabelValues(labels...)))
+	require.Equal(t, float64(1), promUtil.ToFloat64(telemetry.MetricNetworkHedgeLostTotal.WithLabelValues(labels...)))
+}

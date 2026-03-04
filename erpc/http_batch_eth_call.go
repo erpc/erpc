@@ -572,6 +572,7 @@ func (s *HttpServer) handleEthCallBatchAggregation(
 			nr.SetAttempts(mcResp.Attempts())
 			nr.SetRetries(mcResp.Retries())
 			nr.SetHedges(mcResp.Hedges())
+			nr.SetWinningHedge(mcResp.WinningHedge())
 			nr.SetEvmBlockRef(mcResp.EvmBlockRef())
 			nr.SetEvmBlockNumber(mcResp.EvmBlockNumber())
 			responses[cand.index] = nr

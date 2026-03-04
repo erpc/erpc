@@ -25,6 +25,7 @@ import (
 const (
 	adaptiveHedgeStableP95Max         = 150 * time.Millisecond
 	adaptiveHedgeStableJitterMaxRatio = 0.20
+	adaptiveHedgeMinSampleCount       = uint64(scoreMinSamplesForConfidence)
 )
 
 var (
@@ -482,6 +483,9 @@ func shouldSuppressAdaptiveHedge(ctx context.Context, req *common.NormalizedRequ
 	qt := mt.GetResponseQuantiles()
 	if qt == nil {
 		return false, "missing_quantiles"
+	}
+	if qt.GetSampleCount() < adaptiveHedgeMinSampleCount {
+		return false, "insufficient_samples"
 	}
 
 	p50 := qt.GetQuantile(0.50)

@@ -25,6 +25,7 @@ type NormalizedResponse struct {
 	attempts          atomic.Value
 	retries           atomic.Value
 	hedges            atomic.Value
+	winningHedge      atomic.Bool
 	upstream          atomic.Value
 
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
@@ -263,6 +264,21 @@ func (r *NormalizedResponse) Hedges() int {
 
 func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
 	r.hedges.Store(hedges)
+	return r
+}
+
+func (r *NormalizedResponse) WinningHedge() bool {
+	if r == nil {
+		return false
+	}
+	return r.winningHedge.Load()
+}
+
+func (r *NormalizedResponse) SetWinningHedge(winningHedge bool) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	r.winningHedge.Store(winningHedge)
 	return r
 }
 
@@ -565,6 +581,7 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 	e.Int("attempts", r.Attempts())
 	e.Int("retries", r.Retries())
 	e.Int("hedges", r.Hedges())
+	e.Bool("winningHedge", r.WinningHedge())
 	e.Interface("evmBlockRef", r.evmBlockRef.Load())
 	e.Interface("evmBlockNumber", r.evmBlockNumber.Load())
 
@@ -645,6 +662,7 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 	r.SetAttempts(resp.Attempts())
 	r.SetRetries(resp.Retries())
 	r.SetHedges(resp.Hedges())
+	r.SetWinningHedge(resp.WinningHedge())
 	r.SetEvmBlockRef(resp.EvmBlockRef())
 	r.SetEvmBlockNumber(resp.EvmBlockNumber())
 

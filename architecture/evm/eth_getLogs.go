@@ -414,6 +414,7 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 		nnr.SetAttempts(rs.Attempts())
 		nnr.SetRetries(rs.Retries())
 		nnr.SetHedges(rs.Hedges())
+		nnr.SetWinningHedge(rs.WinningHedge())
 		nnr.SetUpstream(u)
 		rq.SetLastValidResponse(ctx, nnr)
 		// We replaced the original response with a normalized one; release the old instance
