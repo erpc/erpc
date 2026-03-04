@@ -230,6 +230,40 @@ func TestShouldSuppressAdaptiveHedge_StableAfterWarmup(t *testing.T) {
 	assert.Equal(t, "stable_latency", reason)
 }
 
+func TestShouldSuppressAdaptiveHedge_WarmupBoundaryBelowThreshold(t *testing.T) {
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`))
+	req.SetNetwork(&stubAdaptiveNetwork{
+		metrics: &stubAdaptiveTrackedMetrics{
+			quantiles: &stubAdaptiveQuantiles{
+				p50:   20 * time.Millisecond,
+				p95:   30 * time.Millisecond,
+				count: 19,
+			},
+		},
+	})
+
+	suppress, reason := shouldSuppressAdaptiveHedge(context.Background(), req, "eth_getBalance")
+	assert.False(t, suppress)
+	assert.Equal(t, "insufficient_samples", reason)
+}
+
+func TestShouldSuppressAdaptiveHedge_WarmupBoundaryAtThreshold(t *testing.T) {
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":[]}`))
+	req.SetNetwork(&stubAdaptiveNetwork{
+		metrics: &stubAdaptiveTrackedMetrics{
+			quantiles: &stubAdaptiveQuantiles{
+				p50:   50 * time.Millisecond,
+				p95:   60 * time.Millisecond,
+				count: 20,
+			},
+		},
+	})
+
+	suppress, reason := shouldSuppressAdaptiveHedge(context.Background(), req, "eth_getBalance")
+	assert.True(t, suppress)
+	assert.Equal(t, "stable_latency", reason)
+}
+
 func TestRetryPolicy_EmptyResultWithConfidence(t *testing.T) {
 	tests := []struct {
 		name            string
