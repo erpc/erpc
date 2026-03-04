@@ -597,11 +597,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Int("retry", retry).Msgf("trying to forward request to upstream")
 
-		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
-			return nil, err
-		}
+			if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
+				return nil, err
+			}
+			upstreamCalls.Add(1)
 
-		resp, err = n.doForward(ctx, u, req, false)
+			resp, err = n.doForward(ctx, u, req, false)
 
 		if err != nil && !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
@@ -795,7 +796,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if reason := classifyAttemptReason(failsafeExecutor.consensusPolicyEnabled, retries, hedges); reason != "" {
 					telemetry.IncNetworkAttemptReason(n.projectId, n.Label(), method, reason)
 				}
-				upstreamCalls.Add(1)
 
 				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, retries)
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {

@@ -62,7 +62,16 @@ func logHttpRequestBody(lg *zerolog.Logger, body []byte) {
 
 	sampled := lg.Sample(httpRequestLogSampler)
 	if len(body) == 0 {
-		sampled.Debug().Msg("received http request with empty body")
+		event := sampled.Debug()
+		if !event.Enabled() {
+			return
+		}
+		event.Msg("received http request with empty body")
+		return
+	}
+
+	event := sampled.Debug()
+	if !event.Enabled() {
 		return
 	}
 
@@ -73,7 +82,7 @@ func logHttpRequestBody(lg *zerolog.Logger, body []byte) {
 		truncated = true
 	}
 
-	sampled.Debug().
+	event.
 		Int("body_size_bytes", len(body)).
 		Bool("body_truncated", truncated).
 		Str("body_preview", string(preview)).
@@ -680,14 +689,22 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					go func() {
 						defer wg.Done()
 						for job := range jobs {
+							if httpCtx.Err() != nil {
+								continue
+							}
 							processRequest(job.index, job.body, headers, queryArgs)
 						}
 					}()
 				}
+			enqueueLoop:
 				for i, reqBody := range requests {
-					jobs <- batchJob{
+					select {
+					case <-httpCtx.Done():
+						break enqueueLoop
+					case jobs <- batchJob{
 						index: i,
 						body:  reqBody,
+					}:
 					}
 				}
 				close(jobs)
