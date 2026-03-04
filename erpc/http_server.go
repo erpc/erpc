@@ -32,6 +32,9 @@ import (
 
 // Only compress responses larger than 1KB to save CPU on small responses
 const compressionThreshold = 1024
+const maxHttpRequestLogBodyBytes = 1024
+
+var httpRequestLogSampler = &zerolog.BasicSampler{N: 100}
 
 type HttpServer struct {
 	appCtx                  context.Context
@@ -49,6 +52,40 @@ type HttpServer struct {
 	trustedForwarderIPs     map[string]struct{}
 	trustedIPHeaders        []string
 	resolvedResponseHeaders map[string]string
+}
+
+func logHttpRequestBody(lg *zerolog.Logger, body []byte) {
+	if lg == nil || lg.GetLevel() > zerolog.DebugLevel {
+		return
+	}
+
+	sampled := lg.Sample(httpRequestLogSampler)
+	if len(body) == 0 {
+		event := sampled.Debug()
+		if !event.Enabled() {
+			return
+		}
+		event.Msg("received http request with empty body")
+		return
+	}
+
+	event := sampled.Debug()
+	if !event.Enabled() {
+		return
+	}
+
+	preview := body
+	truncated := false
+	if len(preview) > maxHttpRequestLogBodyBytes {
+		preview = preview[:maxHttpRequestLogBodyBytes]
+		truncated = true
+	}
+
+	event.
+		Int("body_size_bytes", len(body)).
+		Bool("body_truncated", truncated).
+		Str("body_preview", string(preview)).
+		Msg("received http request")
 }
 
 func NewHttpServer(
@@ -364,11 +401,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		_, parseRequestsSpan := common.StartDetailSpan(httpCtx, "Http.ParseRequests")
-		if len(body) > 0 {
-			lg.Info().RawJSON("body", body).Msgf("received http request")
-		} else {
-			lg.Info().Msgf("received http request with empty body")
-		}
+		logHttpRequestBody(&lg, body)
 
 		var requests []json.RawMessage
 		isBatch := len(body) > 0 && body[0] == '['

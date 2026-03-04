@@ -24,6 +24,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+var networkCacheHitLogSampler = &zerolog.BasicSampler{N: 100}
+
 type FailsafeExecutor struct {
 	method                 string
 	finalities             []common.DataFinalityState
@@ -36,6 +38,18 @@ type FailsafeExecutor struct {
 	// upstream before returning to failsafe, even when the retry policy
 	// would accept the empty result anyway (wasting time on slow upstreams).
 	emptyResultAccept []string
+}
+
+func logCacheHit(lg *zerolog.Logger, resp *common.NormalizedResponse) {
+	if lg == nil || lg.GetLevel() > zerolog.DebugLevel {
+		return
+	}
+	sampled := lg.Sample(networkCacheHitLogSampler)
+	if lg.GetLevel() <= zerolog.TraceLevel {
+		sampled.Debug().Object("response", resp).Msg("response served from cache")
+		return
+	}
+	sampled.Debug().Msg("response served from cache")
 }
 
 type getSortedUpstreamsForNetworkFn func(
@@ -366,11 +380,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 		} else if resp != nil && !resp.IsObjectNull(ctx) {
-			if lg.GetLevel() <= zerolog.DebugLevel {
-				lg.Debug().Object("response", resp).Msgf("response served from cache")
-			} else {
-				lg.Info().Msgf("response served from cache")
-			}
+			logCacheHit(&lg, resp)
 			if mlx != nil {
 				mlx.Close(ctx, resp, err)
 			}
