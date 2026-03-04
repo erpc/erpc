@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"os"
 	"sort"
@@ -191,6 +192,27 @@ type methodUsageState struct {
 }
 
 const defaultNetworkMethod = "*"
+
+type routingWorkKey struct {
+	network string
+	method  string
+}
+
+type routingPairResult struct {
+	network, method string
+	penalties       map[string]float64
+	sorted          []*Upstream
+}
+
+type routingStrategyRefreshFn func(*UpstreamsRegistry) error
+
+var routingStrategyRefreshers = map[string]routingStrategyRefreshFn{
+	"score-based":   (*UpstreamsRegistry).refreshScoreBased,
+	"round-robin":   (*UpstreamsRegistry).refreshRoundRobin,
+	"latency-aware": (*UpstreamsRegistry).refreshLatencyAware,
+	"cost-aware":    (*UpstreamsRegistry).refreshCostAware,
+	"rendezvous":    (*UpstreamsRegistry).refreshRendezvous,
+}
 
 type UpstreamsRegistry struct {
 	appCtx               context.Context
@@ -638,20 +660,38 @@ func (u *UpstreamsRegistry) RUnlockUpstreams() {
 	u.upstreamsMu.RUnlock()
 }
 
-func (u *UpstreamsRegistry) refreshRoundRobin() error {
-	u.upstreamsMu.RLock()
-	if len(u.allUpstreams) == 0 {
-		u.upstreamsMu.RUnlock()
-		u.logger.Trace().Str("projectId", u.prjId).Msg("no upstreams yet to refresh scores")
-		return nil
+func (u *UpstreamsRegistry) warnSortedMethodLockDuration(lockStarted time.Time) {
+	if elapsed := time.Since(lockStarted); elapsed > sortedMethodLockWarnDuration {
+		telemetry.MetricUpstreamSortedMethodCacheLockWarningTotal.WithLabelValues(u.prjId).Inc()
+		u.logger.Warn().
+			Str("projectId", u.prjId).
+			Dur("duration", elapsed).
+			Msg("upstreams write lock held longer than threshold while refreshing method caches")
+	}
+}
+
+func (u *UpstreamsRegistry) snapshotRoutingWork(pruneStale bool) (map[routingWorkKey][]*Upstream, []*Upstream, map[routingWorkKey]string, bool) {
+	now := time.Now()
+	lockStarted := time.Now()
+	u.upstreamsMu.Lock()
+	if pruneStale {
+		u.pruneStaleMethodCachesLocked(now)
 	}
 
-	type key struct{ network, method string }
-	work := make(map[key][]*Upstream)
+	if len(u.allUpstreams) == 0 {
+		u.upstreamsMu.Unlock()
+		u.warnSortedMethodLockDuration(lockStarted)
+		u.logger.Trace().Str("projectId", u.prjId).Msg("no upstreams yet to refresh scores")
+		return nil, nil, nil, false
+	}
+
+	work := make(map[routingWorkKey][]*Upstream)
 	allUpstreams := make([]*Upstream, len(u.allUpstreams))
 	copy(allUpstreams, u.allUpstreams)
+	prevPrimary := make(map[routingWorkKey]string)
+
 	for networkId, methods := range u.sortedUpstreams {
-		for method := range methods {
+		for method, sorted := range methods {
 			var src []*Upstream
 			if networkId == "*" {
 				src = u.allUpstreams
@@ -660,17 +700,109 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 			}
 			cp := make([]*Upstream, len(src))
 			copy(cp, src)
-			work[key{network: networkId, method: method}] = cp
+			work[routingWorkKey{network: networkId, method: method}] = cp
+			if len(sorted) > 0 {
+				prevPrimary[routingWorkKey{network: networkId, method: method}] = sorted[0].Id()
+			}
 		}
 	}
-	u.upstreamsMu.RUnlock()
-	u.evaluateBrownoutStates(allUpstreams, time.Now())
 
-	type pairResult struct {
-		network, method string
-		sorted          []*Upstream
+	u.upstreamsMu.Unlock()
+	u.evaluateBrownoutStates(allUpstreams, now)
+	u.warnSortedMethodLockDuration(lockStarted)
+
+	return work, allUpstreams, prevPrimary, true
+}
+
+func (u *UpstreamsRegistry) commitRoutingResults(results []routingPairResult) {
+	u.upstreamsMu.Lock()
+	for _, res := range results {
+		if _, ok := u.sortedUpstreams[res.network]; !ok {
+			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
+		}
+		u.sortedUpstreams[res.network][res.method] = res.sorted
+		u.recordScores(res.sorted, res.network, res.method, res.penalties)
 	}
-	var results []pairResult
+	u.emitRoutingPriority()
+	u.upstreamsMu.Unlock()
+}
+
+func (u *UpstreamsRegistry) metricsMethodForRouting(method string) string {
+	if u.scoringCfg.ScoreGranularity == "upstream" {
+		return "*"
+	}
+	return method
+}
+
+func (u *UpstreamsRegistry) latencyPenalty(ups *Upstream, metricsMethod string) float64 {
+	if u.metricsTracker == nil || ups == nil {
+		return scoreNeutralLatencySeconds
+	}
+	mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
+	if mt == nil || mt.ResponseQuantiles == nil {
+		return scoreNeutralLatencySeconds
+	}
+
+	qn := 0.70
+	if upsCfg := ups.Config(); upsCfg != nil && upsCfg.Routing != nil && upsCfg.Routing.ScoreLatencyQuantile != 0 {
+		qn = upsCfg.Routing.ScoreLatencyQuantile
+	}
+	latency := mt.ResponseQuantiles.GetQuantile(qn).Seconds()
+	if math.IsNaN(latency) || math.IsInf(latency, 0) || latency < 0 {
+		return scoreNeutralLatencySeconds
+	}
+	return latency
+}
+
+func (u *UpstreamsRegistry) costPenalty(ups *Upstream, metricsMethod string) float64 {
+	if u.metricsTracker == nil || ups == nil {
+		return 0
+	}
+	mt := u.metricsTracker.GetUpstreamMethodMetrics(ups, metricsMethod)
+	if mt == nil {
+		return 0
+	}
+
+	throttled := mt.ThrottledRate()
+	if math.IsNaN(throttled) || math.IsInf(throttled, 0) || throttled < 0 {
+		throttled = 0
+	}
+	errorRate := mt.ErrorRate()
+	if math.IsNaN(errorRate) || math.IsInf(errorRate, 0) || errorRate < 0 {
+		errorRate = 0
+	}
+	latency := u.latencyPenalty(ups, metricsMethod)
+	penalty := throttled*100 + errorRate*10 + latency
+	if math.IsNaN(penalty) || math.IsInf(penalty, 0) || penalty < 0 {
+		return 0
+	}
+	return penalty
+}
+
+func rendezvousHash(networkID, method, upstreamID string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(networkID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(method))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(upstreamID))
+	return h.Sum64()
+}
+
+func rendezvousWeight(networkID, method, upstreamID string, penalty float64) float64 {
+	if math.IsNaN(penalty) || math.IsInf(penalty, 0) || penalty < 0 {
+		penalty = 0
+	}
+	return (float64(rendezvousHash(networkID, method, upstreamID)) / float64(^uint64(0))) / (1.0 + penalty)
+}
+
+func (u *UpstreamsRegistry) refreshRoundRobin() error {
+	work, _, _, ok := u.snapshotRoutingWork(true)
+	if !ok {
+		return nil
+	}
+
+	results := make([]routingPairResult, 0, len(work))
 	for km, upsList := range work {
 		if len(upsList) == 0 {
 			continue
@@ -688,20 +820,117 @@ func (u *UpstreamsRegistry) refreshRoundRobin() error {
 		for i := range active {
 			rotated[i] = active[(i+offset)%len(active)]
 		}
-		results = append(results, pairResult{network: km.network, method: km.method, sorted: rotated})
+		results = append(results, routingPairResult{
+			network: km.network,
+			method:  km.method,
+			sorted:  rotated,
+		})
 	}
 
-	u.upstreamsMu.Lock()
-	for _, res := range results {
-		if _, ok := u.sortedUpstreams[res.network]; !ok {
-			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
+	u.commitRoutingResults(results)
+	return nil
+}
+
+func (u *UpstreamsRegistry) refreshLatencyAware() error {
+	work, _, prevPrimary, ok := u.snapshotRoutingWork(true)
+	if !ok {
+		return nil
+	}
+
+	results := make([]routingPairResult, 0, len(work))
+	for km, upsList := range work {
+		if len(upsList) == 0 {
+			continue
 		}
-		u.sortedUpstreams[res.network][res.method] = res.sorted
-		u.recordScores(res.sorted, res.network, res.method, nil)
+		metricsMethod := u.metricsMethodForRouting(km.method)
+		penalties := make(map[string]float64, len(upsList))
+		for _, ups := range upsList {
+			penalties[ups.Id()] = u.latencyPenalty(ups, metricsMethod)
+		}
+		active := u.filterAvailable(upsList, km.method)
+		if len(active) == 0 {
+			continue
+		}
+		sorted := u.stickySort(active, penalties, km.network, km.method, prevPrimary[km])
+		results = append(results, routingPairResult{
+			network:   km.network,
+			method:    km.method,
+			penalties: penalties,
+			sorted:    sorted,
+		})
 	}
-	u.emitRoutingPriority()
-	u.upstreamsMu.Unlock()
+	u.commitRoutingResults(results)
+	return nil
+}
 
+func (u *UpstreamsRegistry) refreshCostAware() error {
+	work, _, prevPrimary, ok := u.snapshotRoutingWork(true)
+	if !ok {
+		return nil
+	}
+
+	results := make([]routingPairResult, 0, len(work))
+	for km, upsList := range work {
+		if len(upsList) == 0 {
+			continue
+		}
+		metricsMethod := u.metricsMethodForRouting(km.method)
+		penalties := make(map[string]float64, len(upsList))
+		for _, ups := range upsList {
+			penalties[ups.Id()] = u.costPenalty(ups, metricsMethod)
+		}
+		active := u.filterAvailable(upsList, km.method)
+		if len(active) == 0 {
+			continue
+		}
+		sorted := u.stickySort(active, penalties, km.network, km.method, prevPrimary[km])
+		results = append(results, routingPairResult{
+			network:   km.network,
+			method:    km.method,
+			penalties: penalties,
+			sorted:    sorted,
+		})
+	}
+	u.commitRoutingResults(results)
+	return nil
+}
+
+func (u *UpstreamsRegistry) refreshRendezvous() error {
+	work, _, _, ok := u.snapshotRoutingWork(true)
+	if !ok {
+		return nil
+	}
+
+	results := make([]routingPairResult, 0, len(work))
+	for km, upsList := range work {
+		if len(upsList) == 0 {
+			continue
+		}
+
+		metricsMethod := u.metricsMethodForRouting(km.method)
+		penalties := u.computePenalties(upsList, km.network, metricsMethod)
+		active := u.filterAvailable(upsList, km.method)
+		if len(active) == 0 {
+			continue
+		}
+
+		sort.Slice(active, func(i, j int) bool {
+			iWeight := rendezvousWeight(km.network, km.method, active[i].Id(), penalties[active[i].Id()])
+			jWeight := rendezvousWeight(km.network, km.method, active[j].Id(), penalties[active[j].Id()])
+			if iWeight != jWeight {
+				return iWeight > jWeight
+			}
+			return active[i].Id() < active[j].Id()
+		})
+
+		results = append(results, routingPairResult{
+			network:   km.network,
+			method:    km.method,
+			penalties: penalties,
+			sorted:    active,
+		})
+	}
+	u.commitRoutingResults(results)
 	return nil
 }
 
@@ -712,82 +941,31 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	_, span := common.StartDetailSpan(u.appCtx, "UpstreamsRegistry.RefreshUpstreamNetworkMethodScores")
 	defer span.End()
 
-	switch u.scoringCfg.RoutingStrategy {
-	case "round-robin":
-		return u.refreshRoundRobin()
-	case "", "score-based":
-		// default
-	default:
+	strategy := strings.ToLower(strings.TrimSpace(u.scoringCfg.RoutingStrategy))
+	if strategy == "" {
+		strategy = "score-based"
+	}
+	refresher, ok := routingStrategyRefreshers[strategy]
+	if !ok {
 		u.logger.Warn().
-			Str("routingStrategy", u.scoringCfg.RoutingStrategy).
+			Str("routingStrategy", strategy).
 			Msg("unknown routing strategy, defaulting to score-based")
+		refresher = routingStrategyRefreshers["score-based"]
 	}
 
-	// Snapshot current workset under lock after pruning stale entries and cap enforcement.
-	now := time.Now()
-	u.upstreamsMu.Lock()
-	lockStarted := time.Now()
-	u.pruneStaleMethodCachesLocked(now)
-	if len(u.allUpstreams) == 0 {
-		u.upstreamsMu.Unlock()
-		if elapsed := time.Since(lockStarted); elapsed > sortedMethodLockWarnDuration {
-			telemetry.MetricUpstreamSortedMethodCacheLockWarningTotal.WithLabelValues(u.prjId).Inc()
-			u.logger.Warn().
-				Str("projectId", u.prjId).
-				Dur("duration", elapsed).
-				Msg("upstreams write lock held longer than threshold while refreshing method caches")
-		}
-		u.logger.Trace().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
+	return refresher(u)
+}
+
+func (u *UpstreamsRegistry) refreshScoreBased() error {
+	work, _, prevPrimary, ok := u.snapshotRoutingWork(true)
+	if !ok {
 		return nil
-	}
-	type key struct{ network, method string }
-	work := make(map[key][]*Upstream)
-	allUpstreams := make([]*Upstream, len(u.allUpstreams))
-	copy(allUpstreams, u.allUpstreams)
-	for networkId, methods := range u.sortedUpstreams {
-		for method := range methods {
-			var src []*Upstream
-			if networkId == "*" {
-				src = u.allUpstreams
-			} else {
-				src = u.networkUpstreams[networkId]
-			}
-			cp := make([]*Upstream, len(src))
-			copy(cp, src)
-			work[key{networkId, method}] = cp
-		}
-	}
-	// Snapshot previous sorted order for stickiness
-	prevPrimary := make(map[key]string)
-	for networkId, methods := range u.sortedUpstreams {
-		for method, ups := range methods {
-			if len(ups) > 0 {
-				prevPrimary[key{networkId, method}] = ups[0].Id()
-			}
-		}
-	}
-	u.upstreamsMu.Unlock()
-	u.evaluateBrownoutStates(allUpstreams, now)
-	if elapsed := time.Since(lockStarted); elapsed > sortedMethodLockWarnDuration {
-		telemetry.MetricUpstreamSortedMethodCacheLockWarningTotal.WithLabelValues(u.prjId).Inc()
-		u.logger.Warn().
-			Str("projectId", u.prjId).
-			Dur("duration", elapsed).
-			Msg("upstreams write lock held longer than threshold while refreshing method caches")
 	}
 
 	cfg := u.scoringCfg
-	type pairResult struct {
-		network, method string
-		penalties       map[string]float64
-		sorted          []*Upstream
-	}
-	var results []pairResult
+	results := make([]routingPairResult, 0, len(work))
 
 	if cfg.ScoreGranularity == "upstream" {
-		// Compute ONE penalty per upstream using method="*" metrics, then sort
-		// ONCE per network using the "*" method stickiness. Broadcast that single
-		// canonical order to all methods so the metric and request path always agree.
 		type networkResult struct {
 			penalties map[string]float64
 			sorted    []*Upstream
@@ -799,37 +977,36 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 			}
 			penalties := u.computePenalties(upsList, km.network, "*")
 			active := u.filterAvailable(upsList, "*")
-			prev := prevPrimary[key{km.network, "*"}]
+			prev := prevPrimary[routingWorkKey{network: km.network, method: "*"}]
 			sorted := u.stickySort(active, penalties, km.network, "*", prev)
-			networkResults[km.network] = &networkResult{penalties, sorted}
+			networkResults[km.network] = &networkResult{penalties: penalties, sorted: sorted}
 		}
 		for km := range work {
 			nr := networkResults[km.network]
 			cp := make([]*Upstream, len(nr.sorted))
 			copy(cp, nr.sorted)
-			results = append(results, pairResult{km.network, km.method, nr.penalties, cp})
+			results = append(results, routingPairResult{
+				network:   km.network,
+				method:    km.method,
+				penalties: nr.penalties,
+				sorted:    cp,
+			})
 		}
 	} else {
-		// Per-method: compute penalty per (upstream, method) pair
 		for km, upsList := range work {
 			penalties := u.computePenalties(upsList, km.network, km.method)
 			active := u.filterAvailable(upsList, km.method)
 			sorted := u.stickySort(active, penalties, km.network, km.method, prevPrimary[km])
-			results = append(results, pairResult{km.network, km.method, penalties, sorted})
+			results = append(results, routingPairResult{
+				network:   km.network,
+				method:    km.method,
+				penalties: penalties,
+				sorted:    sorted,
+			})
 		}
 	}
 
-	// Commit under write lock
-	u.upstreamsMu.Lock()
-	for _, res := range results {
-		if _, ok := u.sortedUpstreams[res.network]; !ok {
-			u.sortedUpstreams[res.network] = make(map[string][]*Upstream)
-		}
-		u.sortedUpstreams[res.network][res.method] = res.sorted
-		u.recordScores(res.sorted, res.network, res.method, res.penalties)
-	}
-	u.emitRoutingPriority()
-	u.upstreamsMu.Unlock()
+	u.commitRoutingResults(results)
 	return nil
 }
 

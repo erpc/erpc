@@ -12,6 +12,22 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+func validateCapabilityTags(path string, tags []string) error {
+	if len(tags) == 0 {
+		return nil
+	}
+	for _, raw := range tags {
+		tag := NormalizeCapabilityTag(raw)
+		if tag == "" {
+			return fmt.Errorf("%s contains an empty capability tag", path)
+		}
+		if !IsValidCapabilityTag(tag) {
+			return fmt.Errorf("%s contains invalid capability tag '%s' (allowed: [a-z0-9._:-])", path, raw)
+		}
+	}
+	return nil
+}
+
 func (c *Config) Validate() error {
 	if c.Server != nil {
 		if err := c.Server.Validate(); err != nil {
@@ -561,10 +577,10 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	}
 	if p.RoutingStrategy != "" {
 		switch strings.ToLower(strings.TrimSpace(p.RoutingStrategy)) {
-		case "score-based", "round-robin":
+		case "score-based", "round-robin", "latency-aware", "cost-aware", "rendezvous":
 			// ok
 		default:
-			return fmt.Errorf("project.*.routingStrategy must be one of: score-based, round-robin")
+			return fmt.Errorf("project.*.routingStrategy must be one of: score-based, round-robin, latency-aware, cost-aware, rendezvous")
 		}
 	}
 	if p.ScoreGranularity != "" {
@@ -836,6 +852,10 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
+	if err := validateCapabilityTags("upstream.*.capabilities", u.Capabilities); err != nil {
+		return err
+	}
+	u.Capabilities = NormalizeCapabilityTags(u.Capabilities)
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {
 			return err
@@ -1276,6 +1296,17 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.SelectionPolicy != nil {
 		if err := n.SelectionPolicy.Validate(); err != nil {
 			return err
+		}
+	}
+	if n.Methods != nil && n.Methods.Definitions != nil {
+		for methodName, methodCfg := range n.Methods.Definitions {
+			if methodCfg == nil {
+				continue
+			}
+			if err := validateCapabilityTags(fmt.Sprintf("network.*.methods.definitions.%s.requires", methodName), methodCfg.Requires); err != nil {
+				return err
+			}
+			methodCfg.Requires = NormalizeCapabilityTags(methodCfg.Requires)
 		}
 	}
 	if n.RateLimitBudget != "" {

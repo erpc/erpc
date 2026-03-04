@@ -236,6 +236,8 @@ type CacheMethodConfig struct {
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
 	Stateful  bool            `yaml:"stateful,omitempty" json:"stateful"`
+	// Requires lists upstream capabilities required to route this method.
+	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
 	// TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
 	// When nil or true, translation is enabled by default.
 	TranslateLatestTag *bool `yaml:"translateLatestTag,omitempty" json:"translateLatestTag,omitempty"`
@@ -411,6 +413,9 @@ type ProjectConfig struct {
 	// RoutingStrategy selects the upstream ordering algorithm.
 	// "score-based" (default): penalty-based sticky routing.
 	// "round-robin": time-rotating equal distribution across upstreams.
+	// "latency-aware": lowest latency first (with sticky switching).
+	// "cost-aware": prefers lower throttled/error pressure.
+	// "rendezvous": deterministic hash-based ordering per method.
 	RoutingStrategy string `yaml:"routingStrategy,omitempty" json:"routingStrategy"`
 	// ScoreGranularity controls whether penalties are computed per-upstream or per-method.
 	// "upstream" (default): one penalty across all methods using aggregate metrics.
@@ -560,6 +565,7 @@ type UpstreamConfig struct {
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
+	Capabilities                 []string                 `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
 }
 
@@ -602,6 +608,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty"`
 		RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty"`
 		Routing                      *RoutingConfig           `yaml:"routing,omitempty"`
+		Capabilities                 []string                 `yaml:"capabilities,omitempty"`
 		Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty"`
 	}
 
@@ -626,6 +633,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.RateLimitBudget = old.RateLimitBudget
 	u.RateLimitAutoTune = old.RateLimitAutoTune
 	u.Routing = old.Routing
+	u.Capabilities = old.Capabilities
 	u.Shadow = old.Shadow
 
 	if old.Failsafe != nil {
@@ -664,6 +672,10 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 	if c.RateLimitAutoTune != nil {
 		copied.RateLimitAutoTune = c.RateLimitAutoTune.Copy()
+	}
+	if c.Capabilities != nil {
+		copied.Capabilities = make([]string, len(c.Capabilities))
+		copy(copied.Capabilities, c.Capabilities)
 	}
 
 	if c.IgnoreMethods != nil {

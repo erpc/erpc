@@ -488,6 +488,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if req.Directives() != nil {
 		useUpstreamDirective = req.Directives().UseUpstream
 	}
+	requiredCapabilities := n.requiredCapabilitiesForMethod(method)
 
 	loadUpstreams := func() ([]common.Upstream, error) {
 		_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
@@ -543,6 +544,25 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			forwardSpan.SetAttributes(
 				attribute.Int("upstreams.filtered_count", len(upsList)),
 				attribute.String("upstreams.filter_group", failsafeExecutor.upstreamGroup),
+			)
+		}
+
+		if len(requiredCapabilities) > 0 {
+			filteredByCapabilities := filterUpstreamsByRequiredCapabilities(upsList, requiredCapabilities)
+			if len(filteredByCapabilities) == 0 {
+				return nil, common.NewErrFailsafeConfiguration(
+					fmt.Errorf("no upstreams satisfy required capabilities %v for method %s", requiredCapabilities, method),
+					map[string]interface{}{
+						"method":               method,
+						"requiredCapabilities": requiredCapabilities,
+						"originalCount":        len(upsList),
+					},
+				)
+			}
+			upsList = filteredByCapabilities
+			forwardSpan.SetAttributes(
+				attribute.Int("upstreams.capability_filtered_count", len(upsList)),
+				attribute.String("upstreams.required_capabilities", strings.Join(requiredCapabilities, ",")),
 			)
 		}
 
