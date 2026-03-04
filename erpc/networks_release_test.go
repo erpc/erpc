@@ -147,10 +147,17 @@ func TestNetworkForward_CacheSetBackpressureSkipsWrites(t *testing.T) {
 
 	network := setupTestNetworkSimple(t, ctx, nil, nil)
 	network.cacheWriteSem = make(chan struct{}, 1)
+	network.cacheWriteSem <- struct{}{}
+	defer func() {
+		select {
+		case <-network.cacheWriteSem:
+		default:
+		}
+	}()
 
-	slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+	cacheDal, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
 	require.NoError(t, err)
-	network.cacheDal = slowCache.WithProjectId("test")
+	network.cacheDal = cacheDal.WithProjectId("test")
 
 	gock.New("http://rpc1.localhost").
 		Post("/").
@@ -158,7 +165,7 @@ func TestNetworkForward_CacheSetBackpressureSkipsWrites(t *testing.T) {
 			body := util.SafeReadBody(r)
 			return strings.Contains(body, "eth_getBalance")
 		}).
-		Times(2).
+		Times(1).
 		Reply(200).
 		JSON(map[string]interface{}{
 			"jsonrpc": "2.0",
@@ -170,30 +177,20 @@ func TestNetworkForward_CacheSetBackpressureSkipsWrites(t *testing.T) {
 		telemetry.MetricNetworkCacheWriteDroppedTotal.WithLabelValues(network.projectId, network.Label(), "eth_getBalance"),
 	)
 
-	req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
-	req1.SetNetwork(network)
-	start1 := time.Now()
-	resp1, err1 := network.Forward(ctx, req1)
-	require.NoError(t, err1)
-	require.NotNil(t, resp1)
-	assert.Less(t, time.Since(start1), 1*time.Second, "first forward should not block on async cache write")
-
-	req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xdef","latest"],"id":2}`))
-	req2.SetNetwork(network)
-	start2 := time.Now()
-	resp2, err2 := network.Forward(ctx, req2)
-	require.NoError(t, err2)
-	require.NotNil(t, resp2)
-	assert.Less(t, time.Since(start2), 1*time.Second, "second forward should not block when cache write queue is full")
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`))
+	req.SetNetwork(network)
+	start := time.Now()
+	resp, err := network.Forward(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Less(t, time.Since(start), 1*time.Second, "forward should not block when cache write queue is full")
 
 	afterDrops := testutil.ToFloat64(
 		telemetry.MetricNetworkCacheWriteDroppedTotal.WithLabelValues(network.projectId, network.Label(), "eth_getBalance"),
 	)
 	assert.Greater(t, afterDrops, beforeDrops, "cache write backpressure should increment dropped metric")
 
-	go resp1.Release()
-	go resp2.Release()
-	time.Sleep(3 * time.Second)
+	resp.Release()
 }
 
 // TestNetworkForward_DoubleReleaseIsSafe proves that calling Release() twice
