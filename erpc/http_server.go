@@ -680,14 +680,22 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					go func() {
 						defer wg.Done()
 						for job := range jobs {
+							if httpCtx.Err() != nil {
+								continue
+							}
 							processRequest(job.index, job.body, headers, queryArgs)
 						}
 					}()
 				}
+			enqueueLoop:
 				for i, reqBody := range requests {
-					jobs <- batchJob{
+					select {
+					case <-httpCtx.Done():
+						break enqueueLoop
+					case jobs <- batchJob{
 						index: i,
 						body:  reqBody,
+					}:
 					}
 				}
 				close(jobs)
