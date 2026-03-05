@@ -229,6 +229,9 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 	if v, ok := t.urdObsCache.Load(key); ok {
 		return v.(prometheus.Observer)
 	}
+	if telemetry.MetricUpstreamRequestDuration == nil {
+		return nil
+	}
 	obs := telemetry.MetricUpstreamRequestDuration.WithLabelValues(
 		key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
 	)
@@ -563,8 +566,9 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		}
 	}
 	// Use cached observer to avoid per-request MetricVec lookups/locks.
-	obs := t.getUpstreamRequestDurationObserver(up, method, comp, finality, userId)
-	obs.Observe(sec)
+	if obs := t.getUpstreamRequestDurationObserver(up, method, comp, finality, userId); obs != nil {
+		obs.Observe(sec)
+	}
 }
 
 func (t *Tracker) RecordUpstreamFailure(up common.Upstream, method string, err error) {
