@@ -199,8 +199,12 @@ type RequestDirectives struct {
 	GroundTruthTransactions []*GroundTruthTransaction `json:"-"`
 	//
 	// GroundTruthLogs: expected logs for bloom validation when logs aren't in the response
-	// Used with ValidateLogsBloomMatch for methods like eth_getBlockByNumber that don't return logs
+	// Used with ValidateLogsBloomMatch for methods like eth_getBlockByNumber that don't return logs.
+	// For block-level bloom validation, GroundTruthLogs must represent the complete log set for the block.
 	GroundTruthLogs []*GroundTruthLog `json:"-"`
+	// GroundTruthLogsComplete indicates GroundTruthLogs represents the complete block log set.
+	// This must be true for block-level bloom validation to avoid false positives on filtered log queries.
+	GroundTruthLogsComplete bool `json:"-"`
 }
 
 // GroundTruthTransaction represents expected transaction data for cross-validation.
@@ -251,6 +255,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		ValidateReceiptTransactionMatch: d.ValidateReceiptTransactionMatch,
 		ValidateContractCreation:        d.ValidateContractCreation,
 		ValidationExpectedBlockHash:     d.ValidationExpectedBlockHash,
+		GroundTruthLogsComplete:         d.GroundTruthLogsComplete,
 	}
 	// Deep copy pointer fields
 	if d.ReceiptsCountExact != nil {
@@ -289,7 +294,7 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 		}
 	}
 	// Deep copy GroundTruthLogs slice
-	if len(d.GroundTruthLogs) > 0 {
+	if d.GroundTruthLogs != nil {
 		cloned.GroundTruthLogs = make([]*GroundTruthLog, len(d.GroundTruthLogs))
 		for i, log := range d.GroundTruthLogs {
 			if log == nil {
