@@ -149,6 +149,21 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 	})
 }
 
+func TestSetDefaults_DirectiveDefaultsConfig(t *testing.T) {
+	t.Run("EnablesCoreIntegrityDefaults", func(t *testing.T) {
+		dirs := &DirectiveDefaultsConfig{}
+
+		err := dirs.SetDefaults()
+		assert.NoError(t, err)
+		if assert.NotNil(t, dirs.ValidateTransactionsRoot) {
+			assert.True(t, *dirs.ValidateTransactionsRoot)
+		}
+		if assert.NotNil(t, dirs.ValidateLogsBloomEmptiness) {
+			assert.True(t, *dirs.ValidateLogsBloomEmptiness)
+		}
+	})
+}
+
 func TestSetDefaults_UpstreamConfig(t *testing.T) {
 	t.Run("SchemeBasedUpstreamConfigConversionToProvider", func(t *testing.T) {
 		cfg := &Config{

@@ -88,6 +88,7 @@ The pre-send block availability check is the most important mechanism. It preven
 | Field | Where | Default | Description |
 |-------|-------|---------|-------------|
 | `retryEmpty` | `directiveDefaults` | `true` | Enable retrying when all upstreams return empty or missing data |
+| `validateLogsBloomEmptiness` | `directiveDefaults` | `true` | Reject inconsistent bloom/log emptiness when logs are available to validate |
 | `emptyResultAccept` | `failsafe[].retry` | `["eth_getLogs", "eth_call"]` | Methods where empty is a **valid** response — never retry these on empty |
 | `emptyResultConfidence` | `failsafe[].retry` | `finalizedBlock` | When to trust an empty result: `blockHead` (block ≤ latest) or `finalizedBlock` (block ≤ finalized) |
 | `emptyResultMaxAttempts` | `failsafe[].retry` | same as `maxAttempts` | Max retry attempts specifically for empty results |
@@ -230,9 +231,8 @@ projects:
         evm:
           chainId: 1
         directiveDefaults:
-          # Response validations are DISABLED by default (to avoid JSON parsing overhead).
-          # Enable specific ones as needed for high-integrity use-cases:
-          validateLogsBloomEmptiness: true
+          # Bloom/log emptiness validation is enabled by default.
+          # Full bloom recomputation remains opt-in for high-integrity use-cases:
           validateLogsBloomMatch: true
           enforceLogIndexStrictIncrements: true
           # etc.

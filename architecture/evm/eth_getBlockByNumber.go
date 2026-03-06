@@ -1,12 +1,14 @@
 package evm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"go.opentelemetry.io/otel/attribute"
@@ -567,6 +569,11 @@ func validateBlock(ctx context.Context, u common.Upstream, dirs *common.RequestD
 		}
 	}
 
+	// 4. Logs bloom validation against caller-provided ground truth logs.
+	if err := validateBlockLogsBloom(u, dirs, &block); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -760,6 +767,93 @@ func validateHeaderFieldLengths(u common.Upstream, block *blockValidationBlockLi
 		if len(bloomBytes) != 256 {
 			return common.NewErrEndpointContentValidation(fmt.Errorf("logsBloom length invalid: %d", len(bloomBytes)), u)
 		}
+	}
+
+	return nil
+}
+
+func validateBlockLogsBloom(u common.Upstream, dirs *common.RequestDirectives, block *blockValidationBlockLite) error {
+	if dirs == nil {
+		return nil
+	}
+	if !dirs.ValidateLogsBloomEmptiness && !dirs.ValidateLogsBloomMatch {
+		return nil
+	}
+	if dirs.GroundTruthLogs == nil || block == nil || block.LogsBloom == "" {
+		return nil
+	}
+
+	gtLogCount := 0
+	for _, log := range dirs.GroundTruthLogs {
+		if log != nil {
+			gtLogCount++
+		}
+	}
+
+	if dirs.ValidateLogsBloomEmptiness {
+		bloomIsZero := isZeroBloom(block.LogsBloom)
+		hasLogs := gtLogCount > 0
+		if !bloomIsZero && !hasLogs {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("block logsBloom is non-zero but got 0 ground-truth log records"),
+				u,
+			)
+		}
+		if bloomIsZero && hasLogs {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("block logsBloom is zero but got %d ground-truth log records", gtLogCount),
+				u,
+			)
+		}
+	}
+
+	if !dirs.ValidateLogsBloomMatch {
+		return nil
+	}
+
+	providedBloom, err := evm.HexToBytes(block.LogsBloom)
+	if err != nil {
+		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid block logsBloom hex: %w", err), u)
+	}
+	if len(providedBloom) != evm.BloomLength {
+		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid block logsBloom length: %d", len(providedBloom)), u)
+	}
+
+	expected := make([]byte, evm.BloomLength)
+	for i, log := range dirs.GroundTruthLogs {
+		if log == nil {
+			continue
+		}
+
+		if len(log.Address) > 0 {
+			if len(log.Address) != evm.AddressLength {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("ground truth log %d: invalid address length: %d", i, len(log.Address)),
+					u,
+				)
+			}
+			bloomAdd(expected, log.Address)
+		}
+
+		if len(log.Topics) > evm.MaxTopics {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("ground truth log %d: too many topics: %d", i, len(log.Topics)),
+				u,
+			)
+		}
+		for j, topic := range log.Topics {
+			if len(topic) != evm.TopicLength {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("ground truth log %d topic %d: invalid topic length: %d", i, j, len(topic)),
+					u,
+				)
+			}
+			bloomAdd(expected, topic)
+		}
+	}
+
+	if !bytes.Equal(expected, providedBloom) {
+		return common.NewErrEndpointContentValidation(fmt.Errorf("block logsBloom does not match ground-truth logs"), u)
 	}
 
 	return nil

@@ -1609,6 +1609,9 @@ func (d *DirectiveDefaultsConfig) SetDefaults() error {
 	if d.ValidateTransactionsRoot == nil {
 		d.ValidateTransactionsRoot = util.BoolPtr(true)
 	}
+	if d.ValidateLogsBloomEmptiness == nil {
+		d.ValidateLogsBloomEmptiness = util.BoolPtr(true)
+	}
 	return nil
 }
 
