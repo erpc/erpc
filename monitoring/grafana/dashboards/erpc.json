@@ -3350,7 +3350,7 @@
                   }
                 ]
               },
-              "unit": "s"
+              "unit": "ms"
             },
             "overrides": []
           },
@@ -3390,7 +3390,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "erpc_network_dynamic_block_time_seconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\"}",
+              "expr": "erpc_network_dynamic_block_time_milliseconds{network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\"}",
               "format": "time_series",
               "instant": false,
               "legendFormat": "{{project}} / {{network}}",

@@ -816,7 +816,7 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 // ------------------------------------
 
 const blockTimeEMAAlpha = 0.1
-const blockTimeMinSamples = 10 // minimum samples before the EMA is considered stable
+const blockTimeMinSamples = 4 // minimum samples before the EMA is considered stable
 
 // updateBlockTimeSample manages the reference (block, timestamp) pair and folds
 // a new per-block time sample into the EMA. All ref state is read and written
@@ -874,7 +874,7 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 
 	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
 		t.projectId, netLabel,
-	).Set(time.Duration(newEMA).Seconds())
+	).Set(float64(time.Duration(newEMA).Milliseconds()))
 }
 
 // GetNetworkBlockTime returns the dynamic EMA-based block time for a network.
@@ -890,6 +890,12 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	}
 
 	return 0
+}
+
+// GetLatestBlockTimestamp returns the on-chain timestamp (unix seconds) of the
+// highest observed block for a network. Returns 0 if no timestamp is available.
+func (t *Tracker) GetLatestBlockTimestamp(networkId string) int64 {
+	return t.getMetadata(metadataKey{nil, networkId}).evmLatestBlockTimestamp.Load()
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {

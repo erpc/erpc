@@ -168,6 +168,9 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 				return
 			case <-ticker.C:
+				if e.shouldSkipTick() {
+					continue
+				}
 				// Calculate timeout based on shared state config:
 				// 1. Wait for distributed lock (up to lockTtl)
 				// 2. Buffer for operations (fetch block, update remote)
@@ -350,15 +353,37 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }
 
+// shouldSkipTick returns true when the next block is not yet expected,
+// allowing the poll loop to avoid wasted RPC calls. Uses the on-chain
+// timestamp of the last observed block plus the EMA block time to predict
+// when the next block should arrive.
+func (e *EvmStatePoller) shouldSkipTick() bool {
+	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
+	if blockTime == 0 {
+		return false
+	}
+	lastBlockTs := e.tracker.GetLatestBlockTimestamp(e.upstream.NetworkId())
+	if lastBlockTs <= 0 {
+		return false
+	}
+	if lastBlockTs > time.Now().Unix() {
+		return false
+	}
+	nextExpected := time.Unix(lastBlockTs, 0).Add(blockTime)
+	return time.Now().Before(nextExpected)
+}
+
 // resolveDebounce returns the debounce interval for poll methods.
+// When the EMA is active, shouldSkipTick handles timing so the debounce
+// only needs to prevent genuinely redundant calls within the same tick.
 //
-//	user config → EMA block time → network FallbackStatePollerDebounce → 1s hard floor
+//	user config → EMA active (1s safety net) → network FallbackStatePollerDebounce → 1s hard floor
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	if dbi := e.debounceInterval; dbi != 0 {
 		return dbi
 	}
-	if dbi := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); dbi != 0 {
-		return dbi
+	if e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()) != 0 {
+		return 1 * time.Second
 	}
 	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
 		return cfg.FallbackStatePollerDebounce.Duration()

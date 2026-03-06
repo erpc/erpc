@@ -880,15 +880,15 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 		tracker.SetLatestBlockNumber(ups, baseBlock, baseTimestamp)
 
-		// Feed 9 samples (below minSamples=10) — should still return 0
-		for i := int64(1); i <= 9; i++ {
+		// Feed 3 samples (below minSamples=4) — should still return 0
+		for i := int64(1); i <= 3; i++ {
 			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTimestamp+i*6)
 		}
 		d := tracker.GetNetworkBlockTime(networkId)
 		assert.Equal(t, time.Duration(0), d, "below minSamples should return 0")
 
-		// 10th sample crosses the threshold
-		tracker.SetLatestBlockNumber(ups, baseBlock+10, baseTimestamp+60)
+		// 4th sample crosses the threshold
+		tracker.SetLatestBlockNumber(ups, baseBlock+4, baseTimestamp+24)
 		d = tracker.GetNetworkBlockTime(networkId)
 		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "at minSamples should return EMA")
 	})
@@ -924,8 +924,8 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		// Valid call — sample spans block 1000→1002 (skipping 1001), 24s / 2 blocks = 12s
 		tracker.SetLatestBlockNumber(ups, 1002, 1700000024)
 
-		// Feed more 12s samples to reach minSamples=10
-		for i := int64(3); i <= 11; i++ {
+		// Feed more 12s samples to reach minSamples=4
+		for i := int64(3); i <= 5; i++ {
 			tracker.SetLatestBlockNumber(ups, 1000+i, 1700000024+(i-2)*12)
 		}
 
@@ -995,7 +995,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		wg.Wait()
 
 		// After 200 updates across goroutines, EMA should be non-zero
-		// (enough samples to pass minSamples=10)
+		// (enough samples to pass minSamples=4)
 		d := tracker.GetNetworkBlockTime(networkId)
 		assert.Greater(t, d, time.Duration(0), "EMA should be set after concurrent updates")
 		assert.Less(t, d.Seconds(), 120.0, "EMA should be within sane bounds")
@@ -1088,15 +1088,15 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		baseTs := int64(1700000000)
 		tracker.SetLatestBlockNumber(ups, baseBlock, baseTs)
 
-		// Feed exactly minSamples-1 = 9 samples — should return 0
-		for i := int64(1); i <= 9; i++ {
+		// Feed exactly minSamples-1 = 3 samples — should return 0
+		for i := int64(1); i <= 3; i++ {
 			tracker.SetLatestBlockNumber(ups, baseBlock+i, baseTs+i*3)
 		}
 		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId),
 			"at minSamples-1 should still return 0")
 
-		// The 10th sample crosses the threshold — should return non-zero
-		tracker.SetLatestBlockNumber(ups, baseBlock+10, baseTs+10*3)
+		// The 4th sample crosses the threshold — should return non-zero
+		tracker.SetLatestBlockNumber(ups, baseBlock+4, baseTs+4*3)
 		d := tracker.GetNetworkBlockTime(networkId)
 		assert.Greater(t, d, time.Duration(0), "at exactly minSamples should return non-zero EMA")
 		assert.InDelta(t, 3.0, d.Seconds(), 0.3, "EMA should reflect 3s block time")
