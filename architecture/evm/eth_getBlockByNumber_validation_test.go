@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -153,6 +154,32 @@ func TestValidateBlock_LogsBloomValidationSkipsWithoutGroundTruthLogs(t *testing
 
 	err := validateBlock(ctx, nil, dirs, req, resp)
 	require.NoError(t, err)
+}
+
+func TestValidateBlock_LogsBloomValidationRejectsMissingBloom(t *testing.T) {
+	ctx := context.Background()
+
+	resp := newBlockValidationResponseFromFixture(t)
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+
+	blockJSON := string(jrr.GetResultBytes())
+	blockJSON = strings.Replace(blockJSON, `"logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000040000000000000000000010000100000000000000000000000000080000008000000000000000000000008000000000000000002000000020000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000",`, "", 1)
+
+	jrpcResp, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte(blockJSON), nil)
+	require.NoError(t, err)
+	resp = common.NewNormalizedResponse().WithJsonRpcResponse(jrpcResp)
+
+	dirs := &common.RequestDirectives{
+		ValidateLogsBloomEmptiness: true,
+		GroundTruthLogs:            loadBlockValidationGroundTruthLogsFixture(t),
+	}
+	req := newBlockValidationRequest(dirs)
+	resp.WithRequest(req)
+
+	err = validateBlock(ctx, nil, dirs, req, resp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "logsBloom missing")
 }
 
 func cloneGroundTruthLogs(logs []*common.GroundTruthLog) []*common.GroundTruthLog {

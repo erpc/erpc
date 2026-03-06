@@ -779,15 +779,62 @@ func validateBlockLogsBloom(u common.Upstream, dirs *common.RequestDirectives, b
 	if !dirs.ValidateLogsBloomEmptiness && !dirs.ValidateLogsBloomMatch {
 		return nil
 	}
-	if dirs.GroundTruthLogs == nil || block == nil || block.LogsBloom == "" {
+	if dirs.GroundTruthLogs == nil || block == nil {
 		return nil
 	}
 
 	gtLogCount := 0
+	var expected []byte
+	if dirs.ValidateLogsBloomMatch {
+		expected = make([]byte, evm.BloomLength)
+	}
 	for _, log := range dirs.GroundTruthLogs {
-		if log != nil {
-			gtLogCount++
+		if log == nil {
+			continue
 		}
+		gtLogCount++
+
+		if !dirs.ValidateLogsBloomMatch {
+			continue
+		}
+
+		if len(log.Address) > 0 {
+			if len(log.Address) != evm.AddressLength {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("ground truth log %d: invalid address length: %d", gtLogCount-1, len(log.Address)),
+					u,
+				)
+			}
+			bloomAdd(expected, log.Address)
+		}
+
+		if len(log.Topics) > evm.MaxTopics {
+			return common.NewErrEndpointContentValidation(
+				fmt.Errorf("ground truth log %d: too many topics: %d", gtLogCount-1, len(log.Topics)),
+				u,
+			)
+		}
+		for j, topic := range log.Topics {
+			if len(topic) != evm.TopicLength {
+				return common.NewErrEndpointContentValidation(
+					fmt.Errorf("ground truth log %d topic %d: invalid topic length: %d", gtLogCount-1, j, len(topic)),
+					u,
+				)
+			}
+			bloomAdd(expected, topic)
+		}
+	}
+
+	if block.LogsBloom == "" {
+		return common.NewErrEndpointContentValidation(
+			fmt.Errorf(
+				"block logsBloom missing while validating %d ground-truth log records for block number=%s hash=%s",
+				gtLogCount,
+				block.Number,
+				block.Hash,
+			),
+			u,
+		)
 	}
 
 	if dirs.ValidateLogsBloomEmptiness {
@@ -819,41 +866,16 @@ func validateBlockLogsBloom(u common.Upstream, dirs *common.RequestDirectives, b
 		return common.NewErrEndpointContentValidation(fmt.Errorf("invalid block logsBloom length: %d", len(providedBloom)), u)
 	}
 
-	expected := make([]byte, evm.BloomLength)
-	for i, log := range dirs.GroundTruthLogs {
-		if log == nil {
-			continue
-		}
-
-		if len(log.Address) > 0 {
-			if len(log.Address) != evm.AddressLength {
-				return common.NewErrEndpointContentValidation(
-					fmt.Errorf("ground truth log %d: invalid address length: %d", i, len(log.Address)),
-					u,
-				)
-			}
-			bloomAdd(expected, log.Address)
-		}
-
-		if len(log.Topics) > evm.MaxTopics {
-			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("ground truth log %d: too many topics: %d", i, len(log.Topics)),
-				u,
-			)
-		}
-		for j, topic := range log.Topics {
-			if len(topic) != evm.TopicLength {
-				return common.NewErrEndpointContentValidation(
-					fmt.Errorf("ground truth log %d topic %d: invalid topic length: %d", i, j, len(topic)),
-					u,
-				)
-			}
-			bloomAdd(expected, topic)
-		}
-	}
-
 	if !bytes.Equal(expected, providedBloom) {
-		return common.NewErrEndpointContentValidation(fmt.Errorf("block logsBloom does not match ground-truth logs"), u)
+		return common.NewErrEndpointContentValidation(
+			fmt.Errorf(
+				"block logsBloom does not match ground-truth logs (count=%d block number=%s hash=%s)",
+				gtLogCount,
+				block.Number,
+				block.Hash,
+			),
+			u,
+		)
 	}
 
 	return nil
