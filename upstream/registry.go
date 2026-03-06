@@ -97,6 +97,8 @@ type UpstreamsRegistry struct {
 	// round-robin rotation counter per (network, method)
 	rotationCounters map[string]map[string]uint64
 
+	providerOnce sync.Map // networkId -> *sync.Once
+
 	onUpstreamRegistered func(ups *Upstream) error
 	scoreMetricsMode     telemetry.ScoreMetricsMode
 }
@@ -229,28 +231,31 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 
 	// 1) Static upstreams are expected to be registered via Bootstrap() already.
 
-	// 2) Start execution of provider-based upstreams tasks in background; errors are logged but do not fail the caller
-	allProviders := u.providersRegistry.GetAllProviders()
-	var tasks []*util.BootstrapTask
-	for _, p := range allProviders {
-		provider := p
-		t := u.buildProviderBootstrapTask(provider, networkId)
-		tasks = append(tasks, t)
-	}
-	go func() {
-		if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
-			u.logger.Error().
-				Err(err).
-				Str("networkId", networkId).
-				Interface("status", u.initializer.Status()).
-				Msg("failed to execute provider bootstrap tasks")
-		} else {
-			u.logger.Info().
-				Str("networkId", networkId).
-				Interface("status", u.initializer.Status()).
-				Msg("provider bootstrap tasks executed successfully")
+	// 2) Schedule provider-based upstream tasks once per network; the initializer's
+	// auto-retry loop handles failures on appCtx so we don't leak goroutines on retries.
+	onceVal, _ := u.providerOnce.LoadOrStore(networkId, &sync.Once{})
+	onceVal.(*sync.Once).Do(func() {
+		allProviders := u.providersRegistry.GetAllProviders()
+		var tasks []*util.BootstrapTask
+		for _, p := range allProviders {
+			t := u.buildProviderBootstrapTask(p, networkId)
+			tasks = append(tasks, t)
 		}
-	}()
+		go func() {
+			if err := u.initializer.ExecuteTasks(u.appCtx, tasks...); err != nil {
+				u.logger.Error().
+					Err(err).
+					Str("networkId", networkId).
+					Interface("status", u.initializer.Status()).
+					Msg("failed to execute provider bootstrap tasks")
+			} else {
+				u.logger.Info().
+					Str("networkId", networkId).
+					Interface("status", u.initializer.Status()).
+					Msg("provider bootstrap tasks executed successfully")
+			}
+		}()
+	})
 
 	// Require only one ready upstream to start handling requests.
 	// Use adaptive timeout: default to 30s, but cap to the caller's context deadline if sooner.
