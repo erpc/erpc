@@ -209,7 +209,7 @@ Set via **config** (applies to all requests), **HTTP headers**, or **query param
 
 | Directive | Header | Query | Description |
 |-----------|--------|-------|-------------|
-| `validateLogsBloomEmptiness` | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | Bloom/logs consistency: logs exist ↔ bloom non-zero |
+| `validateLogsBloomEmptiness` | `X-ERPC-Validate-Logs-Bloom-Emptiness` | `validate-logs-bloom-emptiness` | Bloom/logs consistency using `GroundTruthLogs`: logs exist ↔ bloom non-zero |
 | `validateLogsBloomMatch` | `X-ERPC-Validate-Logs-Bloom-Match` | `validate-logs-bloom-match` | Recalculate bloom from logs and verify match |
 | `enforceLogIndexStrictIncrements` | `X-ERPC-Enforce-Log-Index-Strict-Increments` | `enforce-log-index-strict-increments` | Log indices must increment by 1 across receipts |
 | `validateTxHashUniqueness` | `X-ERPC-Validate-Tx-Hash-Uniqueness` | `validate-tx-hash-uniqueness` | No duplicate transaction hashes in receipts |

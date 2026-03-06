@@ -75,6 +75,26 @@ func newBlockValidationRequest(dirs *common.RequestDirectives) *common.Normalize
 	return req
 }
 
+func newBlockValidationResponseWithBloom(t *testing.T, bloomReplacement string) *common.NormalizedResponse {
+	t.Helper()
+
+	resp := newBlockValidationResponseFromFixture(t)
+	jrr, err := resp.JsonRpcResponse(context.Background())
+	require.NoError(t, err)
+
+	blockJSON := string(jrr.GetResultBytes())
+	blockJSON = strings.Replace(
+		blockJSON,
+		`"logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000040000000000000000000010000100000000000000000000000000080000008000000000000000000000008000000000000000002000000020000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000"`,
+		`"logsBloom": "`+bloomReplacement+`"`,
+		1,
+	)
+
+	jrpcResp, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte(blockJSON), nil)
+	require.NoError(t, err)
+	return common.NewNormalizedResponse().WithJsonRpcResponse(jrpcResp)
+}
+
 func TestValidateBlock_LogsBloomEmptinessWithGroundTruthLogs(t *testing.T) {
 	ctx := context.Background()
 
@@ -104,6 +124,34 @@ func TestValidateBlock_LogsBloomEmptinessWithGroundTruthLogs(t *testing.T) {
 
 		err := validateBlock(ctx, nil, dirs, req, resp)
 		require.NoError(t, err)
+	})
+
+	t.Run("AcceptsZeroBloomWithZeroLogs", func(t *testing.T) {
+		resp := newBlockValidationResponseWithBloom(t, "0x0")
+		dirs := &common.RequestDirectives{
+			ValidateLogsBloomEmptiness: true,
+			GroundTruthLogs:            []*common.GroundTruthLog{},
+		}
+		req := newBlockValidationRequest(dirs)
+		resp.WithRequest(req)
+
+		err := validateBlock(ctx, nil, dirs, req, resp)
+		require.NoError(t, err)
+	})
+
+	t.Run("RejectsZeroBloomWithNonEmptyLogs", func(t *testing.T) {
+		resp := newBlockValidationResponseWithBloom(t, "0x0")
+		dirs := &common.RequestDirectives{
+			ValidateLogsBloomEmptiness: true,
+			GroundTruthLogs:            loadBlockValidationGroundTruthLogsFixture(t),
+		}
+		req := newBlockValidationRequest(dirs)
+		resp.WithRequest(req)
+
+		err := validateBlock(ctx, nil, dirs, req, resp)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "zero")
+		assert.Contains(t, err.Error(), "ground-truth log records")
 	})
 }
 
@@ -162,7 +210,6 @@ func TestValidateBlock_LogsBloomValidationRejectsMissingBloom(t *testing.T) {
 	resp := newBlockValidationResponseFromFixture(t)
 	jrr, err := resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-
 	blockJSON := string(jrr.GetResultBytes())
 	blockJSON = strings.Replace(blockJSON, `"logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000040000000000000000000010000100000000000000000000000000080000008000000000000000000000008000000000000000002000000020000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000",`, "", 1)
 
