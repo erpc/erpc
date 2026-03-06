@@ -779,7 +779,7 @@ func validateBlockLogsBloom(u common.Upstream, dirs *common.RequestDirectives, b
 	if !dirs.ValidateLogsBloomEmptiness && !dirs.ValidateLogsBloomMatch {
 		return nil
 	}
-	if dirs.GroundTruthLogs == nil || block == nil {
+	if dirs.GroundTruthLogs == nil || block == nil || !dirs.GroundTruthLogsComplete {
 		return nil
 	}
 
@@ -842,13 +842,23 @@ func validateBlockLogsBloom(u common.Upstream, dirs *common.RequestDirectives, b
 		hasLogs := gtLogCount > 0
 		if !bloomIsZero && !hasLogs {
 			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("block logsBloom is non-zero but got 0 ground-truth log records"),
+				fmt.Errorf(
+					"block logsBloom is non-zero but got %d ground-truth log records (block number=%s hash=%s)",
+					gtLogCount,
+					block.Number,
+					block.Hash,
+				),
 				u,
 			)
 		}
 		if bloomIsZero && hasLogs {
 			return common.NewErrEndpointContentValidation(
-				fmt.Errorf("block logsBloom is zero but got %d ground-truth log records", gtLogCount),
+				fmt.Errorf(
+					"block logsBloom is zero but got %d ground-truth log records (block number=%s hash=%s)",
+					gtLogCount,
+					block.Number,
+					block.Hash,
+				),
 				u,
 			)
 		}

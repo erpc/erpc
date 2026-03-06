@@ -434,6 +434,25 @@ func TestHeaderOverridesConfigDefault_ValidateTransactionsRoot(t *testing.T) {
 	})
 }
 
+func TestRequestDirectivesClone_PreservesGroundTruthLogsSemantics(t *testing.T) {
+	t.Run("PreservesExplicitEmptyGroundTruthLogs", func(t *testing.T) {
+		dirs := (&RequestDirectives{
+			GroundTruthLogs:         []*GroundTruthLog{},
+			GroundTruthLogsComplete: true,
+		}).Clone()
+
+		if dirs.GroundTruthLogs == nil {
+			t.Fatalf("expected explicit empty GroundTruthLogs slice to be preserved")
+		}
+		if len(dirs.GroundTruthLogs) != 0 {
+			t.Fatalf("expected empty GroundTruthLogs slice, got %d items", len(dirs.GroundTruthLogs))
+		}
+		if !dirs.GroundTruthLogsComplete {
+			t.Fatalf("expected GroundTruthLogsComplete to be preserved")
+		}
+	})
+}
+
 func TestNormalizedRequestForwardBody_RawFastPathWhenUnmodified(t *testing.T) {
 	raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 	req := NewNormalizedRequest(raw)

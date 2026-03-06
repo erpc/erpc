@@ -205,6 +205,8 @@ With **consensus**: Invalid responses are excluded from consensus voting. Only v
 
 With **hedge + consensus + retry** (recommended for indexers): Hedge spawns parallel requests, consensus compares valid responses, retry handles cases where all initial attempts fail validation.
 
+For block-level bloom validation on methods like `eth_getBlockByNumber`, `GroundTruthLogs` must represent the **complete** block log set. Filtered log queries are not sufficient for bloom consistency checks.
+
 Set via **config** (applies to all requests), **HTTP headers**, or **query parameters**:
 
 | Directive | Header | Query | Description |

@@ -103,6 +103,7 @@ func TestValidateBlock_LogsBloomEmptinessWithGroundTruthLogs(t *testing.T) {
 		dirs := &common.RequestDirectives{
 			ValidateLogsBloomEmptiness: true,
 			GroundTruthLogs:            []*common.GroundTruthLog{},
+			GroundTruthLogsComplete:    true,
 		}
 		req := newBlockValidationRequest(dirs)
 		resp.WithRequest(req)
@@ -118,6 +119,7 @@ func TestValidateBlock_LogsBloomEmptinessWithGroundTruthLogs(t *testing.T) {
 		dirs := &common.RequestDirectives{
 			ValidateLogsBloomEmptiness: true,
 			GroundTruthLogs:            loadBlockValidationGroundTruthLogsFixture(t),
+			GroundTruthLogsComplete:    true,
 		}
 		req := newBlockValidationRequest(dirs)
 		resp.WithRequest(req)
@@ -131,6 +133,7 @@ func TestValidateBlock_LogsBloomEmptinessWithGroundTruthLogs(t *testing.T) {
 		dirs := &common.RequestDirectives{
 			ValidateLogsBloomEmptiness: true,
 			GroundTruthLogs:            []*common.GroundTruthLog{},
+			GroundTruthLogsComplete:    true,
 		}
 		req := newBlockValidationRequest(dirs)
 		resp.WithRequest(req)
@@ -144,6 +147,7 @@ func TestValidateBlock_LogsBloomEmptinessWithGroundTruthLogs(t *testing.T) {
 		dirs := &common.RequestDirectives{
 			ValidateLogsBloomEmptiness: true,
 			GroundTruthLogs:            loadBlockValidationGroundTruthLogsFixture(t),
+			GroundTruthLogsComplete:    true,
 		}
 		req := newBlockValidationRequest(dirs)
 		resp.WithRequest(req)
@@ -161,8 +165,9 @@ func TestValidateBlock_LogsBloomMatchWithGroundTruthLogs(t *testing.T) {
 	t.Run("AcceptsMatchingBloom", func(t *testing.T) {
 		resp := newBlockValidationResponseFromFixture(t)
 		dirs := &common.RequestDirectives{
-			ValidateLogsBloomMatch: true,
-			GroundTruthLogs:        loadBlockValidationGroundTruthLogsFixture(t),
+			ValidateLogsBloomMatch:  true,
+			GroundTruthLogs:         loadBlockValidationGroundTruthLogsFixture(t),
+			GroundTruthLogsComplete: true,
 		}
 		req := newBlockValidationRequest(dirs)
 		resp.WithRequest(req)
@@ -177,8 +182,9 @@ func TestValidateBlock_LogsBloomMatchWithGroundTruthLogs(t *testing.T) {
 		logs[0].Topics[0][0] ^= 0x01
 
 		dirs := &common.RequestDirectives{
-			ValidateLogsBloomMatch: true,
-			GroundTruthLogs:        logs,
+			ValidateLogsBloomMatch:  true,
+			GroundTruthLogs:         logs,
+			GroundTruthLogsComplete: true,
 		}
 		req := newBlockValidationRequest(dirs)
 		resp.WithRequest(req)
@@ -220,6 +226,7 @@ func TestValidateBlock_LogsBloomValidationRejectsMissingBloom(t *testing.T) {
 	dirs := &common.RequestDirectives{
 		ValidateLogsBloomEmptiness: true,
 		GroundTruthLogs:            loadBlockValidationGroundTruthLogsFixture(t),
+		GroundTruthLogsComplete:    true,
 	}
 	req := newBlockValidationRequest(dirs)
 	resp.WithRequest(req)
@@ -315,8 +322,9 @@ func BenchmarkValidateBlockLogsBloomMatch(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.name, func(b *testing.B) {
 			dirs := &common.RequestDirectives{
-				ValidateLogsBloomMatch: true,
-				GroundTruthLogs:        bm.logs,
+				ValidateLogsBloomMatch:  true,
+				GroundTruthLogs:         bm.logs,
+				GroundTruthLogsComplete: true,
 			}
 
 			b.ReportAllocs()
