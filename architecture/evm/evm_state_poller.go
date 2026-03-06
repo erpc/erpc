@@ -374,16 +374,23 @@ func (e *EvmStatePoller) shouldSkipTick() bool {
 }
 
 // resolveDebounce returns the debounce interval for poll methods.
-// When the EMA is active, shouldSkipTick handles timing so the debounce
-// only needs to prevent genuinely redundant calls within the same tick.
+// When the EMA is active, the debounce is set to blockTime - tickerInterval
+// so the first tick that passes shouldSkipTick also passes TryUpdateIfStale.
+// For fast chains (blockTime < tickerInterval) the debounce floors at 50ms
+// since the ticker itself is the rate limiter.
 //
-//	user config → EMA active (1s safety net) → network FallbackStatePollerDebounce → 1s hard floor
+//	user config → EMA-derived → network FallbackStatePollerDebounce → 1s hard floor
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	if dbi := e.debounceInterval; dbi != 0 {
 		return dbi
 	}
-	if e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()) != 0 {
-		return 1 * time.Second
+	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {
+		tickerInterval := e.upstream.Config().Evm.StatePollerInterval.Duration()
+		debounce := blockTime - tickerInterval
+		if debounce < 50*time.Millisecond {
+			debounce = 50 * time.Millisecond
+		}
+		return debounce
 	}
 	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
 		return cfg.FallbackStatePollerDebounce.Duration()
