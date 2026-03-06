@@ -160,17 +160,15 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	e.Enabled = true
 
 	go (func() {
-		ticker := time.NewTicker(interval.Duration())
-		defer ticker.Stop()
+		defaultInterval := interval.Duration()
+		timer := time.NewTimer(defaultInterval)
+		defer timer.Stop()
 		for {
 			select {
 			case <-e.appCtx.Done():
 				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 				return
-			case <-ticker.C:
-				if e.shouldSkipTick() {
-					continue
-				}
+			case <-timer.C:
 				// Calculate timeout based on shared state config:
 				// 1. Wait for distributed lock (up to lockTtl)
 				// 2. Buffer for operations (fetch block, update remote)
@@ -200,6 +198,8 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 						e.logger.Warn().Err(err).Msgf("failed to poll evm state")
 					}
 				}
+
+				timer.Reset(e.nextPollDelay(defaultInterval))
 			}
 		}
 	})()
@@ -353,49 +353,44 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }
 
-// shouldSkipTick returns true when the next block is not yet expected,
-// allowing the poll loop to avoid wasted RPC calls. Uses the on-chain
-// timestamp of the last observed block plus the EMA block time to predict
-// when the next block should arrive.
-func (e *EvmStatePoller) shouldSkipTick() bool {
+// nextPollDelay computes how long to wait before the next poll.
+// Anchors to the local detection time of the last new block (ms precision)
+// rather than the on-chain timestamp (second precision). This eliminates
+// the scheduling imprecision on fast chains where block.timestamp is seconds.
+// Never polls faster than the configured statePollerInterval.
+func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Duration {
 	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
-	if blockTime == 0 {
-		return false
+	if blockTime == 0 || blockTime <= defaultInterval {
+		return defaultInterval
 	}
-	lastBlockTs := e.tracker.GetLatestBlockTimestamp(e.upstream.NetworkId())
-	if lastBlockTs <= 0 {
-		return false
+	lastDetectedMs := e.tracker.GetLastNewBlockDetectedAt(e.upstream.NetworkId())
+	if lastDetectedMs <= 0 {
+		return defaultInterval
 	}
-	if lastBlockTs > time.Now().Unix() {
-		return false
+	nextExpected := time.UnixMilli(lastDetectedMs).Add(blockTime)
+	delay := time.Until(nextExpected)
+	if delay < defaultInterval {
+		return defaultInterval
 	}
-	nextExpected := time.Unix(lastBlockTs, 0).Add(blockTime)
-	return time.Now().Before(nextExpected)
+	return delay
 }
 
 // resolveDebounce returns the debounce interval for poll methods.
-// When the EMA is active, the debounce is set to blockTime - tickerInterval
-// so the first tick that passes shouldSkipTick also passes TryUpdateIfStale.
-// For fast chains (blockTime < tickerInterval) the debounce floors at 50ms
-// since the ticker itself is the rate limiter.
+// With the dynamic timer handling scheduling, the debounce is a safety net
+// to prevent genuinely redundant fetches.
 //
-//	user config → EMA-derived → network FallbackStatePollerDebounce → 1s hard floor
+//	user config → block time → network FallbackStatePollerDebounce → 100ms floor
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	if dbi := e.debounceInterval; dbi != 0 {
 		return dbi
 	}
 	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {
-		tickerInterval := e.upstream.Config().Evm.StatePollerInterval.Duration()
-		debounce := blockTime - tickerInterval
-		if debounce < 50*time.Millisecond {
-			debounce = 50 * time.Millisecond
-		}
-		return debounce
+		return blockTime
 	}
 	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
 		return cfg.FallbackStatePollerDebounce.Duration()
 	}
-	return 1 * time.Second
+	return 100 * time.Millisecond
 }
 
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.

@@ -44,18 +44,26 @@ type metadataKey struct {
 // Network Metadata & Timer
 // ------------------------------------
 
+type blockObservation struct {
+	blockNumber int64
+	timestamp   int64 // on-chain seconds
+}
+
+const blockTimeWindowSize = 32
+
 type NetworkMetadata struct {
 	evmLatestBlockNumber    atomic.Int64
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
-	// Dynamic block time EMA. Callers should use GetNetworkBlockTime which
-	// only returns the EMA once enough samples have been collected.
-	evmBlockTime             atomic.Int64 // current EMA value in nanoseconds
-	evmBlockTimeSamples      atomic.Int64 // number of samples folded into the EMA
-	evmBlockTimeMu           sync.Mutex   // protects ref fields below + EMA read-modify-write
-	evmBlockTimeRefBlock     int64        // block number from last valid (block, timestamp) pair
-	evmBlockTimeRefTimestamp int64        // timestamp from that same block
+	// Dynamic block time via sliding window density.
+	// Callers should use GetNetworkBlockTime which returns 0 until enough
+	// observations with distinct timestamps have been collected.
+	evmBlockTime       atomic.Int64        // computed result in nanoseconds (read by consumers)
+	evmBlockTimeMu     sync.Mutex          // protects window slice
+	evmBlockTimeWindow []blockObservation  // sliding window, capped at blockTimeWindowSize
+
+	evmLastNewBlockDetectedAt atomic.Int64 // unix millis (time.Now()) when network block number last advanced
 }
 
 type Timer struct {
@@ -747,18 +755,21 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
 
+		// Record when we detected this new block (ms precision from local clock)
+		ntwMeta.evmLastNewBlockDetectedAt.Store(time.Now().UnixMilli())
+
 		// Atomically update timestamp when network-level block number is updated
 		if blockTimestamp > 0 {
 			ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 
-			// Calculate and record distance metric from EVM state poller
-			currentTime := time.Now().Unix()
-			distance := currentTime - blockTimestamp
+			// Calculate and record distance metric from EVM state poller (ms arithmetic
+			// on current time gives fractional seconds instead of snapping 0/1 on fast chains)
+			distanceMs := time.Now().UnixMilli() - blockTimestamp*1000
 			telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
 				t.projectId,
 				netLabel,
 				"evm_state_poller",
-			).Set(float64(distance))
+			).Set(float64(distanceMs) / 1000.0)
 
 			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
 		}
@@ -812,81 +823,84 @@ func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int
 }
 
 // ------------------------------------
-// Dynamic Block Time (EMA)
+// Dynamic Block Time (Sliding Window)
 // ------------------------------------
 
-const blockTimeEMAAlpha = 0.1
-const blockTimeMinSamples = 4 // minimum samples before the EMA is considered stable
+const blockTimeMinObservations = 4 // minimum observations with >=2 distinct timestamps
 
-// updateBlockTimeSample manages the reference (block, timestamp) pair and folds
-// a new per-block time sample into the EMA. All ref state is read and written
-// under evmBlockTimeMu so concurrent callers cannot interleave.
+// updateBlockTimeSample appends a (blockNumber, timestamp) observation to the
+// sliding window and recomputes block time from the density of blocks across
+// the window. This avoids the EMA convergence problem where single-block-gap
+// samples at second boundaries produce inflated values on fast chains.
 func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64) {
 	ntwMeta.evmBlockTimeMu.Lock()
 	defer ntwMeta.evmBlockTimeMu.Unlock()
 
-	prevBlock := ntwMeta.evmBlockTimeRefBlock
-	prevTs := ntwMeta.evmBlockTimeRefTimestamp
+	w := ntwMeta.evmBlockTimeWindow
 
-	// Out-of-order update — another goroutine already advanced past this block.
-	if blockNumber <= prevBlock {
+	// Reject out-of-order: blockNumber must be strictly increasing.
+	if len(w) > 0 && blockNumber <= w[len(w)-1].blockNumber {
 		return
 	}
 
-	// First call: seed the reference point, no sample to compute yet.
-	if prevBlock <= 0 || prevTs <= 0 {
-		ntwMeta.evmBlockTimeRefBlock = blockNumber
-		ntwMeta.evmBlockTimeRefTimestamp = blockTimestamp
+	w = append(w, blockObservation{blockNumber: blockNumber, timestamp: blockTimestamp})
+
+	// Trim to window size.
+	if len(w) > blockTimeWindowSize {
+		w = w[len(w)-blockTimeWindowSize:]
+	}
+	ntwMeta.evmBlockTimeWindow = w
+
+	if len(w) < blockTimeMinObservations {
 		return
 	}
 
-	timeDiff := blockTimestamp - prevTs
+	first := w[0]
+	last := w[len(w)-1]
+	totalBlocks := last.blockNumber - first.blockNumber
+	totalTime := last.timestamp - first.timestamp
 
-	// Timestamp went backwards or didn't advance — data is suspect, don't
-	// update the reference so the next call retries against the same baseline.
-	if timeDiff <= 0 {
+	if totalBlocks <= 0 || totalTime < 0 {
 		return
 	}
 
-	// The reference is valid regardless of whether the *sample* passes the
-	// outlier filter below. Advancing the ref avoids a cascade of rejected
-	// samples when a single anomalous span (e.g. 100-block jump) is followed
-	// by normal single-block increments.
-	ntwMeta.evmBlockTimeRefBlock = blockNumber
-	ntwMeta.evmBlockTimeRefTimestamp = blockTimestamp
-
-	blockDiff := blockNumber - prevBlock // guaranteed > 0 from the check above
-	sampleNs := int64(float64(timeDiff) / float64(blockDiff) * float64(time.Second))
-
-	if sampleNs < int64(50*time.Millisecond) || sampleNs > int64(120*time.Second) {
+	// Need at least 2 distinct timestamps to compute a meaningful block time.
+	if totalTime == 0 {
+		// All observations in the same second. We know block time < 1s but
+		// can't determine the exact value yet. Use 1s / totalBlocks as a
+		// lower-bound estimate — will refine once the window spans a second boundary.
+		if totalBlocks >= 2 {
+			estimateNs := int64(float64(time.Second) / float64(totalBlocks))
+			ntwMeta.evmBlockTime.Store(estimateNs)
+			telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
+				t.projectId, netLabel,
+			).Set(float64(time.Duration(estimateNs).Milliseconds()))
+		}
 		return
 	}
 
-	current := ntwMeta.evmBlockTime.Load()
-	var newEMA int64
-	if current == 0 {
-		newEMA = sampleNs
-	} else {
-		newEMA = int64(blockTimeEMAAlpha*float64(sampleNs) + (1-blockTimeEMAAlpha)*float64(current))
+	blockTimeNs := int64(float64(totalTime) / float64(totalBlocks) * float64(time.Second))
+
+	// Sanity bounds: reject absurd values.
+	if blockTimeNs < int64(10*time.Millisecond) || blockTimeNs > int64(120*time.Second) {
+		return
 	}
-	ntwMeta.evmBlockTime.Store(newEMA)
-	ntwMeta.evmBlockTimeSamples.Add(1)
+
+	ntwMeta.evmBlockTime.Store(blockTimeNs)
 
 	telemetry.MetricNetworkDynamicBlockTime.WithLabelValues(
 		t.projectId, netLabel,
-	).Set(float64(time.Duration(newEMA).Milliseconds()))
+	).Set(float64(time.Duration(blockTimeNs).Milliseconds()))
 }
 
-// GetNetworkBlockTime returns the dynamic EMA-based block time for a network.
-// Returns 0 until at least blockTimeMinSamples have been collected so the
-// EMA has had a chance to stabilize across multiple blocks.
+// GetNetworkBlockTime returns the computed block time for a network.
+// Returns 0 until at least blockTimeMinObservations have been collected
+// with sufficient data to derive a block time.
 func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
 
-	if ntwMeta.evmBlockTimeSamples.Load() >= blockTimeMinSamples {
-		if v := ntwMeta.evmBlockTime.Load(); v > 0 {
-			return time.Duration(v)
-		}
+	if v := ntwMeta.evmBlockTime.Load(); v > 0 {
+		return time.Duration(v)
 	}
 
 	return 0
@@ -896,6 +910,13 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 // highest observed block for a network. Returns 0 if no timestamp is available.
 func (t *Tracker) GetLatestBlockTimestamp(networkId string) int64 {
 	return t.getMetadata(metadataKey{nil, networkId}).evmLatestBlockTimestamp.Load()
+}
+
+// GetLastNewBlockDetectedAt returns the local-clock time (unix millis) when the
+// network-level block number last advanced. Returns 0 if no block has been seen yet.
+// Unlike GetLatestBlockTimestamp (on-chain seconds), this has millisecond precision.
+func (t *Tracker) GetLastNewBlockDetectedAt(networkId string) int64 {
+	return t.getMetadata(metadataKey{nil, networkId}).evmLastNewBlockDetectedAt.Load()
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
