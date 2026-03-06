@@ -870,6 +870,17 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 			c.Grpc.GetTimeout = Duration(100 * time.Millisecond)
 		}
 	}
+	if c.S3 != nil {
+		c.Driver = DriverS3
+	}
+	if c.Driver == DriverS3 {
+		if c.S3 == nil {
+			c.S3 = &S3ConnectorConfig{}
+		}
+		if err := c.S3.SetDefaults(scope); err != nil {
+			return fmt.Errorf("failed to set defaults for s3 connector: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -1038,6 +1049,38 @@ func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 		d.StatePollInterval = Duration(5 * time.Second)
 	}
 
+	return nil
+}
+
+func (s *S3ConnectorConfig) SetDefaults(scope connectorScope) error {
+	if s.Bucket == "" {
+		switch scope {
+		case connectorScopeSharedState:
+			s.Bucket = "erpc-shared-state"
+		case connectorScopeCache:
+			s.Bucket = "erpc-json-rpc-cache"
+		case connectorScopeAuth:
+			s.Bucket = "erpc-auth"
+		default:
+			return fmt.Errorf("invalid connector scope: %s", scope)
+		}
+	}
+	if s.UseExpressOneZone == nil {
+		isExpress := strings.HasSuffix(s.Bucket, "--x-s3")
+		s.UseExpressOneZone = &isExpress
+	}
+	if s.InitTimeout == 0 {
+		s.InitTimeout = Duration(10 * time.Second)
+	}
+	if s.GetTimeout == 0 {
+		s.GetTimeout = Duration(1 * time.Second)
+	}
+	if s.SetTimeout == 0 {
+		s.SetTimeout = Duration(2 * time.Second)
+	}
+	if s.MaxRetries == 0 {
+		s.MaxRetries = 3
+	}
 	return nil
 }
 

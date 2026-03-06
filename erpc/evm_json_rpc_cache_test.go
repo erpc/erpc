@@ -12,10 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	dbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
@@ -2190,24 +2191,27 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		require.NotNil(t, cachedResp, "should get result before TTL expiry")
 
 		// Verify the TTL was correctly set by examining the DynamoDB entry
-		sess, err := session.NewSession(&aws.Config{
-			Region:      aws.String("us-west-2"),
-			Endpoint:    aws.String(endpoint),
-			Credentials: credentials.NewStaticCredentials("fakeKey", "fakeSecret", ""),
-		})
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+			awsconfig.WithRegion("us-west-2"),
+			awsconfig.WithCredentialsProvider(
+				credentials.NewStaticCredentialsProvider("fakeKey", "fakeSecret", ""),
+			),
+		)
 		require.NoError(t, err)
 
-		dynamoClient := dynamodb.New(sess)
+		dynamoClient := dynamodb.NewFromConfig(awsCfg, func(o *dynamodb.Options) {
+			o.BaseEndpoint = aws.String(endpoint)
+		})
 
 		// Get the cache key from the request
 		cacheKey, err := req.CacheHash(context.Background())
 		require.NoError(t, err)
 
-		result, err := dynamoClient.GetItem(&dynamodb.GetItemInput{
+		result, err := dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
 			TableName: aws.String("evm_cache_test"),
-			Key: map[string]*dynamodb.AttributeValue{
-				"pk": {S: aws.String("evm:123:*")},
-				"rk": {S: aws.String(cacheKey)},
+			Key: map[string]dbtypes.AttributeValue{
+				"pk": &dbtypes.AttributeValueMemberS{Value: "evm:123:*"},
+				"rk": &dbtypes.AttributeValueMemberS{Value: cacheKey},
 			},
 		})
 		require.NoError(t, err)
@@ -2216,9 +2220,10 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 		// Verify TTL is set
 		ttlAttr, exists := result.Item["ttl"]
 		assert.True(t, exists, "TTL attribute should exist")
-		assert.NotNil(t, ttlAttr.N, "TTL should be numeric")
+		ttlN, ok := ttlAttr.(*dbtypes.AttributeValueMemberN)
+		assert.True(t, ok, "TTL should be numeric")
 
-		ttlValue, err := strconv.ParseInt(*ttlAttr.N, 10, 64)
+		ttlValue, err := strconv.ParseInt(ttlN.Value, 10, 64)
 		require.NoError(t, err)
 
 		// The TTL should be approximately 30 seconds from now

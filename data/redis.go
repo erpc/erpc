@@ -277,7 +277,7 @@ func (r *RedisConnector) checkReady() error {
 }
 
 // Set stores a key-value pair in Redis with an optional TTL. Returns early if Redis is not ready.
-func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
+func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration, _ interface{}) error {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Set")
 	defer span.End()
 

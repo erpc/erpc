@@ -107,7 +107,7 @@ func (m *MemoryConnector) Id() string {
 	return m.id
 }
 
-func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
+func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration, _ interface{}) error {
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing to memory (ristretto)")
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)

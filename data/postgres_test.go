@@ -66,7 +66,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		}
 
 		// Try a simple SET/GET to verify readiness.
-		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-world"), nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-world"), nil, nil)
 		require.NoError(t, err, "Set should succeed after successful initialization")
 
 		val, err := connector.Get(ctx, "", "testPK", "testRK", nil)
@@ -101,7 +101,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		}
 
 		// Attempting to call Set or Get here should result in an error.
-		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil, nil)
 		require.Error(t, err, "should fail because Postgres is not connected")
 
 		_, err = connector.Get(ctx, "", "testPK", "testRK", nil)

@@ -151,7 +151,7 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 		return nil, fmt.Errorf("failed to marshal user data: %w", err)
 	}
 
-	err = connector.Set(ctx, apiKey, userId, userDataBytes, nil)
+	err = connector.Set(ctx, apiKey, userId, userDataBytes, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store API key: %w", err)
 	}
@@ -341,7 +341,7 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to marshal updated data: %w", err)
 	}
 
-	if err := connector.Set(ctx, apiKey, userId, updatedBytes, nil); err != nil {
+	if err := connector.Set(ctx, apiKey, userId, updatedBytes, nil, nil); err != nil {
 		return nil, fmt.Errorf("failed to update API key: %w", err)
 	}
 

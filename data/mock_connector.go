@@ -34,8 +34,8 @@ func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 }
 
 // Set mocks the Set method of the Connector interface
-func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
-	args := m.Called(ctx, partitionKey, rangeKey, value, ttl)
+func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration, metadata interface{}) error {
+	args := m.Called(ctx, partitionKey, rangeKey, value, ttl, metadata)
 	return args.Error(0)
 }
 
@@ -110,7 +110,7 @@ func NewMockMemoryConnector(ctx context.Context, logger *zerolog.Logger, id stri
 }
 
 // Set overrides the base Set method to include a fake delay
-func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
+func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration, metadata interface{}) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -119,7 +119,7 @@ func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey st
 	if rand.Float64() < m.setErrorRate || m.setErrorRate == 1 {
 		return errors.New("fake random SET error")
 	}
-	return m.MemoryConnector.Set(ctx, partitionKey, rangeKey, value, ttl)
+	return m.MemoryConnector.Set(ctx, partitionKey, rangeKey, value, ttl, metadata)
 }
 
 // Get overrides the base Get method to include a fake delay

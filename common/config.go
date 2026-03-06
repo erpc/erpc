@@ -262,6 +262,7 @@ const (
 	DriverPostgreSQL ConnectorDriverType = "postgresql"
 	DriverDynamoDB   ConnectorDriverType = "dynamodb"
 	DriverGrpc       ConnectorDriverType = "grpc"
+	DriverS3         ConnectorDriverType = "s3"
 )
 
 type ConnectorConfig struct {
@@ -272,6 +273,7 @@ type ConnectorConfig struct {
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
 	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
 	Grpc       *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
+	S3         *S3ConnectorConfig         `yaml:"s3,omitempty" json:"s3"`
 	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
 }
 
@@ -348,6 +350,47 @@ type DynamoDBConnectorConfig struct {
 	MaxRetries        int            `yaml:"maxRetries,omitempty" json:"maxRetries"`
 	StatePollInterval Duration       `yaml:"statePollInterval,omitempty" json:"statePollInterval" tstype:"Duration"`
 	LockRetryInterval Duration       `yaml:"lockRetryInterval,omitempty" json:"lockRetryInterval" tstype:"Duration"`
+}
+
+type S3ObjectMetadata struct {
+	StorageClass string `yaml:"storageClass,omitempty" json:"storageClass"`
+}
+
+type EvmFinalityS3Metadata struct {
+	Finalized   *S3ObjectMetadata `yaml:"finalized,omitempty" json:"finalized"`
+	Unfinalized *S3ObjectMetadata `yaml:"unfinalized,omitempty" json:"unfinalized"`
+	Realtime    *S3ObjectMetadata `yaml:"realtime,omitempty" json:"realtime"`
+	Unknown     *S3ObjectMetadata `yaml:"unknown,omitempty" json:"unknown"`
+}
+
+type S3ConnectorConfig struct {
+	Bucket                string                 `yaml:"bucket" json:"bucket"`
+	Region                string                 `yaml:"region" json:"region"`
+	Endpoint              string                 `yaml:"endpoint,omitempty" json:"endpoint"`
+	Auth                  *AwsAuthConfig         `yaml:"auth,omitempty" json:"auth"`
+	KeyPrefix             string                 `yaml:"keyPrefix,omitempty" json:"keyPrefix"`
+	UseExpressOneZone     *bool                  `yaml:"useExpressOneZone,omitempty" json:"useExpressOneZone"`
+	EvmFinalityS3Metadata *EvmFinalityS3Metadata `yaml:"evmFinalityS3Metadata,omitempty" json:"evmFinalityS3Metadata"`
+	InitTimeout           Duration               `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout            Duration               `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout            Duration               `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	MaxRetries            int                    `yaml:"maxRetries,omitempty" json:"maxRetries"`
+}
+
+func (s *S3ConnectorConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"bucket":                s.Bucket,
+		"region":                s.Region,
+		"endpoint":              util.RedactEndpoint(s.Endpoint),
+		"auth":                  s.Auth,
+		"keyPrefix":             s.KeyPrefix,
+		"useExpressOneZone":     s.UseExpressOneZone,
+		"evmFinalityS3Metadata": s.EvmFinalityS3Metadata,
+		"initTimeout":           s.InitTimeout.String(),
+		"getTimeout":            s.GetTimeout.String(),
+		"setTimeout":            s.SetTimeout.String(),
+		"maxRetries":            s.MaxRetries,
+	})
 }
 
 type PostgreSQLConnectorConfig struct {

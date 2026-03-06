@@ -591,9 +591,9 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				}
 			}
 
-			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
+			setCtx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, ttl)
+			err = connector.Set(setCtx, pk, rk, valueToStore, ttl, finState)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
