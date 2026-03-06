@@ -246,7 +246,7 @@ func (p *PostgreSQLConnector) Id() string {
 	return p.id
 }
 
-func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
+func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration, _ interface{}) error {
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Set")
 	defer span.End()
 

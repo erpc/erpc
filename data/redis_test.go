@@ -50,7 +50,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.Equal(t, util.StateReady, state, "connector should be in ready state")
 
 		// Try a simple SET/GET to verify readiness.
-		err = connector.Set(ctx, "testPK", "testRK", []byte("hello"), nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("hello"), nil, nil)
 		require.NoError(t, err, "Set should succeed after successful initialization")
 
 		val, err := connector.Get(ctx, "", "testPK", "testRK", nil)
@@ -91,7 +91,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.NotEqual(t, util.StateReady, state, "connector should not be in ready state")
 
 		// Attempting to call Set or Get here should result in an error because checkReady will fail.
-		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil, nil)
 		require.Error(t, err, "should fail because redis is not connected")
 
 		// The same for Get
@@ -186,7 +186,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			"Connector did not become READY within the expected timeframe")
 
 		// At this point, the connector should be ready. Let's confirm by doing a Set/Get.
-		err = connector.Set(ctx, "eventual", "rk", []byte("recovered-value"), nil)
+		err = connector.Set(ctx, "eventual", "rk", []byte("recovered-value"), nil, nil)
 		require.NoError(t, err, "Set should succeed if the connector is truly ready")
 
 		val, err := connector.Get(ctx, "", "eventual", "rk", nil)
@@ -703,7 +703,7 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	value := []byte("tx-receipt-value")
 
 	// Store the value using the concrete partition key. This should also create the reverse index entry.
-	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, nil)
+	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, nil, nil)
 	require.NoError(t, err)
 
 	// Verify that the reverse index key exists in Redis
@@ -758,12 +758,12 @@ func TestRedisConnector_ChainIsolation(t *testing.T) {
 	// Store block number for chain A
 	partitionKeyA := fmt.Sprintf("%s:%s", chainA, method)
 	rangeKey := "latest"
-	err = connector.Set(ctx, partitionKeyA, rangeKey, blockNumberA, nil)
+	err = connector.Set(ctx, partitionKeyA, rangeKey, blockNumberA, nil, nil)
 	require.NoError(t, err, "failed to set block number for chain A")
 
 	// Store block number for chain B
 	partitionKeyB := fmt.Sprintf("%s:%s", chainB, method)
-	err = connector.Set(ctx, partitionKeyB, rangeKey, blockNumberB, nil)
+	err = connector.Set(ctx, partitionKeyB, rangeKey, blockNumberB, nil, nil)
 	require.NoError(t, err, "failed to set block number for chain B")
 
 	// Verify chain A can read its own data

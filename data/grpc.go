@@ -353,7 +353,7 @@ func fetchGrpcServers(ctx context.Context, logger *zerolog.Logger, endpoint stri
 	return out, nil
 }
 
-func (g *GrpcConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
+func (g *GrpcConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration, _ interface{}) error {
 	// no-op for read-only connector
 	return fmt.Errorf("grpc connector is read-only")
 }

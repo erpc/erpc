@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
@@ -74,7 +75,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		}, 10*time.Second, 100*time.Millisecond, "connector should be in ready state")
 
 		// Try a simple SET/GET to confirm real operation
-		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-dynamo"), nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-dynamo"), nil, nil)
 		require.NoError(t, err, "Set should succeed after successful initialization")
 
 		val, err := connector.Get(ctx, "", "testPK", "testRK", nil)
@@ -116,7 +117,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		}
 
 		// 4) Verify that calls to Set/Get fail because the DynamoDB client is not connected
-		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil, nil)
 		require.Error(t, err, "Set should fail because DynamoDB is not connected (invalid endpoint)")
 
 		_, err = connector.Get(ctx, "", "testPK", "testRK", nil)
@@ -190,7 +191,7 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 	}
 
 	for _, data := range testData {
-		err = connector.Set(ctx, data.pk, data.rk, []byte(data.value), nil)
+		err = connector.Set(ctx, data.pk, data.rk, []byte(data.value), nil, nil)
 		require.NoError(t, err, "failed to insert test data")
 	}
 
@@ -323,12 +324,12 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		lockExpiryTime := time.Now().Add(lockExpiry).Unix()
 
-		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
-			Item: map[string]*dynamodb.AttributeValue{
-				connector.partitionKeyName: {S: aws.String(formattedLockKey)},
-				connector.rangeKeyName:     {S: aws.String("lock")},
-				"expiry":                   {N: aws.String(fmt.Sprintf("%d", lockExpiryTime))},
+			Item: map[string]types.AttributeValue{
+				connector.partitionKeyName: &types.AttributeValueMemberS{Value: formattedLockKey},
+				connector.rangeKeyName:     &types.AttributeValueMemberS{Value: "lock"},
+				"expiry":                   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", lockExpiryTime)},
 			},
 		})
 		require.NoError(t, err, "should create mock lock record")
@@ -355,12 +356,12 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		lockExpiryTime := time.Now().Add(100 * time.Second).Unix() // Won't expire during our test
 
-		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
-			Item: map[string]*dynamodb.AttributeValue{
-				connector.partitionKeyName: {S: aws.String(formattedLockKey)},
-				connector.rangeKeyName:     {S: aws.String("lock")},
-				"expiry":                   {N: aws.String(fmt.Sprintf("%d", lockExpiryTime))},
+			Item: map[string]types.AttributeValue{
+				connector.partitionKeyName: &types.AttributeValueMemberS{Value: formattedLockKey},
+				connector.rangeKeyName:     &types.AttributeValueMemberS{Value: "lock"},
+				"expiry":                   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", lockExpiryTime)},
 			},
 		})
 		require.NoError(t, err, "should create mock lock record")
@@ -387,12 +388,12 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		lockExpiryTime := time.Now().Add(5 * time.Second).Unix()
 
-		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
-			Item: map[string]*dynamodb.AttributeValue{
-				connector.partitionKeyName: {S: aws.String(formattedLockKey)},
-				connector.rangeKeyName:     {S: aws.String("lock")},
-				"expiry":                   {N: aws.String(fmt.Sprintf("%d", lockExpiryTime))},
+			Item: map[string]types.AttributeValue{
+				connector.partitionKeyName: &types.AttributeValueMemberS{Value: formattedLockKey},
+				connector.rangeKeyName:     &types.AttributeValueMemberS{Value: "lock"},
+				"expiry":                   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", lockExpiryTime)},
 			},
 		})
 		require.NoError(t, err, "should create mock lock record")
@@ -427,12 +428,12 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		expiredLockTime := time.Now().Add(-60 * time.Second).Unix() // Expired 1 minute ago
 
-		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
-			Item: map[string]*dynamodb.AttributeValue{
-				connector.partitionKeyName: {S: aws.String(formattedLockKey)},
-				connector.rangeKeyName:     {S: aws.String("lock")},
-				"expiry":                   {N: aws.String(fmt.Sprintf("%d", expiredLockTime))},
+			Item: map[string]types.AttributeValue{
+				connector.partitionKeyName: &types.AttributeValueMemberS{Value: formattedLockKey},
+				connector.rangeKeyName:     &types.AttributeValueMemberS{Value: "lock"},
+				"expiry":                   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", expiredLockTime)},
 			},
 		})
 		require.NoError(t, err, "should create expired lock record")

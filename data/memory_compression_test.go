@@ -27,7 +27,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 
 	t.Run("small values are not compressed", func(t *testing.T) {
 		smallValue := `{"jsonrpc":"2.0","result":"0x1bc16d674ec80000","id":1}`
-		err := connector.Set(ctx, "test", "small", []byte(smallValue), nil)
+		err := connector.Set(ctx, "test", "small", []byte(smallValue), nil, nil)
 		require.NoError(t, err)
 
 		// Wait for Ristretto to process the write
@@ -44,7 +44,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		largeValue := createLargeEvmResponse()
 		require.Greater(t, len(largeValue), 512, "Test value should be larger than compression threshold")
 
-		err := connector.Set(ctx, "test", "large", []byte(largeValue), nil)
+		err := connector.Set(ctx, "test", "large", []byte(largeValue), nil, nil)
 		require.NoError(t, err)
 
 		// Wait for Ristretto to process the write
@@ -70,7 +70,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 
 		// Store all values
 		for _, tc := range testCases {
-			err := connector.Set(ctx, "mixed", tc.key, []byte(tc.value), nil)
+			err := connector.Set(ctx, "mixed", tc.key, []byte(tc.value), nil, nil)
 			require.NoError(t, err)
 		}
 
@@ -89,7 +89,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		largeValue := createLargeEvmResponse()
 		ttl := 100 * time.Second
 
-		err := connector.Set(ctx, "test", "ttl", []byte(largeValue), &ttl)
+		err := connector.Set(ctx, "test", "ttl", []byte(largeValue), &ttl, nil)
 		require.NoError(t, err)
 
 		// Wait for Ristretto to process the write
@@ -119,7 +119,7 @@ func TestMemoryConnector_CompressionBenefits(t *testing.T) {
 	originalSize := len(evmResponse)
 
 	// Store the value
-	err = connector.Set(ctx, "evm", "block", []byte(evmResponse), nil)
+	err = connector.Set(ctx, "evm", "block", []byte(evmResponse), nil, nil)
 	require.NoError(t, err)
 
 	// Wait for Ristretto to process the write
@@ -179,7 +179,7 @@ func TestMemoryConnector_ConcurrentCompression(t *testing.T) {
 					key := fmt.Sprintf("%s_w%d_op%d", testCase.key, workerID, j)
 
 					// Set operation
-					if err := connector.Set(ctx, "concurrent", key, []byte(testCase.value), nil); err != nil {
+					if err := connector.Set(ctx, "concurrent", key, []byte(testCase.value), nil, nil); err != nil {
 						errChan <- fmt.Errorf("worker %d operation %d set failed: %w", workerID, j, err)
 					}
 

@@ -42,7 +42,7 @@ type Connector interface {
 	Get(ctx context.Context, index, partitionKey, rangeKey string, metadata interface{}) ([]byte, error)
 	// Note if "value" is going to be stored/kept in memory for longer than response lifecycle it must be
 	// copied to a new memory location because B2Str is used to provide "value" as a string reference.
-	Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error
+	Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration, metadata interface{}) error
 	Delete(ctx context.Context, partitionKey, rangeKey string) error
 	List(ctx context.Context, index string, limit int, paginationToken string) ([]KeyValuePair, string, error)
 	Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error)

@@ -2,16 +2,17 @@ package consensus
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
@@ -21,7 +22,7 @@ type s3MisbehaviorExporter struct {
 	mu        sync.Mutex
 	cfg       *common.MisbehaviorsDestinationConfig
 	log       *zerolog.Logger
-	s3Client  *s3.S3
+	s3Client  *s3.Client
 	bucket    string
 	keyPrefix string
 
@@ -47,45 +48,45 @@ func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *ze
 		return nil, err
 	}
 
-	// Create AWS session with tuned HTTP transport for better connection reuse
-	awsConfig := &aws.Config{
-		Region: aws.String(cfg.S3.Region),
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
-				DialContext: (&net.Dialer{
-					Timeout:   10 * time.Second,
-					KeepAlive: 60 * time.Second,
-				}).DialContext,
-				ForceAttemptHTTP2:     true,
-				MaxIdleConns:          256,
-				MaxIdleConnsPerHost:   256,
-				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:   5 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-			},
-			Timeout: 0,
+	// Create AWS config with tuned HTTP transport for better connection reuse
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 60 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          256,
+			MaxIdleConnsPerHost:   256,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
 		},
-		MaxRetries: aws.Int(5),
+		Timeout: 0,
 	}
+
+	var opts []func(*awsconfig.LoadOptions) error
+	opts = append(opts, awsconfig.WithRegion(cfg.S3.Region))
 
 	// Configure credentials if provided
 	if cfg.S3.Credentials != nil {
 		switch cfg.S3.Credentials.Mode {
 		case "secret":
-			awsConfig.Credentials = credentials.NewStaticCredentials(
-				cfg.S3.Credentials.AccessKeyID,
-				cfg.S3.Credentials.SecretAccessKey,
-				"",
-			)
+			opts = append(opts, awsconfig.WithCredentialsProvider(
+				credentials.NewStaticCredentialsProvider(
+					cfg.S3.Credentials.AccessKeyID,
+					cfg.S3.Credentials.SecretAccessKey,
+					"",
+				),
+			))
 		case "file":
-			awsConfig.Credentials = credentials.NewSharedCredentials(
-				cfg.S3.Credentials.CredentialsFile,
-				cfg.S3.Credentials.Profile,
+			opts = append(opts,
+				awsconfig.WithSharedConfigFiles([]string{cfg.S3.Credentials.CredentialsFile}),
+				awsconfig.WithSharedConfigProfile(cfg.S3.Credentials.Profile),
 			)
 		case "env":
 			// Use environment variables (default behavior)
-			awsConfig.Credentials = credentials.NewEnvCredentials()
 		default:
 			// Use default credential chain (env, IAM role, etc.)
 		}
@@ -95,15 +96,18 @@ func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *ze
 	// 2. Shared credentials file
 	// 3. IAM role (for EC2/ECS/EKS)
 
-	sess, err := session.NewSession(awsConfig)
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AWS session: %w", err)
+		return nil, fmt.Errorf("failed to create AWS config: %w", err)
 	}
 
-	s3Client := s3.New(sess)
+	s3Client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.HTTPClient = httpClient
+		o.RetryMaxAttempts = 5
+	})
 
 	// Verify bucket access
-	_, err = s3Client.HeadBucket(&s3.HeadBucketInput{
+	_, err = s3Client.HeadBucket(context.Background(), &s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -201,7 +205,7 @@ func (e *s3MisbehaviorExporter) flush() error {
 			Body:        bytes.NewReader(buf.Bytes()),
 			ContentType: aws.String(e.cfg.S3.ContentType),
 		}
-		if _, err := e.s3Client.PutObject(input); err != nil {
+		if _, err := e.s3Client.PutObject(context.Background(), input); err != nil {
 			e.log.Error().Err(err).Str("bucket", e.bucket).Str("key", key).Int("bytes", buf.Len()).Int("records", e.counts[fileName]).Msg("failed to upload misbehavior records to S3")
 			continue
 		}

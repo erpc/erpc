@@ -589,7 +589,7 @@ func (c *counterInt64) updateRemoteState(ctx context.Context, st CounterInt64Sta
 		return
 	}
 
-	err = c.registry.connector.Set(ctx, c.key, "value", payload, nil)
+	err = c.registry.connector.Set(ctx, c.key, "value", payload, nil, nil)
 	if err == nil {
 		err = c.registry.connector.PublishCounterInt64(ctx, c.key, st)
 	}

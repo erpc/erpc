@@ -26,7 +26,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 	t.Run("item expires after TTL", func(t *testing.T) {
 		// Set item with 100ms TTL
 		ttl := 100 * time.Millisecond
-		err := connector.Set(ctx, "pk1", "rk1", []byte("value1"), &ttl)
+		err := connector.Set(ctx, "pk1", "rk1", []byte("value1"), &ttl, nil)
 		require.NoError(t, err)
 
 		time.Sleep(30 * time.Millisecond)
@@ -47,7 +47,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 
 	t.Run("item without TTL doesn't expire", func(t *testing.T) {
 		// Set item with no TTL
-		err := connector.Set(ctx, "pk3", "rk1", []byte("value1"), nil)
+		err := connector.Set(ctx, "pk3", "rk1", []byte("value1"), nil, nil)
 		require.NoError(t, err)
 
 		// Wait a bit (less than typical eviction times for a non-full cache)
@@ -97,7 +97,7 @@ func TestMemoryConnector_Metrics(t *testing.T) {
 		require.NotNil(t, connector.cache.Metrics)
 
 		// Perform some cache operations to generate metrics
-		err = connector.Set(ctx, "pk1", "rk1", []byte("value1"), nil)
+		err = connector.Set(ctx, "pk1", "rk1", []byte("value1"), nil, nil)
 		require.NoError(t, err)
 
 		// Wait for Ristretto's eventual consistency
@@ -168,7 +168,7 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	// Store block number for chain A
 	partitionKeyA := fmt.Sprintf("%s:%s", chainA, method)
 	rangeKey := "latest"
-	err = connector.Set(ctx, partitionKeyA, rangeKey, blockNumberA, nil)
+	err = connector.Set(ctx, partitionKeyA, rangeKey, blockNumberA, nil, nil)
 	require.NoError(t, err, "failed to set block number for chain A")
 
 	// Wait for Ristretto's eventual consistency
@@ -176,7 +176,7 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 
 	// Store block number for chain B
 	partitionKeyB := fmt.Sprintf("%s:%s", chainB, method)
-	err = connector.Set(ctx, partitionKeyB, rangeKey, blockNumberB, nil)
+	err = connector.Set(ctx, partitionKeyB, rangeKey, blockNumberB, nil, nil)
 	require.NoError(t, err, "failed to set block number for chain B")
 
 	// Wait for Ristretto's eventual consistency
@@ -227,11 +227,11 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	testValueA := []byte("value-for-chain-A")
 	testValueB := []byte("value-for-chain-B")
 
-	err = connector.Set(ctx, partitionKeyA, testRangeKey, testValueA, nil)
+	err = connector.Set(ctx, partitionKeyA, testRangeKey, testValueA, nil, nil)
 	require.NoError(t, err)
 	connector.cache.Wait()
 
-	err = connector.Set(ctx, partitionKeyB, testRangeKey, testValueB, nil)
+	err = connector.Set(ctx, partitionKeyB, testRangeKey, testValueB, nil, nil)
 	require.NoError(t, err)
 	connector.cache.Wait()
 
