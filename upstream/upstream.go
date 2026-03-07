@@ -16,6 +16,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -56,6 +57,7 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	solanaStatePoller    common.SolanaStatePoller
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 }
@@ -177,6 +179,13 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 			// The reason we're not returning error is to allow upstream to still be registered
 			// even if background block polling fails initially.
 			u.logger.Error().Err(err).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+		}
+	}
+
+	if u.config.Type == common.UpstreamTypeSolana {
+		u.solanaStatePoller = solana.NewSolanaStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker)
+		if err := u.solanaStatePoller.Bootstrap(ctx); err != nil {
+			u.logger.Error().Err(err).Msg("failed on initial bootstrap of solana state poller (will retry in background)")
 		}
 	}
 
@@ -790,6 +799,10 @@ func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
 }
 
+func (u *Upstream) SolanaStatePoller() common.SolanaStatePoller {
+	return u.solanaStatePoller
+}
+
 // TODO move to evm package?
 // EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
 // For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
@@ -1286,6 +1299,14 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
 		// TODO evm: detect max eth_getLogs max block range
+	} else if cfg.Type == common.UpstreamTypeSolana {
+		if cfg.Solana == nil {
+			cfg.Solana = &common.SolanaUpstreamConfig{}
+		}
+		if cfg.Solana.Cluster == "" {
+			cfg.Solana.Cluster = string(common.SolanaClusterMainnetBeta)
+		}
+		u.networkId.Store(util.SolanaNetworkId(cfg.Solana.Cluster))
 	} else {
 		return fmt.Errorf("upstream type not supported: %s", cfg.Type)
 	}
