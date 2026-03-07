@@ -357,10 +357,11 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 // Anchors to the local detection time of the last new block (ms precision)
 // rather than the on-chain timestamp (second precision). This eliminates
 // the scheduling imprecision on fast chains where block.timestamp is seconds.
-// Never polls faster than the configured statePollerInterval.
+// Falls back to defaultInterval when block time is unknown, and caps at
+// defaultInterval so we never poll slower than the configured rate.
 func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Duration {
 	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
-	if blockTime == 0 || blockTime <= defaultInterval {
+	if blockTime == 0 {
 		return defaultInterval
 	}
 	lastDetectedMs := e.tracker.GetLastNewBlockDetectedAt(e.upstream.NetworkId())
@@ -369,7 +370,13 @@ func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Durat
 	}
 	nextExpected := time.UnixMilli(lastDetectedMs).Add(blockTime)
 	delay := time.Until(nextExpected)
-	if delay < defaultInterval {
+	// Floor: 1s minimum to avoid hammering RPC providers on sub-second chains.
+	// Being ~500ms stale on a 250ms chain is acceptable; burning rate limits is not.
+	if delay < 1*time.Second {
+		return 1 * time.Second
+	}
+	// Cap: never poll slower than the configured interval
+	if delay > defaultInterval {
 		return defaultInterval
 	}
 	return delay
@@ -379,18 +386,21 @@ func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Durat
 // With the dynamic timer handling scheduling, the debounce is a safety net
 // to prevent genuinely redundant fetches.
 //
-//	user config → block time → network FallbackStatePollerDebounce → 100ms floor
+//	user config → block time (≥1s floor) → network FallbackStatePollerDebounce → 1s floor
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	if dbi := e.debounceInterval; dbi != 0 {
 		return dbi
 	}
 	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {
+		if blockTime < 1*time.Second {
+			return 1 * time.Second
+		}
 		return blockTime
 	}
 	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
 		return cfg.FallbackStatePollerDebounce.Duration()
 	}
-	return 100 * time.Millisecond
+	return 1 * time.Second
 }
 
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.

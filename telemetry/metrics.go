@@ -91,7 +91,7 @@ var (
 	MetricNetworkDynamicBlockTime = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "network_dynamic_block_time_milliseconds",
-		Help:      "Dynamically computed block time (EMA) per network in milliseconds.",
+		Help:      "Dynamically computed block time per network in milliseconds.",
 	}, []string{"project", "network"})
 
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
