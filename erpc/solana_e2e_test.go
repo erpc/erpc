@@ -501,6 +501,9 @@ func TestEvmStillWorksAfterSolana(t *testing.T) {
 // TestSolanaSendTransactionNotRetried verifies that an error on sendTransaction
 // is never retried against a second upstream (gap 4 — double-spend prevention).
 // The network failsafe has MaxAttempts:3, but sendTransaction must stop after 1.
+//
+// Both upstreams return an HTTP 500 error so the test is independent of which
+// upstream the selector picks first.
 func TestSolanaSendTransactionNotRetried(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -508,36 +511,34 @@ func TestSolanaSendTransactionNotRetried(t *testing.T) {
 
 	setupSolanaStatePollerMocks()
 
-	// sol1 rejects the transaction with an HTTP 500 server error so erpc treats
-	// it as an upstream error (not a pass-through JSON-RPC body).
-	var sol1TxCalls atomic.Int32
-	gock.New("http://sol1.localhost").
-		Post("").
-		Persist().
-		Filter(func(req *http.Request) bool {
-			if strings.Contains(util.SafeReadBody(req), "sendTransaction") {
-				sol1TxCalls.Add(1)
-				return true
-			}
-			return false
-		}).
-		Reply(500).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Transaction simulation failed"}}`))
-
-	// sol2 would succeed IF it were called — count any call so the test can assert zero.
-	var sol2TxCalls atomic.Int32
-	gock.New("http://sol2.localhost").
-		Post("").
-		Persist().
-		Filter(func(req *http.Request) bool {
-			if strings.Contains(util.SafeReadBody(req), "sendTransaction") {
-				sol2TxCalls.Add(1)
-				return true
-			}
-			return false
-		}).
-		Reply(200).
-		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"sol2TxSig"}`))
+	// Both upstreams reject sendTransaction with an HTTP 500 server error so
+	// erpc classifies it as an upstream error. We count calls to verify only
+	// one total attempt is made regardless of which upstream is selected first.
+	//
+	// NOTE: gock evaluates every registered mock's Filter before doing URL
+	// matching, so a shared filter would be called twice (once per mock) for a
+	// single request. We guard the counter with a per-upstream host check so
+	// the increment fires only for the mock that actually serves the response.
+	var totalTxCalls atomic.Int32
+	for _, host := range []string{"http://sol1.localhost", "http://sol2.localhost"} {
+		expectedHost := strings.TrimPrefix(host, "http://") // e.g. "sol1.localhost"
+		gock.New(host).
+			Post("").
+			Persist().
+			Filter(func(req *http.Request) bool {
+				// Skip mocks whose host doesn't match this request.
+				if req.URL.Host != expectedHost {
+					return false
+				}
+				if strings.Contains(util.SafeReadBody(req), "sendTransaction") {
+					totalTxCalls.Add(1)
+					return true
+				}
+				return false
+			}).
+			Reply(500).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Transaction simulation failed"}}`))
+	}
 
 	util.ConfigureTestLogger()
 	lg := log.Logger
@@ -562,10 +563,8 @@ func TestSolanaSendTransactionNotRetried(t *testing.T) {
 	require.Error(t, fwdErr, "sendTransaction error must be surfaced to the caller")
 	assert.False(t, common.IsRetryableTowardNetwork(fwdErr),
 		"sendTransaction error must not be retryable toward the network")
-	assert.Equal(t, int32(1), sol1TxCalls.Load(),
-		"sol1 should be called exactly once")
-	assert.Equal(t, int32(0), sol2TxCalls.Load(),
-		"sol2 must NOT be called — sendTransaction must not be retried")
+	assert.Equal(t, int32(1), totalTxCalls.Load(),
+		"sendTransaction must be attempted exactly once (no retry to a second upstream)")
 }
 
 // TestSolanaHighestSlotReflectsMultipleUpstreams verifies that
