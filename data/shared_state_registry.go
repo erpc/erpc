@@ -41,6 +41,22 @@ func NewSharedStateRegistry(
 	cfg *common.SharedStateConfig,
 ) (SharedStateRegistry, error) {
 	lg := logger.With().Str("component", "sharedState").Logger()
+
+	// When cfg is nil (e.g. in tests or single-instance deploys without shared
+	// state configured) fall back to a local in-memory connector so callers
+	// always receive a functional registry.
+	if cfg == nil {
+		cfg = &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: common.DriverMemory,
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems:     10_000,
+					MaxTotalSize: "100MB",
+				},
+			},
+		}
+	}
+
 	connector, err := NewConnector(appCtx, &lg, cfg.Connector)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connector: %w", err)

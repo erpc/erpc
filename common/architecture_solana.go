@@ -1,6 +1,21 @@
 package common
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// SlotSharedVariable is a subset of data.CounterInt64SharedVariable that the
+// SolanaStatePoller needs. Defined here in common so architecture/solana can
+// use it without importing the data package (which would create an import cycle
+// via data → clients → architecture/solana).
+type SlotSharedVariable interface {
+	GetValue() int64
+	TryUpdate(ctx context.Context, newValue int64) int64
+	OnValue(callback func(int64))
+	OnLargeRollback(callback func(currentVal, newVal int64))
+	IsStale(staleness time.Duration) bool
+}
 
 const (
 	UpstreamTypeSolana UpstreamType        = "solana"

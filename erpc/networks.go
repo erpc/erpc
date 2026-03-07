@@ -231,6 +231,48 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	return minBlock
 }
 
+// SolanaHighestLatestSlot returns the highest processed/latest slot seen across all
+// healthy Solana upstreams on this network. Used for slot-lag scoring.
+func (n *Network) SolanaHighestLatestSlot(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.SolanaHighestLatestSlot")
+	defer span.End()
+
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	var maxSlot int64
+	for _, u := range upstreams {
+		sp := u.SolanaStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if slot := sp.LatestSlot(); slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+	span.SetAttributes(attribute.Int64("highest_latest_slot", maxSlot))
+	return maxSlot
+}
+
+// SolanaHighestFinalizedSlot returns the highest finalized slot seen across all
+// Solana upstreams on this network.
+func (n *Network) SolanaHighestFinalizedSlot(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.SolanaHighestFinalizedSlot")
+	defer span.End()
+
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+	var maxSlot int64
+	for _, u := range upstreams {
+		sp := u.SolanaStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if slot := sp.FinalizedSlot(); slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+	span.SetAttributes(attribute.Int64("highest_finalized_slot", maxSlot))
+	return maxSlot
+}
+
 func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	var leader common.Upstream
 	var leaderLastBlock int64 = 0
@@ -384,18 +426,28 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
-	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
-	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
-		if err != nil {
+	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic.
+	// Dispatch by architecture to avoid EVM hooks firing on Solana requests.
+	var networkPreHandled bool
+	var networkPreResp *common.NormalizedResponse
+	var networkPreErr error
+	switch n.cfg.Architecture {
+	case common.ArchitectureEvm:
+		networkPreHandled, networkPreResp, networkPreErr = evm.HandleNetworkPreForward(ctx, n, upsList, req)
+	case common.ArchitectureSolana:
+		networkPreHandled, networkPreResp, networkPreErr = solana.HandleNetworkPreForward(ctx, n, upsList, req)
+	}
+	if networkPreHandled {
+		if networkPreErr != nil {
 			if mlx != nil {
-				mlx.Close(ctx, nil, err)
+				mlx.Close(ctx, nil, networkPreErr)
 			}
-			return nil, err
+			return nil, networkPreErr
 		}
 		if mlx != nil {
-			mlx.Close(ctx, resp, nil)
+			mlx.Close(ctx, networkPreResp, nil)
 		}
-		return resp, nil
+		return networkPreResp, nil
 	}
 
 	// 3) Check if we should handle this method on this network

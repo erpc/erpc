@@ -183,7 +183,17 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 	}
 
 	if u.config.Type == common.UpstreamTypeSolana {
-		u.solanaStatePoller = solana.NewSolanaStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker)
+		// Create shared-state counters in the upstream layer (which can import data)
+		// and pass them as common.SlotSharedVariable to the poller, avoiding an
+		// import cycle through clients → architecture/solana → data.
+		latestKey := fmt.Sprintf("solana/latestSlot/%s", common.UniqueUpstreamKey(u))
+		finalizedKey := fmt.Sprintf("solana/finalizedSlot/%s", common.UniqueUpstreamKey(u))
+		latestVar := u.sharedStateRegistry.GetCounterInt64(latestKey, solana.DefaultToleratedSlotRollback)
+		finalizedVar := u.sharedStateRegistry.GetCounterInt64(finalizedKey, solana.DefaultToleratedSlotRollback)
+
+		u.solanaStatePoller = solana.NewSolanaStatePoller(
+			u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, latestVar, finalizedVar,
+		)
 		if err := u.solanaStatePoller.Bootstrap(ctx); err != nil {
 			u.logger.Error().Err(err).Msg("failed on initial bootstrap of solana state poller (will retry in background)")
 		}
@@ -809,43 +819,70 @@ func (u *Upstream) SolanaStatePoller() common.SolanaStatePoller {
 func (u *Upstream) solanaVerifyGenesisHash(ctx context.Context, cluster string) error {
 	expectedHash, ok := common.SolanaGenesisHashes[common.SolanaCluster(cluster)]
 	if !ok {
-		// Unknown cluster (e.g. localnet) — skip verification
+		// Unknown cluster (e.g. localnet) — skip verification.
 		return nil
 	}
 
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getGenesisHash","params":[]}`))
 	resp, err := u.Forward(ctx, pr, true)
 	if err != nil {
+		// Check for HTTP-level errors (e.g. 401 Unauthorized, 403 Forbidden) to give a
+		// clearer diagnostic than "empty JSON input" when auth is required.
+		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) ||
+			common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrSolanaGenesisHashFetchFailed",
+					Cause: fmt.Errorf("HTTP-level error fetching genesis hash (check auth/network): %w", err),
+				}, u)
+		}
 		return common.NewErrUpstreamClientInitialization(
 			&common.BaseError{Code: "ErrSolanaGenesisHashFetchFailed", Cause: err}, u)
 	}
+
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return common.NewErrUpstreamClientInitialization(
 			&common.BaseError{Code: "ErrSolanaGenesisHashParseFailed", Cause: err}, u)
 	}
+
+	// Detect non-JSON-RPC responses (e.g. HTML error pages, gateway auth walls).
+	// If both result and error are absent the upstream returned a non-RPC body.
+	if jrr.Error == nil && len(jrr.GetResultBytes()) == 0 {
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{
+				Code:  "ErrSolanaGenesisHashFetchFailed",
+				Cause: fmt.Errorf("upstream returned non-JSON-RPC body for getGenesisHash (check auth/endpoint URL)"),
+			}, u)
+	}
+
 	if jrr.Error != nil {
 		return common.NewErrUpstreamClientInitialization(
 			&common.BaseError{
 				Code:  "ErrSolanaGenesisHashRpcError",
-				Cause: fmt.Errorf("%s", jrr.Error.Message),
+				Cause: fmt.Errorf("RPC error %d: %s", jrr.Error.Code, jrr.Error.Message),
 			}, u)
 	}
 
 	var genesisHash string
 	if err := sonic.Unmarshal(jrr.GetResultBytes(), &genesisHash); err != nil {
-		return common.NewErrUpstreamClientInitialization(
-			&common.BaseError{Code: "ErrSolanaGenesisHashUnmarshalFailed", Cause: err}, u)
+		// Upstream returned a non-string body for getGenesisHash — won't
+		// self-heal on retry. Wrap with NewTaskFatal so the Initializer stops.
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashUnmarshalFailed", Cause: err}, u))
 	}
 	if genesisHash != expectedHash {
-		return common.NewErrUpstreamClientInitialization(
+		// Misconfiguration (wrong upstream for this cluster) — permanent.
+		// Direct analog of EVM chainId mismatch; wrap with NewTaskFatal so
+		// the Initializer detects the failure immediately instead of hanging.
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 			&common.BaseError{
 				Code: "ErrSolanaClusterMismatch",
 				Cause: fmt.Errorf(
 					"genesis hash mismatch: upstream returned %q but cluster %q expects %q",
 					genesisHash, cluster, expectedHash,
 				),
-			}, u)
+			}, u))
 	}
 	return nil
 }
