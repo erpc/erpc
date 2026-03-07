@@ -74,40 +74,33 @@ func GetFinality(ctx context.Context, _ common.Network, req *common.NormalizedRe
 	// Extract commitment from params
 	commitment := extractCommitment(req)
 
-	switch strings.ToLower(commitment) {
-	case "finalized", "":
-		return common.DataFinalityStateFinalized
-	case "confirmed":
+	// Normalise once so clients sending "CONFIRMED" still match.
+	switch common.SolanaCommitment(strings.ToLower(commitment)) {
+	case common.SolanaCommitmentConfirmed:
 		return common.DataFinalityStateUnfinalized
-	case "processed":
+	case common.SolanaCommitmentProcessed:
 		return common.DataFinalityStateRealtime
-	default:
+	default: // "finalized", "", or any unrecognised value → treat as finalized
 		return common.DataFinalityStateFinalized
 	}
 }
 
 // extractCommitment pulls the "commitment" field from the last params argument,
 // which is typically an object like {"commitment":"finalized",...}.
+// The params are already decoded by the JSON-RPC parser into []interface{}, so
+// we type-assert directly — no marshal/unmarshal round-trip needed.
 func extractCommitment(req *common.NormalizedRequest) string {
 	jrr, err := req.JsonRpcRequest()
 	if err != nil || jrr == nil || len(jrr.Params) == 0 {
 		return ""
 	}
 
-	// Solana always puts config object as the last param
+	// Solana always puts the config object as the last param.
 	last := jrr.Params[len(jrr.Params)-1]
-
-	// Marshal back to bytes so we can unmarshal as a config object
-	lastBytes, err2 := common.SonicCfg.Marshal(last)
-	if err2 != nil {
-		return ""
-	}
-	var cfg map[string]interface{}
-	if err := common.SonicCfg.Unmarshal(lastBytes, &cfg); err != nil {
-		return ""
-	}
-	if c, ok := cfg["commitment"].(string); ok {
-		return c
+	if cfg, ok := last.(map[string]interface{}); ok {
+		if c, ok := cfg["commitment"].(string); ok {
+			return c
+		}
 	}
 	return ""
 }

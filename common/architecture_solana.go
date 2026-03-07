@@ -2,7 +2,6 @@ package common
 
 import (
 	"context"
-	"time"
 )
 
 // SlotSharedVariable is a subset of data.CounterInt64SharedVariable that the
@@ -14,7 +13,6 @@ type SlotSharedVariable interface {
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 	OnLargeRollback(callback func(currentVal, newVal int64))
-	IsStale(staleness time.Duration) bool
 }
 
 const (
