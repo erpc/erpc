@@ -192,7 +192,7 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		finalizedVar := u.sharedStateRegistry.GetCounterInt64(finalizedKey, solana.DefaultToleratedSlotRollback)
 
 		u.solanaStatePoller = solana.NewSolanaStatePoller(
-			u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, latestVar, finalizedVar,
+			u.appCtx, u.logger, u, u.metricsTracker, latestVar, finalizedVar,
 		)
 		if err := u.solanaStatePoller.Bootstrap(ctx); err != nil {
 			u.logger.Error().Err(err).Msg("failed on initial bootstrap of solana state poller (will retry in background)")

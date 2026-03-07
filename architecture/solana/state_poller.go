@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -13,6 +14,13 @@ import (
 )
 
 const defaultSlotDebounce = 400 * time.Millisecond // ~1 Solana slot
+
+// Pre-computed static request bodies — avoids fmt.Sprintf allocations on every poll tick.
+var (
+	reqGetHealth         = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
+	reqGetSlotProcessed  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
+	reqGetSlotFinalized  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
+)
 
 // DefaultToleratedSlotRollback is the maximum slot decrease considered normal
 // churn (e.g. processed → confirmed reorg). Larger rollbacks trigger alarms.
@@ -31,11 +39,10 @@ var _ common.SolanaStatePoller = &SolanaStatePoller{}
 type SolanaStatePoller struct {
 	Enabled bool
 
-	projectId string
-	appCtx    context.Context
-	logger    *zerolog.Logger
-	upstream  common.Upstream
-	tracker   *health.Tracker
+	appCtx   context.Context
+	logger   *zerolog.Logger
+	upstream common.Upstream
+	tracker  *health.Tracker
 
 	// latestSlotShared and finalizedSlotShared feed into health.Tracker via
 	// OnValue callbacks, which drives BlockHeadLag scoring for upstream routing.
@@ -44,7 +51,7 @@ type SolanaStatePoller struct {
 	latestSlotShared    common.SlotSharedVariable
 	finalizedSlotShared common.SlotSharedVariable
 
-	healthy          healthAtomic
+	healthy          atomic.Bool
 	debounceInterval time.Duration
 	lastPollTime     time.Time
 	pollMu           sync.Mutex
@@ -55,15 +62,6 @@ type SolanaStatePoller struct {
 	healthFailCount    int
 }
 
-// healthAtomic is a simple RWMutex-guarded bool to avoid importing sync/atomic.
-type healthAtomic struct {
-	mu  sync.RWMutex
-	val bool
-}
-
-func (h *healthAtomic) Store(v bool) { h.mu.Lock(); h.val = v; h.mu.Unlock() }
-func (h *healthAtomic) Load() bool   { h.mu.RLock(); v := h.val; h.mu.RUnlock(); return v }
-
 // NewSolanaStatePoller creates a new poller. latestSlotVar and finalizedSlotVar
 // are common.SlotSharedVariable values created by the caller (upstream.go) using
 // the data.SharedStateRegistry, breaking the import cycle.
@@ -71,7 +69,6 @@ func (h *healthAtomic) Load() bool   { h.mu.RLock(); v := h.val; h.mu.RUnlock();
 // Both variables MUST be non-nil. The caller registers OnValue / OnLargeRollback
 // callbacks here so the tracker is notified when slots advance.
 func NewSolanaStatePoller(
-	projectId string,
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	upstream common.Upstream,
@@ -86,7 +83,6 @@ func NewSolanaStatePoller(
 
 	p := &SolanaStatePoller{
 		Enabled:             true,
-		projectId:           projectId,
 		appCtx:              appCtx,
 		logger:              &lg,
 		upstream:            upstream,
@@ -162,47 +158,70 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 	p.lastPollTime = time.Now()
 	p.pollMu.Unlock()
 
-	// Poll node health — runs every cycle alongside slot polling.
-	if err := p.PollHealth(ctx); err != nil {
+	// Fan out the three independent RPC calls concurrently so a slow node
+	// doesn't serialise three round-trips per tick.
+	type slotResult struct {
+		slot int64
+		err  error
+	}
+	healthErrCh := make(chan error, 1)
+	latestCh := make(chan slotResult, 1)
+	finalizedCh := make(chan slotResult, 1)
+
+	go func() { healthErrCh <- p.PollHealth(ctx) }()
+	go func() {
+		s, e := p.PollProcessedSlot(ctx)
+		latestCh <- slotResult{s, e}
+	}()
+	if !p.skipFinalizedCheck {
+		go func() {
+			s, e := p.PollFinalizedSlot(ctx)
+			finalizedCh <- slotResult{s, e}
+		}()
+	} else {
+		finalizedCh <- slotResult{} // unblock the channel read below
+	}
+
+	healthErr := <-healthErrCh
+	if healthErr != nil {
 		p.healthFailCount++
-		p.logger.Debug().Err(err).Msg("solana getHealth poll failed")
+		p.logger.Debug().Err(healthErr).Msg("solana getHealth poll failed")
 	} else {
 		p.healthFailCount = 0
 	}
 
-	slot, err := p.PollProcessedSlot(ctx)
-	if err != nil {
+	latestRes := <-latestCh
+	if latestRes.err != nil {
 		p.latestFailCount++
-		p.logger.Debug().Err(err).Msg("failed to poll processed slot")
+		p.logger.Debug().Err(latestRes.err).Msg("failed to poll processed slot")
 	} else {
 		p.latestFailCount = 0
-		p.SuggestLatestSlot(slot)
+		p.SuggestLatestSlot(latestRes.slot)
 	}
 
 	if !p.skipFinalizedCheck {
-		fSlot, fErr := p.PollFinalizedSlot(ctx)
-		if fErr != nil {
+		fRes := <-finalizedCh
+		if fRes.err != nil {
 			p.finalizedFailCount++
 			if p.finalizedFailCount >= 5 {
 				p.logger.Warn().
-					Err(fErr).
+					Err(fRes.err).
 					Msg("disabling finalized slot polling after 5 consecutive failures")
 				p.skipFinalizedCheck = true
 			}
 		} else {
 			p.finalizedFailCount = 0
-			p.SuggestFinalizedSlot(fSlot)
+			p.SuggestFinalizedSlot(fRes.slot)
 		}
 	}
-	return err
+
+	return latestRes.err
 }
 
 // PollHealth calls getHealth and updates the healthy flag.
 // A node reports healthy when result == "ok"; any RPC error means unhealthy.
 func (p *SolanaStatePoller) PollHealth(ctx context.Context) error {
-	pr := common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`,
-	))
+	pr := common.NewNormalizedRequest(reqGetHealth)
 
 	resp, err := p.upstream.Forward(ctx, pr, true)
 	if err != nil {
@@ -232,17 +251,15 @@ func (p *SolanaStatePoller) PollHealth(ctx context.Context) error {
 }
 
 func (p *SolanaStatePoller) PollProcessedSlot(ctx context.Context) (int64, error) {
-	return p.pollSlot(ctx, string(common.SolanaCommitmentProcessed))
+	return p.pollSlot(ctx, reqGetSlotProcessed, string(common.SolanaCommitmentProcessed))
 }
 
 func (p *SolanaStatePoller) PollFinalizedSlot(ctx context.Context) (int64, error) {
-	return p.pollSlot(ctx, string(common.SolanaCommitmentFinalized))
+	return p.pollSlot(ctx, reqGetSlotFinalized, string(common.SolanaCommitmentFinalized))
 }
 
-func (p *SolanaStatePoller) pollSlot(ctx context.Context, commitment string) (int64, error) {
-	pr := common.NewNormalizedRequest([]byte(
-		fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":%q}]}`, commitment),
-	))
+func (p *SolanaStatePoller) pollSlot(ctx context.Context, reqBody []byte, commitment string) (int64, error) {
+	pr := common.NewNormalizedRequest(reqBody)
 
 	resp, err := p.upstream.Forward(ctx, pr, true)
 	if err != nil {

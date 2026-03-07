@@ -236,18 +236,7 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 func (n *Network) SolanaHighestLatestSlot(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.SolanaHighestLatestSlot")
 	defer span.End()
-
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	var maxSlot int64
-	for _, u := range upstreams {
-		sp := u.SolanaStatePoller()
-		if sp == nil || sp.IsObjectNull() {
-			continue
-		}
-		if slot := sp.LatestSlot(); slot > maxSlot {
-			maxSlot = slot
-		}
-	}
+	maxSlot := n.solanaHighestSlot(ctx, func(sp common.SolanaStatePoller) int64 { return sp.LatestSlot() })
 	span.SetAttributes(attribute.Int64("highest_latest_slot", maxSlot))
 	return maxSlot
 }
@@ -257,19 +246,24 @@ func (n *Network) SolanaHighestLatestSlot(ctx context.Context) int64 {
 func (n *Network) SolanaHighestFinalizedSlot(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.SolanaHighestFinalizedSlot")
 	defer span.End()
+	maxSlot := n.solanaHighestSlot(ctx, func(sp common.SolanaStatePoller) int64 { return sp.FinalizedSlot() })
+	span.SetAttributes(attribute.Int64("highest_finalized_slot", maxSlot))
+	return maxSlot
+}
 
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+// solanaHighestSlot iterates all Solana upstreams and returns the maximum slot
+// returned by the given accessor. Shared by SolanaHighestLatestSlot and SolanaHighestFinalizedSlot.
+func (n *Network) solanaHighestSlot(ctx context.Context, accessor func(common.SolanaStatePoller) int64) int64 {
 	var maxSlot int64
-	for _, u := range upstreams {
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 		sp := u.SolanaStatePoller()
 		if sp == nil || sp.IsObjectNull() {
 			continue
 		}
-		if slot := sp.FinalizedSlot(); slot > maxSlot {
+		if slot := accessor(sp); slot > maxSlot {
 			maxSlot = slot
 		}
 	}
-	span.SetAttributes(attribute.Int64("highest_finalized_slot", maxSlot))
 	return maxSlot
 }
 
