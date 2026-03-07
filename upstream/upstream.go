@@ -803,6 +803,53 @@ func (u *Upstream) SolanaStatePoller() common.SolanaStatePoller {
 	return u.solanaStatePoller
 }
 
+// solanaVerifyGenesisHash calls getGenesisHash on the upstream and compares it
+// against the known hash for the configured cluster. Returns an error on mismatch.
+// Skips verification for unknown/custom clusters (no entry in SolanaGenesisHashes).
+func (u *Upstream) solanaVerifyGenesisHash(ctx context.Context, cluster string) error {
+	expectedHash, ok := common.SolanaGenesisHashes[common.SolanaCluster(cluster)]
+	if !ok {
+		// Unknown cluster (e.g. localnet) — skip verification
+		return nil
+	}
+
+	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getGenesisHash","params":[]}`))
+	resp, err := u.Forward(ctx, pr, true)
+	if err != nil {
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashFetchFailed", Cause: err}, u)
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashParseFailed", Cause: err}, u)
+	}
+	if jrr.Error != nil {
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{
+				Code:  "ErrSolanaGenesisHashRpcError",
+				Cause: fmt.Errorf("%s", jrr.Error.Message),
+			}, u)
+	}
+
+	var genesisHash string
+	if err := sonic.Unmarshal(jrr.GetResultBytes(), &genesisHash); err != nil {
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashUnmarshalFailed", Cause: err}, u)
+	}
+	if genesisHash != expectedHash {
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{
+				Code: "ErrSolanaClusterMismatch",
+				Cause: fmt.Errorf(
+					"genesis hash mismatch: upstream returned %q but cluster %q expects %q",
+					genesisHash, cluster, expectedHash,
+				),
+			}, u)
+	}
+	return nil
+}
+
 // TODO move to evm package?
 // EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
 // For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
@@ -1307,6 +1354,12 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 			cfg.Solana.Cluster = string(common.SolanaClusterMainnetBeta)
 		}
 		u.networkId.Store(util.SolanaNetworkId(cfg.Solana.Cluster))
+		// Verify the node's genesis hash matches the configured cluster.
+		// Mirrors eth_chainId validation for EVM upstreams — prevents a misconfigured
+		// devnet node from silently serving requests meant for mainnet-beta.
+		if err := u.solanaVerifyGenesisHash(ctx, cfg.Solana.Cluster); err != nil {
+			return err
+		}
 	} else {
 		return fmt.Errorf("upstream type not supported: %s", cfg.Type)
 	}

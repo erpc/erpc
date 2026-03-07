@@ -10,13 +10,27 @@ import (
 // neverCacheMethods are always ephemeral regardless of commitment.
 // These are methods whose results change every slot/epoch and must never be cached.
 var neverCacheMethods = map[string]bool{
+	// Blockhash methods — change every ~400ms; caching causes tx rejections
 	"getLatestBlockhash":          true,
-	"getRecentBlockhash":          true, // deprecated but still present
-	"getRecentPerformanceSamples": true,
+	"getRecentBlockhash":          true, // deprecated alias
+	"getFeeForMessage":            true,
+	// Transaction submission — side-effecting; MUST NOT be cached or deduplicated
+	"sendTransaction":             true,
+	"sendRawTransaction":          true, // some providers expose this alias
+	"simulateTransaction":         true,
+	// Real-time statuses — meaningful only for in-flight transactions
+	"getSignatureStatuses":        true,
+	"getSignatureStatus":          true, // singular deprecated alias
+	// Cluster / validator state — changes every epoch/slot
 	"getVoteAccounts":             true,
 	"getLeaderSchedule":           true,
 	"getEpochInfo":                true,
-	"getFeeForMessage":            true,
+	"getEpochSchedule":            true,
+	"getSlotLeaders":              true,
+	"getRecentPerformanceSamples": true,
+	"getRecentPrioritizationFees": true,
+	// Airdrops — side-effecting
+	"requestAirdrop":              true,
 }
 
 // alwaysFinalizedMethods are immutable once finalized — cache indefinitely.
