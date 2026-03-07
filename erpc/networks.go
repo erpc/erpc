@@ -1567,19 +1567,18 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 	ctx, span := common.StartDetailSpan(ctx, "Network.NormalizeResponse")
 	defer span.End()
 
-	switch n.Architecture() {
-	case common.ArchitectureEvm:
-		if resp != nil {
-			// This ensures that even if upstream gives us wrong/missing ID we'll
-			// use correct one from original incoming request.
-			if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
-				jrq, err := req.JsonRpcRequest(ctx)
-				if err != nil {
-					return err
-				}
-				if err := jrr.SetID(jrq.ID); err != nil {
-					return err
-				}
+	// For all JSON-RPC architectures: ensure the response ID always reflects
+	// the client's original request ID, regardless of what the upstream echoed
+	// back. This is especially important for proxies that normalize or multiplex
+	// IDs toward upstreams.
+	if resp != nil {
+		if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
+			jrq, err := req.JsonRpcRequest(ctx)
+			if err != nil {
+				return err
+			}
+			if err := jrr.SetID(jrq.ID); err != nil {
+				return err
 			}
 		}
 	}
