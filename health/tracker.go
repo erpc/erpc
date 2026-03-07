@@ -906,15 +906,8 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	return 0
 }
 
-// GetLatestBlockTimestamp returns the on-chain timestamp (unix seconds) of the
-// highest observed block for a network. Returns 0 if no timestamp is available.
-func (t *Tracker) GetLatestBlockTimestamp(networkId string) int64 {
-	return t.getMetadata(metadataKey{nil, networkId}).evmLatestBlockTimestamp.Load()
-}
-
 // GetLastNewBlockDetectedAt returns the local-clock time (unix millis) when the
 // network-level block number last advanced. Returns 0 if no block has been seen yet.
-// Unlike GetLatestBlockTimestamp (on-chain seconds), this has millisecond precision.
 func (t *Tracker) GetLastNewBlockDetectedAt(networkId string) int64 {
 	return t.getMetadata(metadataKey{nil, networkId}).evmLastNewBlockDetectedAt.Load()
 }
