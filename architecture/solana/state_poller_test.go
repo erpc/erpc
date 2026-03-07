@@ -71,8 +71,6 @@ func (s *stubSlotVar) OnLargeRollback(cb func(currentVal, newVal int64)) {
 	s.onLargeRollbackCbs = append(s.onLargeRollbackCbs, cb)
 }
 
-func (s *stubSlotVar) IsStale(_ time.Duration) bool { return true }
-
 // triggerLargeRollback allows tests to manually fire the rollback callbacks.
 func (s *stubSlotVar) triggerLargeRollback(current, newVal int64) {
 	s.mu.Lock()
@@ -109,7 +107,6 @@ func newTestPollerWithTracker(t *testing.T) (*SolanaStatePoller, *health.Tracker
 	ups := &stubUpstream{id: "test-upstream", networkId: "solana:mainnet-beta", tracker: tracker}
 
 	p := NewSolanaStatePoller(
-		"test-project",
 		context.Background(),
 		&lg,
 		ups,
@@ -181,7 +178,7 @@ func TestTrackerIntegration_OnValueCallbackFires(t *testing.T) {
 	lv := newStubSlotVar(DefaultToleratedSlotRollback)
 	fv := newStubSlotVar(DefaultToleratedSlotRollback)
 
-	p := NewSolanaStatePoller("proj", context.Background(), &lg, ups, tracker, lv, fv)
+	p := NewSolanaStatePoller(context.Background(), &lg, ups, tracker, lv, fv)
 
 	// Suggest a slot — this routes through TryUpdate which fires all OnValue callbacks.
 	p.SuggestLatestSlot(500_000)
