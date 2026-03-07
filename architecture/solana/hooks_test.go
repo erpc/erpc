@@ -233,6 +233,172 @@ func TestJsonRpcErrorExtractor_ZeroErrorCode_NotExtracted(t *testing.T) {
 	assert.NoError(t, err, "code 0 should not be extracted as an error")
 }
 
+// ── JsonRpcErrorExtractor — new error classifications ────────────────────────
+
+func TestJsonRpcErrorExtractor_HTTP429_CapacityExceeded(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(429), nil, nil, nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded),
+		"HTTP 429 should map to ErrEndpointCapacityExceeded")
+}
+
+func TestJsonRpcErrorExtractor_HTTP401_Unauthorized(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(401), nil, nil, nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized),
+		"HTTP 401 should map to ErrEndpointUnauthorized")
+}
+
+func TestJsonRpcErrorExtractor_HTTP403_Unauthorized(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(403), nil, nil, nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized),
+		"HTTP 403 should map to ErrEndpointUnauthorized")
+}
+
+func TestJsonRpcErrorExtractor_Minus32000_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	// -32000 is used by many providers for rate limits, overloads, and generic server errors.
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32000, "Connection rate limits exceeded"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"-32000 should be server-side (triggers failover)")
+}
+
+func TestJsonRpcErrorExtractor_Minus32012_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32012, "Long-term storage is temporarily unavailable"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"-32012 (storage unavailable) should be server-side (triggers failover)")
+}
+
+func TestJsonRpcErrorExtractor_Minus32009_MissingData(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32009, "Requested account not found"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData),
+		"-32009 (account not found) should be MissingData so another upstream is tried")
+}
+
+func TestJsonRpcErrorExtractor_Minus32010_MissingData(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32010, "Requested program not found"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData),
+		"-32010 (program not found) should be MissingData so another upstream is tried")
+}
+
+func TestJsonRpcErrorExtractor_Minus32011_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	// Node is behind the requested minContextSlot — failover to a faster upstream.
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32011, "Minimum context slot has not been reached"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"-32011 (node behind requested slot) should be server-side to trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_AccountSecondaryIndexExclusion_Unsupported(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	// QuickNode returns -32010 for "excluded from account secondary indexes"
+	// (same code it uses for "program not found"). The message check inside the
+	// -32010 case overrides the generic MissingData classification.
+	msg := "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA excluded from account secondary indexes; this RPC method unavailable for key"
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32010, msg), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported),
+		"account secondary index exclusion should be Unsupported so another upstream is tried")
+}
+
+func TestJsonRpcErrorExtractor_Minus32016_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	// QuickNode uses -32016 for "Minimum context slot has not been reached" (non-standard).
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32016, "Minimum context slot has not been reached"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"-32016 (QuickNode minContextSlot) should be server-side to trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_RateLimitMessage_CapacityExceeded(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	// Some providers return -32000 with a rate-limit message in the body.
+	// Our text-based check catches this even if the code is otherwise handled.
+	// Here we use a code that would fall to the text-check path.
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32603, "Too many requests, please try again later"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded),
+		"rate-limit message should map to ErrEndpointCapacityExceeded")
+}
+
+// ── New codes: HTTP 5xx, -32006, -32008, -32015, -32601 ──────────────────────
+
+func TestJsonRpcErrorExtractor_HTTP500_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(500), nil, nil, nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"HTTP 500 should be server-side to trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_HTTP502_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(502), nil, nil, nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"HTTP 502 should be server-side to trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_HTTP503_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(503), nil, nil, nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"HTTP 503 should be server-side to trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_HTTP504_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(504), nil, nil, nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"HTTP 504 should be server-side to trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_Minus32006_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32006, "Node is behind"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"-32006 (node behind / not yet implemented) should trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_Minus32008_MissingData(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32008, "No snapshot"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData),
+		"-32008 (no snapshot) should be missing data so another upstream is tried")
+}
+
+func TestJsonRpcErrorExtractor_Minus32015_MissingData(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32015, "Block status not yet available"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData),
+		"-32015 (block status not yet available) should be missing data so another upstream is tried")
+}
+
+func TestJsonRpcErrorExtractor_Minus32601_Unsupported(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32601, "Method not found"), nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported),
+		"-32601 (method not found) should be unsupported so another upstream is tried")
+}
+
 // ── Gap 5: NormalizeHttpJsonRpc is a safe no-op ───────────────────────────────
 
 func TestNormalizeHttpJsonRpc_NoOp(t *testing.T) {
