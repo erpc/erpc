@@ -17,8 +17,8 @@ const defaultSlotDebounce = 400 * time.Millisecond // ~1 Solana slot
 
 var _ common.SolanaStatePoller = &SolanaStatePoller{}
 
-// SolanaStatePoller tracks the latest and finalized slot for a Solana upstream.
-// It mirrors the pattern of EvmStatePoller (polls on a ticker, shares state).
+// SolanaStatePoller tracks the latest and finalized slot for a Solana upstream,
+// and polls the node's health via getHealth. Mirrors EvmStatePoller.
 type SolanaStatePoller struct {
 	Enabled bool
 
@@ -30,6 +30,7 @@ type SolanaStatePoller struct {
 
 	latestSlot    atomic.Int64
 	finalizedSlot atomic.Int64
+	healthy       atomic.Bool
 
 	debounceInterval time.Duration
 	lastPollTime     time.Time
@@ -38,6 +39,7 @@ type SolanaStatePoller struct {
 	skipFinalizedCheck bool
 	finalizedFailCount int
 	latestFailCount    int
+	healthFailCount    int
 }
 
 func NewSolanaStatePoller(
@@ -55,7 +57,7 @@ func NewSolanaStatePoller(
 		Str("component", "solanaStatePoller").
 		Str("upstreamId", upstream.Id()).
 		Logger()
-	return &SolanaStatePoller{
+	p := &SolanaStatePoller{
 		Enabled:          true,
 		projectId:        projectId,
 		appCtx:           appCtx,
@@ -64,6 +66,9 @@ func NewSolanaStatePoller(
 		tracker:          tracker,
 		debounceInterval: debounce,
 	}
+	// Optimistically assume healthy until proven otherwise
+	p.healthy.Store(true)
+	return p
 }
 
 func (p *SolanaStatePoller) Bootstrap(ctx context.Context) error {
@@ -109,6 +114,14 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 	p.lastPollTime = time.Now()
 	p.pollMu.Unlock()
 
+	// Poll node health — runs every cycle alongside slot polling
+	if err := p.PollHealth(ctx); err != nil {
+		p.healthFailCount++
+		p.logger.Debug().Err(err).Msg("solana getHealth poll failed")
+	} else {
+		p.healthFailCount = 0
+	}
+
 	slot, err := p.PollProcessedSlot(ctx)
 	if err != nil {
 		p.latestFailCount++
@@ -134,6 +147,40 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+// PollHealth calls getHealth and updates the healthy flag.
+// A node reports healthy when result == "ok"; any RPC error means unhealthy.
+func (p *SolanaStatePoller) PollHealth(ctx context.Context) error {
+	pr := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`,
+	))
+
+	resp, err := p.upstream.Forward(ctx, pr, true)
+	if err != nil {
+		p.healthy.Store(false)
+		return fmt.Errorf("getHealth: %w", err)
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		p.healthy.Store(false)
+		return fmt.Errorf("getHealth parse: %w", err)
+	}
+	if jrr.Error != nil {
+		// -32005 = node is unhealthy / behind; any error means not serving well
+		p.healthy.Store(false)
+		return fmt.Errorf("getHealth rpc error %d: %s", jrr.Error.Code, jrr.Error.Message)
+	}
+
+	// result should be the string "ok"
+	var status string
+	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &status); err != nil {
+		// Non-fatal: if we can't parse but there's no error, treat as healthy
+		p.healthy.Store(true)
+		return nil
+	}
+	p.healthy.Store(status == "ok")
+	return nil
 }
 
 func (p *SolanaStatePoller) PollProcessedSlot(ctx context.Context) (int64, error) {
@@ -174,6 +221,12 @@ func (p *SolanaStatePoller) LatestSlot() int64 {
 
 func (p *SolanaStatePoller) FinalizedSlot() int64 {
 	return p.finalizedSlot.Load()
+}
+
+// IsHealthy returns true if the last getHealth call succeeded with "ok".
+// Defaults to true until the first health poll completes.
+func (p *SolanaStatePoller) IsHealthy() bool {
+	return p.healthy.Load()
 }
 
 func (p *SolanaStatePoller) SuggestLatestSlot(slot int64) {
