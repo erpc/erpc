@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sync"
 
+	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
@@ -113,6 +114,28 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 				} else {
 					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
 				}
+
+
+		case common.UpstreamTypeSolana:
+			// Solana JSON-RPC runs over standard HTTP/HTTPS — reuse the generic client
+			// with the Solana-specific error extractor that maps -32005/-32004/-32007.
+			if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
+				newClient, err = NewGenericHttpJsonRpcClient(
+					appCtx,
+					&lg,
+					manager.projectId,
+					ups,
+					parsedUrl,
+					cfg.JsonRpc,
+					proxyPool,
+					solana.NewJsonRpcErrorExtractor(),
+				)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create HTTP client for solana upstream: %v", cfg.Id)
+				}
+			} else {
+				clientErr = fmt.Errorf("unsupported endpoint scheme %q for solana upstream: %v", parsedUrl.Scheme, cfg.Id)
+			}
 
 			default:
 				clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
