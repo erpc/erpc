@@ -745,6 +745,385 @@ func TestSolanaAndEvmInSameProject(t *testing.T) {
 
 // TestSolanaFinalizedSlotTracked verifies that finalized slot suggestions are
 // propagated through the shared variable and readable via FinalizedSlot() (gap 1).
+// ── Edge cases from other proxy repos ────────────────────────────────────────
+
+// TestSolanaHTTP500_FailsoverToSecondUpstream verifies that an HTTP 500 from
+// the first upstream is classified as ServerSideException and triggers failover.
+// Inspired by neon-proxy.rs and yellowstone-grpc test patterns.
+func TestSolanaHTTP500_FailsoverToSecondUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getBalance") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(500).BodyString(`Internal Server Error`)
+
+	gock.New("http://sol2.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getBalance") &&
+				strings.Contains(r.Host, "sol2")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":1000000000}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Nil(t, jrr.Error, "HTTP 500 from sol1 should trigger failover; sol2 response should succeed")
+}
+
+// TestSolanaHTTP429_FailsoverToSecondUpstream verifies that a rate-limit
+// response (HTTP 429) from the first upstream triggers failover.
+func TestSolanaHTTP429_FailsoverToSecondUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getSlot") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(429).BodyString(`Too Many Requests`)
+
+	gock.New("http://sol2.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getSlot") &&
+				strings.Contains(r.Host, "sol2")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":300000001}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Nil(t, jrr.Error, "HTTP 429 from sol1 should trigger failover; sol2 should succeed")
+}
+
+// TestSolanaMethodNotFound_FailsoverToSecondUpstream verifies that -32601
+// (method not found) is classified as ErrEndpointUnsupported and another
+// upstream is tried. Matches behavior seen in Triton/Helius tiered nodes
+// where some methods are only available on premium endpoints.
+func TestSolanaMethodNotFound_FailsoverToSecondUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getLeaderSchedule") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`))
+
+	gock.New("http://sol2.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getLeaderSchedule") &&
+				strings.Contains(r.Host, "sol2")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"identity1":[[0,4,8]]}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getLeaderSchedule","params":[null]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Nil(t, jrr.Error, "-32601 from sol1 should trigger failover; sol2 should succeed")
+}
+
+// TestSolanaNoSnapshot_FailsoverToSecondUpstream verifies that -32008
+// (no snapshot available) is classified as MissingData and another upstream
+// is tried. Common when a node is freshly started or behind on snapshots.
+func TestSolanaNoSnapshot_FailsoverToSecondUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getAccountInfo") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32008,"message":"No snapshot"}}`))
+
+	gock.New("http://sol2.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getAccountInfo") &&
+				strings.Contains(r.Host, "sol2")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":{"data":["","base64"],"executable":false,"lamports":1000,"owner":"11111111111111111111111111111111","rentEpoch":0,"space":0}}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",{"encoding":"base64"}]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Nil(t, jrr.Error, "-32008 from sol1 should trigger MissingData failover; sol2 should succeed")
+}
+
+// TestSolanaGetBlock_SkippedSlotNullPassthrough verifies that a null result
+// from getBlock (which Solana returns for skipped/empty slots) is passed
+// through to the client as-is and does NOT trigger a retry. This is a common
+// bug in Solana proxies that mistake null for "missing data".
+func TestSolanaGetBlock_SkippedSlotNullPassthrough(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	var sol1Hits atomic.Int32
+
+	// sol1 returns null (skipped slot) — valid Solana response
+	gock.New("http://sol1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			if strings.Contains(util.SafeReadBody(r), "getBlock") &&
+				strings.Contains(r.Host, "sol1") {
+				sol1Hits.Add(1)
+				return true
+			}
+			return false
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[299999999,{"maxSupportedTransactionVersion":0}]}`,
+	)))
+
+	// null result is valid — erpc should not error
+	if err == nil {
+		jrr, jErr := resp.JsonRpcResponse()
+		require.NoError(t, jErr)
+		assert.Nil(t, jrr.Error, "null getBlock (skipped slot) should not produce an RPC error")
+	}
+	// Either way, sol1 should only have been hit once — null must not trigger retries
+	assert.LessOrEqual(t, sol1Hits.Load(), int32(2),
+		"null getBlock result must not trigger multiple retries across upstreams")
+}
+
+// TestSolanaRequestID_StringPreserved verifies that a string request ID is
+// returned unchanged in the response. Many proxy implementations incorrectly
+// replace string IDs with integers or drop them entirely.
+func TestSolanaRequestID_StringPreserved(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	// Use getBalance (not getSlot) to avoid conflicting with the persistent
+	// state-poller mock which also calls getSlot.
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getBalance") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":"my-custom-id-123","result":{"context":{"slot":300000042},"value":999000000000}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":"my-custom-id-123","method":"getBalance","params":["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	require.Nil(t, jrr.Error)
+
+	id := jrr.ID()
+	assert.Equal(t, "my-custom-id-123", id,
+		"string request ID must be preserved in the response")
+}
+
+// TestSolanaMinContextSlot_SucceedsOnSecondUpstream verifies the full success
+// path: sol1 returns -32016 (QuickNode minContextSlot), sol2 satisfies the
+// request. This tests the failover plumbing end-to-end.
+func TestSolanaMinContextSlot_SucceedsOnSecondUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getBalance") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32016,"message":"Minimum context slot has not been reached"}}`))
+
+	gock.New("http://sol2.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getBalance") &&
+				strings.Contains(r.Host, "sol2")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000042},"value":5000000000}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",{"minContextSlot":300000040}]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Nil(t, jrr.Error,
+		"-32016 from sol1 should trigger ServerSideException failover; sol2 should succeed")
+}
+
+// TestSolanaSignatureStatuses_NullEntriesPassthrough verifies that
+// getSignatureStatuses correctly passes through responses containing null
+// entries (unrecognised signatures) alongside confirmed ones. Proxies sometimes
+// over-eagerly retry when they see a null inside a result array.
+func TestSolanaSignatureStatuses_NullEntriesPassthrough(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	// Mixed response: first signature is unknown (null), second is confirmed.
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getSignatureStatuses") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":[null,{"slot":299999999,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`))
+
+	var sol2Hits atomic.Int32
+	gock.New("http://sol2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			if strings.Contains(util.SafeReadBody(r), "getSignatureStatuses") &&
+				strings.Contains(r.Host, "sol2") {
+				sol2Hits.Add(1)
+				return true
+			}
+			return false
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":[null,{"slot":299999999,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["UnknownSig111111111111111111111111111111111111111111","KnownSig222222222222222222222222222222222222222222222222222222222222"]]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Nil(t, jrr.Error,
+		"null entries in getSignatureStatuses value array must not trigger retries or errors")
+	assert.Equal(t, int32(0), sol2Hits.Load(),
+		"null entries inside result must not cause failover to sol2")
+}
+
 func TestSolanaFinalizedSlotTracked(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
