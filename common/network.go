@@ -30,6 +30,10 @@ type Network interface {
 	EvmHighestLatestBlockNumber(ctx context.Context) int64
 	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
 	EvmLeaderUpstream(ctx context.Context) Upstream
+
+	// Solana slot tracking — mirrors Evm* equivalents for Solana architecture.
+	SolanaHighestLatestSlot(ctx context.Context) int64
+	SolanaHighestFinalizedSlot(ctx context.Context) int64
 }
 
 func IsValidArchitecture(architecture string) bool {
