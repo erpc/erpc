@@ -634,6 +634,14 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				)
 				return true
 			}
+			// Error is explicitly non-retryable toward the network (e.g. sendTransaction
+			// after a client-side failure). Short-circuit here so the default
+			// "err != nil → retry" rule at the bottom does NOT fire.
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "not_retryable_to_network"),
+			)
+			return false
 		}
 
 		if scope == common.ScopeNetwork && result != nil && !result.IsObjectNull() {
