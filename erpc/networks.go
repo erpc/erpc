@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
@@ -913,6 +914,18 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 			)
 		}
 		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
+	case common.ArchitectureSolana:
+		jsonRpcReq, err := nr.JsonRpcRequest(ctx)
+		if err != nil {
+			return common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorParseException,
+				"failed to unmarshal solana json-rpc request",
+				err,
+				nil,
+			)
+		}
+		solana.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
 	default:
 		return common.NewErrJsonRpcExceptionInternal(
 			0,
@@ -947,6 +960,11 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 
 	if req == nil && resp == nil {
 		return finality
+	}
+
+	// Dispatch to architecture-specific finality logic
+	if n.cfg.Architecture == common.ArchitectureSolana {
+		return solana.GetFinality(ctx, n, req, resp)
 	}
 
 	method, _ := req.Method()
@@ -1045,11 +1063,20 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 		if handled, resp, err := evm.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
 			return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 		}
+		// If not handled, forward and run EVM post-hook
+		resp, err := u.Forward(execSpanCtx, req, false)
+		return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	case common.ArchitectureSolana:
+		if handled, resp, err := solana.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
+			return solana.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+		}
+		resp, err := u.Forward(execSpanCtx, req, false)
+		return solana.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	default:
+		// Unknown architecture: just forward with no post-processing
+		resp, err := u.Forward(execSpanCtx, req, false)
+		return resp, err
 	}
-
-	// If not handled, then fallback to the normal forward
-	resp, err := u.Forward(execSpanCtx, req, false)
-	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
 // resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability
