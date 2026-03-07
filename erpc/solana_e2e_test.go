@@ -359,11 +359,21 @@ func TestSolanaGenesisHashMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Bootstrap should succeed at erpc level (upstream errors are non-fatal),
-	// but the upstream should be rejected / unavailable
+	// but the upstream should be rejected / unavailable.
 	erpcInstance.Bootstrap(ctx)
 
-	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
-	require.NoError(t, err)
+	// With all upstreams permanently failed (genesis hash mismatch is a fatal
+	// init error), GetNetwork may return ErrNetworkNotSupported. We accept any
+	// error from either GetNetwork or the subsequent Forward — the important
+	// assertion is that the request ultimately fails.
+	nw, getNetworkErr := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	if getNetworkErr != nil {
+		assert.True(t,
+			common.HasErrorCode(getNetworkErr, common.ErrCodeNetworkNotSupported) ||
+				common.HasErrorCode(getNetworkErr, common.ErrCodeNetworkInitializing),
+			"GetNetwork error should be NetworkNotSupported or NetworkInitializing, got: %v", getNetworkErr)
+		return
+	}
 
 	// Forward should fail because no healthy upstream is available
 	nr := common.NewNormalizedRequest([]byte(

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -15,10 +14,20 @@ import (
 
 const defaultSlotDebounce = 400 * time.Millisecond // ~1 Solana slot
 
+// DefaultToleratedSlotRollback is the maximum slot decrease considered normal
+// churn (e.g. processed → confirmed reorg). Larger rollbacks trigger alarms.
+// Mirrors evm.DefaultToleratedBlockHeadRollback.
+const DefaultToleratedSlotRollback int64 = 512
+
 var _ common.SolanaStatePoller = &SolanaStatePoller{}
 
 // SolanaStatePoller tracks the latest and finalized slot for a Solana upstream,
 // and polls the node's health via getHealth. Mirrors EvmStatePoller.
+//
+// Slot state is stored via common.SlotSharedVariable — a narrow interface
+// satisfied by data.CounterInt64SharedVariable. This allows the upstream
+// package (which imports data) to wire shared-state backends without creating
+// an import cycle through clients → architecture/solana → data.
 type SolanaStatePoller struct {
 	Enabled bool
 
@@ -28,10 +37,14 @@ type SolanaStatePoller struct {
 	upstream  common.Upstream
 	tracker   *health.Tracker
 
-	latestSlot    atomic.Int64
-	finalizedSlot atomic.Int64
-	healthy       atomic.Bool
+	// latestSlotShared and finalizedSlotShared feed into health.Tracker via
+	// OnValue callbacks, which drives BlockHeadLag scoring for upstream routing.
+	// They also propagate across erpc instances via the shared-state backend
+	// (Redis/DynamoDB/in-memory) when a data.SharedStateRegistry is wired.
+	latestSlotShared    common.SlotSharedVariable
+	finalizedSlotShared common.SlotSharedVariable
 
+	healthy          healthAtomic
 	debounceInterval time.Duration
 	lastPollTime     time.Time
 	pollMu           sync.Mutex
@@ -42,31 +55,66 @@ type SolanaStatePoller struct {
 	healthFailCount    int
 }
 
+// healthAtomic is a simple RWMutex-guarded bool to avoid importing sync/atomic.
+type healthAtomic struct {
+	mu  sync.RWMutex
+	val bool
+}
+
+func (h *healthAtomic) Store(v bool) { h.mu.Lock(); h.val = v; h.mu.Unlock() }
+func (h *healthAtomic) Load() bool   { h.mu.RLock(); v := h.val; h.mu.RUnlock(); return v }
+
+// NewSolanaStatePoller creates a new poller. latestSlotVar and finalizedSlotVar
+// are common.SlotSharedVariable values created by the caller (upstream.go) using
+// the data.SharedStateRegistry, breaking the import cycle.
+//
+// Both variables MUST be non-nil. The caller registers OnValue / OnLargeRollback
+// callbacks here so the tracker is notified when slots advance.
 func NewSolanaStatePoller(
 	projectId string,
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	upstream common.Upstream,
 	tracker *health.Tracker,
+	latestSlotVar common.SlotSharedVariable,
+	finalizedSlotVar common.SlotSharedVariable,
 ) *SolanaStatePoller {
-	debounce := defaultSlotDebounce
-	if cfg := upstream.Config(); cfg.Solana != nil && cfg.Solana.Cluster != "" {
-		// Could read network config debounce here if available
-	}
 	lg := logger.With().
 		Str("component", "solanaStatePoller").
 		Str("upstreamId", upstream.Id()).
 		Logger()
+
 	p := &SolanaStatePoller{
-		Enabled:          true,
-		projectId:        projectId,
-		appCtx:           appCtx,
-		logger:           &lg,
-		upstream:         upstream,
-		tracker:          tracker,
-		debounceInterval: debounce,
+		Enabled:             true,
+		projectId:           projectId,
+		appCtx:              appCtx,
+		logger:              &lg,
+		upstream:            upstream,
+		tracker:             tracker,
+		latestSlotShared:    latestSlotVar,
+		finalizedSlotShared: finalizedSlotVar,
+		debounceInterval:    defaultSlotDebounce,
 	}
-	// Optimistically assume healthy until proven otherwise
+
+	// Wire tracker callbacks — these drive BlockHeadLag scoring used in
+	// upstream selection. Called whenever the shared variable advances.
+	latestSlotVar.OnValue(func(slot int64) {
+		// Pass 0 for timestamp — Solana blocks don't carry Unix timestamps.
+		p.tracker.SetLatestBlockNumber(p.upstream, slot, 0)
+	})
+	finalizedSlotVar.OnValue(func(slot int64) {
+		p.tracker.SetFinalizedBlockNumber(p.upstream, slot)
+	})
+
+	// Large-rollback alarms.
+	latestSlotVar.OnLargeRollback(func(currentVal, newVal int64) {
+		p.tracker.RecordBlockHeadLargeRollback(p.upstream, "latest", currentVal, newVal)
+	})
+	finalizedSlotVar.OnLargeRollback(func(currentVal, newVal int64) {
+		p.tracker.RecordBlockHeadLargeRollback(p.upstream, "finalized", currentVal, newVal)
+	})
+
+	// Optimistically assume healthy until the first health poll completes.
 	p.healthy.Store(true)
 	return p
 }
@@ -75,11 +123,11 @@ func (p *SolanaStatePoller) Bootstrap(ctx context.Context) error {
 	if !p.Enabled {
 		return nil
 	}
-	// Initial synchronous poll (non-fatal on error)
+	// Initial synchronous poll (non-fatal — node may not be ready yet).
 	if err := p.Poll(ctx); err != nil {
 		p.logger.Warn().Err(err).Msg("initial solana slot poll failed — will retry in background")
 	}
-	// Background polling goroutine
+	// Background polling goroutine — mirrors EvmStatePoller.Bootstrap.
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -114,7 +162,7 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 	p.lastPollTime = time.Now()
 	p.pollMu.Unlock()
 
-	// Poll node health — runs every cycle alongside slot polling
+	// Poll node health — runs every cycle alongside slot polling.
 	if err := p.PollHealth(ctx); err != nil {
 		p.healthFailCount++
 		p.logger.Debug().Err(err).Msg("solana getHealth poll failed")
@@ -167,7 +215,7 @@ func (p *SolanaStatePoller) PollHealth(ctx context.Context) error {
 		return fmt.Errorf("getHealth parse: %w", err)
 	}
 	if jrr.Error != nil {
-		// -32005 = node is unhealthy / behind; any error means not serving well
+		// -32005 = node is unhealthy / behind; any error means not serving well.
 		p.healthy.Store(false)
 		return fmt.Errorf("getHealth rpc error %d: %s", jrr.Error.Code, jrr.Error.Message)
 	}
@@ -175,7 +223,7 @@ func (p *SolanaStatePoller) PollHealth(ctx context.Context) error {
 	// result should be the string "ok"
 	var status string
 	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &status); err != nil {
-		// Non-fatal: if we can't parse but there's no error, treat as healthy
+		// Non-fatal: if we can't parse but there's no error, treat as healthy.
 		p.healthy.Store(true)
 		return nil
 	}
@@ -216,11 +264,17 @@ func (p *SolanaStatePoller) pollSlot(ctx context.Context, commitment string) (in
 }
 
 func (p *SolanaStatePoller) LatestSlot() int64 {
-	return p.latestSlot.Load()
+	if p.latestSlotShared == nil {
+		return 0
+	}
+	return p.latestSlotShared.GetValue()
 }
 
 func (p *SolanaStatePoller) FinalizedSlot() int64 {
-	return p.finalizedSlot.Load()
+	if p.finalizedSlotShared == nil {
+		return 0
+	}
+	return p.finalizedSlotShared.GetValue()
 }
 
 // IsHealthy returns true if the last getHealth call succeeded with "ok".
@@ -229,30 +283,21 @@ func (p *SolanaStatePoller) IsHealthy() bool {
 	return p.healthy.Load()
 }
 
+// SuggestLatestSlot forwards the slot value into the shared variable, triggering
+// OnValue → tracker.SetLatestBlockNumber → BlockHeadLag scoring.
 func (p *SolanaStatePoller) SuggestLatestSlot(slot int64) {
-	for {
-		current := p.latestSlot.Load()
-		if slot > current {
-			if p.latestSlot.CompareAndSwap(current, slot) {
-				break
-			}
-		} else {
-			break
-		}
+	if p.latestSlotShared == nil {
+		return
 	}
+	p.latestSlotShared.TryUpdate(p.appCtx, slot)
 }
 
+// SuggestFinalizedSlot forwards the slot value into the shared variable.
 func (p *SolanaStatePoller) SuggestFinalizedSlot(slot int64) {
-	for {
-		current := p.finalizedSlot.Load()
-		if slot > current {
-			if p.finalizedSlot.CompareAndSwap(current, slot) {
-				break
-			}
-		} else {
-			break
-		}
+	if p.finalizedSlotShared == nil {
+		return
 	}
+	p.finalizedSlotShared.TryUpdate(p.appCtx, slot)
 }
 
 func (p *SolanaStatePoller) IsObjectNull() bool {

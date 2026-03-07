@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -252,17 +253,29 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	// Project-level pre-forward: cache-affecting, upstream-agnostic short-circuits.
+	// Dispatch by architecture so each architecture can independently handle early exits.
 	switch network.cfg.Architecture {
 	case common.ArchitectureEvm:
-		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
 		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
 			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
 		}
+	case common.ArchitectureSolana:
+		if handled, resp, err := solana.HandleProjectPreForward(ctx, network, nq); handled {
+			return solana.HandleNetworkPostForward(ctx, network, nq, resp, err)
+		}
 	}
 
-	// If not handled, then fallback to the normal forward
+	// Normal forward path — also dispatched by architecture for post-forward.
 	resp, err := network.Forward(ctx, nq)
-	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	switch network.cfg.Architecture {
+	case common.ArchitectureEvm:
+		return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	case common.ArchitectureSolana:
+		return solana.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	default:
+		return resp, err
+	}
 }
 
 func (p *PreparedProject) acquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {
