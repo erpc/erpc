@@ -33,7 +33,8 @@ type Network interface {
 }
 
 func IsValidArchitecture(architecture string) bool {
-	return architecture == string(ArchitectureEvm) // TODO add more architectures when they are supported
+	return architecture == string(ArchitectureEvm) ||
+		architecture == string(ArchitectureSolana)
 }
 
 func IsValidNetwork(network string) bool {
@@ -43,6 +44,13 @@ func IsValidNetwork(network string) bool {
 			return false
 		}
 		return chainId > 0
+	}
+
+	if strings.HasPrefix(network, "solana:") {
+		cluster := strings.TrimPrefix(network, "solana:")
+		return cluster == string(SolanaClusterMainnetBeta) ||
+			cluster == string(SolanaClusterDevnet) ||
+			cluster == string(SolanaClusterTestnet)
 	}
 
 	return false
