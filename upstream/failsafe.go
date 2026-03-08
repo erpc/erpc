@@ -622,6 +622,19 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 				return false
 			}
 		} else if scope == common.ScopeNetwork && err != nil {
+			// Client-side errors are deterministic — the same error will occur on every
+			// upstream (bad params, invalid tx, invalid address, etc.). Retrying a
+			// different upstream wastes capacity and may cause double-submission for write
+			// methods. Short-circuit immediately without calling IsRetryableTowardNetwork,
+			// which defaults to true and would otherwise allow these to be retried.
+			if common.IsClientError(err) {
+				span.SetAttributes(
+					attribute.Bool("retry", false),
+					attribute.String("reason", "client_error_not_retryable"),
+					attribute.String("error_code", common.ErrCodeEndpointClientSideException),
+				)
+				return false
+			}
 			isRetryable := common.IsRetryableTowardNetwork(err)
 			span.SetAttributes(
 				attribute.Bool("error.retryable_to_network", isRetryable),

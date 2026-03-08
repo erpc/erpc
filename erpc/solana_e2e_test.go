@@ -56,6 +56,16 @@ func setupSolanaStatePollerMocks() {
 			}).
 			Reply(200).
 			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":300000000}`))
+
+		// getMaxShredInsertSlot — called every poll cycle (Phase 2 addition)
+		gock.New(host).
+			Post("").
+			Persist().
+			Filter(func(req *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(req), "getMaxShredInsertSlot")
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":300000000}`))
 	}
 }
 
@@ -1073,31 +1083,45 @@ func TestSolanaMinContextSlot_SucceedsOnSecondUpstream(t *testing.T) {
 // getSignatureStatuses correctly passes through responses containing null
 // entries (unrecognised signatures) alongside confirmed ones. Proxies sometimes
 // over-eagerly retry when they see a null inside a result array.
+//
+// Both sol1 and sol2 are registered with Persist() mocks and a shared hit
+// counter, so the test is order-independent (round-robin may start at either
+// upstream). The assertion is that only ONE upstream total is ever contacted —
+// a null entry must not trigger a failover.
 func TestSolanaSignatureStatuses_NullEntriesPassthrough(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	defer gock.Off()
 	setupSolanaStatePollerMocks()
 
-	// Mixed response: first signature is unknown (null), second is confirmed.
-	gock.New("http://sol1.localhost").Post("").
-		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "getSignatureStatuses") &&
-				strings.Contains(r.Host, "sol1")
-		}).
-		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":[null,{"slot":299999999,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`))
+	// Track hits per upstream. Either upstream may be tried first (round-robin
+	// position varies). The assertion: exactly one upstream total is tried —
+	// a null entry must not cause a failover.
+	var sol1Hits, sol2Hits atomic.Int32
+	sigStatusReply := []byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":[null,{"slot":299999999,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`)
 
-	var sol2Hits atomic.Int32
+	gock.New("http://sol1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			// Include host check: gock evaluates filter BEFORE URL matching, so a
+			// request to sol2.localhost would otherwise trigger this filter (and
+			// increment sol1Hits) before gock rejects the mock on host mismatch.
+			if r.URL.Host == "sol1.localhost" && strings.Contains(util.SafeReadBody(r), "getSignatureStatuses") {
+				sol1Hits.Add(1)
+				return true
+			}
+			return false
+		}).
+		Reply(200).JSON(sigStatusReply)
+
 	gock.New("http://sol2.localhost").Post("").Persist().
 		Filter(func(r *http.Request) bool {
-			if strings.Contains(util.SafeReadBody(r), "getSignatureStatuses") &&
-				strings.Contains(r.Host, "sol2") {
+			if r.URL.Host == "sol2.localhost" && strings.Contains(util.SafeReadBody(r), "getSignatureStatuses") {
 				sol2Hits.Add(1)
 				return true
 			}
 			return false
 		}).
-		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":[null,{"slot":299999999,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`))
+		Reply(200).JSON(sigStatusReply)
 
 	util.ConfigureTestLogger()
 	lg := log.Logger
@@ -1120,8 +1144,123 @@ func TestSolanaSignatureStatuses_NullEntriesPassthrough(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, jrr.Error,
 		"null entries in getSignatureStatuses value array must not trigger retries or errors")
+	totalHits := sol1Hits.Load() + sol2Hits.Load()
+	t.Logf("sol1Hits=%d sol2Hits=%d totalHits=%d", sol1Hits.Load(), sol2Hits.Load(), totalHits)
+	assert.Equal(t, int32(1), totalHits,
+		"exactly one upstream must serve the request — null entries must not cause failover")
+}
+
+// ── Phase 2 tests ─────────────────────────────────────────────────────────────
+
+// TestSolana_SimulationError_NotRetried verifies that deterministic simulation
+// errors (-32002) are treated as ClientSideException and are NOT retried on a
+// second upstream. An invalid transaction will fail the same way everywhere.
+//
+// Uses simulateTransaction (not sendTransaction) to avoid the double-handling
+// in HandleUpstreamPostForward, keeping the test clean. Uses Persist() mocks
+// on both upstreams to be robust against background state-poller goroutines.
+func TestSolana_SimulationError_NotRetried(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	var sol2Hits atomic.Int32
+
+	// sol1: returns -32002 (transaction simulation failed — bad tx)
+	gock.New("http://sol1.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "simulateTransaction") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Transaction simulation failed: insufficient funds for instruction"}}`))
+
+	// sol2: succeeds — but must NOT be called
+	gock.New("http://sol2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			if strings.Contains(util.SafeReadBody(r), "simulateTransaction") &&
+				strings.Contains(r.Host, "sol2") {
+				sol2Hits.Add(1)
+				return true
+			}
+			return false
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":{"err":null,"logs":[]}}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"simulateTransaction","params":["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]}`,
+	)))
+
+	// erpc surfaces a ClientSideException either as a Go error OR as a JSON-RPC
+	// error body. Either way, sol2 must NOT have been contacted.
+	if err == nil {
+		require.NotNil(t, resp)
+		jrr, jErr := resp.JsonRpcResponse()
+		require.NoError(t, jErr)
+		assert.NotNil(t, jrr.Error,
+			"if no Go error, the JSON-RPC response must carry the simulation error")
+	}
 	assert.Equal(t, int32(0), sol2Hits.Load(),
-		"null entries inside result must not cause failover to sol2")
+		"sol2 must NOT be tried — -32002 is deterministic and retrying wastes capacity")
+}
+
+// TestSolana_32000_RateLimit_InJsonBody_FailsoverToSecondUpstream verifies
+// that a -32000 error with a rate-limit message inside a 200 response body
+// is correctly classified as CapacityExceeded and triggers failover.
+func TestSolana_32000_RateLimit_InJsonBody_FailsoverToSecondUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+	defer gock.Off()
+	setupSolanaStatePollerMocks()
+
+	gock.New("http://sol1.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getBalance") &&
+				strings.Contains(r.Host, "sol1")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Connection rate limits exceeded"}}`))
+
+	gock.New("http://sol2.localhost").Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "getBalance") &&
+				strings.Contains(r.Host, "sol2")
+		}).
+		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000042},"value":5000000000}}`))
+
+	util.ConfigureTestLogger()
+	lg := log.Logger
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssr, err := data.NewSharedStateRegistry(ctx, &lg, nil)
+	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &lg, ssr, nil, newSolanaTestConfig())
+	require.NoError(t, err)
+	erpcInstance.Bootstrap(ctx)
+
+	nw, err := erpcInstance.GetNetwork(ctx, "test", "solana:mainnet-beta")
+	require.NoError(t, err)
+
+	resp, err := nw.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"]}`,
+	)))
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Nil(t, jrr.Error,
+		"rate-limited sol1 (-32000 in JSON body) should failover to sol2 which succeeds")
 }
 
 func TestSolanaFinalizedSlotTracked(t *testing.T) {

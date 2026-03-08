@@ -61,9 +61,15 @@ type SolanaStatePoller interface {
 	Poll(ctx context.Context) error
 	PollProcessedSlot(ctx context.Context) (int64, error)
 	PollFinalizedSlot(ctx context.Context) (int64, error)
+	PollMaxShredInsertSlot(ctx context.Context) (int64, error)
 	PollHealth(ctx context.Context) error
 	LatestSlot() int64
 	FinalizedSlot() int64
+	// MaxShredInsertSlotLag returns the difference between the node's highest
+	// shred-insert slot and its processed slot. A large lag (>100 slots) means
+	// the node is receiving block shreds but failing to process them — it may
+	// still pass getHealth but serves stale state.
+	MaxShredInsertSlotLag() int64
 	IsHealthy() bool
 	SuggestLatestSlot(slot int64)
 	SuggestFinalizedSlot(slot int64)

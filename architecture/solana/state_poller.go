@@ -17,10 +17,17 @@ const defaultSlotDebounce = 400 * time.Millisecond // ~1 Solana slot
 
 // Pre-computed static request bodies — avoids fmt.Sprintf allocations on every poll tick.
 var (
-	reqGetHealth         = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
-	reqGetSlotProcessed  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
-	reqGetSlotFinalized  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
+	reqGetHealth              = []byte(`{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}`)
+	reqGetSlotProcessed       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
+	reqGetSlotFinalized       = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)
+	reqGetMaxShredInsertSlot  = []byte(`{"jsonrpc":"2.0","id":1,"method":"getMaxShredInsertSlot","params":[]}`)
 )
+
+// MaxShredInsertSlotLagThreshold is the number of slots by which a node's
+// max-shred-insert slot may lead its processed slot before it is marked
+// degraded. A large delta means the node receives block shreds from the
+// network but fails to process them — it can still pass getHealth.
+const MaxShredInsertSlotLagThreshold int64 = 100
 
 // DefaultToleratedSlotRollback is the maximum slot decrease considered normal
 // churn (e.g. processed → confirmed reorg). Larger rollbacks trigger alarms.
@@ -51,10 +58,11 @@ type SolanaStatePoller struct {
 	latestSlotShared    common.SlotSharedVariable
 	finalizedSlotShared common.SlotSharedVariable
 
-	healthy          atomic.Bool
-	debounceInterval time.Duration
-	lastPollTime     time.Time
-	pollMu           sync.Mutex
+	healthy            atomic.Bool
+	shredInsertLag     atomic.Int64 // maxShredInsertSlot − processedSlot; 0 = unknown
+	debounceInterval   time.Duration
+	lastPollTime       time.Time
+	pollMu             sync.Mutex
 
 	skipFinalizedCheck bool
 	finalizedFailCount int
@@ -158,15 +166,16 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 	p.lastPollTime = time.Now()
 	p.pollMu.Unlock()
 
-	// Fan out the three independent RPC calls concurrently so a slow node
-	// doesn't serialise three round-trips per tick.
+	// Fan out four independent RPC calls concurrently so a slow node
+	// doesn't serialise round-trips per tick.
 	type slotResult struct {
 		slot int64
 		err  error
 	}
 	healthErrCh := make(chan error, 1)
-	latestCh := make(chan slotResult, 1)
+	latestCh    := make(chan slotResult, 1)
 	finalizedCh := make(chan slotResult, 1)
+	shredCh     := make(chan slotResult, 1)
 
 	go func() { healthErrCh <- p.PollHealth(ctx) }()
 	go func() {
@@ -179,8 +188,12 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 			finalizedCh <- slotResult{s, e}
 		}()
 	} else {
-		finalizedCh <- slotResult{} // unblock the channel read below
+		finalizedCh <- slotResult{} // unblock channel read
 	}
+	go func() {
+		s, e := p.PollMaxShredInsertSlot(ctx)
+		shredCh <- slotResult{s, e}
+	}()
 
 	healthErr := <-healthErrCh
 	if healthErr != nil {
@@ -212,6 +225,26 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 		} else {
 			p.finalizedFailCount = 0
 			p.SuggestFinalizedSlot(fRes.slot)
+		}
+	}
+
+	// getMaxShredInsertSlot: if it leads the processed slot by more than
+	// MaxShredInsertSlotLagThreshold, the node is receiving shreds but failing
+	// to process them. Mark it degraded even when getHealth returns "ok".
+	shredRes := <-shredCh
+	if shredRes.err == nil && latestRes.err == nil && latestRes.slot > 0 {
+		lag := shredRes.slot - latestRes.slot
+		if lag < 0 {
+			lag = 0
+		}
+		p.shredInsertLag.Store(lag)
+		if lag > MaxShredInsertSlotLagThreshold {
+			p.logger.Warn().
+				Int64("maxShredInsertSlot", shredRes.slot).
+				Int64("processedSlot", latestRes.slot).
+				Int64("lag", lag).
+				Msg("shred-insert lag exceeds threshold — marking upstream degraded")
+			p.healthy.Store(false)
 		}
 	}
 
@@ -256,6 +289,36 @@ func (p *SolanaStatePoller) PollProcessedSlot(ctx context.Context) (int64, error
 
 func (p *SolanaStatePoller) PollFinalizedSlot(ctx context.Context) (int64, error) {
 	return p.pollSlot(ctx, reqGetSlotFinalized, string(common.SolanaCommitmentFinalized))
+}
+
+// PollMaxShredInsertSlot calls getMaxShredInsertSlot and returns the slot number.
+// This is the highest slot for which the node has inserted shreds — it leads
+// the processed slot when the node's processing pipeline is backlogged.
+func (p *SolanaStatePoller) PollMaxShredInsertSlot(ctx context.Context) (int64, error) {
+	pr := common.NewNormalizedRequest(reqGetMaxShredInsertSlot)
+	resp, err := p.upstream.Forward(ctx, pr, true)
+	if err != nil {
+		return 0, fmt.Errorf("getMaxShredInsertSlot: %w", err)
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return 0, fmt.Errorf("getMaxShredInsertSlot parse: %w", err)
+	}
+	if jrr.Error != nil {
+		return 0, fmt.Errorf("getMaxShredInsertSlot rpc error: %s", jrr.Error.Message)
+	}
+	var slot int64
+	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &slot); err != nil {
+		return 0, fmt.Errorf("getMaxShredInsertSlot unmarshal: %w", err)
+	}
+	return slot, nil
+}
+
+// MaxShredInsertSlotLag returns the last measured difference between the node's
+// maxShredInsertSlot and its processedSlot. Returns 0 when unknown (first poll
+// not yet complete or either call failed).
+func (p *SolanaStatePoller) MaxShredInsertSlotLag() int64 {
+	return p.shredInsertLag.Load()
 }
 
 func (p *SolanaStatePoller) pollSlot(ctx context.Context, reqBody []byte, commitment string) (int64, error) {
