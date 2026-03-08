@@ -179,7 +179,8 @@ func (e *JsonRpcErrorExtractor) Extract(
 		if strings.Contains(lmsg, "transaction simulation failed") ||
 			strings.Contains(lmsg, "blockhash not found") ||
 			strings.Contains(lmsg, "blockhash expired") {
-			return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg))
+			return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg)).
+				WithRetryableTowardNetwork(false)
 		}
 		if strings.Contains(msg, "Connection rate limits exceeded") ||
 			strings.Contains(lmsg, "rate limit") ||
@@ -192,7 +193,8 @@ func (e *JsonRpcErrorExtractor) Extract(
 
 	case -32002, -32003, -32013: // Deterministic tx errors — bad tx, bad sig, bad length.
 		// All upstreams will return the same error. Return to client immediately.
-		return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg))
+		return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg)).
+			WithRetryableTowardNetwork(false)
 
 	case -32005, -32006: // Node unhealthy / behind — failover to another upstream
 		return common.NewErrEndpointServerSideException(
@@ -240,5 +242,6 @@ func (e *JsonRpcErrorExtractor) Extract(
 
 	// Everything else is a deterministic client-side error (bad params, wrong
 	// encoding, invalid address, etc.) — no point retrying another upstream.
-	return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg))
+	return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg)).
+		WithRetryableTowardNetwork(false)
 }
