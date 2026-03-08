@@ -1157,35 +1157,41 @@ func TestSolanaSignatureStatuses_NullEntriesPassthrough(t *testing.T) {
 // second upstream. An invalid transaction will fail the same way everywhere.
 //
 // Uses simulateTransaction (not sendTransaction) to avoid the double-handling
-// in HandleUpstreamPostForward, keeping the test clean. Uses Persist() mocks
-// on both upstreams to be robust against background state-poller goroutines.
+// in HandleUpstreamPostForward, keeping the test clean. Both upstreams return
+// -32002 so the assertion is order-independent (round-robin may pick either
+// upstream first, but exactly ONE must be contacted).
 func TestSolana_SimulationError_NotRetried(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	defer gock.Off()
 	setupSolanaStatePollerMocks()
 
-	var sol2Hits atomic.Int32
+	// Both upstreams return -32002 — the deterministic simulation error should
+	// never cause a retry regardless of which upstream is tried first.
+	var sol1Hits, sol2Hits atomic.Int32
+	simErr := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Transaction simulation failed: insufficient funds for instruction"}}`)
 
-	// sol1: returns -32002 (transaction simulation failed — bad tx)
 	gock.New("http://sol1.localhost").Post("").Persist().
 		Filter(func(r *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(r), "simulateTransaction") &&
-				strings.Contains(r.Host, "sol1")
+			// Host guard: gock evaluates filter before URL check, so a sol2 request
+			// would otherwise trigger this filter before the URL match fails.
+			if r.URL.Host == "sol1.localhost" && strings.Contains(util.SafeReadBody(r), "simulateTransaction") {
+				sol1Hits.Add(1)
+				return true
+			}
+			return false
 		}).
-		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Transaction simulation failed: insufficient funds for instruction"}}`))
+		Reply(200).JSON(simErr)
 
-	// sol2: succeeds — but must NOT be called
 	gock.New("http://sol2.localhost").Post("").Persist().
 		Filter(func(r *http.Request) bool {
-			if strings.Contains(util.SafeReadBody(r), "simulateTransaction") &&
-				strings.Contains(r.Host, "sol2") {
+			if r.URL.Host == "sol2.localhost" && strings.Contains(util.SafeReadBody(r), "simulateTransaction") {
 				sol2Hits.Add(1)
 				return true
 			}
 			return false
 		}).
-		Reply(200).JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":300000000},"value":{"err":null,"logs":[]}}}`))
+		Reply(200).JSON(simErr)
 
 	util.ConfigureTestLogger()
 	lg := log.Logger
@@ -1205,7 +1211,7 @@ func TestSolana_SimulationError_NotRetried(t *testing.T) {
 	)))
 
 	// erpc surfaces a ClientSideException either as a Go error OR as a JSON-RPC
-	// error body. Either way, sol2 must NOT have been contacted.
+	// error body. Either way, exactly ONE upstream must have been contacted.
 	if err == nil {
 		require.NotNil(t, resp)
 		jrr, jErr := resp.JsonRpcResponse()
@@ -1213,8 +1219,10 @@ func TestSolana_SimulationError_NotRetried(t *testing.T) {
 		assert.NotNil(t, jrr.Error,
 			"if no Go error, the JSON-RPC response must carry the simulation error")
 	}
-	assert.Equal(t, int32(0), sol2Hits.Load(),
-		"sol2 must NOT be tried — -32002 is deterministic and retrying wastes capacity")
+	totalHits := sol1Hits.Load() + sol2Hits.Load()
+	t.Logf("sol1Hits=%d sol2Hits=%d totalHits=%d", sol1Hits.Load(), sol2Hits.Load(), totalHits)
+	assert.Equal(t, int32(1), totalHits,
+		"exactly one upstream must serve the request — -32002 is deterministic and must not cause failover")
 }
 
 // TestSolana_32000_RateLimit_InJsonBody_FailsoverToSecondUpstream verifies
