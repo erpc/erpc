@@ -261,11 +261,12 @@ func TestJsonRpcErrorExtractor_HTTP403_Unauthorized(t *testing.T) {
 
 func TestJsonRpcErrorExtractor_Minus32000_ServerSide(t *testing.T) {
 	extractor := NewJsonRpcErrorExtractor()
-	// -32000 is used by many providers for rate limits, overloads, and generic server errors.
-	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32000, "Connection rate limits exceeded"), nil)
+	// -32000 with a generic server-side message (not simulation/blockhash/rate-limit)
+	// should be ServerSideException so the proxy fails over to the next upstream.
+	err := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(-32000, "Server is overloaded, try again later"), nil)
 	require.Error(t, err)
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
-		"-32000 should be server-side (triggers failover)")
+		"-32000 with generic server error should be ServerSideException (triggers failover)")
 }
 
 func TestJsonRpcErrorExtractor_Minus32012_ServerSide(t *testing.T) {
@@ -397,6 +398,82 @@ func TestJsonRpcErrorExtractor_Minus32601_Unsupported(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported),
 		"-32601 (method not found) should be unsupported so another upstream is tried")
+}
+
+// ── Phase 2: -32000 message-based disambiguation ─────────────────────────────
+
+func TestJsonRpcErrorExtractor_Minus32000_SimulationFailed_ClientSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil,
+		fakeJrrWithError(-32000, "Transaction simulation failed: Error processing Instruction 0: custom program error: 0x1"),
+		nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointClientSideException),
+		"-32000 with 'Transaction simulation failed' must be ClientSideException — all upstreams will return the same error for a bad tx")
+	assert.False(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"-32000 simulation failure must NOT trigger failover")
+}
+
+func TestJsonRpcErrorExtractor_Minus32000_BlockhashNotFound_ClientSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil,
+		fakeJrrWithError(-32000, "Transaction simulation failed: Blockhash not found"),
+		nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointClientSideException),
+		"-32000 with 'Blockhash not found' must be ClientSideException")
+}
+
+func TestJsonRpcErrorExtractor_Minus32000_Overloaded_ServerSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil,
+		fakeJrrWithError(-32000, "Server is overloaded, try again later"),
+		nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException),
+		"-32000 with generic server error should still be ServerSideException (failover)")
+}
+
+func TestJsonRpcErrorExtractor_Minus32000_RateLimit_CapacityExceeded(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil,
+		fakeJrrWithError(-32000, "Connection rate limits exceeded"),
+		nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded),
+		"-32000 with rate limit message should be CapacityExceeded")
+}
+
+// ── Phase 2: explicit -32002 / -32003 / -32013 client-side classification ────
+
+func TestJsonRpcErrorExtractor_Minus32002_TransactionSimulationFailed_ClientSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil,
+		fakeJrrWithError(-32002, "Transaction simulation failed: insufficient funds"),
+		nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointClientSideException),
+		"-32002 (tx simulation failed) must be ClientSideException — bad tx is deterministic")
+}
+
+func TestJsonRpcErrorExtractor_Minus32003_SignatureVerificationFailed_ClientSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil,
+		fakeJrrWithError(-32003, "Transaction signature verification failure"),
+		nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointClientSideException),
+		"-32003 (signature verification) must be ClientSideException — bad signature cannot be fixed by retrying")
+}
+
+func TestJsonRpcErrorExtractor_Minus32013_SignatureLengthMismatch_ClientSide(t *testing.T) {
+	extractor := NewJsonRpcErrorExtractor()
+	err := extractor.Extract(fakeResp(200), nil,
+		fakeJrrWithError(-32013, "Transaction signature length mismatch"),
+		nil)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointClientSideException),
+		"-32013 (signature length mismatch) must be ClientSideException")
 }
 
 // ── Gap 5: NormalizeHttpJsonRpc is a safe no-op ───────────────────────────────

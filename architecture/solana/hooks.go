@@ -148,9 +148,11 @@ func (e *JsonRpcErrorExtractor) Extract(
 	msg := jr.Error.Message
 
 	// Solana error codes:
-	//  -32000: Generic server-side error (rate limits, overloaded, simulation, etc.)
-	//  -32002: Transaction simulation failed  → client-side (bad tx)
-	//  -32003: Transaction rejected           → client-side (bad params)
+	//  -32000: Generic server-side error (rate limits, overloaded, etc.) — BUT also
+	//          overloaded for client errors like simulation failure and stale blockhash.
+	//          Requires text-based disambiguation (see case below).
+	//  -32002: Transaction simulation failed  → client-side (bad tx, deterministic)
+	//  -32003: Transaction rejected           → client-side (bad signature)
 	//  -32004: Block not available            → missing data, try another upstream
 	//  -32005: Node is unhealthy / behind     → server-side, triggers failover
 	//  -32006: Node is behind / not yet impl  → server-side, triggers failover
@@ -160,16 +162,44 @@ func (e *JsonRpcErrorExtractor) Extract(
 	//  -32010: Requested program not found    → missing data on this node
 	//  -32011: Min context slot not reached   → node is behind, try another upstream
 	//  -32012: Long-term storage unavailable  → server-side, triggers failover
+	//  -32013: Transaction signature length mismatch → client-side (bad tx construction)
 	//  -32015: Block status not yet available → missing data, try another upstream
+	//  -32016: Min context slot not reached (QuickNode variant of -32011)
 	//  -32601: Method not found               → unsupported, try another upstream
 	switch jr.Error.Code {
+
+	case -32000:
+		// -32000 is overloaded across providers. Disambiguate by message text:
+		//   • Simulation / blockhash errors are deterministic — the tx itself is
+		//     invalid and every upstream will return the same error. Return to
+		//     client immediately.
+		//   • Rate-limit text → CapacityExceeded so the upstream is rotated.
+		//   • Everything else is treated as a transient server-side issue.
+		lmsg := strings.ToLower(msg)
+		if strings.Contains(lmsg, "transaction simulation failed") ||
+			strings.Contains(lmsg, "blockhash not found") ||
+			strings.Contains(lmsg, "blockhash expired") {
+			return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg))
+		}
+		if strings.Contains(msg, "Connection rate limits exceeded") ||
+			strings.Contains(lmsg, "rate limit") ||
+			strings.Contains(lmsg, "too many requests") {
+			return common.NewErrEndpointCapacityExceeded(fmt.Errorf("%s", msg))
+		}
+		return common.NewErrEndpointServerSideException(
+			fmt.Errorf("%s", msg), nil, statusCode,
+		)
+
+	case -32002, -32003, -32013: // Deterministic tx errors — bad tx, bad sig, bad length.
+		// All upstreams will return the same error. Return to client immediately.
+		return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg))
 
 	case -32005, -32006: // Node unhealthy / behind — failover to another upstream
 		return common.NewErrEndpointServerSideException(
 			fmt.Errorf("solana node unhealthy: %s", msg), nil, statusCode,
 		)
 
-	case -32000, -32012: // Generic server / storage unavailable — failover
+	case -32012: // Long-term storage unavailable — failover
 		return common.NewErrEndpointServerSideException(
 			fmt.Errorf("%s", msg), nil, statusCode,
 		)
