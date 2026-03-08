@@ -12,6 +12,10 @@ func EvmNetworkId(chainId interface{}) string {
 	return fmt.Sprintf("evm:%d", chainId)
 }
 
+func SolanaNetworkId(cluster string) string {
+	return "solana:" + cluster
+}
+
 var validIdentifierRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 func IsValidIdentifier(s string) bool {
@@ -22,6 +26,10 @@ func IsValidNetworkId(s string) bool {
 	if strings.HasPrefix(s, "evm:") {
 		_, err := strconv.Atoi(s[4:])
 		return err == nil
+	}
+	if strings.HasPrefix(s, "solana:") {
+		cluster := s[7:]
+		return cluster == "mainnet-beta" || cluster == "devnet" || cluster == "testnet"
 	}
 	return false
 }

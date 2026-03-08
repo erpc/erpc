@@ -30,10 +30,15 @@ type Network interface {
 	EvmHighestLatestBlockNumber(ctx context.Context) int64
 	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
 	EvmLeaderUpstream(ctx context.Context) Upstream
+
+	// Solana slot tracking — mirrors Evm* equivalents for Solana architecture.
+	SolanaHighestLatestSlot(ctx context.Context) int64
+	SolanaHighestFinalizedSlot(ctx context.Context) int64
 }
 
 func IsValidArchitecture(architecture string) bool {
-	return architecture == string(ArchitectureEvm) // TODO add more architectures when they are supported
+	return architecture == string(ArchitectureEvm) ||
+		architecture == string(ArchitectureSolana)
 }
 
 func IsValidNetwork(network string) bool {
@@ -43,6 +48,13 @@ func IsValidNetwork(network string) bool {
 			return false
 		}
 		return chainId > 0
+	}
+
+	if strings.HasPrefix(network, "solana:") {
+		cluster := strings.TrimPrefix(network, "solana:")
+		return cluster == string(SolanaClusterMainnetBeta) ||
+			cluster == string(SolanaClusterDevnet) ||
+			cluster == string(SolanaClusterTestnet)
 	}
 
 	return false

@@ -709,6 +709,11 @@ type ErrUpstreamClientInitialization struct {
 	BaseError
 }
 
+// IsTaskFatal marks upstream client initialization failures as fatal so the
+// bootstrap initializer does not retry them. A bad genesis hash, invalid
+// endpoint, or missing credentials will never self-heal on retry.
+func (e *ErrUpstreamClientInitialization) IsTaskFatal() bool { return true }
+
 var NewErrUpstreamClientInitialization = func(cause error, upstream Upstream) error {
 	return &ErrUpstreamClientInitialization{
 		UpstreamAwareError: UpstreamAwareError{

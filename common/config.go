@@ -448,6 +448,7 @@ type NetworkDefaults struct {
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+	Solana            *SolanaNetworkConfig     `yaml:"solana,omitempty" json:"solana"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 }
 
@@ -546,6 +547,7 @@ type UpstreamConfig struct {
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
+	Solana                       *SolanaUpstreamConfig    `yaml:"solana,omitempty" json:"solana"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
@@ -1432,11 +1434,31 @@ type MethodsConfig struct {
 	Definitions            map[string]*CacheMethodConfig `yaml:"definitions,omitempty" json:"definitions"`
 }
 
+// SolanaNetworkConfig holds Solana-specific network configuration.
+type SolanaNetworkConfig struct {
+	// Cluster is the Solana cluster: "mainnet-beta", "devnet", or "testnet".
+	Cluster string `yaml:"cluster" json:"cluster"`
+
+	// FallbackFinalitySlotDistance is slots behind "processed" considered finalized
+	// when the upstream doesn't return a finalized slot. Default: 32.
+	FallbackFinalitySlotDistance int64 `yaml:"fallbackFinalitySlotDistance,omitempty" json:"fallbackFinalitySlotDistance,omitempty"`
+
+	// StatePollerDebounce controls minimum interval between slot polls. Default: 400ms.
+	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce,omitempty"`
+}
+
+// SolanaUpstreamConfig holds Solana-specific upstream configuration.
+type SolanaUpstreamConfig struct {
+	// Cluster is the Solana cluster this upstream serves: "mainnet-beta", "devnet", or "testnet".
+	Cluster string `yaml:"cluster" json:"cluster"`
+}
+
 type NetworkConfig struct {
 	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
+	Solana            *SolanaNetworkConfig     `yaml:"solana,omitempty" json:"solana"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
@@ -1835,13 +1857,17 @@ type RateLimitStoreConfig struct {
 }
 
 func (c *NetworkConfig) NetworkId() string {
-	if c.Architecture == "" || c.Evm == nil {
-		return ""
-	}
-
 	switch c.Architecture {
 	case "evm":
+		if c.Evm == nil {
+			return ""
+		}
 		return util.EvmNetworkId(c.Evm.ChainId)
+	case "solana":
+		if c.Solana == nil || c.Solana.Cluster == "" {
+			return ""
+		}
+		return util.SolanaNetworkId(c.Solana.Cluster)
 	default:
 		return ""
 	}

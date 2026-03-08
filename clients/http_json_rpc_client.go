@@ -881,8 +881,10 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		}
 	}
 
-	if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {
-		return e
+	if c.errorExtractor != nil {
+		if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {
+			return e
+		}
 	}
 
 	if jr == nil || jr.Error == nil {
