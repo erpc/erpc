@@ -391,3 +391,47 @@ func TestOnValueCallback_NotFiredOnLowerValue(t *testing.T) {
 	lv.TryUpdate(context.Background(), 50) // lower — should not advance
 	assert.Equal(t, 0, calls, "OnValue should not fire when value doesn't advance")
 }
+
+// ── Phase 2: MaxShredInsertSlotLag / degraded-node detection ─────────────────
+
+func TestMaxShredInsertSlotLag_InitiallyZero(t *testing.T) {
+	p := newTestPoller()
+	assert.Equal(t, int64(0), p.MaxShredInsertSlotLag(),
+		"lag should be 0 before first poll")
+}
+
+func TestMaxShredInsertSlotLag_BelowThreshold_StaysHealthy(t *testing.T) {
+	p := newTestPoller()
+	// Simulate: processedSlot = 300_000_000, maxShredInsertSlot = 300_000_050 (lag=50)
+	p.SuggestLatestSlot(300_000_000)
+	lag := int64(50)
+	p.shredInsertLag.Store(lag)
+	// A lag below the threshold must not affect health
+	assert.True(t, p.IsHealthy(), "lag below threshold must not mark node degraded")
+	assert.Equal(t, lag, p.MaxShredInsertSlotLag())
+}
+
+func TestMaxShredInsertSlotLag_AboveThreshold_MarksNodeDegraded(t *testing.T) {
+	p := newTestPoller()
+	p.SuggestLatestSlot(300_000_000)
+
+	// Simulate what Poll() does when maxShredInsertSlot leads processedSlot by 200 slots.
+	processedSlot := int64(300_000_000)
+	maxShredSlot := int64(300_000_200)
+	lag := maxShredSlot - processedSlot // 200 > MaxShredInsertSlotLagThreshold (100)
+
+	p.shredInsertLag.Store(lag)
+	if lag > MaxShredInsertSlotLagThreshold {
+		p.healthy.Store(false)
+	}
+
+	assert.False(t, p.IsHealthy(),
+		"shred-insert lag > threshold must mark upstream degraded even when getHealth says ok")
+	assert.Equal(t, int64(200), p.MaxShredInsertSlotLag())
+}
+
+func TestMaxShredInsertSlotLag_LagThresholdConstant(t *testing.T) {
+	// Sanity check: constant must be > 0 and < 10_000.
+	assert.Greater(t, MaxShredInsertSlotLagThreshold, int64(0))
+	assert.Less(t, MaxShredInsertSlotLagThreshold, int64(10_000))
+}
