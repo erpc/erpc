@@ -504,10 +504,6 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 		Int64("previousValue", currentValue).
 		Int64("newValue", newValue).
 		Msg("latest block suggestion applied")
-
-	// Keep detection time fresh so nextPollDelay stays aligned to real block
-	// production even when response traffic (not the poller) surfaces new blocks.
-	e.tracker.NoteNetworkBlockDetection(e.upstream.NetworkId(), blockNumber)
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {
