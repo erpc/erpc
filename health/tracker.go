@@ -912,6 +912,19 @@ func (t *Tracker) GetLastNewBlockDetectedAt(networkId string) int64 {
 	return t.getMetadata(metadataKey{nil, networkId}).evmLastNewBlockDetectedAt.Load()
 }
 
+// NoteNetworkBlockDetection records the local detection time when a block suggestion
+// advances the network-level block number. Called from SuggestLatestBlock so that
+// nextPollDelay stays anchored to real block production even when response traffic
+// (not the poller) is surfacing new blocks. No timestamp is available from suggests
+// so the sliding window is not updated — only the detection time.
+// All operations are atomic; safe to call from the hot request path.
+func (t *Tracker) NoteNetworkBlockDetection(networkId string, blockNumber int64) {
+	ntwMeta := t.getMetadata(metadataKey{nil, networkId})
+	if blockNumber > ntwMeta.evmLatestBlockNumber.Load() {
+		ntwMeta.evmLastNewBlockDetectedAt.Store(time.Now().UnixMilli())
+	}
+}
+
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
 	lg := upstream.Logger().With().Str("networkId", upstream.NetworkId()).Logger()
 
