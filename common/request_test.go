@@ -570,6 +570,33 @@ func TestNormalizedRequestForwardBody_MarshalsWhenNoRawBody(t *testing.T) {
 	}
 }
 
+func TestNormalizedRequestForwardBody_StripsEthGetLogsMaxSizeFromUpstreamPayload(t *testing.T) {
+	raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","maxSize":2}]}`)
+	req := NewNormalizedRequest(raw)
+
+	hashWithLimit, err := req.CacheHash()
+	if err != nil {
+		t.Fatalf("expected CacheHash to succeed: %v", err)
+	}
+
+	withoutLimit := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
+	hashWithoutLimit, err := withoutLimit.CacheHash()
+	if err != nil {
+		t.Fatalf("expected CacheHash without limit to succeed: %v", err)
+	}
+	if hashWithLimit == hashWithoutLimit {
+		t.Fatalf("expected maxSize to affect cache hash")
+	}
+
+	forwardBody, err := req.ForwardBody()
+	if err != nil {
+		t.Fatalf("expected ForwardBody to succeed: %v", err)
+	}
+	if strings.Contains(string(forwardBody), `"maxSize"`) {
+		t.Fatalf("expected maxSize to be stripped from upstream payload, got %s", string(forwardBody))
+	}
+}
+
 func TestMarkUpstreamCompleted_SingleUpstreamBlockUnavailable_DisablesNetworkRetry(t *testing.T) {
 	ctx := context.Background()
 	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))

@@ -981,9 +981,27 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 func TestGetLogsFromBlockReceiptsWriter_IsResultEmptyish_InvalidResultIsNotEmpty(t *testing.T) {
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`{invalid-json`), nil)
-	w := newGetLogsFromBlockReceiptsWriter(nil, jrr, newGetLogsFilter(nil, nil))
+	w := newGetLogsFromBlockReceiptsWriter(nil, jrr, newGetLogsFilter(nil, nil, 0))
 
 	assert.False(t, w.IsResultEmptyish())
+}
+
+func TestGetLogsFromBlockReceiptsWriter_FiltersOversizedPayloads(t *testing.T) {
+	jrr := common.MustNewJsonRpcResponseFromBytes(
+		[]byte(`"0x1"`),
+		[]byte(`[{"logs":[{"data":"0x1234"},{"data":"0x1234567890"}]}]`),
+		nil,
+	)
+	w := newGetLogsFromBlockReceiptsWriter(nil, jrr, newGetLogsFilter(nil, nil, 2))
+
+	var buf bytes.Buffer
+	_, err := w.WriteTo(&buf, false)
+	require.NoError(t, err)
+
+	var logs []map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+	require.Len(t, logs, 1)
+	assert.Equal(t, "0x1234", logs[0]["data"])
 }
 
 func TestGetLogsMultiResponseWriter_ReleaseIdempotentSizeAfterRelease(t *testing.T) {
@@ -1865,6 +1883,104 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 		n.AssertExpectations(t)
 	})
+
+	t.Run("invalid_max_size_is_rejected_early", func(t *testing.T) {
+		n := new(mockNetwork)
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x2",
+			"maxSize":   "abc",
+		})
+
+		handled, resp, err := projectPreForward_eth_getLogs(ctx, n, r)
+		require.Error(t, err)
+		assert.True(t, handled)
+		assert.Nil(t, resp)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeInvalidRequest))
+	})
+
+	t.Run("cache_chunking_filters_oversized_log_payloads", func(t *testing.T) {
+		chunkSize := int64(2)
+		n := new(mockNetwork)
+		n.On("Id").Return("evm:123").Maybe()
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Config").Return(&common.NetworkConfig{
+			Evm: &common.EvmNetworkConfig{
+				GetLogsCacheChunkSize:   &chunkSize,
+				GetLogsSplitConcurrency: 2,
+			},
+		}).Maybe()
+
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				jrr := common.MustNewJsonRpcResponseFromBytes(
+					[]byte(`"0x1"`),
+					[]byte(`[{"data":"0x1234"},{"data":"0x1234567890"}]`),
+					nil,
+				)
+				return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+			},
+			nil,
+		).Times(2)
+
+		r := createTestRequest(map[string]interface{}{
+			"fromBlock": "0x0",
+			"toBlock":   "0x3",
+			"maxSize":   2,
+		})
+		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, nil, r)
+		require.NoError(t, err)
+		require.True(t, handled)
+		require.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse(ctx)
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		_, err = jrr.WriteResultTo(&buf, false)
+		require.NoError(t, err)
+
+		var logs []map[string]interface{}
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &logs))
+		require.Len(t, logs, 2)
+		for _, lg := range logs {
+			assert.Equal(t, "0x1234", lg["data"])
+		}
+
+		n.AssertExpectations(t)
+	})
+}
+
+func TestUpstreamPostForward_eth_getLogs_FiltersOversizedPayloads(t *testing.T) {
+	ctx := context.Background()
+	n := new(mockNetwork)
+	n.On("Id").Return("evm:123").Maybe()
+	u := new(mockEvmUpstream)
+	u.On("Id").Return("u1").Maybe()
+
+	r := createTestRequest(map[string]interface{}{
+		"fromBlock": "0x1",
+		"toBlock":   "0x1",
+		"maxSize":   2,
+	})
+	rs := common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(
+		common.MustNewJsonRpcResponseFromBytes(
+			[]byte(`"0x1"`),
+			[]byte(`[{"data":"0x1234"},{"data":"0x1234567890"}]`),
+			nil,
+		),
+	)
+
+	out, err := upstreamPostForward_eth_getLogs(ctx, n, u, r, rs, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	jrr, err := out.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+
+	var logs []map[string]interface{}
+	require.NoError(t, json.Unmarshal(jrr.GetResultBytes(), &logs))
+	require.Len(t, logs, 1)
+	assert.Equal(t, "0x1234", logs[0]["data"])
 }
 
 func createTestRequest(filter interface{}) *common.NormalizedRequest {

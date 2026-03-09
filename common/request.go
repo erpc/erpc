@@ -976,7 +976,10 @@ func (r *NormalizedRequest) Body() []byte {
 // Fast-path: reuse original raw bytes if request was not modified.
 func (r *NormalizedRequest) ForwardBody(ctx ...context.Context) ([]byte, error) {
 	if body := r.Body(); len(body) > 0 {
-		return body, nil
+		method, _ := r.Method()
+		if !strings.EqualFold(method, "eth_getLogs") {
+			return body, nil
+		}
 	}
 
 	jrq, err := r.JsonRpcRequest(ctx...)
@@ -988,10 +991,11 @@ func (r *NormalizedRequest) ForwardBody(ctx ...context.Context) ([]byte, error) 
 	}
 
 	jrq.RLock()
+	params := sanitizeForwardParams(jrq.Method, jrq.Params)
 	requestBody, err := SonicCfg.Marshal(JsonRpcRequest{
 		JSONRPC: jrq.JSONRPC,
 		Method:  jrq.Method,
-		Params:  jrq.Params,
+		Params:  params,
 		ID:      jrq.ID,
 	})
 	jrq.RUnlock()
@@ -1000,6 +1004,32 @@ func (r *NormalizedRequest) ForwardBody(ctx ...context.Context) ([]byte, error) 
 	}
 
 	return requestBody, nil
+}
+
+func sanitizeForwardParams(method string, params []interface{}) []interface{} {
+	if !strings.EqualFold(method, "eth_getLogs") || len(params) == 0 {
+		return params
+	}
+
+	filter, ok := params[0].(map[string]interface{})
+	if !ok {
+		return params
+	}
+	if _, hasMaxSize := filter["maxSize"]; !hasMaxSize {
+		return params
+	}
+
+	cloned := make([]interface{}, len(params))
+	copy(cloned, params)
+
+	sanitized, ok := deepCopyValue(filter).(map[string]interface{})
+	if !ok {
+		return params
+	}
+	delete(sanitized, "maxSize")
+	cloned[0] = sanitized
+
+	return cloned
 }
 
 func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {

@@ -100,6 +100,10 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 		jrq.RUnlock()
 		return false, nil, nil
 	}
+	if _, err := extractGetLogsMaxDataBytes(filter); err != nil {
+		jrq.RUnlock()
+		return true, nil, common.NewErrInvalidRequest(err)
+	}
 	// EIP-234 short-circuit (blockHash): no range size applicable
 	if _, ok := filter["blockHash"].(string); ok {
 		jrq.RUnlock()
@@ -422,6 +426,44 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 		return nnr, nil
 	}
 
+	if re == nil && rs != nil {
+		payloadLimit, err := extractGetLogsPayloadLimitFromRequest(ctx, rq)
+		if err != nil {
+			return nil, common.NewErrInvalidRequest(err)
+		}
+		if payloadLimit > 0 {
+			jrr, err := rs.JsonRpcResponse(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if jrr != nil && jrr.Error == nil {
+				filterReq, err := rq.JsonRpcRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				filterReq.RLock()
+				var reqFilter map[string]interface{}
+				if len(filterReq.Params) > 0 {
+					reqFilter, _ = filterReq.Params[0].(map[string]interface{})
+				}
+				filterReq.RUnlock()
+				if reqFilter != nil {
+					filter := newGetLogsFilter(reqFilter["address"], reqFilter["topics"], payloadLimit)
+					dropped, err := filterGetLogsResponseByDataLimit(jrr, filter)
+					if err != nil {
+						return nil, err
+					}
+					if dropped > 0 {
+						n.Logger().Debug().
+							Int("droppedLogs", dropped).
+							Int64("maxSize", payloadLimit).
+							Msg("filtered oversized eth_getLogs payloads")
+					}
+				}
+			}
+		}
+	}
+
 	return rs, re
 }
 
@@ -466,7 +508,11 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 					if dirs := rq.Directives(); dirs != nil {
 						skipCacheRead = dirs.SkipCacheRead
 					}
-					out, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, rq, fb, filter["address"], filter["topics"], skipCacheRead, rq.ID())
+					payloadLimit, lerr := extractGetLogsMaxDataBytes(filter)
+					if lerr != nil {
+						return rs, common.NewErrInvalidRequest(lerr)
+					}
+					out, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, rq, fb, filter["address"], filter["topics"], payloadLimit, skipCacheRead, rq.ID())
 					if ferr == nil && out != nil {
 						if rs != nil {
 							rs.Release()
@@ -870,6 +916,10 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 
 func executeGetLogsSubRequestsInternal(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool, concurrency int, depth int, semaphore chan struct{}) (*common.JsonRpcResponse, *getLogsMergeMeta, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
+	payloadLimit, err := extractGetLogsPayloadLimitFromRequest(ctx, r)
+	if err != nil {
+		return nil, nil, common.NewErrInvalidRequest(err)
+	}
 
 	wg := sync.WaitGroup{}
 	// Preserve sub-request order for deterministic merged output
@@ -1001,7 +1051,7 @@ loop:
 						re = subErr
 					} else if req.fromBlock == req.toBlock && shouldFallbackEthGetLogsToBlockReceipts(re) {
 						releaseToken()
-						fjrr, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, r, req.fromBlock, req.address, req.topics, skipCacheRead, util.RandomID())
+						fjrr, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, r, req.fromBlock, req.address, req.topics, payloadLimit, skipCacheRead, util.RandomID())
 						if ferr == nil && fjrr != nil {
 							responses[i] = fjrr
 							holders[i] = nil
@@ -1066,7 +1116,7 @@ loop:
 						// Release the failing response; we will compute logs via receipts.
 						rs.Release()
 						releaseToken()
-						fjrr, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, r, req.fromBlock, req.address, req.topics, skipCacheRead, util.RandomID())
+						fjrr, ferr := fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx, n, r, req.fromBlock, req.address, req.topics, payloadLimit, skipCacheRead, util.RandomID())
 						if ferr == nil && fjrr != nil {
 							responses[i] = fjrr
 							holders[i] = nil
@@ -1091,6 +1141,27 @@ loop:
 				mu.Unlock()
 				rs.Release()
 				return
+			}
+
+			if payloadLimit > 0 {
+				filter := newGetLogsFilter(req.address, req.topics, payloadLimit)
+				dropped, err := filterGetLogsResponseByDataLimit(jrr, filter)
+				if err != nil {
+					mu.Lock()
+					incSplitFailure()
+					errs = append(errs, err)
+					mu.Unlock()
+					rs.Release()
+					return
+				}
+				if dropped > 0 {
+					logger.Debug().
+						Int("droppedLogs", dropped).
+						Int64("maxSize", payloadLimit).
+						Int64("fromBlock", req.fromBlock).
+						Int64("toBlock", req.toBlock).
+						Msg("filtered oversized eth_getLogs payloads from sub-request")
+				}
 			}
 
 			incSplitSuccess()
@@ -1137,7 +1208,7 @@ loop:
 	if jrqErr != nil {
 		return nil, nil, fmt.Errorf("failed to get parent request for ID assignment: %w", jrqErr)
 	}
-	err := mergedResponse.SetID(jrq.ID)
+	err = mergedResponse.SetID(jrq.ID)
 	if err != nil {
 		return nil, nil, err
 	}

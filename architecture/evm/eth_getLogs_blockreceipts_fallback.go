@@ -16,6 +16,9 @@ import (
 type getLogsFilter struct {
 	addrAny bool
 	addrSet map[string]struct{}
+	// maxDataBytes applies to the decoded `data` payload of a single log.
+	// Zero means disabled.
+	maxDataBytes int64
 
 	// topics[i] is:
 	// - nil: wildcard (any topic matches)
@@ -24,11 +27,12 @@ type getLogsFilter struct {
 	topics [][]string
 }
 
-func newGetLogsFilter(address interface{}, topics interface{}) *getLogsFilter {
+func newGetLogsFilter(address interface{}, topics interface{}, maxDataBytes int64) *getLogsFilter {
 	f := &getLogsFilter{
-		addrAny: true,
-		addrSet: nil,
-		topics:  nil,
+		addrAny:      true,
+		addrSet:      nil,
+		maxDataBytes: maxDataBytes,
+		topics:       nil,
 	}
 
 	// address: string | []any
@@ -91,6 +95,15 @@ func newGetLogsFilter(address interface{}, topics interface{}) *getLogsFilter {
 func (f *getLogsFilter) matchesLog(log *ast.Node) bool {
 	if log == nil || !log.Exists() {
 		return false
+	}
+	if f.maxDataBytes > 0 {
+		dataNode := log.Get("data")
+		if dataNode != nil && dataNode.Exists() {
+			data, err := dataNode.String()
+			if err == nil && logDataExceedsLimit(data, f.maxDataBytes) {
+				return false
+			}
+		}
 	}
 	if !f.addrAny {
 		addrNode := log.Get("address")
@@ -318,7 +331,7 @@ func (w *getLogsFromBlockReceiptsWriter) WriteTo(out io.Writer, trimSides bool) 
 	return n, nil
 }
 
-func fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx context.Context, n common.Network, parent *common.NormalizedRequest, blockNumber int64, address interface{}, topics interface{}, skipCacheRead bool, responseID interface{}) (*common.JsonRpcResponse, error) {
+func fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx context.Context, n common.Network, parent *common.NormalizedRequest, blockNumber int64, address interface{}, topics interface{}, maxDataBytes int64, skipCacheRead bool, responseID interface{}) (*common.JsonRpcResponse, error) {
 	bh, err := common.NormalizeHex(blockNumber)
 	if err != nil {
 		return nil, err
@@ -363,6 +376,6 @@ func fallbackEthGetLogsSingleBlockViaBlockReceipts(ctx context.Context, n common
 		rs.Release()
 		return nil, err
 	}
-	out.SetResultWriter(newGetLogsFromBlockReceiptsWriter(rs, jrr, newGetLogsFilter(address, topics)))
+	out.SetResultWriter(newGetLogsFromBlockReceiptsWriter(rs, jrr, newGetLogsFilter(address, topics, maxDataBytes)))
 	return out, nil
 }
