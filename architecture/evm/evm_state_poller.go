@@ -359,6 +359,21 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 // the scheduling imprecision on fast chains where block.timestamp is seconds.
 // Falls back to defaultInterval when block time is unknown, and caps at
 // defaultInterval so we never poll slower than the configured rate.
+//
+// When the expected block is late, uses gradual backoff:
+//
+//	Base retry:  blockTime / 10  (responsive for normal jitter)
+//	Growth:      +overdue / 10   (backs off for chain issues)
+//	Cap:         blockTime / 2   (never slower than half a block period)
+//	Floor:       50ms            (fast chains stay responsive)
+//
+// Example for ETH (12s blocks):
+//
+//	On time:   polls at 12s (the EMA prediction)
+//	0.5s late: retries every 1.2s  (normal jitter, responsive)
+//	6s late:   retries every 1.8s  (getting late, slight backoff)
+//	24s late:  retries every 3.6s  (chain issue, backs off more)
+//	48s+ late: retries every 6s    (capped at blockTime/2)
 func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Duration {
 	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
 	if blockTime == 0 {
@@ -370,16 +385,27 @@ func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Durat
 	}
 	nextExpected := time.UnixMilli(lastDetectedMs).Add(blockTime)
 	delay := time.Until(nextExpected)
+	return computePollBackoff(delay, blockTime, defaultInterval)
+}
 
-	// When the block is late (delay ≤ 0) or about to be due, use a fraction of
-	// blockTime as the retry interval instead of a fixed 50ms floor. This prevents
-	// hot-looping on slow chains while staying responsive on fast chains:
-	//   ETH 12s  → retries every ~1.2s (not 50ms = 240 wake-ups avoided)
-	//   Base 2s  → retries every ~200ms
-	//   Arb 250ms → retries every 50ms (floor)
+// computePollBackoff is the pure math for poll scheduling.
+// delay is time until the next expected block (negative = overdue).
+// blockTime is the EMA-estimated block time.
+// defaultInterval is the configured fallback/cap.
+func computePollBackoff(delay, blockTime, defaultInterval time.Duration) time.Duration {
 	const minPollInterval = 50 * time.Millisecond
 	if delay < minPollInterval {
-		retry := blockTime / 10
+		// Block is late (or about to be due). Use blockTime/10 as the base
+		// retry interval and grow based on how overdue we are. This stays
+		// responsive for normal jitter while backing off for chain issues.
+		overdue := -delay
+		if overdue < 0 {
+			overdue = 0
+		}
+		retry := blockTime/10 + overdue/10
+		if cap := blockTime / 2; retry > cap {
+			retry = cap
+		}
 		if retry < minPollInterval {
 			retry = minPollInterval
 		}
