@@ -370,10 +370,11 @@ func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Durat
 	}
 	nextExpected := time.UnixMilli(lastDetectedMs).Add(blockTime)
 	delay := time.Until(nextExpected)
-	// Floor: 1s minimum to avoid hammering RPC providers on sub-second chains.
-	// Being ~500ms stale on a 250ms chain is acceptable; burning rate limits is not.
-	if delay < 1*time.Second {
-		return 1 * time.Second
+	// Floor: small guard to prevent hot-looping on timing edge cases.
+	// No artificial 1s floor — fast chains (e.g. Arbitrum 250ms) need tight polling
+	// for low integrity lag; the per-upstream debounce prevents thundering herd.
+	if delay < 50*time.Millisecond {
+		return 50 * time.Millisecond
 	}
 	// Cap: never poll slower than the configured interval
 	if delay > defaultInterval {
@@ -392,9 +393,8 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 		return dbi
 	}
 	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {
-		if blockTime < 1*time.Second {
-			return 1 * time.Second
-		}
+		// Use block time directly as debounce — no artificial floor.
+		// Fast chains need tight debounce to avoid integrity lag.
 		return blockTime
 	}
 	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {

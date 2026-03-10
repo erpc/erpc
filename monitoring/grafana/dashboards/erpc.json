@@ -3294,7 +3294,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Dynamically computed block time (EMA) per network in seconds. Used to auto-tune the state poller debounce interval.",
+          "description": "Dynamically computed block time per network in seconds. Used to auto-tune the state poller interval and debounce.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -3398,7 +3398,7 @@
               "refId": "A"
             }
           ],
-          "title": "Dynamic Block Time (EMA)",
+          "title": "Dynamic Block Time",
           "type": "timeseries"
         }
       ],
