@@ -370,11 +370,20 @@ func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Durat
 	}
 	nextExpected := time.UnixMilli(lastDetectedMs).Add(blockTime)
 	delay := time.Until(nextExpected)
-	// Floor: small guard to prevent hot-looping on timing edge cases.
-	// No artificial 1s floor — fast chains (e.g. Arbitrum 250ms) need tight polling
-	// for low integrity lag; the per-upstream debounce prevents thundering herd.
-	if delay < 50*time.Millisecond {
-		return 50 * time.Millisecond
+
+	// When the block is late (delay ≤ 0) or about to be due, use a fraction of
+	// blockTime as the retry interval instead of a fixed 50ms floor. This prevents
+	// hot-looping on slow chains while staying responsive on fast chains:
+	//   ETH 12s  → retries every ~1.2s (not 50ms = 240 wake-ups avoided)
+	//   Base 2s  → retries every ~200ms
+	//   Arb 250ms → retries every 50ms (floor)
+	const minPollInterval = 50 * time.Millisecond
+	if delay < minPollInterval {
+		retry := blockTime / 10
+		if retry < minPollInterval {
+			retry = minPollInterval
+		}
+		return retry
 	}
 	// Cap: never poll slower than the configured interval
 	if delay > defaultInterval {
