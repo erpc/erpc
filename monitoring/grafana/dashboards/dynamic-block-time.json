@@ -10,7 +10,7 @@
         "name": "network",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values(erpc_network_dynamic_block_time_seconds, network)",
+        "query": "label_values(erpc_network_dynamic_block_time_milliseconds, network)",
         "multi": true,
         "includeAll": true,
         "current": { "text": "All", "value": "$__all" },
@@ -26,7 +26,7 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "erpc_network_dynamic_block_time_seconds{network=~\"$network\"}",
+          "expr": "erpc_network_dynamic_block_time_milliseconds{network=~\"$network\"} / 1000",
           "legendFormat": "{{network}}"
         }
       ],
@@ -56,7 +56,7 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
       "targets": [
         {
-          "expr": "erpc_network_dynamic_block_time_seconds{network=~\"$network\"}",
+          "expr": "erpc_network_dynamic_block_time_milliseconds{network=~\"$network\"} / 1000",
           "legendFormat": "Block Time: {{network}}"
         },
         {
