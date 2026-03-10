@@ -387,7 +387,7 @@ func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Durat
 // With the dynamic timer handling scheduling, the debounce is a safety net
 // to prevent genuinely redundant fetches.
 //
-//	user config → block time (≥1s floor) → network FallbackStatePollerDebounce → 1s floor
+//	user config → block time → network FallbackStatePollerDebounce → 1s default
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
 	if dbi := e.debounceInterval; dbi != 0 {
 		return dbi
