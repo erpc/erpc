@@ -362,20 +362,27 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 // Falls back to defaultInterval when block time is unknown, and caps at
 // defaultInterval so we never poll slower than the configured rate.
 //
-// When the expected block is late, uses gradual backoff:
+// When the expected block is late, uses two-phase gradual backoff:
 //
 //	Base retry:  blockTime / 10  (responsive for normal jitter)
-//	Growth:      +overdue / 10   (backs off for chain issues)
-//	Cap:         blockTime / 2   (never slower than half a block period)
+//	Growth:      +overdue / 10   (backs off as overdue increases)
 //	Floor:       50ms            (fast chains stay responsive)
 //
-// Example for ETH (12s blocks):
+//	Phase 1 – Normal jitter (overdue < 5× blockTime):
+//	  Cap at blockTime / 2 to stay responsive while the chain catches up.
 //
-//	On time:   polls at 12s (the EMA prediction)
-//	0.5s late: retries every 1.2s  (normal jitter, responsive)
-//	6s late:   retries every 1.8s  (getting late, slight backoff)
-//	24s late:  retries every 3.6s  (chain issue, backs off more)
-//	48s+ late: retries every 6s    (capped at blockTime/2)
+//	Phase 2 – Extended outage (overdue ≥ 5× blockTime):
+//	  Cap grows toward defaultInterval, so a downed upstream doesn't
+//	  burn resources (e.g. Arb polling 8 req/s forever).
+//
+// Example for ETH (12s blocks, defaultInterval=30s):
+//
+//	On time:    polls at 12s  (the EMA prediction)
+//	0.5s late:  retries every 1.25s  (normal jitter, responsive)
+//	6s late:    retries every 1.8s   (getting late, slight backoff)
+//	48s late:   retries every 6s     (capped at blockTime/2)
+//	60s+ late:  retries every 7.2s   (enters phase 2, grows past blockTime/2)
+//	5min late:  retries every 30s    (capped at defaultInterval)
 func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Duration {
 	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
 	if blockTime == 0 {
