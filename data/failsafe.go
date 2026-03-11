@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var scopeConnector = common.Scope("connector")
@@ -121,7 +124,7 @@ func CreateCacheFailsafePolicies(
 	}
 
 	if fsCfg.Timeout != nil {
-		plc, err := createCacheTimeoutPolicy(logger, fsCfg.Timeout)
+		plc, err := createCacheTimeoutPolicy(logger, connectorId, fsCfg.Timeout)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(
 				err,
@@ -163,7 +166,7 @@ func CreateCacheFailsafePolicies(
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
-		plc, err := createCacheHedgePolicy(logger, fsCfg.Hedge)
+		plc, err := createCacheHedgePolicy(logger, connectorId, fsCfg.Hedge)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(
 				err,
@@ -196,6 +199,7 @@ func getFailsafeExecutor(executors []*CacheFailsafeExecutor, ctx context.Context
 	var method string
 	var finality common.DataFinalityState
 
+	// Extract method/finality from the request in context (if present)
 	if r := ctx.Value(common.RequestContextKey); r != nil {
 		if req, ok := r.(*common.NormalizedRequest); ok && req != nil {
 			method, _ = req.Method()
@@ -253,14 +257,47 @@ func (f *FailsafeConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	if fe == nil {
 		return f.wrapped.Get(ctx, index, partitionKey, rangeKey, metadata)
 	}
+
+	ctx, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.Get",
+		trace.WithAttributes(
+			attribute.String("connector.id", f.wrapped.Id()),
+			attribute.String("connector.operation", "get"),
+			attribute.String("connector.partition_key", partitionKey),
+			attribute.String("connector.range_key", rangeKey),
+			attribute.String("failsafe.match_method", fe.method),
+		),
+	)
+	defer span.End()
+
 	result, err := fe.executor.WithContext(ctx).GetWithExecution(
 		func(exec failsafe.Execution[[]byte]) ([]byte, error) {
-			return f.wrapped.Get(exec.Context(), index, partitionKey, rangeKey, metadata)
+			ectx, execSpan := common.StartDetailSpan(exec.Context(), "ConnectorFailsafe.GetAttempt",
+				trace.WithAttributes(
+					attribute.String("connector.id", f.wrapped.Id()),
+					attribute.Int("execution.attempt", exec.Attempts()),
+					attribute.Int("execution.retry", exec.Retries()),
+					attribute.Int("execution.hedge", exec.Hedges()),
+				),
+			)
+			defer execSpan.End()
+
+			data, err := f.wrapped.Get(ectx, index, partitionKey, rangeKey, metadata)
+			if err != nil {
+				common.SetTraceSpanError(execSpan, err)
+				execSpan.SetAttributes(attribute.String("error.summary", common.ErrorSummary(err)))
+			} else {
+				execSpan.SetAttributes(attribute.Int("result.bytes", len(data)))
+			}
+			return data, err
 		},
 	)
 	if err != nil {
-		return nil, TranslateCacheFailsafeError(f.wrapped.Id(), err)
+		translated := TranslateCacheFailsafeError(f.wrapped.Id(), err)
+		common.SetTraceSpanError(span, translated)
+		span.SetAttributes(attribute.String("error.summary", common.ErrorSummary(translated)))
+		return nil, translated
 	}
+	span.SetAttributes(attribute.Int("result.bytes", len(result)))
 	return result, nil
 }
 
@@ -269,13 +306,48 @@ func (f *FailsafeConnector) Set(ctx context.Context, partitionKey, rangeKey stri
 	if fe == nil {
 		return f.wrapped.Set(ctx, partitionKey, rangeKey, value, ttl)
 	}
+
+	ctx, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.Set",
+		trace.WithAttributes(
+			attribute.String("connector.id", f.wrapped.Id()),
+			attribute.String("connector.operation", "set"),
+			attribute.String("connector.partition_key", partitionKey),
+			attribute.String("connector.range_key", rangeKey),
+			attribute.String("failsafe.match_method", fe.method),
+			attribute.Int("value.bytes", len(value)),
+		),
+	)
+	defer span.End()
+
+	if ttl != nil {
+		span.SetAttributes(attribute.Int64("ttl.ms", ttl.Milliseconds()))
+	}
+
 	_, err := fe.executor.WithContext(ctx).GetWithExecution(
 		func(exec failsafe.Execution[[]byte]) ([]byte, error) {
-			return nil, f.wrapped.Set(exec.Context(), partitionKey, rangeKey, value, ttl)
+			_, execSpan := common.StartDetailSpan(exec.Context(), "ConnectorFailsafe.SetAttempt",
+				trace.WithAttributes(
+					attribute.String("connector.id", f.wrapped.Id()),
+					attribute.Int("execution.attempt", exec.Attempts()),
+					attribute.Int("execution.retry", exec.Retries()),
+					attribute.Int("execution.hedge", exec.Hedges()),
+				),
+			)
+			defer execSpan.End()
+
+			err := f.wrapped.Set(exec.Context(), partitionKey, rangeKey, value, ttl)
+			if err != nil {
+				common.SetTraceSpanError(execSpan, err)
+				execSpan.SetAttributes(attribute.String("error.summary", common.ErrorSummary(err)))
+			}
+			return nil, err
 		},
 	)
 	if err != nil {
-		return TranslateCacheFailsafeError(f.wrapped.Id(), err)
+		translated := TranslateCacheFailsafeError(f.wrapped.Id(), err)
+		common.SetTraceSpanError(span, translated)
+		span.SetAttributes(attribute.String("error.summary", common.ErrorSummary(translated)))
+		return translated
 	}
 	return nil
 }
@@ -285,13 +357,43 @@ func (f *FailsafeConnector) Delete(ctx context.Context, partitionKey, rangeKey s
 	if fe == nil {
 		return f.wrapped.Delete(ctx, partitionKey, rangeKey)
 	}
+
+	ctx, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.Delete",
+		trace.WithAttributes(
+			attribute.String("connector.id", f.wrapped.Id()),
+			attribute.String("connector.operation", "delete"),
+			attribute.String("connector.partition_key", partitionKey),
+			attribute.String("connector.range_key", rangeKey),
+			attribute.String("failsafe.match_method", fe.method),
+		),
+	)
+	defer span.End()
+
 	_, err := fe.executor.WithContext(ctx).GetWithExecution(
 		func(exec failsafe.Execution[[]byte]) ([]byte, error) {
-			return nil, f.wrapped.Delete(exec.Context(), partitionKey, rangeKey)
+			_, execSpan := common.StartDetailSpan(exec.Context(), "ConnectorFailsafe.DeleteAttempt",
+				trace.WithAttributes(
+					attribute.String("connector.id", f.wrapped.Id()),
+					attribute.Int("execution.attempt", exec.Attempts()),
+					attribute.Int("execution.retry", exec.Retries()),
+					attribute.Int("execution.hedge", exec.Hedges()),
+				),
+			)
+			defer execSpan.End()
+
+			err := f.wrapped.Delete(exec.Context(), partitionKey, rangeKey)
+			if err != nil {
+				common.SetTraceSpanError(execSpan, err)
+				execSpan.SetAttributes(attribute.String("error.summary", common.ErrorSummary(err)))
+			}
+			return nil, err
 		},
 	)
 	if err != nil {
-		return TranslateCacheFailsafeError(f.wrapped.Id(), err)
+		translated := TranslateCacheFailsafeError(f.wrapped.Id(), err)
+		common.SetTraceSpanError(span, translated)
+		span.SetAttributes(attribute.String("error.summary", common.ErrorSummary(translated)))
+		return translated
 	}
 	return nil
 }
@@ -314,23 +416,44 @@ func (f *FailsafeConnector) PublishCounterInt64(ctx context.Context, key string,
 
 // ----- Policy creators -----
 
-func createCacheTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[[]byte], error) {
+func createCacheTimeoutPolicy(logger *zerolog.Logger, connectorId string, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[[]byte], error) {
 	builder := timeout.Builder[[]byte](cfg.Duration.Duration())
 
-	if logger.GetLevel() == zerolog.TraceLevel {
-		builder.OnTimeoutExceeded(func(event failsafe.ExecutionDoneEvent[[]byte]) {
-			logger.Trace().Msgf(
-				"cache failsafe timeout exceeded (start: %v, elapsed: %v, attempts: %d, retries: %d, hedges: %d)",
-				event.StartTime().Format(time.RFC3339), event.ElapsedTime(), event.Attempts(), event.Retries(), event.Hedges(),
-			)
-		})
-	}
+	builder.OnTimeoutExceeded(func(event failsafe.ExecutionDoneEvent[[]byte]) {
+		ctx := event.Context()
+		_, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.TimeoutExceeded",
+			trace.WithAttributes(
+				attribute.String("connector.id", connectorId),
+				attribute.String("timeout.start_time", event.StartTime().Format(time.RFC3339)),
+				attribute.Int64("timeout.elapsed_ms", event.ElapsedTime().Milliseconds()),
+				attribute.Int64("timeout.configured_ms", cfg.Duration.Duration().Milliseconds()),
+				attribute.Int("execution.attempts", event.Attempts()),
+				attribute.Int("execution.retries", event.Retries()),
+				attribute.Int("execution.hedges", event.Hedges()),
+			),
+		)
+		span.End()
+
+		if logger.GetLevel() <= zerolog.DebugLevel {
+			logger.Debug().
+				Str("connectorId", connectorId).
+				Int64("elapsedMs", event.ElapsedTime().Milliseconds()).
+				Int64("configuredMs", cfg.Duration.Duration().Milliseconds()).
+				Int("attempts", event.Attempts()).
+				Int("retries", event.Retries()).
+				Msg("cache failsafe timeout exceeded")
+		}
+	})
 
 	return builder.Build(), nil
 }
 
 func createCacheRetryPolicy(logger *zerolog.Logger, connectorId string, cfg *common.RetryPolicyConfig) (failsafe.Policy[[]byte], error) {
 	builder := retrypolicy.Builder[[]byte]()
+
+	// Store configured values for tracing
+	configuredMaxAttempts := cfg.MaxAttempts
+	configuredDelay := cfg.Delay.Duration()
 
 	if cfg.MaxAttempts > 0 {
 		builder = builder.WithMaxAttempts(cfg.MaxAttempts)
@@ -353,22 +476,80 @@ func createCacheRetryPolicy(logger *zerolog.Logger, connectorId string, cfg *com
 	}
 
 	builder = builder.HandleIf(func(exec failsafe.ExecutionAttempt[[]byte], result []byte, err error) bool {
+		ctx := exec.Context()
+		_, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.RetryHandleIf",
+			trace.WithAttributes(
+				attribute.String("connector.id", connectorId),
+				attribute.Int64("retry.configured_delay_ms", configuredDelay.Milliseconds()),
+				attribute.Int("retry.configured_max_attempts", configuredMaxAttempts),
+				attribute.Int("execution.attempts", exec.Attempts()),
+			),
+		)
+		defer span.End()
+
 		if err == nil {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "success"),
+			)
 			return false
 		}
+
 		// Cache miss / expired are expected, not retriable
-		if common.HasErrorCode(err, common.ErrCodeRecordNotFound, common.ErrCodeRecordExpired) {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "record_not_found"),
+			)
 			return false
 		}
+		if common.HasErrorCode(err, common.ErrCodeRecordExpired) {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "record_expired"),
+			)
+			return false
+		}
+
 		// Context cancellation is caller-initiated
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.Canceled) {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "context_canceled"),
+			)
 			return false
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "context_deadline_exceeded"),
+			)
+			return false
+		}
+
 		// Retry all other errors (connection failures, server errors, etc.)
+		span.SetAttributes(
+			attribute.Bool("retry", true),
+			attribute.String("reason", "retriable_error"),
+			attribute.String("error.summary", common.ErrorSummary(err)),
+		)
 		return true
 	})
 
 	builder = builder.OnRetryScheduled(func(event failsafe.ExecutionScheduledEvent[[]byte]) {
+		ctx := event.Context()
+		_, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.RetryScheduled",
+			trace.WithAttributes(
+				attribute.String("connector.id", connectorId),
+				attribute.Int64("retry.configured_delay_ms", configuredDelay.Milliseconds()),
+				attribute.Int64("retry.scheduled_delay_ms", event.Delay.Milliseconds()),
+				attribute.Int("retry.configured_max_attempts", configuredMaxAttempts),
+				attribute.Int("execution.attempts", event.Attempts()),
+				attribute.Int("execution.retries", event.Retries()),
+			),
+		)
+		span.End()
+
 		if logger.GetLevel() <= zerolog.DebugLevel {
 			logger.Debug().
 				Str("connectorId", connectorId).
@@ -414,35 +595,99 @@ func createCacheCircuitBreakerPolicy(logger *zerolog.Logger, connectorId string,
 			Uint("failures", mt.Failures()).
 			Uint("failureRate", mt.FailureRate()).
 			Uint("successRate", mt.SuccessRate()).
+			Str("oldState", fmt.Sprintf("%s", event.OldState)).
+			Str("newState", fmt.Sprintf("%s", event.NewState)).
 			Msgf("cache circuit breaker state changed from %s to %s", event.OldState, event.NewState)
 	})
 
 	builder.HandleIf(func(exec failsafe.ExecutionAttempt[[]byte], result []byte, err error) bool {
+		ctx := exec.Context()
+		_, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.CircuitBreakerHandleIf",
+			trace.WithAttributes(
+				attribute.String("connector.id", connectorId),
+			),
+		)
+		defer span.End()
+
 		if err == nil {
+			span.SetAttributes(
+				attribute.Bool("should_open", false),
+				attribute.String("reason", "success"),
+			)
 			return false
 		}
+
 		// Cache miss / expired are normal, not failures
-		if common.HasErrorCode(err, common.ErrCodeRecordNotFound, common.ErrCodeRecordExpired) {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			span.SetAttributes(
+				attribute.Bool("should_open", false),
+				attribute.String("reason", "record_not_found"),
+			)
 			return false
 		}
+		if common.HasErrorCode(err, common.ErrCodeRecordExpired) {
+			span.SetAttributes(
+				attribute.Bool("should_open", false),
+				attribute.String("reason", "record_expired"),
+			)
+			return false
+		}
+
 		// Context cancellation is client-side
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			span.SetAttributes(
+				attribute.Bool("should_open", false),
+				attribute.String("reason", "context_canceled"),
+			)
 			return false
 		}
+
 		// All other errors count as failures
+		span.SetAttributes(
+			attribute.Bool("should_open", true),
+			attribute.String("reason", "connector_error"),
+			attribute.String("error.summary", common.ErrorSummary(err)),
+		)
 		return true
 	})
 
 	return builder.Build(), nil
 }
 
-func createCacheHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[[]byte], error) {
+func createCacheHedgePolicy(logger *zerolog.Logger, connectorId string, cfg *common.HedgePolicyConfig) (failsafe.Policy[[]byte], error) {
 	delay := cfg.Delay.Duration()
 	builder := hedgepolicy.BuilderWithDelay[[]byte](delay)
 
 	if cfg.MaxCount > 0 {
 		builder = builder.WithMaxHedges(cfg.MaxCount)
 	}
+
+	builder = builder.OnHedge(func(event failsafe.ExecutionEvent[[]byte]) bool {
+		ctx := event.Context()
+		_, span := common.StartDetailSpan(ctx, "ConnectorFailsafe.OnHedge",
+			trace.WithAttributes(
+				attribute.String("connector.id", connectorId),
+				attribute.Int64("hedge.delay_ms", delay.Milliseconds()),
+				attribute.Int("hedge.max_count", cfg.MaxCount),
+				attribute.Int("execution.attempts", event.Attempts()),
+				attribute.Int("execution.hedges", event.Hedges()),
+			),
+		)
+		defer span.End()
+
+		span.SetAttributes(
+			attribute.Bool("hedge", true),
+			attribute.String("reason", "allowed"),
+		)
+
+		logger.Trace().
+			Str("connectorId", connectorId).
+			Int("attempts", event.Attempts()).
+			Int("hedges", event.Hedges()).
+			Msg("cache failsafe hedge attempt")
+
+		return true
+	})
 
 	return builder.Build(), nil
 }

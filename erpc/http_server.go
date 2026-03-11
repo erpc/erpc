@@ -165,9 +165,11 @@ func NewHttpServer(
 	// Create IPv6 server if configured
 	if cfg.ListenV6 != nil && *cfg.ListenV6 {
 		srv.serverV6 = &http.Server{
-			Handler:      handlerWithTimeout,
-			ReadTimeout:  readTimeout,
-			WriteTimeout: writeTimeout,
+			Handler:        handlerWithTimeout,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+			IdleTimeout:    300 * time.Second,
+			MaxHeaderBytes: 1 << 20, // 1MB
 		}
 	}
 

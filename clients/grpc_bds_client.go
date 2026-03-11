@@ -18,6 +18,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -137,6 +138,7 @@ func NewGrpcBdsClient(
 	// Create gRPC connection with aggressive timeouts suitable for cache services
 	// These should fail fast to allow failover to other upstreams
 	conn, err := grpc.NewClient(target,
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(100*1024*1024),

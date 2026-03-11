@@ -45,6 +45,14 @@ func ErrorSummary(err interface{}) string {
 	if be, ok := err.(StandardError); ok {
 		if errorLabelMode == ErrorLabelModeCompact {
 			s = string(be.Base().Code)
+			for cause := be.GetCause(); cause != nil; {
+				if causeSE, ok := cause.(StandardError); ok {
+					s += "/" + string(causeSE.Base().Code)
+					cause = causeSE.GetCause()
+				} else {
+					break
+				}
+			}
 		} else {
 			s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
 		}
