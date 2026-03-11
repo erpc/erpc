@@ -392,20 +392,36 @@ func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Durat
 // delay is time until the next expected block (negative = overdue).
 // blockTime is the EMA-estimated block time.
 // defaultInterval is the configured fallback/cap.
+//
+// Two phases:
+//
+//	Normal jitter (overdue < 5× blockTime): cap retry at blockTime/2 to stay
+//	responsive while the chain catches up.
+//
+//	Extended outage (overdue ≥ 5× blockTime): let retry grow via overdue/10
+//	toward defaultInterval, so a downed upstream doesn't burn resources
+//	(e.g. Arb at 8 req/s forever).
 func computePollBackoff(delay, blockTime, defaultInterval time.Duration) time.Duration {
 	const minPollInterval = 50 * time.Millisecond
 	if delay < minPollInterval {
-		// Block is late (or about to be due). Use blockTime/10 as the base
-		// retry interval and grow based on how overdue we are. This stays
-		// responsive for normal jitter while backing off for chain issues.
 		overdue := -delay
 		if overdue < 0 {
 			overdue = 0
 		}
 		retry := blockTime/10 + overdue/10
-		if cap := blockTime / 2; retry > cap {
-			retry = cap
+
+		if overdue < blockTime*5 {
+			// Normal jitter: cap at half block time for responsiveness.
+			if cap := blockTime / 2; retry > cap {
+				retry = cap
+			}
+		} else {
+			// Extended outage: allow growth toward defaultInterval.
+			if retry > defaultInterval {
+				retry = defaultInterval
+			}
 		}
+
 		if retry < minPollInterval {
 			retry = minPollInterval
 		}
