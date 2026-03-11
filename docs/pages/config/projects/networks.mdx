@@ -37,6 +37,12 @@ projects:
           # Defining this fallback helps with increasing cache-hit rate and reducing redundant 'retry' attempts on empty responses, as we know which data is finalized.
           # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
           fallbackFinalityDepth: 1024
+          # (OPTIONAL) Fallback debounce interval for block polling when the dynamic block
+          # time estimate is not yet available (e.g. during the first few blocks after startup).
+          # Once enough blocks have been observed, the debounce is derived dynamically from
+          # the estimated block time × dynamicBlockTimeDebounceMultiplier.
+          # DEFAULT: 5s
+          fallbackStatePollerDebounce: 5s
           # (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
           # the debounce interval for block polling. A value of 0.7 means the debounce is 30%
           # shorter than the estimated block time, preferring fresher data over fewer RPC calls.
@@ -173,6 +179,11 @@ export default createConfig({
             * DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
             */
             fallbackFinalityDepth: 1024,
+            /**
+            * (OPTIONAL) Fallback debounce interval for block polling when the dynamic block
+            * time estimate is not yet available. Default: "5s"
+            */
+            fallbackStatePollerDebounce: "5s",
             /**
             * (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
             * the debounce interval for block polling. Default: 0.7

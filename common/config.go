@@ -835,7 +835,7 @@ type EvmUpstreamConfig struct {
 	// StatePollerDebounce overrides the debounce interval for the state poller.
 	// When 0 (default), the interval is dynamically inferred from the chain's
 	// observed block time, falling back to the network-level
-	// FallbackStatePollerDebounce, then to a 100ms floor.
+	// FallbackStatePollerDebounce, then to a 1s floor.
 	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
