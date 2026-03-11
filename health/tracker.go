@@ -888,7 +888,13 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 	blockTimeNs := int64(ntwMeta.evmBlockTimeEmaNs)
 
 	// Sanity bounds: reject absurd values.
+	// Reset the internal EMA to the last published value so that recovery from a
+	// prolonged halt doesn't create a delayed spike when the EMA first crosses
+	// back below the threshold (e.g. jumping from 2s to ~119s).
 	if blockTimeNs < int64(10*time.Millisecond) || blockTimeNs > int64(120*time.Second) {
+		if lastGood := ntwMeta.evmBlockTime.Load(); lastGood > 0 {
+			ntwMeta.evmBlockTimeEmaNs = float64(lastGood)
+		}
 		return
 	}
 
