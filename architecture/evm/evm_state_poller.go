@@ -159,18 +159,9 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
 	e.Enabled = true
 
-	// Bootstrap: run the first poll synchronously so we have an initial block
-	// observation before entering the dynamic timer loop.
-	err := e.Poll(ctx)
-	if err == nil {
-		e.logger.Info().Msgf("bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states")
-	}
-
 	go (func() {
 		defaultInterval := interval.Duration()
-		// Use nextPollDelay for the initial tick so fast chains don't wait
-		// the full defaultInterval (30s) after the bootstrap poll.
-		timer := time.NewTimer(e.nextPollDelay(defaultInterval))
+		timer := time.NewTimer(defaultInterval)
 		defer timer.Stop()
 		for {
 			select {
@@ -212,6 +203,11 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 			}
 		}
 	})()
+
+	err := e.Poll(ctx)
+	if err == nil {
+		e.logger.Info().Msgf("bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states")
+	}
 
 	return err
 }
