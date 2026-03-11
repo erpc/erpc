@@ -274,7 +274,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			return
 		}
 
-		syncing, err := e.fetchSyncingState(ctx)
+		syncCtx, syncCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer syncCancel()
+		syncing, err := e.fetchSyncingState(syncCtx)
 		if err != nil {
 			// Handle consecutive failures to determine if we should stop querying eth_syncing
 			e.stateMu.Lock()
