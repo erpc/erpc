@@ -37,6 +37,11 @@ projects:
           # Defining this fallback helps with increasing cache-hit rate and reducing redundant 'retry' attempts on empty responses, as we know which data is finalized.
           # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
           fallbackFinalityDepth: 1024
+          # (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+          # the debounce interval for block polling. A value of 0.7 means the debounce is 30%
+          # shorter than the estimated block time, preferring fresher data over fewer RPC calls.
+          # DEFAULT: 0.7
+          dynamicBlockTimeDebounceMultiplier: 0.7
           # (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
           # When true (default), duplicate transaction errors are converted to success responses,
           # allowing safe use of retry/hedge policies with transaction sending.
@@ -168,6 +173,11 @@ export default createConfig({
             * DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
             */
             fallbackFinalityDepth: 1024,
+            /**
+            * (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+            * the debounce interval for block polling. Default: 0.7
+            */
+            dynamicBlockTimeDebounceMultiplier: 0.7,
             /**
             * (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
             * When true (default), duplicate transaction errors are converted to success responses,

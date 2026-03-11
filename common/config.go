@@ -1617,6 +1617,13 @@ type EvmNetworkConfig struct {
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
 
+	// DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
+	// the debounce interval for block polling. A value of 0.7 means debounce = 70% of
+	// the estimated block time, preferring fresher data at the cost of slightly more
+	// polling. Lower values reduce staleness risk; higher values reduce RPC calls.
+	// Default: 0.7 (30% under the estimated block time).
+	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
+
 	// IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
 	// When enabled (default), "already known" and verified "nonce too low" errors are converted
 	// to success responses with the transaction hash. This allows failsafe policies (retry/hedge)

@@ -1802,6 +1802,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.FallbackStatePollerDebounce == 0 && defaults.Evm.FallbackStatePollerDebounce != 0 {
 				n.Evm.FallbackStatePollerDebounce = defaults.Evm.FallbackStatePollerDebounce
 			}
+			if n.Evm.DynamicBlockTimeDebounceMultiplier == nil && defaults.Evm.DynamicBlockTimeDebounceMultiplier != nil {
+				n.Evm.DynamicBlockTimeDebounceMultiplier = defaults.Evm.DynamicBlockTimeDebounceMultiplier
+			}
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
 				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
 			}
@@ -1947,6 +1950,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.FallbackStatePollerDebounce == 0 {
 		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
+	}
+	if e.DynamicBlockTimeDebounceMultiplier == nil {
+		d := 0.7
+		e.DynamicBlockTimeDebounceMultiplier = &d
 	}
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}
