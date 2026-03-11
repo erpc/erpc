@@ -370,21 +370,20 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, em
 
 	// Cancel other hedges when this execution has a result worth taking.
 	//
-	// Error semantics:
-	//   - ErrUpstreamsExhausted: all upstreams in this execution were already tried.
-	//     Cancel other hedges — they will hit the same exhausted pool (no benefit waiting).
+	// All errors go through IsRetryableTowardNetwork, including ErrUpstreamsExhausted:
 	//   - Terminal/deterministic errors (execution reverted, client faults, method unsupported):
 	//     Cancel other hedges — all upstreams would return the same result.
-	//   - Transient errors (MissingData, ServerSideException, BlockUnavailable):
-	//     Do NOT cancel. In consensus mode each hedge execution only tries one upstream,
-	//     so a transient error from one execution doesn't preclude a different execution
-	//     (targeting a healthy upstream) from succeeding.
+	//   - Transient/retryable errors (MissingData, ServerSideException, BlockUnavailable),
+	//     including ErrUpstreamsExhausted wrapping transient errors:
+	//     Do NOT cancel. Other hedge executions may have reserved upstreams that are
+	//     still in-flight and could succeed. Cancelling would kill those in-flight requests.
+	//
+	// We intentionally do NOT special-case ErrUpstreamsExhausted here. In a hedge
+	// scenario, "exhausted" can mean "some upstreams were reserved by another concurrent
+	// execution" — not that they were all genuinely tried and failed. Cancelling based on
+	// artificial exhaustion would kill in-flight requests to healthy upstreams.
 	builder = builder.CancelIf(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse], result *common.NormalizedResponse, err error) bool {
 		if err != nil {
-			// Exhausted = all upstreams already tried in this execution, cancel remaining hedges
-			if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
-				return true
-			}
 			// Transient/retryable errors: don't cancel — other hedge executions may reach healthy upstreams
 			// Terminal/deterministic errors: cancel — all upstreams would agree on the same result
 			return !common.IsRetryableTowardNetwork(err)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
@@ -384,6 +385,234 @@ func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testi
 	jrr, jrrErr := resp.JsonRpcResponse()
 	require.NoError(t, jrrErr)
 	assert.Contains(t, jrr.GetResultString(), "0xabc")
+}
+
+// ---------------------------------------------------------------------------
+// Non-consensus hedge CancelIf tests: ErrUpstreamsExhausted with retryable errors
+// ---------------------------------------------------------------------------
+//
+// These test the scenario where a hedge execution reports ErrUpstreamsExhausted
+// because some upstreams were reserved by another concurrent execution, not
+// because they were all genuinely tried and failed. The hedge must NOT cancel
+// the other execution's in-flight request to a working upstream.
+
+func TestHedge_ExhaustedWithRetryableErrors_DoesNotCancelInFlight(t *testing.T) {
+	// 3 upstreams: rpc1+rpc2 are pruned (fast "missing trie node"), rpc3 is a
+	// slow archive node that works. Main execution tries rpc1→fail, rpc2→fail,
+	// then starts rpc3 (slow). Hedge fires, tries rpc1→fail, rpc2→fail, can't
+	// acquire rpc3 (reserved) → ErrUpstreamsExhausted. The hedge must NOT
+	// cancel the main execution's in-flight rpc3 request.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	var rpc1Calls, rpc2Calls, rpc3Calls atomic.Int32
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getProof")
+		}).
+		Persist().
+		Reply(200).
+		Map(func(r *http.Response) *http.Response { rpc1Calls.Add(1); return r }).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error": map[string]interface{}{
+				"code":    -32000,
+				"message": "missing trie node abc123 (path )",
+			},
+		})
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getProof")
+		}).
+		Persist().
+		Reply(200).
+		Map(func(r *http.Response) *http.Response { rpc2Calls.Add(1); return r }).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error": map[string]interface{}{
+				"code":    -32000,
+				"message": "missing trie node def456 (path )",
+			},
+		})
+
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getProof")
+		}).
+		Persist().
+		Reply(200).
+		Delay(800 * time.Millisecond).
+		Map(func(r *http.Response) *http.Response { rpc3Calls.Add(1); return r }).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]interface{}{
+				"address":      "0x63dec0c0cf911d8967446ce422dd31f13e1e0556",
+				"balance":      "0x0",
+				"nonce":        "0x1",
+				"storageHash":  "0xe01f",
+				"accountProof": []string{"0xf901"},
+				"storageProof": []interface{}{},
+			},
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkWithMultipleUpstreams(t, ctx, 3, &common.HedgePolicyConfig{
+		Delay:    common.Duration(300 * time.Millisecond),
+		MaxCount: 1,
+	})
+	upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2", "rpc3")
+
+	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getProof","params":["0x63dec0c0cf911d8967446ce422dd31f13e1e0556",["0x0"],"0x100"]}`)
+	req := common.NewNormalizedRequest(requestBytes)
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+	resp, err := network.Forward(ctx, req)
+
+	t.Logf("rpc1=%d rpc2=%d rpc3=%d err=%v",
+		rpc1Calls.Load(), rpc2Calls.Load(), rpc3Calls.Load(), err)
+
+	require.NoError(t, err,
+		"rpc3 (archive node) should succeed — hedge must not cancel in-flight request "+
+			"when ErrUpstreamsExhausted wraps retryable MissingData errors")
+	require.NotNil(t, resp)
+
+	jrr, jrrErr := resp.JsonRpcResponse()
+	require.NoError(t, jrrErr)
+	assert.Nil(t, jrr.Error)
+
+	result, pErr := jrr.PeekStringByPath(ctx, "address")
+	require.NoError(t, pErr)
+	assert.Equal(t, "0x63dec0c0cf911d8967446ce422dd31f13e1e0556", result)
+
+	assert.GreaterOrEqual(t, rpc3Calls.Load(), int32(1),
+		"rpc3 (archive) should have been called at least once")
+}
+
+func TestHedge_ExhaustedWithTerminalErrors_StillCancels(t *testing.T) {
+	// When ErrUpstreamsExhausted wraps only terminal errors (execution reverted),
+	// the hedge SHOULD cancel — all upstreams return the same deterministic result.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	for _, host := range []string{"rpc1", "rpc2", "rpc3"} {
+		gock.New(fmt.Sprintf("http://%s.localhost", host)).
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).
+			Persist().
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    3,
+					"message": "execution reverted",
+					"data":    "0x08c379a0",
+				},
+			})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkWithMultipleUpstreams(t, ctx, 3, &common.HedgePolicyConfig{
+		Delay:    common.Duration(100 * time.Millisecond),
+		MaxCount: 1,
+	})
+
+	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"0x100"]}`)
+	req := common.NewNormalizedRequest(requestBytes)
+
+	start := time.Now()
+	_, err := network.Forward(ctx, req)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+		"should be execution exception, got: %v", err)
+
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"terminal error should resolve quickly — hedge cancellation still works for deterministic errors")
+}
+
+func TestHedge_SlowUpstreamSucceeds_FastUpstreamsFail_NoHedgeInterference(t *testing.T) {
+	// 2-upstream variant: rpc1 fails fast with 500, rpc2 is slow but succeeds.
+	// Hedge fires, tries rpc1 (fails), can't get rpc2 → exhausted. Must not
+	// cancel the main execution's rpc2 request.
+	util.ResetGock()
+	defer util.ResetGock()
+	util.SetupMocksForEvmStatePoller()
+
+	var rpc1Calls, rpc2Calls atomic.Int32
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Persist().
+		Reply(500).
+		Map(func(r *http.Response) *http.Response { rpc1Calls.Add(1); return r }).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error": map[string]interface{}{
+				"code":    -32000,
+				"message": "Internal server error",
+			},
+		})
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Persist().
+		Reply(200).
+		Delay(600 * time.Millisecond).
+		Map(func(r *http.Response) *http.Response { rpc2Calls.Add(1); return r }).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  "0xde0b6b3a7640000",
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network := setupTestNetworkWithHedgePolicy(t, ctx, &common.HedgePolicyConfig{
+		Delay:    common.Duration(200 * time.Millisecond),
+		MaxCount: 1,
+	})
+	upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","0x100"]}`)
+	req := common.NewNormalizedRequest(requestBytes)
+
+	resp, err := network.Forward(ctx, req)
+
+	t.Logf("rpc1=%d rpc2=%d err=%v", rpc1Calls.Load(), rpc2Calls.Load(), err)
+
+	require.NoError(t, err,
+		"rpc2 should succeed — hedge must not cancel in-flight request to working upstream")
+	require.NotNil(t, resp)
+
+	jrr, jrrErr := resp.JsonRpcResponse()
+	require.NoError(t, jrrErr)
+	assert.Contains(t, jrr.GetResultString(), "0xde0b6b3a7640000")
 }
 
 func setupTestNetworkWithHedgeAndConsensus(

@@ -1303,11 +1303,12 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("BothFailDifferentErrorsBeforeHedge", func(t *testing.T) {
-		// Primary fails before hedge starts - should return immediately with primary error
+		// Primary execution tries both upstreams (rpc1→500, rpc2→503) before
+		// the hedge delay. Since server errors are retryable, the hedge still
+		// fires and also tries both upstreams. Both executions fail → error.
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // rpc2 never called
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1361,27 +1362,28 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 
-		// rpc1: Primary - fails before hedge starts
+		// rpc1: 500 error (persistent — hedge may also try it)
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
+			Persist().
 			Reply(500).
-			Delay(50 * time.Millisecond). // Fails before hedge delay (100ms)
+			Delay(50 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"error": "internal server error",
 			})
 
-		// rpc2: Never called because primary fails before hedge starts
+		// rpc2: 503 error (persistent — hedge may also try it)
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
-			Persist(). // Keep it pending
+			Persist().
 			Reply(503).
 			JSON(map[string]interface{}{
 				"error": "service unavailable",
@@ -1396,9 +1398,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
-		// Should fail immediately with primary error (500)
+		// Both executions (primary + hedge) fail → error response
 		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "internal server error")
+		assert.Contains(t, body, "ErrUpstreamsExhausted")
 	})
 
 	t.Run("BothFailDifferentErrorsWithHedgeRunning", func(t *testing.T) {
