@@ -199,7 +199,7 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 					}
 				}
 
-				timer.Reset(e.nextPollDelay(defaultInterval))
+				timer.Reset(defaultInterval)
 			}
 		}
 	})()
