@@ -49,16 +49,19 @@ type NetworkMetadata struct {
 	evmLatestBlockTimestamp atomic.Int64
 	evmFinalizedBlockNumber atomic.Int64
 
-	// Dynamic block time via EMA on local detection timestamps.
-	// Uses ms-precision local clock and normalizes by block count gap.
+	// Dynamic block time via EMA on on-chain block timestamps.
+	// Uses block.timestamp (integer seconds) normalized by block count gap.
+	// For fast chains where consecutive blocks share the same timestamp,
+	// samples are skipped until the timestamp advances, then blockGap
+	// normalization recovers sub-second precision.
 	// Callers should use GetNetworkBlockTime which returns 0 until enough
 	// samples have been collected.
-	evmBlockTime          atomic.Int64 // computed result in nanoseconds (read by consumers)
-	evmBlockTimeMu        sync.Mutex   // protects EMA state below
-	evmBlockTimePrevBlock int64        // last block number fed to EMA
-	evmBlockTimePrevMs    int64        // local detection time (ms) of that block
-	evmBlockTimeEmaNs     float64      // current EMA value in nanoseconds
-	evmBlockTimeSamples   int          // number of EMA samples collected
+	evmBlockTime              atomic.Int64 // computed result in nanoseconds (read by consumers)
+	evmBlockTimeMu            sync.Mutex   // protects EMA state below
+	evmBlockTimePrevBlock     int64        // last block number fed to EMA
+	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
+	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
+	evmBlockTimeSamples       int          // number of EMA samples collected
 
 	evmLastNewBlockDetectedAt atomic.Int64 // unix millis (time.Now()) when network block number last advanced
 }
@@ -756,10 +759,15 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		detectedAtMs := time.Now().UnixMilli()
 		ntwMeta.evmLastNewBlockDetectedAt.Store(detectedAtMs)
 
-		// Feed block detection into EMA for dynamic block time estimation.
-		// Uses local ms-precision timestamps (not on-chain) to avoid
-		// integer-second quantization on fast chains.
-		t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, detectedAtMs)
+		// Feed block.timestamp into EMA for dynamic block time estimation.
+		// Uses on-chain timestamps (not local clock) so the EMA tracks actual
+		// chain production rate, not our polling cadence. For fast chains where
+		// consecutive blocks share the same integer-second timestamp, samples
+		// are skipped until the timestamp advances; blockGap normalization
+		// recovers sub-second precision.
+		if blockTimestamp > 0 {
+			t.updateBlockTimeSample(ntwMeta, netLabel, blockNumber, blockTimestamp)
+		}
 
 		// Atomically update timestamp when network-level block number is updated
 		if blockTimestamp > 0 {
@@ -832,21 +840,22 @@ const (
 	blockTimeMinSamples = 3   // minimum EMA samples before emitting (requires 4 observations total)
 )
 
-// updateBlockTimeSample feeds a new block detection into the EMA and
-// recomputes the network block time. Uses ms-precision local timestamps
-// (not on-chain timestamps) to avoid integer-second quantization on fast chains.
-// Each sample is normalized by block count gap: sample = timeGap / blockGap.
-func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, detectedAtMs int64) {
+// updateBlockTimeSample feeds a new block into the EMA using on-chain
+// block.timestamp (integer seconds). For fast chains where consecutive blocks
+// share the same timestamp, we skip the sample and do NOT advance prev — the
+// block gap accumulates until the timestamp ticks, then normalization recovers
+// sub-second precision (e.g. 1s / 4 blocks = 250ms for Arbitrum).
+func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel string, blockNumber int64, blockTimestamp int64) {
 	ntwMeta.evmBlockTimeMu.Lock()
 	defer ntwMeta.evmBlockTimeMu.Unlock()
 
 	prevBlock := ntwMeta.evmBlockTimePrevBlock
-	prevMs := ntwMeta.evmBlockTimePrevMs
+	prevTimestamp := ntwMeta.evmBlockTimePrevTimestamp
 
 	// First observation: store as previous and return.
 	if prevBlock == 0 {
 		ntwMeta.evmBlockTimePrevBlock = blockNumber
-		ntwMeta.evmBlockTimePrevMs = detectedAtMs
+		ntwMeta.evmBlockTimePrevTimestamp = blockTimestamp
 		return
 	}
 
@@ -856,17 +865,15 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 		return
 	}
 
-	// Reject non-positive time gaps (clock skew, etc).
-	timeGapMs := detectedAtMs - prevMs
-	if timeGapMs <= 0 {
-		// Still advance prev so we don't get stuck.
-		ntwMeta.evmBlockTimePrevBlock = blockNumber
-		ntwMeta.evmBlockTimePrevMs = detectedAtMs
+	// Skip if timestamp hasn't advanced (fast chains where blocks share the same second).
+	// Do NOT advance prev — let blockGap accumulate until the timestamp ticks.
+	timestampDeltaSec := blockTimestamp - prevTimestamp
+	if timestampDeltaSec <= 0 {
 		return
 	}
 
-	// Per-block sample in nanoseconds.
-	sampleNs := float64(timeGapMs) * 1e6 / float64(blockGap)
+	// Per-block sample in nanoseconds (seconds → ms → ns, divided by block count).
+	sampleNs := float64(timestampDeltaSec) * 1e9 / float64(blockGap)
 
 	// Update EMA.
 	if ntwMeta.evmBlockTimeSamples == 0 {
@@ -878,7 +885,7 @@ func (t *Tracker) updateBlockTimeSample(ntwMeta *NetworkMetadata, netLabel strin
 
 	// Store current as previous.
 	ntwMeta.evmBlockTimePrevBlock = blockNumber
-	ntwMeta.evmBlockTimePrevMs = detectedAtMs
+	ntwMeta.evmBlockTimePrevTimestamp = blockTimestamp
 
 	// Don't emit until we have enough samples.
 	if ntwMeta.evmBlockTimeSamples < blockTimeMinSamples {
