@@ -160,15 +160,14 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	e.Enabled = true
 
 	go (func() {
-		defaultInterval := interval.Duration()
-		timer := time.NewTimer(defaultInterval)
-		defer timer.Stop()
+		ticker := time.NewTicker(interval.Duration())
+		defer ticker.Stop()
 		for {
 			select {
 			case <-e.appCtx.Done():
 				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 				return
-			case <-timer.C:
+			case <-ticker.C:
 				// Calculate timeout based on shared state config:
 				// 1. Wait for distributed lock (up to lockTtl)
 				// 2. Buffer for operations (fetch block, update remote)
@@ -198,8 +197,6 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 						e.logger.Warn().Err(err).Msgf("failed to poll evm state")
 					}
 				}
-
-				timer.Reset(defaultInterval)
 			}
 		}
 	})()
@@ -355,97 +352,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }
 
-// nextPollDelay computes how long to wait before the next poll.
-// Anchors to the local detection time of the last new block (ms precision)
-// rather than the on-chain timestamp (second precision). This eliminates
-// the scheduling imprecision on fast chains where block.timestamp is seconds.
-// Falls back to defaultInterval when block time is unknown, and caps at
-// defaultInterval so we never poll slower than the configured rate.
-//
-// When the expected block is late, uses two-phase gradual backoff:
-//
-//	Base retry:  blockTime / 10  (responsive for normal jitter)
-//	Growth:      +overdue / 10   (backs off as overdue increases)
-//	Floor:       50ms            (fast chains stay responsive)
-//
-//	Phase 1 – Normal jitter (overdue < 5× blockTime):
-//	  Cap at blockTime / 2 to stay responsive while the chain catches up.
-//
-//	Phase 2 – Extended outage (overdue ≥ 5× blockTime):
-//	  Cap grows toward defaultInterval, so a downed upstream doesn't
-//	  burn resources (e.g. Arb polling 8 req/s forever).
-//
-// Example for ETH (12s blocks, defaultInterval=30s):
-//
-//	On time:    polls at 12s  (the EMA prediction)
-//	0.5s late:  retries every 1.25s  (normal jitter, responsive)
-//	6s late:    retries every 1.8s   (getting late, slight backoff)
-//	48s late:   retries every 6s     (capped at blockTime/2)
-//	60s+ late:  retries every 7.2s   (enters phase 2, grows past blockTime/2)
-//	5min late:  retries every 30s    (capped at defaultInterval)
-func (e *EvmStatePoller) nextPollDelay(defaultInterval time.Duration) time.Duration {
-	blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId())
-	if blockTime == 0 {
-		return defaultInterval
-	}
-	lastDetectedMs := e.tracker.GetLastNewBlockDetectedAt(e.upstream.NetworkId())
-	if lastDetectedMs <= 0 {
-		return defaultInterval
-	}
-	nextExpected := time.UnixMilli(lastDetectedMs).Add(blockTime)
-	delay := time.Until(nextExpected)
-	return computePollBackoff(delay, blockTime, defaultInterval)
-}
-
-// computePollBackoff is the pure math for poll scheduling.
-// delay is time until the next expected block (negative = overdue).
-// blockTime is the EMA-estimated block time.
-// defaultInterval is the configured fallback/cap.
-//
-// Two phases:
-//
-//	Normal jitter (overdue < 5× blockTime): cap retry at blockTime/2 to stay
-//	responsive while the chain catches up.
-//
-//	Extended outage (overdue ≥ 5× blockTime): let retry grow via overdue/10
-//	toward defaultInterval, so a downed upstream doesn't burn resources
-//	(e.g. Arb at 8 req/s forever).
-func computePollBackoff(delay, blockTime, defaultInterval time.Duration) time.Duration {
-	const minPollInterval = 50 * time.Millisecond
-	if delay < minPollInterval {
-		overdue := -delay
-		if overdue < 0 {
-			overdue = 0
-		}
-		retry := blockTime/10 + overdue/10
-
-		if overdue < blockTime*5 {
-			// Normal jitter: cap at half block time for responsiveness.
-			if cap := blockTime / 2; retry > cap {
-				retry = cap
-			}
-		} else {
-			// Extended outage: allow growth toward defaultInterval.
-			if retry > defaultInterval {
-				retry = defaultInterval
-			}
-		}
-
-		if retry < minPollInterval {
-			retry = minPollInterval
-		}
-		return retry
-	}
-	// Cap: never poll slower than the configured interval
-	if delay > defaultInterval {
-		return defaultInterval
-	}
-	return delay
-}
-
 // resolveDebounce returns the debounce interval for poll methods.
-// With the dynamic timer handling scheduling, the debounce is a safety net
-// to prevent genuinely redundant fetches.
+// The debounce prevents redundant fetches when request traffic or other
+// paths (e.g. SuggestLatestBlock) already keep the block number fresh.
 //
 //	user config → block time → network FallbackStatePollerDebounce → 1s default
 func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {

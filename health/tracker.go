@@ -62,8 +62,6 @@ type NetworkMetadata struct {
 	evmBlockTimePrevTimestamp int64        // block.timestamp (seconds) of that block
 	evmBlockTimeEmaNs         float64      // current EMA value in nanoseconds
 	evmBlockTimeSamples       int          // number of EMA samples collected
-
-	evmLastNewBlockDetectedAt atomic.Int64 // unix millis (time.Now()) when network block number last advanced
 }
 
 type Timer struct {
@@ -755,10 +753,6 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		g.Set(float64(blockNumber))
 		needsGlobalUpdate = true
 
-		// Record when we detected this new block (ms precision from local clock)
-		detectedAtMs := time.Now().UnixMilli()
-		ntwMeta.evmLastNewBlockDetectedAt.Store(detectedAtMs)
-
 		// Feed block.timestamp into EMA for dynamic block time estimation.
 		// Uses on-chain timestamps (not local clock) so the EMA tracks actual
 		// chain production rate, not our polling cadence. For fast chains where
@@ -773,8 +767,7 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		if blockTimestamp > 0 {
 			ntwMeta.evmLatestBlockTimestamp.Store(blockTimestamp)
 
-			// Calculate and record distance metric from EVM state poller (ms arithmetic
-			// on current time gives fractional seconds instead of snapping 0/1 on fast chains)
+			detectedAtMs := time.Now().UnixMilli()
 			distanceMs := detectedAtMs - blockTimestamp*1000
 			telemetry.MetricNetworkLatestBlockTimestampDistance.WithLabelValues(
 				t.projectId,
@@ -922,12 +915,6 @@ func (t *Tracker) GetNetworkBlockTime(networkId string) time.Duration {
 	}
 
 	return 0
-}
-
-// GetLastNewBlockDetectedAt returns the local-clock time (unix millis) when the
-// network-level block number last advanced. Returns 0 if no block has been seen yet.
-func (t *Tracker) GetLastNewBlockDetectedAt(networkId string) int64 {
-	return t.getMetadata(metadataKey{nil, networkId}).evmLastNewBlockDetectedAt.Load()
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
