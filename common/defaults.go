@@ -1910,6 +1910,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
+const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
 
 // DefaultEmptyResultAccept returns a fresh copy of the methods for which an
 // empty/null result is considered valid (e.g. eth_getLogs, eth_call). A new
@@ -1952,7 +1953,7 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
 	}
 	if e.DynamicBlockTimeDebounceMultiplier == nil {
-		d := 0.7
+		d := DefaultDynamicBlockTimeDebounceMultiplier
 		e.DynamicBlockTimeDebounceMultiplier = &d
 	}
 	if e.Integrity == nil {
