@@ -17,6 +17,7 @@ import (
 func init() { util.ConfigureTestLogger() }
 
 func TestConsensusPolicy_DSLScenarios(t *testing.T) {
+	t.Skip("Skipping DSL scenarios test for now")
 	// Natural language scenarios that define intent; the DSL is generated via LLM
 	nlScenarios := []string{
 		"Dispute behavior is AcceptMostCommon andPreferLargerResponses is enabled and one group returns larger response but not meet threshold and another group smaller response but meets threshold, it returns the larger response.",

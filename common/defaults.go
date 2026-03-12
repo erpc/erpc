@@ -815,6 +815,32 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 	if c.Id == "" {
 		c.Id = string(scope) + "-" + string(c.Driver)
 	}
+	if c.FailsafeForGets != nil {
+		for idx, f := range c.FailsafeForGets {
+			if f == nil {
+				continue
+			}
+			if f.MatchMethod == "" {
+				f.MatchMethod = "*"
+			}
+			if err := f.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for policy #%d in failsafeForGets: %w", idx, err)
+			}
+		}
+	}
+	if c.FailsafeForSets != nil {
+		for idx, f := range c.FailsafeForSets {
+			if f == nil {
+				continue
+			}
+			if f.MatchMethod == "" {
+				f.MatchMethod = "*"
+			}
+			if err := f.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for policy #%d in failsafeForSets: %w", idx, err)
+			}
+		}
+	}
 	if c.Memory != nil {
 		c.Driver = DriverMemory
 	}

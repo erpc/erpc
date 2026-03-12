@@ -55,22 +55,39 @@ func NewConnector(
 	logger *zerolog.Logger,
 	cfg *common.ConnectorConfig,
 ) (Connector, error) {
+	var connector Connector
+	var err error
+
 	switch cfg.Driver {
 	case common.DriverMemory:
-		return NewMemoryConnector(ctx, logger, cfg.Id, cfg.Memory)
+		connector, err = NewMemoryConnector(ctx, logger, cfg.Id, cfg.Memory)
 	case common.DriverRedis:
-		return NewRedisConnector(ctx, logger, cfg.Id, cfg.Redis)
+		connector, err = NewRedisConnector(ctx, logger, cfg.Id, cfg.Redis)
 	case common.DriverDynamoDB:
-		return NewDynamoDBConnector(ctx, logger, cfg.Id, cfg.DynamoDB)
+		connector, err = NewDynamoDBConnector(ctx, logger, cfg.Id, cfg.DynamoDB)
 	case common.DriverPostgreSQL:
-		return NewPostgreSQLConnector(ctx, logger, cfg.Id, cfg.PostgreSQL)
+		connector, err = NewPostgreSQLConnector(ctx, logger, cfg.Id, cfg.PostgreSQL)
 	case common.DriverGrpc:
-		return NewGrpcConnector(ctx, logger, cfg.Id, cfg.Grpc)
+		connector, err = NewGrpcConnector(ctx, logger, cfg.Id, cfg.Grpc)
+	default:
+		if util.IsTest() && cfg.Driver == "mock" {
+			connector, err = NewMockMemoryConnector(ctx, logger, "mock", cfg.Mock)
+		} else {
+			return nil, common.NewErrInvalidConnectorDriver(cfg.Driver)
+		}
 	}
 
-	if util.IsTest() && cfg.Driver == "mock" {
-		return NewMockMemoryConnector(ctx, logger, "mock", cfg.Mock)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, common.NewErrInvalidConnectorDriver(cfg.Driver)
+	// Wrap with failsafe if configured
+	if len(cfg.FailsafeForGets) > 0 || len(cfg.FailsafeForSets) > 0 {
+		connector, err = NewFailsafeConnector(logger, connector, cfg.FailsafeForGets, cfg.FailsafeForSets)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return connector, nil
 }
