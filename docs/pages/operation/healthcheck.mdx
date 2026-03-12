@@ -180,7 +180,7 @@ curl http://localhost:4000/healthcheck
 
 ### Verbose Mode
 
-In verbose mode, the healthcheck returns a detailed JSON response with information about the status of each project and upstream:
+In verbose mode, the healthcheck returns a detailed JSON response with information about the status of each project and upstream, including the dynamically estimated block time per network:
 
 ```bash
 curl http://localhost:4000/healthcheck
@@ -196,18 +196,29 @@ curl http://localhost:4000/healthcheck
 #         "upstreams": 3,
 #         "providers": 1
 #       },
-#       "upstreams": {
-#         "alchemy-mainnet": {
-#           "network": "evm:1",
-#           "metrics": { ... },
-#           "status": "OK"
+#       "networks": {
+#         "evm:42161": {
+#           "networkId": "evm:42161",
+#           "alias": "arbitrum-one",
+#           "blockTimeMs": 253,
+#           "healthy": true,
+#           "status": "OK",
+#           "upstreams": { ... }
 #         },
-#         ...
+#         "evm:1": {
+#           "networkId": "evm:1",
+#           "blockTimeMs": 12003,
+#           "healthy": true,
+#           "status": "OK",
+#           "upstreams": { ... }
+#         }
 #       }
 #     }
 #   }
 # }
 ```
+
+The `blockTimeMs` field shows the EMA-estimated block time in milliseconds for each network, computed from on-chain block timestamps. This value is `null` (omitted) during startup until enough block observations have been collected.
 
 ## Authentication
 

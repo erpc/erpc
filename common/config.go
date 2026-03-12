@@ -834,6 +834,10 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 type EvmUpstreamConfig struct {
 	ChainId                            int64                       `yaml:"chainId" json:"chainId"`
 	StatePollerInterval                Duration                    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	// StatePollerDebounce overrides the debounce interval for the state poller.
+	// When 0 (default), the interval is dynamically inferred from the chain's
+	// observed block time, falling back to the network-level
+	// FallbackStatePollerDebounce, then to a 1s floor.
 	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
@@ -1614,6 +1618,13 @@ type EvmNetworkConfig struct {
 	// empty result likely means the upstream hasn't indexed that data yet.
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
+
+	// DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
+	// the debounce interval for block polling. A value of 0.7 means debounce = 70% of
+	// the estimated block time, preferring fresher data at the cost of slightly more
+	// polling. Lower values reduce staleness risk; higher values reduce RPC calls.
+	// Default: 0.7 (30% under the estimated block time).
+	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
 
 	// IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
 	// When enabled (default), "already known" and verified "nonce too low" errors are converted
