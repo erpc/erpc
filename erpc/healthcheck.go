@@ -41,12 +41,13 @@ type StaticCounts struct {
 }
 
 type NetworkHealthData struct {
-	NetworkId string                         `json:"networkId"`
-	Alias     string                         `json:"alias,omitempty"`
-	Healthy   bool                           `json:"healthy"`
-	Status    string                         `json:"status"`
-	Message   string                         `json:"message,omitempty"`
-	Upstreams map[string]*UpstreamHealthData `json:"upstreams"`
+	NetworkId     string                         `json:"networkId"`
+	Alias         string                         `json:"alias,omitempty"`
+	BlockTimeMs   *float64                       `json:"blockTimeMs,omitempty"`
+	Healthy       bool                           `json:"healthy"`
+	Status        string                         `json:"status"`
+	Message       string                         `json:"message,omitempty"`
+	Upstreams     map[string]*UpstreamHealthData `json:"upstreams"`
 }
 
 type UpstreamHealthData struct {
@@ -233,13 +234,17 @@ func (s *HttpServer) handleHealthCheck(
 				if network != nil && network.Config() != nil {
 					alias = network.Config().Alias
 				}
-				networkHealth = &NetworkHealthData{
-					NetworkId: networkId,
-					Alias:     alias,
-					Healthy:   true,
-					Status:    "OK",
-					Upstreams: make(map[string]*UpstreamHealthData),
-				}
+			networkHealth = &NetworkHealthData{
+				NetworkId: networkId,
+				Alias:     alias,
+				Healthy:   true,
+				Status:    "OK",
+				Upstreams: make(map[string]*UpstreamHealthData),
+			}
+			if bt := metricsTracker.GetNetworkBlockTime(networkId); bt > 0 {
+				ms := float64(bt.Milliseconds())
+				networkHealth.BlockTimeMs = &ms
+			}
 				projectHealth.Networks[networkId] = networkHealth
 			}
 
