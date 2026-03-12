@@ -178,7 +178,6 @@ func NewGrpcBdsClient(
 	return client, nil
 }
 
-// flyProxyInterceptor returns a gRPC unary interceptor that, for sampled
 // grpcResponseMetadataInterceptor captures all response metadata (headers)
 // from gRPC calls and records them as span attributes on detailed traces.
 func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {

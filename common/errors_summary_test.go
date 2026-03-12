@@ -21,20 +21,12 @@ func TestErrorSummary_CompactMode_CompoundLabels(t *testing.T) {
 		assert.Equal(t, "ErrFailsafeRetryExceeded/ErrEndpointRequestTimeout", summary)
 	})
 
-	t.Run("TimeoutExceeded_WithStandardCause", func(t *testing.T) {
+	t.Run("TimeoutExceeded_NoCauseCompound", func(t *testing.T) {
 		cause := NewErrEndpointRequestTimeout(5*time.Second, nil)
 		err := NewErrFailsafeTimeoutExceeded(Scope("connector"), cause, nil)
 
 		summary := ErrorSummary(err)
-		assert.Equal(t, "ErrFailsafeTimeoutExceeded/ErrEndpointRequestTimeout", summary)
-	})
-
-	t.Run("CircuitBreakerOpen_WithStandardCause", func(t *testing.T) {
-		cause := NewErrEndpointRequestTimeout(5*time.Second, nil)
-		err := NewErrFailsafeCircuitBreakerOpen(Scope("connector"), cause, nil)
-
-		summary := ErrorSummary(err)
-		assert.Equal(t, "ErrFailsafeCircuitBreakerOpen/ErrEndpointRequestTimeout", summary)
+		assert.Equal(t, "ErrFailsafeTimeoutExceeded", summary)
 	})
 
 	t.Run("RetryExceeded_NilCause", func(t *testing.T) {

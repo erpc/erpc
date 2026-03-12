@@ -45,12 +45,23 @@ func ErrorSummary(err interface{}) string {
 	if be, ok := err.(StandardError); ok {
 		if errorLabelMode == ErrorLabelModeCompact {
 			s = string(be.Base().Code)
-			for cause := be.GetCause(); cause != nil; {
-				if causeSE, ok := cause.(StandardError); ok {
-					s += "/" + string(causeSE.Base().Code)
-					cause = causeSE.GetCause()
-				} else {
-					break
+			if cause := be.GetCause(); cause != nil {
+				// For certain errors their underlying cause has more useful information
+				if HasErrorCode(
+					be,
+					ErrCodeFailsafeRetryExceeded,
+					ErrCodeUpstreamRequest,
+					ErrCodeUpstreamRequestSkipped,
+				) {
+					if causeSE, ok := cause.(StandardError); ok {
+						cd := causeSE.Base().Code
+						// For json-rpc errors let's include their numeric code
+						if cd == ErrCodeJsonRpcExceptionInternal {
+							s += "/" + fmt.Sprintf("%d", causeSE.DeepSearch("normalizedCode"))
+						} else {
+							s += "/" + string(causeSE.Base().Code)
+						}
+					}
 				}
 			}
 		} else {

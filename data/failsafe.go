@@ -64,6 +64,9 @@ func buildExecutors(logger *zerolog.Logger, connectorId string, cfgs []*common.F
 	var executors []*CacheFailsafeExecutor
 
 	for _, fsCfg := range cfgs {
+		if fsCfg == nil {
+			continue
+		}
 		policiesMap, err := CreateCacheFailsafePolicies(logger, connectorId, fsCfg)
 		if err != nil {
 			return nil, err
@@ -325,7 +328,7 @@ func (f *FailsafeConnector) Set(ctx context.Context, partitionKey, rangeKey stri
 
 	_, err := fe.executor.WithContext(ctx).GetWithExecution(
 		func(exec failsafe.Execution[[]byte]) ([]byte, error) {
-			_, execSpan := common.StartDetailSpan(exec.Context(), "ConnectorFailsafe.SetAttempt",
+			ectx, execSpan := common.StartDetailSpan(exec.Context(), "ConnectorFailsafe.SetAttempt",
 				trace.WithAttributes(
 					attribute.String("connector.id", f.wrapped.Id()),
 					attribute.Int("execution.attempt", exec.Attempts()),
@@ -335,7 +338,7 @@ func (f *FailsafeConnector) Set(ctx context.Context, partitionKey, rangeKey stri
 			)
 			defer execSpan.End()
 
-			err := f.wrapped.Set(exec.Context(), partitionKey, rangeKey, value, ttl)
+			err := f.wrapped.Set(ectx, partitionKey, rangeKey, value, ttl)
 			if err != nil {
 				common.SetTraceSpanError(execSpan, err)
 				execSpan.SetAttributes(attribute.String("error.summary", common.ErrorSummary(err)))
@@ -371,7 +374,7 @@ func (f *FailsafeConnector) Delete(ctx context.Context, partitionKey, rangeKey s
 
 	_, err := fe.executor.WithContext(ctx).GetWithExecution(
 		func(exec failsafe.Execution[[]byte]) ([]byte, error) {
-			_, execSpan := common.StartDetailSpan(exec.Context(), "ConnectorFailsafe.DeleteAttempt",
+			ectx, execSpan := common.StartDetailSpan(exec.Context(), "ConnectorFailsafe.DeleteAttempt",
 				trace.WithAttributes(
 					attribute.String("connector.id", f.wrapped.Id()),
 					attribute.Int("execution.attempt", exec.Attempts()),
@@ -381,7 +384,7 @@ func (f *FailsafeConnector) Delete(ctx context.Context, partitionKey, rangeKey s
 			)
 			defer execSpan.End()
 
-			err := f.wrapped.Delete(exec.Context(), partitionKey, rangeKey)
+			err := f.wrapped.Delete(ectx, partitionKey, rangeKey)
 			if err != nil {
 				common.SetTraceSpanError(execSpan, err)
 				execSpan.SetAttributes(attribute.String("error.summary", common.ErrorSummary(err)))
@@ -700,15 +703,9 @@ func TranslateCacheFailsafeError(connectorId string, execErr error) error {
 
 	var retryExceededErr retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
-		ler := retryExceededErr.LastError
-		if common.IsNull(ler) {
-			if lexr, ok := execErr.(common.StandardError); ok {
-				ler = lexr.GetCause()
-			}
-		}
 		var translatedCause error
-		if ler != nil {
-			translatedCause = TranslateCacheFailsafeError(connectorId, ler)
+		if !common.IsNull(retryExceededErr.LastError) {
+			translatedCause = TranslateCacheFailsafeError(connectorId, retryExceededErr.LastError)
 		}
 		return common.NewErrFailsafeRetryExceeded(scopeConnector, translatedCause, nil)
 	}
@@ -724,10 +721,7 @@ func TranslateCacheFailsafeError(connectorId string, execErr error) error {
 	// Unwrap joined errors from hedge
 	if joinedErr, ok := execErr.(interface{ Unwrap() []error }); ok {
 		errs := joinedErr.Unwrap()
-		if len(errs) == 1 {
-			return errs[0]
-		} else if len(errs) > 1 {
-			// All hedge attempts failed — return the first translated error
+		if len(errs) > 0 {
 			return TranslateCacheFailsafeError(connectorId, errs[0])
 		}
 	}

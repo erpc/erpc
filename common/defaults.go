@@ -817,6 +817,9 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 	}
 	if c.FailsafeForGets != nil {
 		for idx, f := range c.FailsafeForGets {
+			if f == nil {
+				continue
+			}
 			if f.MatchMethod == "" {
 				f.MatchMethod = "*"
 			}
@@ -827,6 +830,9 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 	}
 	if c.FailsafeForSets != nil {
 		for idx, f := range c.FailsafeForSets {
+			if f == nil {
+				continue
+			}
 			if f.MatchMethod == "" {
 				f.MatchMethod = "*"
 			}
