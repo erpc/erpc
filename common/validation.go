@@ -470,6 +470,31 @@ func (c *ConnectorConfig) Validate() error {
 		}
 	}
 
+	for i, fsCfg := range c.FailsafeForGets {
+		if err := validateConnectorFailsafe(c.Id, "failsafeForGets", i, fsCfg); err != nil {
+			return err
+		}
+	}
+	for i, fsCfg := range c.FailsafeForSets {
+		if err := validateConnectorFailsafe(c.Id, "failsafeForSets", i, fsCfg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
+	if fsCfg == nil {
+		return nil
+	}
+	prefix := fmt.Sprintf("connector '%s'.%s[%d]", connectorId, field, index)
+	if fsCfg.Consensus != nil {
+		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
+	}
+	if fsCfg.Hedge != nil && fsCfg.Hedge.Quantile > 0 {
+		return fmt.Errorf("%s: hedge quantile is not supported for connector-level failsafe (no latency metric source)", prefix)
+	}
 	return nil
 }
 

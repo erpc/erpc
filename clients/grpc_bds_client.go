@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-
 	"time"
 
 	_ "github.com/blockchain-data-standards/manifesto/common"
@@ -18,6 +17,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -125,11 +125,11 @@ func NewGrpcBdsClient(
 			"name": [{"service": ""}],
 			"waitForReady": true,
 			"retryPolicy": {
-				"maxAttempts": 3,
-				"initialBackoff": "0.05s",
-				"maxBackoff": "0.3s",
+				"maxAttempts": 2,
+				"initialBackoff": "1s",
+				"maxBackoff": "5s",
 				"backoffMultiplier": 2,
-				"retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED"]
+				"retryableStatusCodes": ["UNAVAILABLE"]
 			}
 		}]
 	}`
@@ -137,7 +137,9 @@ func NewGrpcBdsClient(
 	// Create gRPC connection with aggressive timeouts suitable for cache services
 	// These should fail fast to allow failover to other upstreams
 	conn, err := grpc.NewClient(target,
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithTransportCredentials(transportCredentials),
+		grpc.WithChainUnaryInterceptor(grpcResponseMetadataInterceptor()),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(100*1024*1024),
 			grpc.MaxCallSendMsgSize(100*1024*1024),
@@ -149,12 +151,12 @@ func NewGrpcBdsClient(
 			PermitWithoutStream: true,             // Keep connection warm even during idle periods
 		}),
 		grpc.WithConnectParams(grpc.ConnectParams{
-			MinConnectTimeout: 500 * time.Millisecond, // Allow time for TLS handshake on cross-region
+			MinConnectTimeout: 3 * time.Second, // Cross-region TLS through Fly Anycast can take 400-600ms; 500ms caused mid-handshake aborts
 			Backoff: backoff.Config{
-				BaseDelay:  50 * time.Millisecond, // Fast initial retry
+				BaseDelay:  100 * time.Millisecond, // Give proxy breathing room between reconnect attempts
 				Multiplier: 1.5,
 				Jitter:     0.2,
-				MaxDelay:   500 * time.Millisecond, // Don't backoff too long
+				MaxDelay:   1 * time.Second, // Allow longer backoff to reduce connection churn
 			},
 		}),
 	)
@@ -174,6 +176,42 @@ func NewGrpcBdsClient(
 	logger.Debug().Str("target", target).Msg("created gRPC BDS client")
 
 	return client, nil
+}
+
+// grpcResponseMetadataInterceptor captures all response metadata (headers)
+// from gRPC calls and records them as span attributes on detailed traces.
+func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
+	return func(
+		ctx context.Context,
+		method string,
+		req, reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		if !common.IsTracingDetailed {
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}
+		span := trace.SpanFromContext(ctx)
+		if !span.IsRecording() {
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}
+
+		var respMD metadata.MD
+		opts = append(opts, grpc.Header(&respMD))
+
+		err := invoker(ctx, method, req, reply, cc, opts...)
+
+		for key, vals := range respMD {
+			if len(vals) == 1 {
+				span.SetAttributes(attribute.String("grpc.response.metadata."+key, vals[0]))
+			} else if len(vals) > 1 {
+				span.SetAttributes(attribute.StringSlice("grpc.response.metadata."+key, vals))
+			}
+		}
+
+		return err
+	}
 }
 
 func (c *GenericGrpcBdsClient) GetType() ClientType {

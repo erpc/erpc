@@ -265,14 +265,16 @@ const (
 )
 
 type ConnectorConfig struct {
-	Id         string                     `yaml:"id,omitempty" json:"id"`
-	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
-	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
-	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
-	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
-	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
-	Grpc       *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
-	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
+	Id              string                     `yaml:"id,omitempty" json:"id"`
+	Driver          ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
+	Memory          *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
+	Redis           *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
+	DynamoDB        *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
+	PostgreSQL      *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
+	Grpc            *GrpcConnectorConfig       `yaml:"grpc,omitempty" json:"grpc"`
+	FailsafeForGets []*FailsafeConfig          `yaml:"failsafeForGets,omitempty" json:"failsafeForGets"`
+	FailsafeForSets []*FailsafeConfig          `yaml:"failsafeForSets,omitempty" json:"failsafeForSets"`
+	Mock            *MockConnectorConfig       `yaml:"-" json:"-"`
 }
 
 type GrpcConnectorConfig struct {
