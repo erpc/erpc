@@ -292,9 +292,10 @@ func (d *RequestDirectives) Clone() *RequestDirectives {
 type NormalizedRequest struct {
 	sync.RWMutex
 
-	network  Network
-	cacheDal CacheDAL
-	body     []byte
+	network        Network
+	cacheDal       CacheDAL
+	body           []byte
+	ForwardHeaders http.Header
 
 	method         string
 	directives     *RequestDirectives

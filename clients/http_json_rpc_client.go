@@ -690,6 +690,14 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			},
 		}
 	}
+
+	// Add headers to forward
+	for key, values := range req.ForwardHeaders {
+		for _, value := range values {
+			httpReq.Header.Add(key, value)
+		}
+	}
+
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
 	resp, err := c.getHttpClient().Do(httpReq)
