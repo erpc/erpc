@@ -366,7 +366,7 @@ func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Dura
 		// debounce expires before the next block is expected. This prefers freshness
 		// over saving RPC calls — EMA smooths long-term, multiplier covers the tail.
 		mult := common.DefaultDynamicBlockTimeDebounceMultiplier
-		if cfg != nil && cfg.DynamicBlockTimeDebounceMultiplier != nil {
+		if cfg != nil && cfg.DynamicBlockTimeDebounceMultiplier != nil && *cfg.DynamicBlockTimeDebounceMultiplier > 0 {
 			mult = *cfg.DynamicBlockTimeDebounceMultiplier
 		}
 		return time.Duration(float64(blockTime) * mult)
