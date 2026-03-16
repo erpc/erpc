@@ -289,6 +289,8 @@ export interface ConnectorConfig {
   dynamodb?: DynamoDBConnectorConfig;
   postgresql?: PostgreSQLConnectorConfig;
   grpc?: GrpcConnectorConfig;
+  failsafeForGets?: (FailsafeConfig | undefined)[];
+  failsafeForSets?: (FailsafeConfig | undefined)[];
 }
 export interface GrpcConnectorConfig {
   bootstrap?: string;

@@ -144,18 +144,7 @@ func main() {
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			zerolog.SetGlobalLevel(zerolog.Disabled)
 
-			fs := afero.NewOsFs()
-			configPath := cmd.String("config")
-			if configPath == "" && len(cmd.Args().Slice()) > 0 {
-				configPath = cmd.Args().First()
-			}
-			if configPath == "" {
-				fmt.Fprintln(os.Stderr, "error: config file is required: erpc dump <config-file>")
-				util.OsExit(1)
-				return nil
-			}
-
-			cfg, err := common.LoadConfig(fs, configPath, &common.DefaultOptions{})
+			cfg, err := getConfig(logger, cmd)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: failed to load config: %v\n", err)
 				util.OsExit(1)

@@ -333,6 +333,22 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (r *RedisConnectorConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"addr":              r.Addr,
+		"username":          r.Username,
+		"password":          "REDACTED",
+		"db":                r.DB,
+		"connPoolSize":      r.ConnPoolSize,
+		"uri":               util.RedactEndpoint(r.URI),
+		"tls":               r.TLS,
+		"initTimeout":       r.InitTimeout.String(),
+		"getTimeout":        r.GetTimeout.String(),
+		"setTimeout":        r.SetTimeout.String(),
+		"lockRetryInterval": r.LockRetryInterval.String(),
+	}, nil
+}
+
 type DynamoDBConnectorConfig struct {
 	Table             string         `yaml:"table,omitempty" json:"table"`
 	Region            string         `yaml:"region,omitempty" json:"region"`
@@ -372,6 +388,18 @@ func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (p *PostgreSQLConnectorConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
+		"table":         p.Table,
+		"minConns":      p.MinConns,
+		"maxConns":      p.MaxConns,
+		"initTimeout":   p.InitTimeout.String(),
+		"getTimeout":    p.GetTimeout.String(),
+		"setTimeout":    p.SetTimeout.String(),
+	}, nil
+}
+
 type AwsAuthConfig struct {
 	Mode            string `yaml:"mode" json:"mode" tstype:"'file' | 'env' | 'secret'"` // "file", "env", "secret"
 	CredentialsFile string `yaml:"credentialsFile" json:"credentialsFile"`
@@ -388,6 +416,16 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 		"accessKeyID":     a.AccessKeyID,
 		"secretAccessKey": "REDACTED",
 	})
+}
+
+func (a *AwsAuthConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"mode":            a.Mode,
+		"credentialsFile": a.CredentialsFile,
+		"profile":         a.Profile,
+		"accessKeyID":     a.AccessKeyID,
+		"secretAccessKey": "REDACTED",
+	}, nil
 }
 
 type ProjectConfig struct {
@@ -537,6 +575,18 @@ func (p *ProviderConfig) MarshalJSON() ([]byte, error) {
 		"upstreamIdTemplate": p.UpstreamIdTemplate,
 		"overrides":          p.Overrides,
 	})
+}
+
+func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"id":                 p.Id,
+		"vendor":             p.Vendor,
+		"settings":           "REDACTED",
+		"onlyNetworks":       p.OnlyNetworks,
+		"ignoreNetworks":     p.IgnoreNetworks,
+		"upstreamIdTemplate": p.UpstreamIdTemplate,
+		"overrides":          p.Overrides,
+	}, nil
 }
 
 type UpstreamConfig struct {
@@ -782,6 +832,13 @@ func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 		Endpoint: util.RedactEndpoint(u.Endpoint),
 		Alias:    (*Alias)(u),
 	})
+}
+
+func (u *UpstreamConfig) MarshalYAML() (interface{}, error) {
+	type Alias UpstreamConfig
+	cp := *u
+	cp.Endpoint = util.RedactEndpoint(u.Endpoint)
+	return (*Alias)(&cp), nil
 }
 
 type RateLimitAutoTuneConfig struct {
@@ -1710,8 +1767,7 @@ func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 	evf := "<undefined>"
 	if c.evalFunctionOriginal != "" {
 		evf = c.evalFunctionOriginal
-	}
-	if c.EvalFunction != nil {
+	} else if c.EvalFunction != nil {
 		evf = "<function>"
 	}
 	return sonic.Marshal(map[string]interface{}{
@@ -1763,6 +1819,13 @@ func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]string{
 		"value": "REDACTED",
 	})
+}
+
+func (s *SecretStrategyConfig) MarshalYAML() (interface{}, error) {
+	return map[string]string{
+		"id":    s.Id,
+		"value": "REDACTED",
+	}, nil
 }
 
 type DatabaseStrategyConfig struct {
