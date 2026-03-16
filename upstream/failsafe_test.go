@@ -191,6 +191,55 @@ func TestRetryPolicy_EmptyResultWithConfidence(t *testing.T) {
 	}
 }
 
+func TestRetryPolicy_EmptyAcceptListRetriesBeforeAccepting(t *testing.T) {
+	tests := []struct {
+		name            string
+		maxAttempts     int
+		expectedRetries int
+	}{
+		{
+			name:            "RetriesUpToMaxAttempts",
+			maxAttempts:     3,
+			expectedRetries: 3,
+		},
+		{
+			name:            "AcceptsImmediatelyWhenMaxAttemptsZero",
+			maxAttempts:     0,
+			expectedRetries: 1,
+		},
+		{
+			name:            "SingleRetryWhenMaxAttemptsOne",
+			maxAttempts:     1,
+			expectedRetries: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &common.RetryPolicyConfig{
+				MaxAttempts:           6,
+				EmptyResultMaxAttempts: tt.maxAttempts,
+				EmptyResultAccept:     []string{"eth_getLogs"},
+				EmptyResultConfidence: common.AvailbilityConfidenceBlockHead,
+			}
+
+			req := common.NewNormalizedRequest([]byte(`{"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x64"}],"id":1,"jsonrpc":"2.0"}`))
+			req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+			mockUpstream := new(mockUpstreamForRetry)
+			mockUpstream.On("Config").Return(&common.UpstreamConfig{
+				Type: common.UpstreamTypeEvm,
+				Evm:  &common.EvmUpstreamConfig{},
+			}).Maybe()
+
+			mockResp := createMockResponse(true, req, mockUpstream)
+
+			attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, mockResp, nil)
+			assert.Equal(t, tt.expectedRetries, attempts)
+		})
+	}
+}
+
 func TestRetryPolicy_EmptyResultWithIgnore(t *testing.T) {
 	tests := []struct {
 		name            string

@@ -680,8 +680,14 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						attribute.String("method", method),
 						attribute.Bool("method_in_accept_list", slices.Contains(emptyResultAccept, method)),
 					)
-					// Check if method is in accept list - if so, empty is valid, do NOT retry
 					if slices.Contains(emptyResultAccept, method) {
+						if cfg.EmptyResultMaxAttempts > 0 && exec.Attempts() < cfg.EmptyResultMaxAttempts {
+							span.SetAttributes(
+								attribute.Bool("retry", true),
+								attribute.String("reason", "empty_accept_list_retry_before_max_attempts"),
+							)
+							return true
+						}
 						span.SetAttributes(
 							attribute.Bool("retry", false),
 							attribute.String("reason", "method_in_empty_accept_list"),
