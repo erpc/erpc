@@ -1823,8 +1823,9 @@ func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
 
 func (s *SecretStrategyConfig) MarshalYAML() (interface{}, error) {
 	return map[string]string{
-		"id":    s.Id,
-		"value": "REDACTED",
+		"id":              s.Id,
+		"value":           "REDACTED",
+		"rateLimitBudget": s.RateLimitBudget,
 	}, nil
 }
 
