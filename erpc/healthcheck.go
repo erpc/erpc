@@ -41,12 +41,13 @@ type StaticCounts struct {
 }
 
 type NetworkHealthData struct {
-	NetworkId string                         `json:"networkId"`
-	Alias     string                         `json:"alias,omitempty"`
-	Healthy   bool                           `json:"healthy"`
-	Status    string                         `json:"status"`
-	Message   string                         `json:"message,omitempty"`
-	Upstreams map[string]*UpstreamHealthData `json:"upstreams"`
+	NetworkId   string                         `json:"networkId"`
+	Alias       string                         `json:"alias,omitempty"`
+	BlockTimeMs *float64                       `json:"blockTimeMs,omitempty"`
+	Healthy     bool                           `json:"healthy"`
+	Status      string                         `json:"status"`
+	Message     string                         `json:"message,omitempty"`
+	Upstreams   map[string]*UpstreamHealthData `json:"upstreams"`
 }
 
 type UpstreamHealthData struct {
@@ -239,6 +240,10 @@ func (s *HttpServer) handleHealthCheck(
 					Healthy:   true,
 					Status:    "OK",
 					Upstreams: make(map[string]*UpstreamHealthData),
+				}
+				if bt := metricsTracker.GetNetworkBlockTime(networkId); bt > 0 {
+					ms := float64(bt.Milliseconds())
+					networkHealth.BlockTimeMs = &ms
 				}
 				projectHealth.Networks[networkId] = networkHealth
 			}
@@ -704,9 +709,10 @@ func (s *HttpServer) formatHealthDataForMode(projectsHealth []*ProjectHealthData
 	case "networks":
 		// Networks mode: return per-project list of networks
 		type NetworkHealthItem struct {
-			Id    string `json:"id"`
-			Alias string `json:"alias,omitempty"`
-			State string `json:"state"`
+			Id          string   `json:"id"`
+			Alias       string   `json:"alias,omitempty"`
+			BlockTimeMs *float64 `json:"blockTimeMs,omitempty"`
+			State       string   `json:"state"`
 		}
 
 		result := make(map[string][]NetworkHealthItem)
@@ -714,9 +720,10 @@ func (s *HttpServer) formatHealthDataForMode(projectsHealth []*ProjectHealthData
 			items := make([]NetworkHealthItem, 0)
 			for _, nh := range ph.Networks {
 				items = append(items, NetworkHealthItem{
-					Id:    nh.NetworkId,
-					Alias: nh.Alias,
-					State: nh.Status,
+					Id:          nh.NetworkId,
+					Alias:       nh.Alias,
+					BlockTimeMs: nh.BlockTimeMs,
+					State:       nh.Status,
 				})
 			}
 			result[ph.ProjectId] = items
@@ -778,6 +785,23 @@ func (s *HttpServer) formatHealthDataForMode(projectsHealth []*ProjectHealthData
 
 			if len(upstreamsDetails) > 0 {
 				projectDetails["upstreams"] = upstreamsDetails
+			}
+
+			networksDetails := make(map[string]map[string]any)
+			for _, nh := range ph.Networks {
+				nd := map[string]any{
+					"status": nh.Status,
+				}
+				if nh.Alias != "" {
+					nd["alias"] = nh.Alias
+				}
+				if nh.BlockTimeMs != nil {
+					nd["blockTimeMs"] = *nh.BlockTimeMs
+				}
+				networksDetails[nh.NetworkId] = nd
+			}
+			if len(networksDetails) > 0 {
+				projectDetails["networks"] = networksDetails
 			}
 
 			result[ph.ProjectId] = projectDetails

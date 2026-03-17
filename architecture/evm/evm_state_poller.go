@@ -154,9 +154,6 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		if cfg.Evm.StatePollerDebounce != 0 {
 			e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
 		}
-		if e.debounceInterval == 0 && cfg.Evm.ChainId > 0 {
-			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
-		}
 	}
 
 	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
@@ -226,17 +223,6 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {
 	} else {
 		e.networkLabel = cfg.NetworkId()
 	}
-
-	if e.debounceInterval == 0 {
-		if cfg.Evm.FallbackStatePollerDebounce != 0 {
-			e.debounceInterval = cfg.Evm.FallbackStatePollerDebounce.Duration()
-		}
-	}
-	if e.debounceInterval == 0 {
-		if cfg.Evm.ChainId > 0 {
-			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
-		}
-	}
 }
 
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
@@ -285,7 +271,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			return
 		}
 
-		syncing, err := e.fetchSyncingState(ctx)
+		syncCtx, syncCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer syncCancel()
+		syncing, err := e.fetchSyncingState(syncCtx)
 		if err != nil {
 			// Handle consecutive failures to determine if we should stop querying eth_syncing
 			e.stateMu.Lock()
@@ -364,6 +352,31 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	return nil
 }
 
+// resolveDebounce returns the debounce interval for poll methods.
+// The debounce prevents redundant fetches when request traffic or other
+// paths (e.g. SuggestLatestBlock) already keep the block number fresh.
+//
+//	user config → block time → network FallbackStatePollerDebounce → 1s default
+func (e *EvmStatePoller) resolveDebounce(cfg *common.EvmNetworkConfig) time.Duration {
+	if dbi := e.debounceInterval; dbi != 0 {
+		return dbi
+	}
+	if blockTime := e.tracker.GetNetworkBlockTime(e.upstream.NetworkId()); blockTime != 0 {
+		// Scale block time down by the configured multiplier (default 0.7) so the
+		// debounce expires before the next block is expected. This prefers freshness
+		// over saving RPC calls — EMA smooths long-term, multiplier covers the tail.
+		mult := common.DefaultDynamicBlockTimeDebounceMultiplier
+		if cfg != nil && cfg.DynamicBlockTimeDebounceMultiplier != nil && *cfg.DynamicBlockTimeDebounceMultiplier > 0 {
+			mult = *cfg.DynamicBlockTimeDebounceMultiplier
+		}
+		return time.Duration(float64(blockTime) * mult)
+	}
+	if cfg != nil && cfg.FallbackStatePollerDebounce != 0 {
+		return cfg.FallbackStatePollerDebounce.Duration()
+	}
+	return 1 * time.Second
+}
+
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
@@ -371,11 +384,12 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
 	}
-	dbi := e.debounceInterval
-	if dbi == 0 {
-		// We must have some debounce interval to avoid thundering herd
-		dbi = 1 * time.Second
-	}
+	e.stateMu.RLock()
+	cfg := e.cfg
+	networkLabel := e.networkLabel
+	e.stateMu.RUnlock()
+
+	dbi := e.resolveDebounce(cfg)
 	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
@@ -384,11 +398,6 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		),
 	)
 	defer span.End()
-
-	// Read networkLabel with lock to avoid race condition
-	e.stateMu.RLock()
-	networkLabel := e.networkLabel
-	e.stateMu.RUnlock()
 
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		if e.logger.GetLevel() <= zerolog.TraceLevel {
@@ -486,16 +495,13 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		),
 	)
 	defer span.End()
-	dbi := e.debounceInterval
-	if dbi == 0 {
-		// We must have some debounce interval to avoid thundering herd
-		dbi = 1 * time.Second
-	}
 
-	// Read networkLabel with lock to avoid race condition
 	e.stateMu.RLock()
+	cfg := e.cfg
 	networkLabel := e.networkLabel
 	e.stateMu.RUnlock()
+
+	dbi := e.resolveDebounce(cfg)
 
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
@@ -1432,17 +1438,4 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 		}
 	}
 	return l, nil
-}
-
-func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime(chainId int64) {
-	if d, ok := KnownBlockTimes[chainId]; ok {
-		// Anything lower than 1 second has a chance of causing a thundering herd (e.g. a high RPS for a method like getLogs).
-		// If users truly want to have a smaller value they can directly set the debounce interval
-		// either on network config or upstream config.
-		if d < 1*time.Second {
-			e.debounceInterval = 1 * time.Second
-		} else {
-			e.debounceInterval = d
-		}
-	}
 }

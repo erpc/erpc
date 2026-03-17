@@ -88,6 +88,12 @@ var (
 		Help:      "Distance in seconds between the latest block timestamp and current time for a network.",
 	}, []string{"project", "network", "origin"})
 
+	MetricNetworkDynamicBlockTime = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_dynamic_block_time_milliseconds",
+		Help:      "Dynamically computed block time per network in milliseconds.",
+	}, []string{"project", "network"})
+
 	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_cordoned",

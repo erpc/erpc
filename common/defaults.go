@@ -1700,12 +1700,8 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 			e.StatePollerInterval = Duration(30 * time.Second)
 		}
 	}
-	if e.StatePollerDebounce == 0 {
-		if defaults != nil && defaults.StatePollerDebounce != 0 {
-			e.StatePollerDebounce = defaults.StatePollerDebounce
-		} else {
-			e.StatePollerDebounce = Duration(5 * time.Second)
-		}
+	if e.StatePollerDebounce == 0 && defaults != nil && defaults.StatePollerDebounce != 0 {
+		e.StatePollerDebounce = defaults.StatePollerDebounce
 	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {
@@ -1832,6 +1828,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.FallbackStatePollerDebounce == 0 && defaults.Evm.FallbackStatePollerDebounce != 0 {
 				n.Evm.FallbackStatePollerDebounce = defaults.Evm.FallbackStatePollerDebounce
 			}
+			if n.Evm.DynamicBlockTimeDebounceMultiplier == nil && defaults.Evm.DynamicBlockTimeDebounceMultiplier != nil {
+				n.Evm.DynamicBlockTimeDebounceMultiplier = defaults.Evm.DynamicBlockTimeDebounceMultiplier
+			}
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
 				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
 			}
@@ -1937,6 +1936,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 const DefaultEvmFinalityDepth = 1024
 const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
+const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
 
 // DefaultEmptyResultAccept returns a fresh copy of the methods for which an
 // empty/null result is considered valid (e.g. eth_getLogs, eth_call). A new
@@ -1977,6 +1977,10 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.FallbackStatePollerDebounce == 0 {
 		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
+	}
+	if e.DynamicBlockTimeDebounceMultiplier == nil {
+		d := DefaultDynamicBlockTimeDebounceMultiplier
+		e.DynamicBlockTimeDebounceMultiplier = &d
 	}
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}
