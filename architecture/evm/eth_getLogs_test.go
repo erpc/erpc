@@ -115,8 +115,8 @@ func (m *mockNetwork) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Co
 	return 0
 }
 
-func (m *mockNetwork) ResolveLatestBlockGuarantee(profileId string) ([]string, error) {
-	return nil, nil
+func (m *mockNetwork) EvmLatestBlockGuaranteeProfiles() []*common.EvmLatestBlockGuaranteeConfig {
+	return nil
 }
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)

@@ -74,7 +74,7 @@ func NewERPC(
 		rateLimitersRegistry,
 		vendorsRegistry,
 		proxyPoolRegistry,
-		cfg.LatestBlockGuarantees,
+		cfg.EvmLatestBlockGuarantees,
 	)
 	if err != nil {
 		return nil, err

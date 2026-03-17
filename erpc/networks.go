@@ -54,10 +54,10 @@ type Network struct {
 	selectionPolicyEvaluator *PolicyEvaluator
 	initializer              *util.Initializer
 
-	// latestBlockGuarantees stores named profiles for resolving guarantee IDs.
-	latestBlockGuarantees []*common.LatestBlockGuaranteeConfig
-	// defaultGuaranteeMethods is pre-resolved from the network's directive defaults at init time.
-	defaultGuaranteeMethods []string
+	// evmLatestBlockGuarantees stores named profiles for resolving EVM guarantee IDs.
+	evmLatestBlockGuarantees []*common.EvmLatestBlockGuaranteeConfig
+	// evmDefaultGuaranteeMethods is pre-resolved from the network's directive defaults at init time.
+	evmDefaultGuaranteeMethods []string
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -114,8 +114,8 @@ func (n *Network) Logger() *zerolog.Logger {
 
 func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	// Apply default guarantee from network config if configured
-	if len(n.defaultGuaranteeMethods) > 0 {
-		return n.EvmHighestLatestBlockNumberWithGuarantee(ctx, n.defaultGuaranteeMethods)
+	if len(n.evmDefaultGuaranteeMethods) > 0 {
+		return n.EvmHighestLatestBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
 	}
 	return n.evmHighestLatestBlockNumberRaw(ctx)
 }
@@ -241,8 +241,8 @@ func (n *Network) EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, 
 
 func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	// Apply default guarantee from network config if configured
-	if len(n.defaultGuaranteeMethods) > 0 {
-		return n.EvmHighestFinalizedBlockNumberWithGuarantee(ctx, n.defaultGuaranteeMethods)
+	if len(n.evmDefaultGuaranteeMethods) > 0 {
+		return n.EvmHighestFinalizedBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
 	}
 	return n.evmHighestFinalizedBlockNumberRaw(ctx)
 }
@@ -364,21 +364,8 @@ func (n *Network) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Contex
 	return result
 }
 
-func (n *Network) ResolveLatestBlockGuarantee(profileId string) ([]string, error) {
-	if profileId == "" {
-		return nil, nil
-	}
-	// Check custom profiles first
-	for _, p := range n.latestBlockGuarantees {
-		if p.Id == profileId {
-			return p.Methods, nil
-		}
-	}
-	// Fall back to built-in presets
-	if methods, ok := common.BuiltinLatestBlockGuarantees[profileId]; ok {
-		return methods, nil
-	}
-	return nil, fmt.Errorf("latestBlockGuarantee profile '%s' not found", profileId)
+func (n *Network) EvmLatestBlockGuaranteeProfiles() []*common.EvmLatestBlockGuaranteeConfig {
+	return n.evmLatestBlockGuarantees
 }
 
 // isWildcardPattern returns true if the string contains glob wildcard characters.

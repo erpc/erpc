@@ -12203,7 +12203,7 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 				DirectiveDefaults: &common.DirectiveDefaultsConfig{
-					LatestBlockGuarantee: &guaranteeProfile,
+					EvmLatestBlockGuarantee: &guaranteeProfile,
 				},
 			},
 			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
@@ -12353,50 +12353,36 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 
 	})
 
-	t.Run("ResolveLatestBlockGuarantee_BuiltinAndCustomProfiles", func(t *testing.T) {
-		ctx := context.Background()
-		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(ctx, &common.RateLimiterConfig{}, &log.Logger)
-		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
-		upstreamsRegistry := upstream.NewUpstreamsRegistry(
-			ctx, &log.Logger, "test", nil, nil,
-			rateLimitersRegistry, thirdparty.NewVendorsRegistry(), nil, nil,
-			metricsTracker, 1*time.Second, nil, nil,
-		)
-
-		customProfiles := []*common.LatestBlockGuaranteeConfig{
+	t.Run("ResolveEvmLatestBlockGuarantee_BuiltinAndCustomProfiles", func(t *testing.T) {
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
 			{Id: "my-custom", Methods: []string{"eth_call", "my_method"}},
 		}
 
-		network, err := NewNetwork(
-			ctx, &log.Logger, "test",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			},
-			rateLimitersRegistry, upstreamsRegistry, metricsTracker, customProfiles,
-		)
-		require.NoError(t, err)
-
 		// Custom profile should resolve
-		methods, err := network.ResolveLatestBlockGuarantee("my-custom")
+		methods, err := evm.ResolveEvmLatestBlockGuarantee(customProfiles, "my-custom")
 		require.NoError(t, err)
 		assert.Equal(t, []string{"eth_call", "my_method"}, methods)
 
 		// Built-in profile should resolve
-		methods, err = network.ResolveLatestBlockGuarantee("frontend-dapps")
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(customProfiles, "frontend-dapps")
 		require.NoError(t, err)
-		assert.Equal(t, common.BuiltinLatestBlockGuarantees["frontend-dapps"], methods)
+		assert.Equal(t, evm.EvmBuiltinLatestBlockGuarantees["frontend-dapps"], methods)
 
 		// Unknown profile returns error
-		methods, err = network.ResolveLatestBlockGuarantee("nonexistent")
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(customProfiles, "nonexistent")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "nonexistent")
 		assert.Nil(t, methods)
 
 		// Empty profile returns nil without error
-		methods, err = network.ResolveLatestBlockGuarantee("")
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(customProfiles, "")
 		assert.NoError(t, err)
 		assert.Nil(t, methods)
+
+		// Nil custom profiles still resolves built-ins
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(nil, "complete-indexing")
+		require.NoError(t, err)
+		assert.Equal(t, evm.EvmBuiltinLatestBlockGuarantees["complete-indexing"], methods)
 	})
 }
 

@@ -66,8 +66,8 @@ func (t *testNetwork) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Co
 	return t.EvmHighestFinalizedBlockNumber(ctx)
 }
 
-func (t *testNetwork) ResolveLatestBlockGuarantee(profileId string) ([]string, error) {
-	return nil, nil
+func (t *testNetwork) EvmLatestBlockGuaranteeProfiles() []*common.EvmLatestBlockGuaranteeConfig {
+	return nil
 }
 
 func (t *testNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {

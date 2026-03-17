@@ -152,9 +152,9 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 	// Resolve guarantee methods from request directives for constrained block selection
 	var guaranteeMethods []string
-	if dirs.LatestBlockGuarantee != "" {
+	if dirs.EvmLatestBlockGuarantee != "" {
 		var err error
-		guaranteeMethods, err = network.ResolveLatestBlockGuarantee(dirs.LatestBlockGuarantee)
+		guaranteeMethods, err = ResolveEvmLatestBlockGuarantee(network.EvmLatestBlockGuaranteeProfiles(), dirs.EvmLatestBlockGuarantee)
 		if err != nil {
 			return nil, err
 		}

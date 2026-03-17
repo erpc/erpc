@@ -58,8 +58,8 @@ func projectPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	// constrained by guaranteed methods if configured via directives
 	var highestBlock int64
 	dirs := nq.Directives()
-	if dirs != nil && dirs.LatestBlockGuarantee != "" {
-		methods, err := network.ResolveLatestBlockGuarantee(dirs.LatestBlockGuarantee)
+	if dirs != nil && dirs.EvmLatestBlockGuarantee != "" {
+		methods, err := ResolveEvmLatestBlockGuarantee(network.EvmLatestBlockGuaranteeProfiles(), dirs.EvmLatestBlockGuarantee)
 		if err != nil {
 			common.SetTraceSpanError(span, err)
 			return true, nil, err
