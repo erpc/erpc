@@ -27,12 +27,9 @@ type Network interface {
 	GetFinality(ctx context.Context, req *NormalizedRequest, resp *NormalizedResponse) DataFinalityState
 
 	// TODO Move to EvmNetwork interface?
-	EvmHighestLatestBlockNumber(ctx context.Context) int64
-	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
-	EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64
-	EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64
+	EvmHighestLatestBlockNumber(ctx context.Context, evmLatestBlockGuaranteeOverride ...string) int64
+	EvmHighestFinalizedBlockNumber(ctx context.Context, evmLatestBlockGuaranteeOverride ...string) int64
 	EvmLeaderUpstream(ctx context.Context) Upstream
-	EvmLatestBlockGuaranteeProfiles() []*EvmLatestBlockGuaranteeConfig
 }
 
 func IsValidArchitecture(architecture string) bool {

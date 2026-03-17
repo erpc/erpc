@@ -11955,13 +11955,16 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 			1*time.Second, nil, nil,
 		)
 
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
+			{Id: "test-guarantee", Methods: []string{"eth_getBlockByNumber", "eth_call", "trace_block"}},
+		}
 		network, err := NewNetwork(
 			ctx, &log.Logger, "test",
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			},
-			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, customProfiles,
 		)
 		require.NoError(t, err)
 
@@ -11990,8 +11993,7 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 		nodeB.EvmStatePoller().SuggestLatestBlock(999)
 		time.Sleep(50 * time.Millisecond)
 
-		methods := []string{"eth_getBlockByNumber", "eth_call", "trace_block"}
-		result := network.EvmHighestLatestBlockNumberWithGuarantee(ctx, methods)
+		result := network.EvmHighestLatestBlockNumber(ctx, "test-guarantee")
 		assert.Equal(t, int64(999), result, "Should return min of max blocks per guaranteed method")
 	})
 
@@ -12040,13 +12042,16 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 			1*time.Second, nil, nil,
 		)
 
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
+			{Id: "trace-required", Methods: []string{"eth_getBlockByNumber", "trace_block"}},
+		}
 		network, err := NewNetwork(
 			ctx, &log.Logger, "test",
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			},
-			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, customProfiles,
 		)
 		require.NoError(t, err)
 
@@ -12062,8 +12067,7 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// trace_block is not supported, so should return 0
-		methods := []string{"eth_getBlockByNumber", "trace_block"}
-		result := network.EvmHighestLatestBlockNumberWithGuarantee(ctx, methods)
+		result := network.EvmHighestLatestBlockNumber(ctx, "trace-required")
 		assert.Equal(t, int64(0), result, "Should return 0 when a guaranteed method is unsupported")
 	})
 
@@ -12131,9 +12135,10 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 		upsList[0].EvmStatePoller().SuggestLatestBlock(1000)
 		time.Sleep(50 * time.Millisecond)
 
+		// No guarantee profile → should return raw highest
 		raw := network.evmHighestLatestBlockNumberRaw(ctx)
-		withEmpty := network.EvmHighestLatestBlockNumberWithGuarantee(ctx, nil)
-		assert.Equal(t, raw, withEmpty, "Empty methods should return same as raw highest")
+		withNoOverride := network.EvmHighestLatestBlockNumber(ctx)
+		assert.Equal(t, raw, withNoOverride, "No guarantee should return same as raw highest")
 	})
 
 	t.Run("DefaultGuaranteeAppliedViaEvmHighestLatestBlockNumber", func(t *testing.T) {
@@ -12305,13 +12310,16 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 			1*time.Second, nil, nil,
 		)
 
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
+			{Id: "wildcard-test", Methods: []string{"eth_getBlockByNumber", "*trace*|*debug*"}},
+		}
 		network, err := NewNetwork(
 			ctx, &log.Logger, "test",
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			},
-			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, customProfiles,
 		)
 		require.NoError(t, err)
 
@@ -12341,14 +12349,13 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Wildcard pattern: *trace*|*debug* means "supports trace or debug methods"
-		methods := []string{"eth_getBlockByNumber", "*trace*|*debug*"}
-		result := network.EvmHighestLatestBlockNumberWithGuarantee(ctx, methods)
+		result := network.EvmHighestLatestBlockNumber(ctx, "wildcard-test")
 		assert.Equal(t, int64(999), result, "Wildcard guarantee should constrain to archive node's block")
 
 		// When both nodes have same block, should return that block
 		basicNode.EvmStatePoller().SuggestLatestBlock(999)
 		time.Sleep(50 * time.Millisecond)
-		result = network.EvmHighestLatestBlockNumberWithGuarantee(ctx, methods)
+		result = network.EvmHighestLatestBlockNumber(ctx, "wildcard-test")
 		assert.Equal(t, int64(999), result)
 
 	})

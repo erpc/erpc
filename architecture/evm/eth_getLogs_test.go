@@ -97,26 +97,14 @@ func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
 	return args.Get(0).(common.EvmStatePoller)
 }
 
-func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
 	args := m.Called(ctx)
 	return args.Get(0).(int64)
 }
 
-func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
 	args := m.Called(ctx)
 	return args.Get(0).(int64)
-}
-
-func (m *mockNetwork) EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
-	return 0
-}
-
-func (m *mockNetwork) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
-	return 0
-}
-
-func (m *mockNetwork) EvmLatestBlockGuaranteeProfiles() []*common.EvmLatestBlockGuaranteeConfig {
-	return nil
 }
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)

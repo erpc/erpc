@@ -112,10 +112,19 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
+	// If a per-request guarantee profile override is provided, resolve and apply it.
+	if len(guaranteeProfileOverride) > 0 && guaranteeProfileOverride[0] != "" {
+		methods, err := evm.ResolveEvmLatestBlockGuarantee(n.evmLatestBlockGuarantees, guaranteeProfileOverride[0])
+		if err != nil {
+			n.logger.Warn().Err(err).Str("profile", guaranteeProfileOverride[0]).Msg("failed to resolve evmLatestBlockGuarantee profile override, using default")
+		} else if len(methods) > 0 {
+			return n.evmHighestLatestBlockNumberWithGuarantee(ctx, methods)
+		}
+	}
 	// Apply default guarantee from network config if configured
 	if len(n.evmDefaultGuaranteeMethods) > 0 {
-		return n.EvmHighestLatestBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
+		return n.evmHighestLatestBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
 	}
 	return n.evmHighestLatestBlockNumberRaw(ctx)
 }
@@ -158,7 +167,7 @@ func (n *Network) evmHighestLatestBlockNumberRaw(ctx context.Context) int64 {
 	return maxBlock
 }
 
-func (n *Network) EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+func (n *Network) evmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
 	if len(methods) == 0 {
 		return n.evmHighestLatestBlockNumberRaw(ctx)
 	}
@@ -239,10 +248,19 @@ func (n *Network) EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, 
 	return result
 }
 
-func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
+	// If a per-request guarantee profile override is provided, resolve and apply it.
+	if len(guaranteeProfileOverride) > 0 && guaranteeProfileOverride[0] != "" {
+		methods, err := evm.ResolveEvmLatestBlockGuarantee(n.evmLatestBlockGuarantees, guaranteeProfileOverride[0])
+		if err != nil {
+			n.logger.Warn().Err(err).Str("profile", guaranteeProfileOverride[0]).Msg("failed to resolve evmLatestBlockGuarantee profile override, using default")
+		} else if len(methods) > 0 {
+			return n.evmHighestFinalizedBlockNumberWithGuarantee(ctx, methods)
+		}
+	}
 	// Apply default guarantee from network config if configured
 	if len(n.evmDefaultGuaranteeMethods) > 0 {
-		return n.EvmHighestFinalizedBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
+		return n.evmHighestFinalizedBlockNumberWithGuarantee(ctx, n.evmDefaultGuaranteeMethods)
 	}
 	return n.evmHighestFinalizedBlockNumberRaw(ctx)
 }
@@ -286,7 +304,7 @@ func (n *Network) evmHighestFinalizedBlockNumberRaw(ctx context.Context) int64 {
 	return maxBlock
 }
 
-func (n *Network) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+func (n *Network) evmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
 	if len(methods) == 0 {
 		return n.evmHighestFinalizedBlockNumberRaw(ctx)
 	}
@@ -364,13 +382,9 @@ func (n *Network) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Contex
 	return result
 }
 
-func (n *Network) EvmLatestBlockGuaranteeProfiles() []*common.EvmLatestBlockGuaranteeConfig {
-	return n.evmLatestBlockGuarantees
-}
-
 // isWildcardPattern returns true if the string contains glob wildcard characters.
 func isWildcardPattern(s string) bool {
-	return strings.ContainsAny(s, "*?")
+	return strings.ContainsAny(s, "*?&|()")
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
