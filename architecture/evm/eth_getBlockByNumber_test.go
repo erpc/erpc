@@ -58,6 +58,18 @@ func (t *testNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 
 	return 0
 }
 
+func (t *testNetwork) EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+	return t.EvmHighestLatestBlockNumber(ctx)
+}
+
+func (t *testNetwork) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+	return t.EvmHighestFinalizedBlockNumber(ctx)
+}
+
+func (t *testNetwork) ResolveLatestBlockGuarantee(profileId string) ([]string, error) {
+	return nil, nil
+}
+
 func (t *testNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	return nil
 }

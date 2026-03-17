@@ -29,7 +29,10 @@ type Network interface {
 	// TODO Move to EvmNetwork interface?
 	EvmHighestLatestBlockNumber(ctx context.Context) int64
 	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
+	EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64
+	EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64
 	EvmLeaderUpstream(ctx context.Context) Upstream
+	ResolveLatestBlockGuarantee(profileId string) ([]string, error)
 }
 
 func IsValidArchitecture(architecture string) bool {

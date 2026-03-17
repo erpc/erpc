@@ -88,6 +88,7 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 		nil,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	require.NoError(t, err)
 

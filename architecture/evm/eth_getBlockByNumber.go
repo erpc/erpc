@@ -150,9 +150,24 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
+	// Resolve guarantee methods from request directives for constrained block selection
+	var guaranteeMethods []string
+	if dirs.LatestBlockGuarantee != "" {
+		var err error
+		guaranteeMethods, err = network.ResolveLatestBlockGuarantee(dirs.LatestBlockGuarantee)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	switch bnp {
 	case "latest":
-		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		var highestBlockNumber int64
+		if len(guaranteeMethods) > 0 {
+			highestBlockNumber = network.EvmHighestLatestBlockNumberWithGuarantee(ctx, guaranteeMethods)
+		} else {
+			highestBlockNumber = network.EvmHighestLatestBlockNumber(ctx)
+		}
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
@@ -213,7 +228,12 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nr, re
 		}
 	case "finalized":
-		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx)
+		var highestBlockNumber int64
+		if len(guaranteeMethods) > 0 {
+			highestBlockNumber = network.EvmHighestFinalizedBlockNumberWithGuarantee(ctx, guaranteeMethods)
+		} else {
+			highestBlockNumber = network.EvmHighestFinalizedBlockNumber(ctx)
+		}
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err

@@ -35,17 +35,18 @@ var (
 
 // Config represents the configuration of the application.
 type Config struct {
-	LogLevel     string             `yaml:"logLevel,omitempty" json:"logLevel" tstype:"LogLevel"`
-	ClusterKey   string             `yaml:"clusterKey,omitempty" json:"clusterKey"`
-	Server       *ServerConfig      `yaml:"server,omitempty" json:"server"`
-	HealthCheck  *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
-	Admin        *AdminConfig       `yaml:"admin,omitempty" json:"admin"`
-	Database     *DatabaseConfig    `yaml:"database,omitempty" json:"database"`
-	Projects     []*ProjectConfig   `yaml:"projects,omitempty" json:"projects"`
-	RateLimiters *RateLimiterConfig `yaml:"rateLimiters,omitempty" json:"rateLimiters"`
-	Metrics      *MetricsConfig     `yaml:"metrics,omitempty" json:"metrics"`
-	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
-	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
+	LogLevel              string                        `yaml:"logLevel,omitempty" json:"logLevel" tstype:"LogLevel"`
+	ClusterKey            string                        `yaml:"clusterKey,omitempty" json:"clusterKey"`
+	Server                *ServerConfig                 `yaml:"server,omitempty" json:"server"`
+	HealthCheck           *HealthCheckConfig            `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	Admin                 *AdminConfig                  `yaml:"admin,omitempty" json:"admin"`
+	Database              *DatabaseConfig               `yaml:"database,omitempty" json:"database"`
+	Projects              []*ProjectConfig              `yaml:"projects,omitempty" json:"projects"`
+	RateLimiters          *RateLimiterConfig            `yaml:"rateLimiters,omitempty" json:"rateLimiters"`
+	Metrics               *MetricsConfig                `yaml:"metrics,omitempty" json:"metrics"`
+	ProxyPools            []*ProxyPoolConfig            `yaml:"proxyPools,omitempty" json:"proxyPools"`
+	Tracing               *TracingConfig                `yaml:"tracing,omitempty" json:"tracing"`
+	LatestBlockGuarantees []*LatestBlockGuaranteeConfig `yaml:"latestBlockGuarantees,omitempty" json:"latestBlockGuarantees,omitempty"`
 }
 
 // LoadConfig loads the configuration from the specified file.
@@ -1240,6 +1241,52 @@ func (c *PunishMisbehaviorConfig) Copy() *PunishMisbehaviorConfig {
 	return copied
 }
 
+// LatestBlockGuaranteeConfig defines a named profile of methods that must be available
+// on at least one upstream before a block number is reported as "latest".
+type LatestBlockGuaranteeConfig struct {
+	Id      string   `yaml:"id" json:"id"`
+	Methods []string `yaml:"methods" json:"methods"`
+}
+
+// BuiltinLatestBlockGuarantees contains hardcoded preset profiles.
+var BuiltinLatestBlockGuarantees = map[string][]string{
+	"frontend-dapps": {
+		"eth_getBlockByNumber",
+		"eth_call",
+		"eth_getBalance",
+		"eth_estimateGas",
+		"eth_gasPrice",
+		"eth_getTransactionReceipt",
+		"eth_getLogs",
+	},
+	"basic-indexing": {
+		"eth_getBlockByNumber",
+		"eth_getTransactionReceipt",
+		"eth_getLogs",
+		"eth_getBlockReceipts",
+	},
+	"complete-indexing": {
+		"eth_getBlockByNumber",
+		"eth_getTransactionReceipt",
+		"eth_getLogs",
+		"eth_getBlockReceipts",
+		"trace_block",
+		"debug_traceBlockByNumber",
+	},
+	"full-archive": {
+		"eth_getBlockByNumber",
+		"eth_getTransactionReceipt",
+		"eth_getLogs",
+		"eth_getBlockReceipts",
+		"trace_block",
+		"debug_traceBlockByNumber",
+		"eth_getProof",
+		"eth_call",
+		"eth_getBalance",
+		"eth_getStorageAt",
+	},
+}
+
 type RateLimiterConfig struct {
 	Store   *RateLimitStoreConfig    `yaml:"store,omitempty" json:"store"`
 	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets" tstype:"RateLimitBudgetConfig[]"`
@@ -1521,6 +1568,11 @@ type DirectiveDefaultsConfig struct {
 	SkipCacheRead     interface{} `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
 	UseUpstream       *string     `yaml:"useUpstream,omitempty" json:"useUpstream"`
 	SkipInterpolation *bool       `yaml:"skipInterpolation,omitempty" json:"skipInterpolation"`
+
+	// LatestBlockGuarantee references a named profile of methods that must be available
+	// on at least one upstream before reporting a block as "latest". Can reference built-in
+	// profiles (frontend-dapps, basic-indexing, complete-indexing, full-archive) or custom ones.
+	LatestBlockGuarantee *string `yaml:"latestBlockGuarantee,omitempty" json:"latestBlockGuarantee,omitempty"`
 
 	// Validation: Block Integrity
 	EnforceHighestBlock        *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`

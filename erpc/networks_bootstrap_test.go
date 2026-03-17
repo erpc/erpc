@@ -73,7 +73,7 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 
 	// Network config without static upstreams to force provider path
 	ncfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
-	net, err := NewNetwork(ctx, &log.Logger, "prjA", ncfg, rlr, upr, mt)
+	net, err := NewNetwork(ctx, &log.Logger, "prjA", ncfg, rlr, upr, mt, nil)
 	require.NoError(t, err)
 
 	// Prepare upstreams with provider tasks and wait; we expect initialization to succeed after provider config conversion.

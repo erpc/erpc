@@ -107,6 +107,18 @@ func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 
 	return args.Get(0).(int64)
 }
 
+func (m *mockNetwork) EvmHighestLatestBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+	return 0
+}
+
+func (m *mockNetwork) EvmHighestFinalizedBlockNumberWithGuarantee(ctx context.Context, methods []string) int64 {
+	return 0
+}
+
+func (m *mockNetwork) ResolveLatestBlockGuarantee(profileId string) ([]string, error) {
+	return nil, nil
+}
+
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
 type mockEvmUpstream struct {

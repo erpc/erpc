@@ -1237,6 +1237,59 @@ func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
 	return v, nil
 }
 
+// SupportsMethodPattern checks if the upstream could support methods matching the given
+// wildcard pattern (e.g., "*trace*"), by checking against the upstream's allowMethods and
+// ignoreMethods config. Uses bidirectional pattern matching as a heuristic that works
+// correctly for typical upstream configurations.
+func (u *Upstream) SupportsMethodPattern(pattern string) (bool, error) {
+	cfg := u.Config()
+
+	u.cfgMu.RLock()
+	defer u.cfgMu.RUnlock()
+
+	supported := true
+
+	// Check ignoreMethods first: if any ignore entry overlaps with our pattern, methods are blocked
+	if cfg.IgnoreMethods != nil {
+		for _, im := range cfg.IgnoreMethods {
+			m1, err := common.WildcardMatch(pattern, im)
+			if err != nil {
+				return false, err
+			}
+			m2, err := common.WildcardMatch(im, pattern)
+			if err != nil {
+				return false, err
+			}
+			if m1 || m2 {
+				supported = false
+				break
+			}
+		}
+	}
+
+	// Check allowMethods: if set and any entry overlaps with our pattern, methods are supported
+	// (overrides ignoreMethods, matching ShouldHandleMethod semantics)
+	if cfg.AllowMethods != nil {
+		for _, am := range cfg.AllowMethods {
+			m1, err := common.WildcardMatch(pattern, am)
+			if err != nil {
+				return false, err
+			}
+			m2, err := common.WildcardMatch(am, pattern)
+			if err != nil {
+				return false, err
+			}
+			if m1 || m2 {
+				return true, nil
+			}
+		}
+		// allowMethods is set but none overlap with our pattern
+		return false, nil
+	}
+
+	return supported, nil
+}
+
 func (u *Upstream) detectFeatures(ctx context.Context) error {
 	cfg := u.Config()
 
