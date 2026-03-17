@@ -1626,6 +1626,13 @@ type EvmNetworkConfig struct {
 	// Default: 0.7 (30% under the estimated block time).
 	DynamicBlockTimeDebounceMultiplier *float64 `yaml:"dynamicBlockTimeDebounceMultiplier,omitempty" json:"dynamicBlockTimeDebounceMultiplier,omitempty"`
 
+	// BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive
+	// the retry delay when all upstreams return ErrUpstreamBlockUnavailable. When the
+	// dynamic block time is known, the delay is blockTime * this multiplier.
+	// Falls back to the static RetryPolicyConfig.BlockUnavailableDelay when block time
+	// is not yet available. Default: 0.8.
+	BlockUnavailableDelayMultiplier *float64 `yaml:"blockUnavailableDelayMultiplier,omitempty" json:"blockUnavailableDelayMultiplier,omitempty"`
+
 	// IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
 	// When enabled (default), "already known" and verified "nonce too low" errors are converted
 	// to success responses with the transaction hash. This allows failsafe policies (retry/hedge)
