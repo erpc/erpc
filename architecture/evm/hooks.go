@@ -125,6 +125,14 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	// Method-specific post-forward hooks with directive-based validation
 	switch methodLower {
 	case "eth_getlogs":
+		// Allow networks to opt eth_getLogs into "empty means missing data" semantics
+		// without changing the default accept-list behavior globally.
+		if shouldMarkEmpty {
+			rs, validationErr = upstreamPostForward_markUnexpectedEmpty(ctx, u, rq, rs, re)
+			if validationErr != nil {
+				break
+			}
+		}
 		rs, validationErr = upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re)
 
 	case "eth_getblockreceipts":

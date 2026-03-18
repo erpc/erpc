@@ -2153,6 +2153,143 @@ func TestNetworkForward_EmptyResultAccept_StopsRetryForAcceptedMethod(t *testing
 		assert.LessOrEqual(t, rpc1Calls, 2, "should not retry beyond initial round")
 		assert.Less(t, elapsed, 500*time.Millisecond, "should return quickly without delays")
 	})
+
+	t.Run("EthGetLogs_MarkEmptyAsError_FallsBackToSecondUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		rpc1Calls := 0
+		rpc2Calls := 0
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getLogs")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc1Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  []interface{}{},
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getLogs")
+			}).
+			Times(1).
+			Reply(200).
+			Map(func(r *http.Response) *http.Response { rpc2Calls++; return r }).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{
+						"address":          "0x0000000000000000000000000000000000000001",
+						"blockHash":        "0xabc",
+						"blockNumber":      "0x100",
+						"data":             "0x",
+						"logIndex":         "0x0",
+						"removed":          false,
+						"topics":           []string{"0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"},
+						"transactionHash":  "0x1111111111111111111111111111111111111111111111111111111111111111",
+						"transactionIndex": "0x0",
+					},
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		require.NoError(t, err)
+
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems:     100_000,
+					MaxTotalSize: "1GB",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"test",
+			[]*common.UpstreamConfig{
+				{Id: "rpc1", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Id: "rpc2", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			},
+			ssr,
+			rateLimitersRegistry,
+			vr,
+			pr,
+			nil,
+			metricsTracker,
+			time.Second,
+			nil,
+			nil,
+		)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
+		networkConfig := &common.NetworkConfig{
+			Architecture:      common.ArchitectureEvm,
+			DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			Evm: &common.EvmNetworkConfig{
+				ChainId:                 123,
+				MarkEmptyAsErrorMethods: append(common.DefaultMarkEmptyAsErrorMethods(), "eth_getLogs"),
+			},
+			Failsafe: []*common.FailsafeConfig{{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts:       3,
+					Delay:             common.Duration(10 * time.Millisecond),
+					EmptyResultAccept: common.DefaultEmptyResultAccept(),
+				},
+			}},
+		}
+
+		network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+		require.NoError(t, err)
+
+		err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
+		require.NoError(t, err)
+
+		err = network.Bootstrap(ctx)
+		require.NoError(t, err)
+
+		upstream.ReorderUpstreams(network.upstreamsRegistry, "rpc1", "rpc2")
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x100"}]}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err, "eth_getLogs should fall back to the second upstream when empty is marked as missing data")
+		require.NotNil(t, resp)
+
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.False(t, jrr.IsResultEmptyish(), "response should contain logs from the second upstream")
+		assert.Equal(t, 1, rpc1Calls, "rpc1 should be called once")
+		assert.Equal(t, 1, rpc2Calls, "rpc2 should be called once after rpc1 empty is reclassified")
+		assert.Equal(t, 0, resp.Retries(), "second upstream should satisfy the request within the first network attempt")
+	})
 }
 
 // Test: blockUnavailableDelay is respected with timing verification.

@@ -155,6 +155,30 @@ func TestUpstreamPostForward_UnexpectedEmpty_NonListedMethods(t *testing.T) {
 	}
 }
 
+func TestUpstreamPostForward_UnexpectedEmpty_EthGetLogsOptIn(t *testing.T) {
+	network := newTestNetworkWithMarkEmptyMethods([]string{"eth_getLogs"})
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2"}]}`))
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`"1"`), []byte(`[]`), nil)
+	assert.NoError(t, err)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+
+	outResp, err := HandleUpstreamPostForward(
+		context.Background(),
+		network,
+		nil,
+		req,
+		resp,
+		nil,
+		false,
+	)
+
+	assert.Equal(t, resp, outResp, "response pointer should be unchanged on missing-data conversion")
+	assert.Error(t, err, "eth_getLogs should be converted to missing data when opted in")
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData), "expected ErrEndpointMissingData")
+}
+
 func TestUpstreamPostForward_UnexpectedEmpty_CustomConfiguredMethods(t *testing.T) {
 	// Test that users can configure custom methods to trigger the mark-empty behavior
 	customMethods := []string{"custom_method", "another_custom"}
