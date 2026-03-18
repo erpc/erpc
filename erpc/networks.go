@@ -650,11 +650,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				//    emptyResultAccept and consensus is not required,
 				//    because failsafe would accept the empty result anyway
 				//    so trying more upstreams just wastes time on slow ones.
+				//  - eth_getLogs is excluded from that optimization because
+				//    another upstream in the same round may have indexed logs
+				//    for the requested range even when the first returns [].
 				//  - Otherwise emptyish results continue to the next upstream.
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := r.IsResultEmptyish()
 					acceptEmpty := !emptyish ||
 						(!failsafeExecutor.consensusPolicyEnabled &&
+							!strings.EqualFold(method, "eth_getLogs") &&
 							slices.Contains(failsafeExecutor.emptyResultAccept, method))
 					if acceptEmpty {
 						r.SetAttempts(exec.Attempts())
