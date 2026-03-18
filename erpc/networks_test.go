@@ -12148,7 +12148,7 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Two upstreams: node-a supports everything, node-b ignores trace_block
+		// Two upstreams: node-a supports everything, node-b ignores trace and debug
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "full-node",
@@ -12160,7 +12160,7 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 			Id:            "partial-node",
 			Endpoint:      "http://partial.localhost",
 			Evm:           &common.EvmUpstreamConfig{ChainId: 123},
-			IgnoreMethods: []string{"trace_*"},
+			IgnoreMethods: []string{"trace_*", "debug_*"},
 		}
 
 		gock.New("http://full.localhost").
@@ -12236,13 +12236,13 @@ func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
 		require.NotNil(t, fullNode)
 		require.NotNil(t, partialNode)
 
-		// partial-node has higher block but doesn't support trace_block
+		// partial-node has higher block but doesn't support trace or debug methods
 		fullNode.EvmStatePoller().SuggestLatestBlock(999)
 		partialNode.EvmStatePoller().SuggestLatestBlock(1000)
 		time.Sleep(50 * time.Millisecond)
 
 		// EvmHighestLatestBlockNumber should apply the default guarantee
-		// complete-indexing includes trace_block which only full-node supports (latest=999)
+		// complete-indexing includes *trace*|*debug* which only full-node supports (latest=999)
 		highest := network.EvmHighestLatestBlockNumber(ctx)
 		assert.Equal(t, int64(999), highest,
 			"Default guarantee should constrain latest block to the trace-capable upstream's block")
