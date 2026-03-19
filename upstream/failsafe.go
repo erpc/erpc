@@ -450,19 +450,19 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 	// The Forward() execution loop already tries all upstreams for retryable errors
 	// before returning to the retry policy, so these delays fire only after a
 	// full round of upstream attempts.
-	var emptyResultDelayDuration, blockUnavailableDelayDuration time.Duration
+	var emptyResultDelayDuration, fixedBlockUnavailableDelay time.Duration
 	if cfg.EmptyResultDelay > 0 {
 		emptyResultDelayDuration = cfg.EmptyResultDelay.Duration()
 	}
 	if cfg.BlockUnavailableDelay > 0 {
-		blockUnavailableDelayDuration = cfg.BlockUnavailableDelay.Duration()
+		fixedBlockUnavailableDelay = cfg.BlockUnavailableDelay.Duration()
 	}
-	hasBlockUnavailableDelay := blockUnavailableDelayDuration > 0 || dynamicBlockUnavailableDelay != nil
+	hasBlockUnavailableDelay := fixedBlockUnavailableDelay > 0 || dynamicBlockUnavailableDelay != nil
 	if emptyResultDelayDuration > 0 || hasBlockUnavailableDelay {
 		builder = builder.WithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
 			if hasBlockUnavailableDelay {
 				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
-					return resolveBlockUnavailableDelay(dynamicBlockUnavailableDelay, blockUnavailableDelayDuration)
+					return resolveBlockUnavailableDelay(dynamicBlockUnavailableDelay, fixedBlockUnavailableDelay)
 				}
 			}
 			if emptyResultDelayDuration > 0 {
@@ -930,14 +930,14 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 
 // resolveBlockUnavailableDelay returns the delay to use for a block-unavailable retry.
 // Priority: dynamic block-time-derived delay > static config > normal backoff (-1).
-func resolveBlockUnavailableDelay(dynamicProvider func() time.Duration, staticDelay time.Duration) time.Duration {
+func resolveBlockUnavailableDelay(dynamicProvider func() time.Duration, fixedDelay time.Duration) time.Duration {
 	if dynamicProvider != nil {
 		if d := dynamicProvider(); d > 0 {
 			return d
 		}
 	}
-	if staticDelay > 0 {
-		return staticDelay
+	if fixedDelay > 0 {
+		return fixedDelay
 	}
 	return -1
 }
