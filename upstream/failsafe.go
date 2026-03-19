@@ -465,6 +465,10 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 					return resolveBlockUnavailableDelay(dynamicBlockUnavailableDelay, fixedBlockUnavailableDelay)
 				}
 			}
+			// Empty/missing data: custom delay for empty responses or missing-data errors.
+			// The empty result case covers upstreams that returned valid-but-empty responses.
+			// The missing-data error case covers upstreams that returned JSON-RPC errors
+			// (e.g. "missing trie node") which the hooks converted to ErrEndpointMissingData.
 			if emptyResultDelayDuration > 0 {
 				if result := exec.LastResult(); result != nil && !result.IsObjectNull() && result.IsResultEmptyish() {
 					return emptyResultDelayDuration
