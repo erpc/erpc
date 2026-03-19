@@ -48,6 +48,11 @@ projects:
           # shorter than the estimated block time, preferring fresher data over fewer RPC calls.
           # DEFAULT: 0.7
           dynamicBlockTimeDebounceMultiplier: 0.7
+          # (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+          # the retry delay when all upstreams return block-unavailable. Falls back to the
+          # static failsafe retry blockUnavailableDelay when block time is not yet available.
+          # DEFAULT: 0.8
+          blockUnavailableDelayMultiplier: 0.8
           # (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
           # When true (default), duplicate transaction errors are converted to success responses,
           # allowing safe use of retry/hedge policies with transaction sending.
@@ -189,6 +194,11 @@ export default createConfig({
             * the debounce interval for block polling. Default: 0.7
             */
             dynamicBlockTimeDebounceMultiplier: 0.7,
+            /**
+            * (OPTIONAL) Multiplier applied to the dynamically estimated block time to derive
+            * the retry delay when all upstreams return block-unavailable. Default: 0.8
+            */
+            blockUnavailableDelayMultiplier: 0.8,
             /**
             * (OPTIONAL) Enable idempotent transaction broadcasting for eth_sendRawTransaction.
             * When true (default), duplicate transaction errors are converted to success responses,

@@ -92,7 +92,7 @@ The pre-send block availability check is the most important mechanism. It preven
 | `emptyResultConfidence` | `failsafe[].retry` | `finalizedBlock` | When to trust an empty result: `blockHead` (block ≤ latest) or `finalizedBlock` (block ≤ finalized) |
 | `emptyResultMaxAttempts` | `failsafe[].retry` | same as `maxAttempts` | Max retry attempts specifically for empty results |
 | `emptyResultDelay` | `failsafe[].retry` | _(none)_ | Fixed delay between empty-result retries (overrides normal `delay`) |
-| `blockUnavailableDelay` | `failsafe[].retry` | _(none)_ | Delay before retrying when upstreams don't have the block yet |
+| `blockUnavailableDelay` | `failsafe[].retry` | _(none)_ | Fixed fallback delay before retrying when upstreams don't have the block yet. When the network's dynamic block time is available, the delay is derived automatically (`blockTime × blockUnavailableDelayMultiplier`) and this value is only used during startup warmup. |
 
 <Callout type="info">
 **You generally don't need to configure `markEmptyAsErrorMethods`.** eRPC ships with sensible defaults that cover all common point-lookup methods (`eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getTransactionByHash`, traces, etc.). The defaults automatically treat `null` results for these methods as missing data, triggering failover to other upstreams. Only override this if you have unusual methods or upstream behaviors.
@@ -178,7 +178,7 @@ projects:
 | Arbitrum | 250ms | `200ms` | 5 |
 | Monad | 500ms | `200ms` | 3 |
 
-**`blockUnavailableDelay`** — set to `500ms`–`2s` if you see "block unavailable" errors.
+**`blockUnavailableDelay`** — automatically derived from the network's dynamic block time (`blockTime × 0.8` by default). The static value is only used as a fallback during the first few seconds after startup before the block time estimate warms up. You can tune the multiplier with `evm.blockUnavailableDelayMultiplier` in the network config.
 
 **`emptyResultAccept` rules of thumb:**
 - Always include `eth_getLogs` — empty logs is a valid response.
