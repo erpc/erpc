@@ -196,6 +196,13 @@ func TestDatabaseStrategyAuthenticate_LoadsAllowedOriginsFromRecordAndCacheInval
 	assert.Equal(t, []string{"https://app.example.com"}, user.AllowedOrigins)
 	assert.Equal(t, "db-budget", user.RateLimitBudget)
 
+	authorizer := registry.strategies[0]
+	dbStrategy, ok := authorizer.strategy.(*DatabaseStrategy)
+	require.True(t, ok)
+	if dbStrategy.cache != nil {
+		dbStrategy.cache.Wait()
+	}
+
 	writeDatabaseUserRecord(t, connector, "db-secret", map[string]interface{}{
 		"userId":         "db-user",
 		"enabled":        true,
@@ -205,18 +212,17 @@ func TestDatabaseStrategyAuthenticate_LoadsAllowedOriginsFromRecordAndCacheInval
 	disallowedReq := newOriginAwareRequest(http.Header{
 		"Origin": []string{"https://new.example.com"},
 	})
-	require.Eventually(t, func() bool {
-		_, err = registry.Authenticate(context.Background(), disallowedReq, "eth_call", &AuthPayload{
-			Type:   common.AuthTypeDatabase,
-			Secret: &SecretPayload{Value: "db-secret"},
-		})
-		return common.HasErrorCode(err, common.ErrCodeAuthUnauthorized)
-	}, time.Second, 10*time.Millisecond)
+	_, err = registry.Authenticate(context.Background(), disallowedReq, "eth_call", &AuthPayload{
+		Type:   common.AuthTypeDatabase,
+		Secret: &SecretPayload{Value: "db-secret"},
+	})
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeAuthUnauthorized))
 
-	authorizer := registry.strategies[0]
-	dbStrategy, ok := authorizer.strategy.(*DatabaseStrategy)
-	require.True(t, ok)
 	dbStrategy.InvalidateCache("db-secret")
+	if dbStrategy.cache != nil {
+		dbStrategy.cache.Wait()
+	}
 
 	refreshedReq := newOriginAwareRequest(http.Header{
 		"Origin": []string{"https://new.example.com"},
