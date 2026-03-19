@@ -12,6 +12,7 @@ Each project can have one or more authentication strategies enabled. When any au
 
 The appropriate strategy will be activated based on request payload. For example if "token" is present as a query string then "secret" strategy will be activated. These are currently supported strategies:
 - [`secret`](#secret)
+- [`database`](#database)
 - [`network`](#network)
 - [`jwt`](#jwt)
 - [`siwe`](#siwe)
@@ -271,6 +272,9 @@ projects:
         secret:
           id: "custom-id-for-metrics"
           value: "some-random-secret-value" # To use env vars: ${MY_SECRET_VALUE}
+          allowedOrigins:
+          - "https://app.example.com"
+          - "https://*.example.com"
     upstreams:
     # ...
 rateLimiters:
@@ -305,6 +309,10 @@ export default createConfig({
             secret: {
               id: "custom-id-for-metrics",
               value: "some-random-secret-value", // To use env vars: process.env.MY_SECRET_VALUE
+              allowedOrigins: [
+                "https://app.example.com",
+                "https://*.example.com",
+              ],
             },
           },
         ],
@@ -334,6 +342,12 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+If `secret.allowedOrigins` is provided, eRPC only accepts requests whose `Origin` header matches one of the configured patterns. When `Origin` is missing, eRPC falls back to the `Referer` header and matches against its `scheme://host` portion. Wildcards use the same matcher as project CORS config, so patterns like `https://*.example.com` are supported.
+
+<Callout type="warning">
+    An empty `allowedOrigins` list means "no restriction". If you do configure it, non-browser clients must still send either an `Origin` header or a `Referer` header that resolves to an allowed origin, otherwise authentication will be rejected.
+</Callout>
+
 The client must provide this value either via a query string parameter:
 ```bash
 curl -X POST https://localhost:4000/main/evm/42161?secret=some-random-secret-value \
@@ -346,6 +360,89 @@ curl -X POST https://localhost:4000 \
   -H "X-ERPC-Secret-Token: some-random-secret-value"
   # ...
 ```
+
+## `database` strategy
+
+Use `database` strategy when API keys should be looked up from a connector instead of being hard-coded in config. This is useful when you want to add, disable, or update keys without rolling out config changes.
+
+<Callout type="info">
+    Database-backed API keys support the same runtime per-key fields as static secrets, including `rateLimitBudget` and `allowedOrigins`.
+</Callout>
+
+The auth strategy itself only configures where eRPC should read keys from:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: database
+        database:
+          connector:
+            id: auth-db
+            driver: postgresql
+            postgresql:
+              connectionUri: ${AUTH_DB_URI}
+          cache:
+            ttl: 1m
+    upstreams:
+    # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      auth: {
+        strategies: [
+          {
+            type: "database",
+            database: {
+              connector: {
+                id: "auth-db",
+                driver: "postgresql",
+                postgresql: {
+                  connectionUri: process.env.AUTH_DB_URI!,
+                },
+              },
+              cache: {
+                ttl: "1m",
+              },
+            },
+          },
+        ],
+      },
+      upstreams: [
+        // ...
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+Each API key record can then carry `userId`, `enabled`, and optional per-key controls such as `rateLimitBudget` and `allowedOrigins`:
+
+```json
+{
+  "userId": "customer-123",
+  "enabled": true,
+  "rateLimitBudget": "premium",
+  "allowedOrigins": [
+    "https://app.example.com",
+    "https://admin.example.com"
+  ]
+}
+```
+
+For database-backed keys, changing `allowedOrigins` is just a record update. After the cached entry is invalidated or expires, subsequent auth requests will enforce the new allowlist immediately.
 
 ## `network` strategy
 
