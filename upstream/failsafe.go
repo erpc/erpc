@@ -930,9 +930,9 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 
 // resolveBlockUnavailableDelay returns the delay to use for a block-unavailable retry.
 // Priority: dynamic block-time-derived delay > static config > normal backoff (-1).
-func resolveBlockUnavailableDelay(dynamicProvider func() time.Duration, fixedDelay time.Duration) time.Duration {
-	if dynamicProvider != nil {
-		if d := dynamicProvider(); d > 0 {
+func resolveBlockUnavailableDelay(dynamicDelay func() time.Duration, fixedDelay time.Duration) time.Duration {
+	if dynamicDelay != nil {
+		if d := dynamicDelay(); d > 0 {
 			return d
 		}
 	}
