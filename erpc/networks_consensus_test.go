@@ -2693,13 +2693,20 @@ func startConsensusMockServers(t *testing.T, tc consensusTestCase) {
 
 	for i, upstreamCfg := range tc.upstreams {
 		idx := i
+		expectedCount := 1
+		if tc.expectedCalls != nil && len(tc.expectedCalls) > idx {
+			expectedCount = tc.expectedCalls[idx]
+		}
+		optionalCall := consensusCallMayBeSkipped(tc, idx, expectedCount)
 
-		hasMockResp := idx < len(tc.mockResponses) &&
-			(tc.expectedCalls == nil || (len(tc.expectedCalls) > idx && tc.expectedCalls[idx] != 0))
+		hasMockResp := idx < len(tc.mockResponses) && (expectedCount != 0 || optionalCall)
 
 		var mockResp mockResponse
 		if hasMockResp {
 			mockResp = tc.mockResponses[idx]
+			if optionalCall && expectedCount == 0 {
+				mockResp.delay = 0
+			}
 		}
 
 		blockTags := map[string]bool{"latest": true, "finalized": true, "safe": true, "pending": true, "earliest": true}
@@ -2785,22 +2792,68 @@ func startConsensusMockServers(t *testing.T, tc consensusTestCase) {
 		// Capture loop variables for t.Cleanup closure
 		capturedIdx := idx
 		capturedSrv := srv
-		var expectedCount int
-		if tc.expectedCalls != nil && len(tc.expectedCalls) > capturedIdx {
-			expectedCount = tc.expectedCalls[capturedIdx]
-		} else {
-			expectedCount = 1
-		}
+		capturedExpectedCount := expectedCount
+		capturedOptionalCall := optionalCall
 
 		t.Cleanup(func() {
 			capturedSrv.Close()
-			if expectedCount != -1 { // -1 means optional (was Persist in gock)
+			if capturedExpectedCount != -1 { // -1 means optional (was Persist in gock)
 				actual := int(callCounts[capturedIdx].Load())
-				assert.Equal(t, expectedCount, actual,
+				if capturedOptionalCall {
+					assert.GreaterOrEqual(t, actual, 0)
+					assert.LessOrEqual(t, actual, 1,
+						"upstream %d should be called at most once before consensus cancellation races", capturedIdx+1)
+					return
+				}
+				assert.Equal(t, capturedExpectedCount, actual,
 					"upstream %d call count mismatch", capturedIdx+1)
 			}
 		})
 	}
+}
+
+func consensusCallMayBeSkipped(tc consensusTestCase, upstreamIdx int, expectedCount int) bool {
+	if tc.consensusConfig == nil || expectedCount < 0 || expectedCount > 1 {
+		return false
+	}
+	if upstreamIdx >= tc.consensusConfig.MaxParticipants {
+		return false
+	}
+	if tc.consensusConfig.AgreementThreshold >= tc.consensusConfig.MaxParticipants {
+		return false
+	}
+
+	// Consensus starts eligible participants eagerly and cancels laggards only after a
+	// winner is observed. If the threshold can still be met without this upstream,
+	// scheduler timing makes the first HTTP call optional even though the outcome is fixed.
+	threshold := tc.consensusConfig.AgreementThreshold
+	if threshold <= 1 {
+		return min(tc.consensusConfig.MaxParticipants, len(tc.mockResponses))-1 >= 1
+	}
+
+	eligibleParticipants := min(tc.consensusConfig.MaxParticipants, len(tc.mockResponses))
+	groupCounts := make(map[string]int, eligibleParticipants)
+	for idx := 0; idx < eligibleParticipants; idx++ {
+		if idx == upstreamIdx {
+			continue
+		}
+		key := consensusMockResponseKey(tc.mockResponses[idx])
+		groupCounts[key]++
+		if groupCounts[key] >= threshold {
+			return true
+		}
+	}
+
+	return false
+}
+
+func consensusMockResponseKey(resp mockResponse) string {
+	body, err := json.Marshal(resp.body)
+	if err != nil {
+		return fmt.Sprintf("%d|%#v", resp.status, resp.body)
+	}
+
+	return fmt.Sprintf("%d|%s", resp.status, body)
 }
 
 func runConsensusTest(t *testing.T, tc consensusTestCase) {
