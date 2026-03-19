@@ -292,6 +292,10 @@ func (s *DatabaseStrategy) ClearCache() {
 		s.cache.Clear()
 		s.logger.Info().Msg("cleared all API key cache entries")
 	}
+	if s.negCache != nil {
+		s.negCache.Clear()
+		s.logger.Info().Msg("cleared all API key negative cache entries")
+	}
 }
 
 // Close closes the cache and performs cleanup

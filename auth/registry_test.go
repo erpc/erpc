@@ -205,12 +205,13 @@ func TestDatabaseStrategyAuthenticate_LoadsAllowedOriginsFromRecordAndCacheInval
 	disallowedReq := newOriginAwareRequest(http.Header{
 		"Origin": []string{"https://new.example.com"},
 	})
-	_, err = registry.Authenticate(context.Background(), disallowedReq, "eth_call", &AuthPayload{
-		Type:   common.AuthTypeDatabase,
-		Secret: &SecretPayload{Value: "db-secret"},
-	})
-	require.Error(t, err)
-	assert.True(t, common.HasErrorCode(err, common.ErrCodeAuthUnauthorized))
+	require.Eventually(t, func() bool {
+		_, err = registry.Authenticate(context.Background(), disallowedReq, "eth_call", &AuthPayload{
+			Type:   common.AuthTypeDatabase,
+			Secret: &SecretPayload{Value: "db-secret"},
+		})
+		return common.HasErrorCode(err, common.ErrCodeAuthUnauthorized)
+	}, time.Second, 10*time.Millisecond)
 
 	authorizer := registry.strategies[0]
 	dbStrategy, ok := authorizer.strategy.(*DatabaseStrategy)
