@@ -29,5 +29,8 @@ func (s *SecretStrategy) Authenticate(ctx context.Context, req *common.Normalize
 	if s.cfg.RateLimitBudget != "" {
 		user.RateLimitBudget = s.cfg.RateLimitBudget
 	}
+	if len(s.cfg.AllowedOrigins) > 0 {
+		user.AllowedOrigins = s.cfg.AllowedOrigins
+	}
 	return user, nil
 }

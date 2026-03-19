@@ -931,6 +931,7 @@ export interface SecretStrategyConfig {
      * RateLimitBudget, if set, is applied to the authenticated user from this strategy
      */
     rateLimitBudget?: string;
+    allowedOrigins?: string[];
 }
 export interface DatabaseStrategyConfig {
     connector?: ConnectorConfig;
@@ -1079,5 +1080,6 @@ export type Upstream = any;
 export interface User {
     id: string;
     ratelimitbudget: string;
+    allowedOrigins?: string[];
 }
 //# sourceMappingURL=generated.d.ts.map

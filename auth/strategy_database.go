@@ -159,9 +159,10 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 		}
 
 		var userData struct {
-			UserId          string `json:"userId"`
-			Enabled         *bool  `json:"enabled,omitempty"`
-			RateLimitBudget string `json:"rateLimitBudget,omitempty"`
+			UserId          string   `json:"userId"`
+			Enabled         *bool    `json:"enabled,omitempty"`
+			RateLimitBudget string   `json:"rateLimitBudget,omitempty"`
+			AllowedOrigins  []string `json:"allowedOrigins,omitempty"`
 		}
 		if err := json.Unmarshal(valueBytes, &userData); err != nil {
 			s.logger.Error().Err(err).Str("apiKey", apiKey).RawJSON("data", valueBytes).Msg("failed to parse user data from database")
@@ -185,6 +186,9 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 		user := &common.User{Id: userData.UserId}
 		if userData.RateLimitBudget != "" {
 			user.RateLimitBudget = userData.RateLimitBudget
+		}
+		if len(userData.AllowedOrigins) > 0 {
+			user.AllowedOrigins = userData.AllowedOrigins
 		}
 		return &authFetchResult{user: user, err: nil, neg: false}, nil
 	})
@@ -275,6 +279,10 @@ func (s *DatabaseStrategy) InvalidateCache(apiKey string) {
 	if s.cache != nil {
 		s.cache.Del(apiKey)
 		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key cache entry")
+	}
+	if s.negCache != nil {
+		s.negCache.Del(apiKey)
+		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key negative cache entry")
 	}
 }
 

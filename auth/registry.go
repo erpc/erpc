@@ -74,6 +74,9 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		if user != nil && req != nil {
 			req.SetUser(user)
 		}
+		if err := enforceOriginAllowlist(req, user); err != nil {
+			return user, err
+		}
 		// If authentication is passed then apply and consume the rate limit
 		if err := az.acquireRateLimitPermit(ctx, req, method); err != nil {
 			return user, err
@@ -93,6 +96,32 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 
 	// If no strategy matched or succeeded, consider the request unauthorized
 	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+}
+
+func enforceOriginAllowlist(req *common.NormalizedRequest, user *common.User) error {
+	if user == nil || len(user.AllowedOrigins) == 0 {
+		return nil
+	}
+
+	origin := ""
+	if req != nil {
+		origin = req.RequestOrigin()
+	}
+	if origin == "" {
+		return common.NewErrAuthUnauthorized("origin", "missing request origin")
+	}
+
+	for _, allowedOrigin := range user.AllowedOrigins {
+		match, err := common.WildcardMatch(allowedOrigin, origin)
+		if err != nil {
+			continue
+		}
+		if match {
+			return nil
+		}
+	}
+
+	return common.NewErrAuthUnauthorized("origin", "request origin is not allowed")
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

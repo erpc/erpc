@@ -125,6 +125,9 @@ func (a *Authorizer) acquireRateLimitPermit(ctx context.Context, req *common.Nor
 	if effectiveBudget == "" {
 		return nil
 	}
+	if a.rateLimitersRegistry == nil {
+		return nil
+	}
 
 	rlb, errNetLimit := a.rateLimitersRegistry.GetBudget(effectiveBudget)
 	if errNetLimit != nil {
