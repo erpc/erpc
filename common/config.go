@@ -680,6 +680,7 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 
 type ShadowUpstreamConfig struct {
 	Enabled      bool                `yaml:"enabled" json:"enabled"`
+	SampleRate   float64             `yaml:"sampleRate,omitempty" json:"sampleRate"`
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
 }
 
