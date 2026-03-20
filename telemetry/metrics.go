@@ -335,6 +335,12 @@ var (
 		Help:      "Total number of shadow upstream responses that differ from the expected response.",
 	}, []string{"project", "vendor", "network", "upstream", "category", "finality", "emptyish", "larger"})
 
+	MetricShadowResponseSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "shadow_response_skipped_total",
+		Help:      "Total number of shadow upstream requests skipped due to sampling.",
+	}, []string{"project", "vendor", "network", "upstream", "category"})
+
 	MetricShadowResponseErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "shadow_response_error_total",
