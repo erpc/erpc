@@ -1,3 +1,4 @@
+/* #nosec G404 */
 package erpc
 
 import (
@@ -61,8 +62,8 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 		}
 		// Apply sample rate: skip this shadow upstream based on configured probability
 		sampleRate := 1.0
-		if ups.Config().Shadow.SampleRate > 0 {
-			sampleRate = ups.Config().Shadow.SampleRate
+		if ups.Config().Shadow.SampleRate != nil {
+			sampleRate = *ups.Config().Shadow.SampleRate
 		}
 		if sampleRate < 1.0 && rand.Float64() >= sampleRate {
 			p.Logger.Debug().
