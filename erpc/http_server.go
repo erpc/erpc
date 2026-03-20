@@ -427,6 +427,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}()
 
 				nq := common.NewNormalizedRequest(rawReq)
+				nq.ForwardHeaders = make(http.Header)
+
 				// Help GC: drop reference to the rawReq slice copy in the parent slice as soon as possible
 				rawReq = nil
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
@@ -442,8 +444,78 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
+				if project != nil {
+					for _, matchKey := range project.Config.ForwardHeaders {
+						for key, values := range headers {
+							matches, err := common.WildcardMatch(matchKey, key)
+							if err != nil {
+								responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
+								common.EndRequestSpan(requestCtx, nil, responses[index])
+								return
+							}
+							if matches {
+								for _, value := range values {
+									nq.ForwardHeaders.Add(matchKey, value)
+								}
+							}
+						}
+					}
+				}
+
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
+
+				shouldHandleMethod := true
+
+				if project != nil && project.Config.IgnoreMethods != nil {
+					for _, m := range project.Config.IgnoreMethods {
+						match, err := common.WildcardMatch(m, method)
+						if err != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, err)
+							return
+						}
+						if match {
+							shouldHandleMethod = false
+							break
+						}
+					}
+				}
+
+				if project != nil && project.Config.AllowMethods != nil {
+					for _, m := range project.Config.AllowMethods {
+						match, err := common.WildcardMatch(m, method)
+						if err != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, err)
+							return
+						}
+						if match {
+							shouldHandleMethod = true
+							break
+						}
+					}
+				}
+
+				if !shouldHandleMethod {
+					jsonrpcVersion := "2.0"
+					var reqId interface{}
+					if jrr, err := nq.JsonRpcRequest(); err != nil {
+						jsonrpcVersion = jrr.JSONRPC
+						reqId = jrr.ID
+					}
+					responses[index] = &HttpJsonRpcErrorResponse{
+						Jsonrpc: jsonrpcVersion,
+						Id:      reqId,
+						Error: map[string]interface{}{
+							"code":    int(common.JsonRpcErrorUnsupportedException),
+							"message": fmt.Sprintf("method not supported: %s", method),
+						},
+						Cause: nil,
+					}
+					common.EndRequestSpan(requestCtx, nil, nil)
+					return
+				}
 
 				var ap *auth.AuthPayload
 				var err error
