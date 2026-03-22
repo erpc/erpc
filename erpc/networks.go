@@ -28,7 +28,7 @@ type FailsafeExecutor struct {
 	method                 string
 	finalities             []common.DataFinalityState
 	executor               failsafe.Executor[*common.NormalizedResponse]
-	timeout                *time.Duration
+	timeout                upstream.TimeoutFunc
 	consensusPolicyEnabled bool
 	// emptyResultAccept lists methods for which the first emptyish result
 	// short-circuits the upstream loop. Without this the loop tries every
@@ -525,17 +525,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 			}
 			if failsafeExecutor.timeout != nil {
-				var cancelFn context.CancelFunc
-				execSpanCtx, cancelFn = context.WithTimeout(
-					execSpanCtx,
-					// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
-					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-					//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
-					//      but allow the failsafe execution to fail with timeout first for proper error handling.
-					*failsafeExecutor.timeout+5*time.Millisecond,
-				)
-
-				defer cancelFn()
+				if td := failsafeExecutor.timeout(execSpanCtx, effectiveReq); td != nil {
+					var cancelFn context.CancelFunc
+					execSpanCtx, cancelFn = context.WithTimeout(
+						execSpanCtx,
+						// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
+						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
+						//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
+						//      but allow the failsafe execution to fail with timeout first for proper error handling.
+						*td+5*time.Millisecond,
+					)
+					defer cancelFn()
+				}
 			}
 
 			// Try all upstreams in a single execution before returning to failsafe.

@@ -453,6 +453,7 @@ var (
 	MetricNetworkEvmGetLogsRangeRequested     *LabeledHistogram
 	MetricNetworkEvmTraceFilterRangeRequested *LabeledHistogram
 	MetricNetworkHedgeDelaySeconds            *LabeledHistogram
+	MetricNetworkTimeoutDurationSeconds       *LabeledHistogram
 	MetricConsensusResponsesCollected         *LabeledHistogram
 	MetricConsensusAgreementCount             *LabeledHistogram
 	MetricX402FacilitatorRequestDuration      *LabeledHistogram
@@ -542,6 +543,13 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Name:      "network_hedge_delay_seconds",
 		Help:      "Hedge delay used for requests (seconds).",
 		Buckets:   []float64{0.01, 0.03, 0.05, 0.2, 0.3, 0.5, 0.7, 1, 3},
+	}, []string{"project", "network", "category", "finality"})
+
+	MetricNetworkTimeoutDurationSeconds = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "network_timeout_duration_seconds",
+		Help:      "Dynamic timeout duration computed for requests (seconds).",
+		Buckets:   []float64{0.05, 0.1, 0.3, 0.5, 1, 3, 5, 10, 30},
 	}, []string{"project", "network", "category", "finality"})
 
 	MetricConsensusResponsesCollected = NewLabeledHistogram(prometheus.HistogramOpts{
@@ -635,6 +643,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
 	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
 	MetricNetworkHedgeDelaySeconds = registerOrReuse(MetricNetworkHedgeDelaySeconds)
+	MetricNetworkTimeoutDurationSeconds = registerOrReuse(MetricNetworkTimeoutDurationSeconds)
 	MetricConsensusResponsesCollected = registerOrReuse(MetricConsensusResponsesCollected)
 	MetricConsensusAgreementCount = registerOrReuse(MetricConsensusAgreementCount)
 	MetricX402FacilitatorRequestDuration = registerOrReuse(MetricX402FacilitatorRequestDuration)

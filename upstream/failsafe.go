@@ -786,7 +786,15 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 }
 
 func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
-	builder := timeout.Builder[*common.NormalizedResponse](cfg.Duration.Duration())
+	// When quantile-based timeout is configured, the failsafe-go timeout policy
+	// acts as a safety net using MaxDuration (or Duration as fallback). The actual
+	// dynamic timeout is enforced via context.WithTimeout in the executor callback.
+	dur := cfg.Duration.Duration()
+	if cfg.Quantile > 0 && cfg.MaxDuration.Duration() > 0 {
+		dur = cfg.MaxDuration.Duration()
+	}
+
+	builder := timeout.Builder[*common.NormalizedResponse](dur)
 
 	if logger.GetLevel() == zerolog.TraceLevel {
 		builder.OnTimeoutExceeded(func(event failsafe.ExecutionDoneEvent[*common.NormalizedResponse]) {
@@ -795,6 +803,69 @@ func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig
 	}
 
 	return builder.Build(), nil
+}
+
+// NewTimeoutFunc builds a TimeoutFunc from config. When Quantile > 0, the
+// timeout is computed dynamically from method latency percentiles. Otherwise
+// it returns the fixed Duration.
+func NewTimeoutFunc(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) TimeoutFunc {
+	if cfg.Quantile > 0 {
+		fixedDur := cfg.Duration.Duration()
+		minDur := cfg.MinDuration.Duration()
+		maxDur := cfg.MaxDuration.Duration()
+		quantile := cfg.Quantile
+
+		return func(ctx context.Context, req *common.NormalizedRequest) *time.Duration {
+			ntw := req.Network()
+			if ntw != nil {
+				m, _ := req.Method()
+				if m != "" {
+					mt := ntw.GetMethodMetrics(m)
+					if mt != nil {
+						qt := mt.GetResponseQuantiles()
+						dr := qt.GetQuantile(quantile)
+						if dr > 0 {
+							// Clamp to [minDur, maxDur]
+							if minDur > 0 && dr < minDur {
+								dr = minDur
+							}
+							if maxDur > 0 && dr > maxDur {
+								dr = maxDur
+							}
+							finality := req.Finality(ctx)
+							telemetry.ObserverHandle(
+								telemetry.MetricNetworkTimeoutDurationSeconds,
+								ntw.ProjectId(),
+								req.NetworkLabel(),
+								m,
+								finality.String(),
+							).Observe(dr.Seconds())
+							logger.Trace().Object("request", req).Dur("timeout", dr).Msgf("calculated dynamic timeout")
+							return &dr
+						}
+					}
+				}
+			}
+			// Cold start fallback: use Duration if set, otherwise MaxDuration.
+			fallback := fixedDur
+			if fallback == 0 {
+				fallback = maxDur
+			}
+			if fallback > 0 {
+				return &fallback
+			}
+			return nil
+		}
+	}
+
+	// Fixed timeout: return the configured duration.
+	dur := cfg.Duration.Duration()
+	if dur == 0 {
+		return nil
+	}
+	return func(_ context.Context, _ *common.NormalizedRequest) *time.Duration {
+		return &dur
+	}
 }
 
 func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {

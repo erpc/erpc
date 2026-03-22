@@ -1153,7 +1153,10 @@ func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
 }
 
 type TimeoutPolicyConfig struct {
-	Duration Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
+	Duration    Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
+	Quantile    float64  `yaml:"quantile,omitempty" json:"quantile"`
+	MinDuration Duration `yaml:"minDuration,omitempty" json:"minDuration" tstype:"Duration"`
+	MaxDuration Duration `yaml:"maxDuration,omitempty" json:"maxDuration" tstype:"Duration"`
 }
 
 func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {

@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
@@ -117,9 +116,9 @@ func NewNetwork(
 			}
 			policyArray := upstream.ToPolicyArray(pls, "timeout", "consensus", "retry", "hedge")
 
-			var timeoutDuration *time.Duration
+			var timeoutFn upstream.TimeoutFunc
 			if fsCfg.Timeout != nil {
-				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+				timeoutFn = upstream.NewTimeoutFunc(&lg, fsCfg.Timeout)
 			}
 
 			method := fsCfg.MatchMethod
@@ -136,7 +135,7 @@ func NewNetwork(
 				method:                 method,
 				finalities:             fsCfg.MatchFinality,
 				executor:               failsafe.NewExecutor(policyArray...),
-				timeout:                timeoutDuration,
+				timeout:                timeoutFn,
 				consensusPolicyEnabled: fsCfg.Consensus != nil,
 				emptyResultAccept:      emptyAccept,
 			})
