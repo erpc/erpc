@@ -406,6 +406,10 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 	defer span.End()
 
 	if re == nil && rs != nil && rs.IsResultEmptyish(ctx) {
+		if err := validateEmptyGetLogsBlockHashCompleteness(ctx, u, rq); err != nil {
+			return rs, err
+		}
+
 		// This is to normalize empty logs responses (e.g. instead of returning "null")
 		jrr, err := common.NewJsonRpcResponse(rq.ID(), []interface{}{}, nil)
 		if err != nil {
@@ -469,6 +473,126 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 	}
 
 	return rs, re
+}
+
+func validateEmptyGetLogsBlockHashCompleteness(ctx context.Context, u common.Upstream, rq *common.NormalizedRequest) error {
+	if u == nil || rq == nil {
+		return nil
+	}
+
+	dirs := rq.Directives()
+	if dirs == nil || !dirs.ValidateLogsBloomEmptiness {
+		return nil
+	}
+
+	blockHash, ok, err := getLogsCompletenessBlockHash(ctx, rq)
+	if err != nil || !ok {
+		return err
+	}
+
+	auxReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByHash","params":[%q,false]}`,
+		util.RandomID(),
+		blockHash,
+	)))
+	auxReq.SetNetwork(rq.Network())
+	auxReq.CopyHttpContextFrom(rq)
+
+	auxResp, err := u.Forward(ctx, auxReq, true)
+	if err != nil || auxResp == nil {
+		return nil
+	}
+	defer auxResp.Release()
+
+	if auxResp.IsObjectNull() || auxResp.IsResultEmptyish(ctx) {
+		return nil
+	}
+
+	jrr, err := auxResp.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil {
+		return nil
+	}
+
+	var block struct {
+		Number    string `json:"number"`
+		Hash      string `json:"hash"`
+		LogsBloom string `json:"logsBloom"`
+	}
+	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &block); err != nil {
+		return nil
+	}
+
+	if block.LogsBloom == "" || isZeroBloom(block.LogsBloom) {
+		return nil
+	}
+
+	return common.NewErrEndpointContentValidation(
+		fmt.Errorf(
+			"eth_getLogs returned 0 log records for unfiltered blockHash=%s, but eth_getBlockByHash reported non-zero logsBloom (block number=%s hash=%s)",
+			blockHash,
+			block.Number,
+			block.Hash,
+		),
+		u,
+	)
+}
+
+func getLogsCompletenessBlockHash(ctx context.Context, rq *common.NormalizedRequest) (string, bool, error) {
+	jrq, err := rq.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return "", false, err
+	}
+
+	jrq.RLock()
+	defer jrq.RUnlock()
+
+	if len(jrq.Params) < 1 {
+		return "", false, nil
+	}
+
+	filter, ok := jrq.Params[0].(map[string]interface{})
+	if !ok {
+		return "", false, nil
+	}
+
+	blockHash, ok := filter["blockHash"].(string)
+	if !ok || blockHash == "" {
+		return "", false, nil
+	}
+
+	if getLogsHasMaterialFilter(filter["address"]) || getLogsHasMaterialTopicsFilter(filter["topics"]) {
+		return "", false, nil
+	}
+
+	return blockHash, true, nil
+}
+
+func getLogsHasMaterialFilter(value interface{}) bool {
+	switch v := value.(type) {
+	case nil:
+		return false
+	case string:
+		return v != ""
+	case []interface{}:
+		return len(v) > 0
+	default:
+		return true
+	}
+}
+
+func getLogsHasMaterialTopicsFilter(value interface{}) bool {
+	topics, ok := value.([]interface{})
+	if !ok {
+		return getLogsHasMaterialFilter(value)
+	}
+
+	for _, topic := range topics {
+		if getLogsHasMaterialFilter(topic) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // networkPostForward_eth_getLogs performs network-level error-based splitting on 413-like errors

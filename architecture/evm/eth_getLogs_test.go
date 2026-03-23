@@ -165,6 +165,12 @@ func (m *mockEvmUpstream) EvmAssertBlockAvailability(ctx context.Context, forMet
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *mockEvmUpstream) Forward(ctx context.Context, req *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+	args := m.Called(ctx, req, byPassMethodExclusion)
+	resp, _ := args.Get(0).(*common.NormalizedResponse)
+	return resp, args.Error(1)
+}
+
 var _ common.EvmStatePoller = (*mockStatePoller)(nil)
 
 type mockStatePoller struct {
@@ -2062,6 +2068,119 @@ func TestUpstreamPostForward_eth_getLogs_FiltersOversizedPayloads(t *testing.T) 
 	require.NoError(t, json.Unmarshal(jrr.GetResultBytes(), &logs))
 	require.Len(t, logs, 1)
 	assert.Equal(t, "0x1234", logs[0]["data"])
+}
+
+func TestUpstreamPostForward_eth_getLogs_BlockHashEmptyResultWithNonZeroBloomErrors(t *testing.T) {
+	ctx := context.Background()
+	n := new(mockNetwork)
+	n.On("Id").Return("evm:123").Maybe()
+
+	u := new(mockEvmUpstream)
+	u.On("Id").Return("u1").Maybe()
+	u.On("Forward", mock.Anything, mock.MatchedBy(func(req *common.NormalizedRequest) bool {
+		if req == nil {
+			return false
+		}
+		jrq, err := req.JsonRpcRequest(ctx)
+		if err != nil || jrq == nil {
+			return false
+		}
+		jrq.RLock()
+		defer jrq.RUnlock()
+		if jrq.Method != "eth_getBlockByHash" || len(jrq.Params) != 2 {
+			return false
+		}
+		hash, _ := jrq.Params[0].(string)
+		full, _ := jrq.Params[1].(bool)
+		return hash == "0xabc" && !full
+	}), true).Return(
+		common.NewNormalizedResponse().WithJsonRpcResponse(
+			common.MustNewJsonRpcResponseFromBytes(
+				[]byte(`"0x2"`),
+				[]byte(`{"number":"0x123","hash":"0xabc","logsBloom":"0x1"}`),
+				nil,
+			),
+		),
+		nil,
+	).Once()
+
+	r := createTestRequest(map[string]interface{}{
+		"blockHash": "0xabc",
+	})
+	r.SetNetwork(n)
+	r.SetDirectives(&common.RequestDirectives{
+		ValidateLogsBloomEmptiness: true,
+	})
+	rs := common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(
+		common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil),
+	)
+
+	_, err := upstreamPostForward_eth_getLogs(ctx, n, u, r, rs, nil)
+	require.Error(t, err)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointContentValidation), "expected content validation error, got %v", err)
+	assert.Contains(t, err.Error(), "eth_getLogs returned 0 log records")
+	u.AssertExpectations(t)
+}
+
+func TestUpstreamPostForward_eth_getLogs_BlockHashEmptyResultWithZeroBloomPasses(t *testing.T) {
+	ctx := context.Background()
+	n := new(mockNetwork)
+	n.On("Id").Return("evm:123").Maybe()
+
+	u := new(mockEvmUpstream)
+	u.On("Id").Return("u1").Maybe()
+	u.On("Forward", mock.Anything, mock.Anything, true).Return(
+		common.NewNormalizedResponse().WithJsonRpcResponse(
+			common.MustNewJsonRpcResponseFromBytes(
+				[]byte(`"0x2"`),
+				[]byte(`{"number":"0x123","hash":"0xabc","logsBloom":"0x0"}`),
+				nil,
+			),
+		),
+		nil,
+	).Once()
+
+	r := createTestRequest(map[string]interface{}{
+		"blockHash": "0xabc",
+	})
+	r.SetNetwork(n)
+	r.SetDirectives(&common.RequestDirectives{
+		ValidateLogsBloomEmptiness: true,
+	})
+	rs := common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(
+		common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil),
+	)
+
+	out, err := upstreamPostForward_eth_getLogs(ctx, n, u, r, rs, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	u.AssertExpectations(t)
+}
+
+func TestUpstreamPostForward_eth_getLogs_BlockHashFilteredEmptyResultSkipsBloomCheck(t *testing.T) {
+	ctx := context.Background()
+	n := new(mockNetwork)
+	n.On("Id").Return("evm:123").Maybe()
+
+	u := new(mockEvmUpstream)
+	u.On("Id").Return("u1").Maybe()
+
+	r := createTestRequest(map[string]interface{}{
+		"blockHash": "0xabc",
+		"address":   "0x123",
+	})
+	r.SetNetwork(n)
+	r.SetDirectives(&common.RequestDirectives{
+		ValidateLogsBloomEmptiness: true,
+	})
+	rs := common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(
+		common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil),
+	)
+
+	out, err := upstreamPostForward_eth_getLogs(ctx, n, u, r, rs, nil)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	u.AssertExpectations(t)
 }
 
 func TestUpstreamPostForward_eth_getLogs_UsesConfiguredMaxDataBytes(t *testing.T) {
