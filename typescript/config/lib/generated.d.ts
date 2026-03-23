@@ -99,6 +99,7 @@ export interface ServerConfig {
     maxTimeout?: Duration;
     readTimeout?: Duration;
     writeTimeout?: Duration;
+    maxBatchConcurrency?: number;
     enableGzip?: boolean;
     tls?: TLSConfig;
     aliasing?: AliasingConfig;
@@ -233,11 +234,19 @@ export interface CompressionConfig {
     threshold?: number;
 }
 export interface CacheMethodConfig {
+    /**
+     * Profile references a reusable workload profile from network.methods.profiles.
+     */
+    profile?: string;
     reqRefs: any[][];
     respRefs: any[][];
     finalized: boolean;
     realtime: boolean;
     stateful?: boolean;
+    /**
+     * Requires lists upstream capabilities required to route this method.
+     */
+    requires?: string[];
     /**
      * TranslateLatestTag controls whether the method-level tag translation should convert "latest" to a concrete hex block number.
      * When nil or true, translation is enabled by default.
@@ -253,6 +262,10 @@ export interface CacheMethodConfig {
      * are enforced for this method at the network level. When nil or true, enforcement is enabled.
      */
     enforceBlockAvailability?: boolean;
+    /**
+     * Multiplex controls method-level request coalescing. When nil, network-level multiplexing applies.
+     */
+    multiplex?: boolean;
 }
 export interface CachePolicyConfig {
     connector: string;
@@ -368,6 +381,9 @@ export interface ProjectConfig {
      * RoutingStrategy selects the upstream ordering algorithm.
      * "score-based" (default): penalty-based sticky routing.
      * "round-robin": time-rotating equal distribution across upstreams.
+     * "latency-aware": lowest latency first (with sticky switching).
+     * "cost-aware": prefers lower throttled/error pressure.
+     * "rendezvous": deterministic hash-based ordering per method.
      */
     routingStrategy?: string;
     /**
@@ -462,6 +478,7 @@ export interface UpstreamConfig {
     rateLimitBudget?: string;
     rateLimitAutoTune?: RateLimitAutoTuneConfig;
     routing?: RoutingConfig;
+    capabilities?: string[];
     shadow?: ShadowUpstreamConfig;
 }
 export interface ShadowUpstreamConfig {
@@ -762,9 +779,34 @@ export interface DeprecatedProjectHealthCheckConfig {
 }
 export interface MethodsConfig {
     preserveDefaultMethods?: boolean;
+    profiles?: {
+        [key: string]: MethodWorkloadProfileConfig | undefined;
+    };
     definitions?: {
         [key: string]: CacheMethodConfig | undefined;
     };
+}
+export interface MethodWorkloadProfileConfig {
+    cache?: MethodCacheProfileConfig;
+    failsafe?: (FailsafeConfig | undefined)[];
+    routing?: MethodRoutingProfileConfig;
+    multiplex?: MethodMultiplexProfileConfig;
+}
+export interface MethodCacheProfileConfig {
+    reqRefs?: any[][];
+    respRefs?: any[][];
+    finalized?: boolean;
+    realtime?: boolean;
+    stateful?: boolean;
+    translateLatestTag?: boolean;
+    translateFinalizedTag?: boolean;
+    enforceBlockAvailability?: boolean;
+}
+export interface MethodRoutingProfileConfig {
+    requires?: string[];
+}
+export interface MethodMultiplexProfileConfig {
+    enabled?: boolean;
 }
 export interface NetworkConfig {
     architecture: TsNetworkArchitecture;
@@ -999,10 +1041,28 @@ export interface EvmIntegrityConfig {
 export interface SelectionPolicyConfig {
     evalInterval?: Duration;
     evalFunction?: SelectionPolicyEvalFunction | undefined;
+    rules?: (SelectionPolicyRuleConfig | undefined)[];
     evalPerMethod?: boolean;
     resampleExcluded?: boolean;
     resampleInterval?: Duration;
     resampleCount?: number;
+}
+export type SelectionPolicyRuleAction = string;
+export declare const SelectionPolicyRuleActionInclude: SelectionPolicyRuleAction;
+export declare const SelectionPolicyRuleActionExclude: SelectionPolicyRuleAction;
+export interface SelectionPolicyRuleConfig {
+    name?: string;
+    matchMethod?: string;
+    matchUpstreamId?: string;
+    matchUpstreamGroup?: string;
+    maxErrorRate?: number;
+    maxBlockHeadLag?: number;
+    maxFinalizationLag?: number;
+    maxP90ResponseSeconds?: number;
+    maxP95ResponseSeconds?: number;
+    maxP99ResponseSeconds?: number;
+    maxThrottledRate?: number;
+    action?: SelectionPolicyRuleAction;
 }
 export type AuthType = string;
 export declare const AuthTypeSecret: AuthType;
