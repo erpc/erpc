@@ -641,10 +641,12 @@ func hasDirectiveInQueryParams(queryArgs url.Values) bool {
 	return false
 }
 
-func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
-	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
-
-	// Extract user agent (always needed)
+// EnrichTransportFromHttp records Origin / Referer-derived origin and User-Agent before authentication
+// or directive merging. Full EnrichFromHttp still runs later (after network directive defaults).
+func (r *NormalizedRequest) EnrichTransportFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+	if r == nil {
+		return
+	}
 	userAgent := r.getUserAgent(headers, queryArgs)
 	if userAgent != "" {
 		if mode == UserAgentTrackingModeRaw {
@@ -659,6 +661,12 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	} else if refererOrigin := extractRefererOrigin(headers.Get("Referer")); refererOrigin != "" {
 		r.refererOrigin.Store(refererOrigin)
 	}
+}
+
+func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
+
+	r.EnrichTransportFromHttp(headers, queryArgs, mode)
 
 	if !hasDirectives {
 		return

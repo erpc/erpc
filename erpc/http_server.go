@@ -445,6 +445,15 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
 
+				// Origin / Referer must be on the request before auth (e.g. API key origin allowlists).
+				if project != nil {
+					uaMode := common.UserAgentTrackingModeSimplified
+					if project.Config.UserAgentMode != "" {
+						uaMode = project.Config.UserAgentMode
+					}
+					nq.EnrichTransportFromHttp(headers, queryArgs, uaMode)
+				}
+
 				var ap *auth.AuthPayload
 				var err error
 
