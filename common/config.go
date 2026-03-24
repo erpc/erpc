@@ -1749,8 +1749,11 @@ type SecretStrategyConfig struct {
 
 // custom json marshaller to redact the secret value
 func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(map[string]string{
-		"value": "REDACTED",
+	return sonic.Marshal(map[string]interface{}{
+		"id":              s.Id,
+		"value":           "REDACTED",
+		"rateLimitBudget": s.RateLimitBudget,
+		"allowedOrigins":  s.AllowedOrigins,
 	})
 }
 
