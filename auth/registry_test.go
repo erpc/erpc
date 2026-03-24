@@ -94,7 +94,7 @@ func TestAuthRegistryAuthenticate_RejectsDisallowedOriginBeforeRateLimit(t *test
 		Secret: &SecretPayload{Value: "secret-value"},
 	})
 	require.Error(t, err)
-	assert.NotNil(t, user)
+	assert.Nil(t, user)
 	assert.True(t, common.HasErrorCode(err, common.ErrCodeAuthUnauthorized))
 	assert.False(t, common.HasErrorCode(err, common.ErrCodeAuthRateLimitRuleExceeded))
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -70,12 +71,13 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 			continue
 		}
 
-		// Attach user to the request early so downstream labels (user/agent) can be populated
+		if err := enforceOriginAllowlist(az.logger, req, user); err != nil {
+			return nil, err
+		}
+
+		// Attach user to the request only after full auth success (credential + origin)
 		if user != nil && req != nil {
 			req.SetUser(user)
-		}
-		if err := enforceOriginAllowlist(az.logger, req, user); err != nil {
-			return user, err
 		}
 		// If authentication is passed then apply and consume the rate limit
 		if err := az.acquireRateLimitPermit(ctx, req, method); err != nil {
@@ -105,14 +107,14 @@ func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedReques
 
 	origin := ""
 	if req != nil {
-		origin = req.RequestOrigin()
+		origin = strings.ToLower(req.RequestOrigin())
 	}
 	if origin == "" {
 		return common.NewErrAuthUnauthorized("origin", "missing request origin")
 	}
 
 	for _, allowedOrigin := range user.AllowedOrigins {
-		match, err := common.WildcardMatch(allowedOrigin, origin)
+		match, err := common.WildcardMatch(strings.ToLower(allowedOrigin), origin)
 		if err != nil {
 			if logger != nil {
 				logger.Warn().
