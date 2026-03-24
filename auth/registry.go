@@ -74,7 +74,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		if user != nil && req != nil {
 			req.SetUser(user)
 		}
-		if err := enforceOriginAllowlist(req, user); err != nil {
+		if err := enforceOriginAllowlist(az.logger, req, user); err != nil {
 			return user, err
 		}
 		// If authentication is passed then apply and consume the rate limit
@@ -98,7 +98,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
 }
 
-func enforceOriginAllowlist(req *common.NormalizedRequest, user *common.User) error {
+func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedRequest, user *common.User) error {
 	if user == nil || len(user.AllowedOrigins) == 0 {
 		return nil
 	}
@@ -114,6 +114,14 @@ func enforceOriginAllowlist(req *common.NormalizedRequest, user *common.User) er
 	for _, allowedOrigin := range user.AllowedOrigins {
 		match, err := common.WildcardMatch(allowedOrigin, origin)
 		if err != nil {
+			if logger != nil {
+				logger.Warn().
+					Str("userId", user.Id).
+					Str("pattern", allowedOrigin).
+					Str("origin", origin).
+					Err(err).
+					Msg("invalid allowedOrigins pattern, skipping")
+			}
 			continue
 		}
 		if match {
