@@ -1747,14 +1747,19 @@ type SecretStrategyConfig struct {
 	AllowedOrigins  []string `yaml:"allowedOrigins,omitempty" json:"allowedOrigins,omitempty"`
 }
 
-// custom json marshaller to redact the secret value
+// custom json marshaller to redact the secret value while respecting omitempty semantics
 func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(map[string]interface{}{
-		"id":              s.Id,
-		"value":           "REDACTED",
-		"rateLimitBudget": s.RateLimitBudget,
-		"allowedOrigins":  s.AllowedOrigins,
-	})
+	m := map[string]interface{}{
+		"id":    s.Id,
+		"value": "REDACTED",
+	}
+	if s.RateLimitBudget != "" {
+		m["rateLimitBudget"] = s.RateLimitBudget
+	}
+	if len(s.AllowedOrigins) > 0 {
+		m["allowedOrigins"] = s.AllowedOrigins
+	}
+	return sonic.Marshal(m)
 }
 
 type DatabaseStrategyConfig struct {
