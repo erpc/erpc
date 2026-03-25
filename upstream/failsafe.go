@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
+func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig, dynamicBlockUnavailableDelay func() time.Duration) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
 	var policies = map[string]failsafe.Policy[*common.NormalizedResponse]{}
 
@@ -49,7 +49,7 @@ func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scop
 	}
 
 	if fsCfg.Retry != nil {
-		p, err := createRetryPolicy(scope, fsCfg.Retry)
+		p, err := createRetryPolicy(scope, fsCfg.Retry, dynamicBlockUnavailableDelay)
 		if err != nil {
 			return nil, err
 		}
@@ -417,7 +417,7 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig, em
 	return builder.Build(), nil
 }
 
-func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynamicBlockUnavailableDelay func() time.Duration) (failsafe.Policy[*common.NormalizedResponse], error) {
 	builder := retrypolicy.Builder[*common.NormalizedResponse]()
 
 	// Store configured values for tracing
@@ -444,26 +444,25 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
-	// When emptyResultDelay or blockUnavailableDelay is configured, override the delay for those
-	// specific retry scenarios. Returning -1 tells failsafe-go to fall back to the normally
-	// configured delay/backoff for other retries.
+	// Override retry delays for block-unavailable and empty-result scenarios.
+	// Returning -1 tells failsafe-go to fall back to the normal delay/backoff.
 	//
-	// Note: the Forward() execution loop already tries all upstreams for retryable errors
-	// before returning to the retry policy. So these delays naturally fire only after a
+	// The Forward() execution loop already tries all upstreams for retryable errors
+	// before returning to the retry policy, so these delays fire only after a
 	// full round of upstream attempts.
-	var emptyResultDelayDuration, blockUnavailableDelayDuration time.Duration
+	var emptyResultDelayDuration, fixedBlockUnavailableDelay time.Duration
 	if cfg.EmptyResultDelay > 0 {
 		emptyResultDelayDuration = cfg.EmptyResultDelay.Duration()
 	}
 	if cfg.BlockUnavailableDelay > 0 {
-		blockUnavailableDelayDuration = cfg.BlockUnavailableDelay.Duration()
+		fixedBlockUnavailableDelay = cfg.BlockUnavailableDelay.Duration()
 	}
-	if emptyResultDelayDuration > 0 || blockUnavailableDelayDuration > 0 {
+	hasBlockUnavailableDelay := fixedBlockUnavailableDelay > 0 || dynamicBlockUnavailableDelay != nil
+	if emptyResultDelayDuration > 0 || hasBlockUnavailableDelay {
 		builder = builder.WithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
-			// Block-unavailable: all upstreams don't have the block yet, wait for propagation
-			if blockUnavailableDelayDuration > 0 {
+			if hasBlockUnavailableDelay {
 				if err := exec.LastError(); err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
-					return blockUnavailableDelayDuration
+					return resolveBlockUnavailableDelay(dynamicBlockUnavailableDelay, fixedBlockUnavailableDelay)
 				}
 			}
 			// Empty/missing data: custom delay for empty responses or missing-data errors.
@@ -931,4 +930,18 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 	// For unknown errors we return as is so we're not wrongly wrapping with an inappropriate error type.
 	// An example can be deadline exceeded error which must be handled properly on http server level (e.g. wrap with http timeout error).
 	return execErr
+}
+
+// resolveBlockUnavailableDelay returns the delay to use for a block-unavailable retry.
+// Priority: dynamic block-time-derived delay > static config > normal backoff (-1).
+func resolveBlockUnavailableDelay(dynamicDelay func() time.Duration, fixedDelay time.Duration) time.Duration {
+	if dynamicDelay != nil {
+		if d := dynamicDelay(); d > 0 {
+			return d
+		}
+	}
+	if fixedDelay > 0 {
+		return fixedDelay
+	}
+	return -1
 }

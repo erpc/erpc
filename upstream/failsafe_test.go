@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
@@ -87,7 +88,7 @@ func (m *mockUpstreamForRetry) EvmBlockAvailabilityBounds() (int64, int64) {
 
 // Test helper to execute retry policy
 func executeRetryPolicy(t *testing.T, cfg *common.RetryPolicyConfig, scope common.Scope, response *common.NormalizedResponse, err error) (attempts int, finalErr error) {
-	policy, policyErr := createRetryPolicy(scope, cfg)
+	policy, policyErr := createRetryPolicy(scope, cfg, nil)
 	assert.NoError(t, policyErr)
 
 	executor := failsafe.NewExecutor(policy)
@@ -499,7 +500,7 @@ func TestRetryPolicy_MaxAttemptsRespected(t *testing.T) {
 
 	mockResp := createMockResponse(true, req, mockUpstream)
 
-	policy, err := createRetryPolicy(common.ScopeNetwork, cfg)
+	policy, err := createRetryPolicy(common.ScopeNetwork, cfg, nil)
 	assert.NoError(t, err)
 
 	executor := failsafe.NewExecutor(policy)
@@ -555,7 +556,7 @@ func TestRetryPolicy_SimpleEmpty(t *testing.T) {
 	}
 
 	// Test with error - should retry
-	policy, _ := createRetryPolicy(common.ScopeNetwork, cfg)
+	policy, _ := createRetryPolicy(common.ScopeNetwork, cfg, nil)
 	executor := failsafe.NewExecutor(policy)
 	attempts := 0
 
@@ -610,7 +611,7 @@ func TestRetryPolicy_EmptyWithUpstream(t *testing.T) {
 	// Test 1: Empty response with no upstream - should retry
 	emptyResp := createMockResponse(true, req, nil)
 
-	policy, _ := createRetryPolicy(common.ScopeNetwork, cfg)
+	policy, _ := createRetryPolicy(common.ScopeNetwork, cfg, nil)
 	executor := failsafe.NewExecutor(policy)
 	attempts := 0
 
@@ -661,7 +662,7 @@ func TestRetryPolicy_EmptyWithEvmUpstream(t *testing.T) {
 
 	emptyResp := createMockResponse(true, req, mockUpstream)
 
-	policy, _ := createRetryPolicy(common.ScopeNetwork, cfg)
+	policy, _ := createRetryPolicy(common.ScopeNetwork, cfg, nil)
 	executor := failsafe.NewExecutor(policy)
 	attempts := 0
 
@@ -720,7 +721,7 @@ func TestRetryPolicy_TypeAssertion(t *testing.T) {
 }
 
 func executeRetryPolicyWithContext(t *testing.T, cfg *common.RetryPolicyConfig, scope common.Scope, response *common.NormalizedResponse, err error, ctx context.Context) (attempts int, finalErr error) {
-	policy, policyErr := createRetryPolicy(scope, cfg)
+	policy, policyErr := createRetryPolicy(scope, cfg, nil)
 	assert.NoError(t, policyErr)
 
 	executor := failsafe.NewExecutor(policy).WithContext(ctx)
@@ -851,5 +852,180 @@ func TestRetryPolicy_MissingDataErrorVsEmptyResponse(t *testing.T) {
 		attempts, _ := executeRetryPolicyWithContext(t, cfg, common.ScopeNetwork, nil, exhaustedErr, ctx)
 		assert.Equal(t, 3, attempts,
 			"ErrUpstreamBlockUnavailable alone should always retry")
+	})
+}
+
+func TestResolveBlockUnavailableDelay(t *testing.T) {
+	t.Run("DynamicProviderReturnsValue_UseDynamic", func(t *testing.T) {
+		provider := func() time.Duration { return 800 * time.Millisecond }
+		d := resolveBlockUnavailableDelay(provider, 500*time.Millisecond)
+		assert.Equal(t, 800*time.Millisecond, d)
+	})
+
+	t.Run("DynamicProviderReturnsZero_FallToStatic", func(t *testing.T) {
+		provider := func() time.Duration { return 0 }
+		d := resolveBlockUnavailableDelay(provider, 500*time.Millisecond)
+		assert.Equal(t, 500*time.Millisecond, d)
+	})
+
+	t.Run("NilProvider_FallToStatic", func(t *testing.T) {
+		d := resolveBlockUnavailableDelay(nil, 300*time.Millisecond)
+		assert.Equal(t, 300*time.Millisecond, d)
+	})
+
+	t.Run("NilProvider_NoStatic_FallToNormalBackoff", func(t *testing.T) {
+		d := resolveBlockUnavailableDelay(nil, 0)
+		assert.Equal(t, time.Duration(-1), d)
+	})
+
+	t.Run("DynamicProviderReturnsZero_NoStatic_FallToNormalBackoff", func(t *testing.T) {
+		provider := func() time.Duration { return 0 }
+		d := resolveBlockUnavailableDelay(provider, 0)
+		assert.Equal(t, time.Duration(-1), d)
+	})
+}
+
+func TestRetryPolicy_DynamicBlockUnavailableDelay(t *testing.T) {
+	t.Run("DynamicDelay_UsedWhenBlockUnavailable", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+			Delay:       common.Duration(10 * time.Millisecond),
+		}
+
+		dynamicDelay := func() time.Duration { return 50 * time.Millisecond }
+
+		policy, err := createRetryPolicy(common.ScopeNetwork, cfg, dynamicDelay)
+		assert.NoError(t, err)
+
+		blockErr := common.NewErrUpstreamBlockUnavailable("upstream-1", 100, 99, 95)
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   blockErr,
+			},
+		}
+
+		executor := failsafe.NewExecutor(policy)
+		attempts := 0
+		_, _ = executor.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			attempts = exec.Attempts()
+			return nil, exhaustedErr
+		})
+		assert.Equal(t, 2, attempts, "should retry on block unavailable with dynamic delay")
+	})
+
+	t.Run("DynamicDelay_NotWarm_FallsBackToStatic", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts:           2,
+			Delay:                 common.Duration(10 * time.Millisecond),
+			BlockUnavailableDelay: common.Duration(100 * time.Millisecond),
+		}
+
+		notWarm := func() time.Duration { return 0 }
+
+		policy, err := createRetryPolicy(common.ScopeNetwork, cfg, notWarm)
+		assert.NoError(t, err)
+
+		blockErr := common.NewErrUpstreamBlockUnavailable("upstream-1", 100, 99, 95)
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   blockErr,
+			},
+		}
+
+		executor := failsafe.NewExecutor(policy)
+		attempts := 0
+		_, _ = executor.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			attempts = exec.Attempts()
+			return nil, exhaustedErr
+		})
+		assert.Equal(t, 2, attempts, "should retry using static fallback when dynamic not warm")
+	})
+
+	t.Run("NilDynamicDelay_StaticUsed", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts:           2,
+			Delay:                 common.Duration(10 * time.Millisecond),
+			BlockUnavailableDelay: common.Duration(100 * time.Millisecond),
+		}
+
+		policy, err := createRetryPolicy(common.ScopeNetwork, cfg, nil)
+		assert.NoError(t, err)
+
+		blockErr := common.NewErrUpstreamBlockUnavailable("upstream-1", 100, 99, 95)
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   blockErr,
+			},
+		}
+
+		executor := failsafe.NewExecutor(policy)
+		attempts := 0
+		_, _ = executor.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			attempts = exec.Attempts()
+			return nil, exhaustedErr
+		})
+		assert.Equal(t, 2, attempts, "should retry using static delay when no dynamic provider")
+	})
+
+	t.Run("DynamicOnly_NoStaticConfig_RetriesWithDynamic", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+			Delay:       common.Duration(10 * time.Millisecond),
+		}
+
+		dynamicDelay := func() time.Duration { return 40 * time.Millisecond }
+
+		policy, err := createRetryPolicy(common.ScopeNetwork, cfg, dynamicDelay)
+		assert.NoError(t, err)
+
+		blockErr := common.NewErrUpstreamBlockUnavailable("upstream-1", 100, 99, 95)
+		exhaustedErr := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   blockErr,
+			},
+		}
+
+		executor := failsafe.NewExecutor(policy)
+		attempts := 0
+		_, _ = executor.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			attempts = exec.Attempts()
+			return nil, exhaustedErr
+		})
+		assert.Equal(t, 2, attempts, "should retry with dynamic delay even without static config")
+	})
+
+	t.Run("NonBlockUnavailableError_DynamicNotUsed", func(t *testing.T) {
+		cfg := &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+			Delay:       common.Duration(10 * time.Millisecond),
+		}
+
+		callCount := 0
+		dynamicDelay := func() time.Duration {
+			callCount++
+			return 50 * time.Millisecond
+		}
+
+		policy, err := createRetryPolicy(common.ScopeNetwork, cfg, dynamicDelay)
+		assert.NoError(t, err)
+
+		genericErr := errors.New("some transient error")
+
+		executor := failsafe.NewExecutor(policy)
+		attempts := 0
+		_, _ = executor.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			attempts = exec.Attempts()
+			return nil, genericErr
+		})
+		assert.Equal(t, 2, attempts, "should still retry generic errors")
+		assert.Equal(t, 0, callCount, "dynamic provider should not be called for non-block-unavailable errors")
 	})
 }

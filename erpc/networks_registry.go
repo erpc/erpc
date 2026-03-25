@@ -89,11 +89,29 @@ func NewNetwork(
 
 	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
 
+	// Build a provider that resolves the dynamic block-unavailable retry delay
+	// from the network's EMA-estimated block time. Returns 0 before warmup so
+	// the static fallback kicks in.
+	var dynamicBlockUnavailableDelay func() time.Duration
+	if metricsTracker != nil {
+		networkId := nwCfg.NetworkId()
+		mult := common.DefaultBlockUnavailableDelayMultiplier
+		if nwCfg.Evm != nil && nwCfg.Evm.BlockUnavailableDelayMultiplier != nil && *nwCfg.Evm.BlockUnavailableDelayMultiplier > 0 {
+			mult = *nwCfg.Evm.BlockUnavailableDelayMultiplier
+		}
+		dynamicBlockUnavailableDelay = func() time.Duration {
+			if bt := metricsTracker.GetNetworkBlockTime(networkId); bt > 0 {
+				return time.Duration(float64(bt) * mult)
+			}
+			return 0
+		}
+	}
+
 	// Create failsafe executors from configs
 	var failsafeExecutors []*FailsafeExecutor
 	if len(nwCfg.Failsafe) > 0 {
 		for _, fsCfg := range nwCfg.Failsafe {
-			pls, err := upstream.CreateFailSafePolicies(appCtx, &lg, common.ScopeNetwork, key, fsCfg)
+			pls, err := upstream.CreateFailSafePolicies(appCtx, &lg, common.ScopeNetwork, key, fsCfg, dynamicBlockUnavailableDelay)
 			if err != nil {
 				return nil, err
 			}
