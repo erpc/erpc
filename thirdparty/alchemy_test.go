@@ -2,6 +2,7 @@ package thirdparty
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -11,59 +12,115 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAlchemyVendor_DefaultNetworkMappingIncludesKatana(t *testing.T) {
-	subdomain, ok := defaultAlchemyNetworkSubdomains[747474]
-	require.True(t, ok)
-	require.Equal(t, "katana-mainnet", subdomain)
-}
-
-func TestAlchemyVendor_SupportsNetwork_KatanaFromDefaults(t *testing.T) {
-	logger := zerolog.New(io.Discard)
+func seedAlchemyVendorWithDefaultNetworks() *AlchemyVendor {
 	vendor := CreateAlchemyVendor().(*AlchemyVendor)
 	vendor.remoteData[alchemyApiUrl] = defaultAlchemyNetworkSubdomains
 	vendor.remoteDataLastFetchedAt[alchemyApiUrl] = time.Now()
-
-	supported, err := vendor.SupportsNetwork(
-		context.Background(),
-		&logger,
-		common.VendorSettings{
-			"recheckInterval": 24 * time.Hour,
-		},
-		"evm:747474",
-	)
-	require.NoError(t, err)
-	require.True(t, supported)
+	return vendor
 }
 
-func TestAlchemyVendor_GenerateConfigs_UsesKatanaDefaultSubdomain(t *testing.T) {
-	logger := zerolog.New(io.Discard)
-	vendor := CreateAlchemyVendor().(*AlchemyVendor)
-	vendor.remoteData[alchemyApiUrl] = defaultAlchemyNetworkSubdomains
-	vendor.remoteDataLastFetchedAt[alchemyApiUrl] = time.Now()
+func TestAlchemyVendor_DefaultNetworkMappingIncludesRecentEvmChains(t *testing.T) {
+	testCases := map[int64]string{
+		25:      "cronos-mainnet",
+		338:     "cronos-testnet",
+		196:     "xlayer-mainnet",
+		1952:    "xlayer-testnet",
+		1672:    "pharos-mainnet",
+		4153:    "rise-mainnet",
+		4217:    "tempo-mainnet",
+		4326:    "megaeth-mainnet",
+		42018:   "mythos-mainnet",
+		46630:   "robinhood-testnet",
+		51014:   "risa-testnet",
+		737373:  "katana-bokuto",
+		202601:  "ronin-saigon",
+		685689:  "gensyn-mainnet",
+		99999:   "adi-testnet",
+		36900:   "adi-mainnet",
+		747474:  "katana-mainnet",
+		688689:  "pharos-atlantic",
+		5734951: "jovay-mainnet",
+		2019775: "jovay-testnet",
+	}
 
-	cfgs, err := vendor.GenerateConfigs(
-		context.Background(),
-		&logger,
-		&common.UpstreamConfig{
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 747474,
-			},
+	for chainID, expectedSubdomain := range testCases {
+		subdomain, ok := defaultAlchemyNetworkSubdomains[chainID]
+		require.Truef(t, ok, "expected chain %d to exist in fallback map", chainID)
+		require.Equalf(t, expectedSubdomain, subdomain, "unexpected subdomain for chain %d", chainID)
+	}
+}
+
+func TestAlchemyVendor_SupportsNetwork_UsesFallbackMappings(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	vendor := seedAlchemyVendorWithDefaultNetworks()
+
+	for _, chainID := range []int64{4153, 99999, 202601, 737373} {
+		t.Run(fmt.Sprintf("evm:%d", chainID), func(t *testing.T) {
+			supported, err := vendor.SupportsNetwork(
+				context.Background(),
+				&logger,
+				common.VendorSettings{
+					"recheckInterval": 24 * time.Hour,
+				},
+				fmt.Sprintf("evm:%d", chainID),
+			)
+			require.NoError(t, err)
+			require.True(t, supported)
+		})
+	}
+}
+
+func TestAlchemyVendor_GenerateConfigs_UsesFallbackSubdomains(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	vendor := seedAlchemyVendorWithDefaultNetworks()
+
+	testCases := []struct {
+		chainID          int64
+		expectedEndpoint string
+	}{
+		{
+			chainID:          4153,
+			expectedEndpoint: "https://rise-mainnet.g.alchemy.com/v2/demo",
 		},
-		common.VendorSettings{
-			"apiKey":          "demo",
-			"recheckInterval": 24 * time.Hour,
+		{
+			chainID:          36900,
+			expectedEndpoint: "https://adi-mainnet.g.alchemy.com/v2/demo",
 		},
-	)
-	require.NoError(t, err)
-	require.Len(t, cfgs, 1)
-	require.Equal(t, "https://katana-mainnet.g.alchemy.com/v2/demo", cfgs[0].Endpoint)
+		{
+			chainID:          202601,
+			expectedEndpoint: "https://ronin-saigon.g.alchemy.com/v2/demo",
+		},
+		{
+			chainID:          737373,
+			expectedEndpoint: "https://katana-bokuto.g.alchemy.com/v2/demo",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("evm:%d", tc.chainID), func(t *testing.T) {
+			cfgs, err := vendor.GenerateConfigs(
+				context.Background(),
+				&logger,
+				&common.UpstreamConfig{
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: tc.chainID,
+					},
+				},
+				common.VendorSettings{
+					"apiKey":          "demo",
+					"recheckInterval": 24 * time.Hour,
+				},
+			)
+			require.NoError(t, err)
+			require.Len(t, cfgs, 1)
+			require.Equal(t, tc.expectedEndpoint, cfgs[0].Endpoint)
+		})
+	}
 }
 
 func TestAlchemyVendor_SupportsNetwork_UnsupportedChainReturnsFalse(t *testing.T) {
 	logger := zerolog.New(io.Discard)
-	vendor := CreateAlchemyVendor().(*AlchemyVendor)
-	vendor.remoteData[alchemyApiUrl] = defaultAlchemyNetworkSubdomains
-	vendor.remoteDataLastFetchedAt[alchemyApiUrl] = time.Now()
+	vendor := seedAlchemyVendorWithDefaultNetworks()
 
 	supported, err := vendor.SupportsNetwork(
 		context.Background(),
@@ -79,9 +136,7 @@ func TestAlchemyVendor_SupportsNetwork_UnsupportedChainReturnsFalse(t *testing.T
 
 func TestAlchemyVendor_GenerateConfigs_UnsupportedChainReturnsError(t *testing.T) {
 	logger := zerolog.New(io.Discard)
-	vendor := CreateAlchemyVendor().(*AlchemyVendor)
-	vendor.remoteData[alchemyApiUrl] = defaultAlchemyNetworkSubdomains
-	vendor.remoteDataLastFetchedAt[alchemyApiUrl] = time.Now()
+	vendor := seedAlchemyVendorWithDefaultNetworks()
 
 	_, err := vendor.GenerateConfigs(
 		context.Background(),
