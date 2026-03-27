@@ -327,6 +327,11 @@ type NormalizedRequest struct {
 
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
+
+	// directiveDefaultsApplied prevents ApplyDirectiveDefaults from running
+	// more than once, which would overwrite directives explicitly set via
+	// HTTP headers or query parameters.
+	directiveDefaultsApplied bool
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -500,15 +505,27 @@ func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
 	r.Lock()
 	defer r.Unlock()
 	r.directives = directives
+	// Mark defaults as applied since the caller is providing fully resolved
+	// directives (e.g., cloned from a request that already had defaults applied).
+	r.directiveDefaultsApplied = true
 }
 
 // ApplyDirectiveDefaults applies the default directives from the network configuration.
+// It is idempotent: once applied, subsequent calls are no-ops. This prevents
+// Network.Forward() from overwriting directives that were explicitly set via
+// HTTP headers or query parameters (parsed by EnrichFromHttp between the first
+// ApplyDirectiveDefaults call and the Forward call).
 func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveDefaultsConfig) {
 	if directiveDefaults == nil {
 		return
 	}
 	r.Lock()
 	defer r.Unlock()
+
+	if r.directiveDefaultsApplied {
+		return
+	}
+	r.directiveDefaultsApplied = true
 
 	if r.directives == nil {
 		r.directives = &RequestDirectives{}

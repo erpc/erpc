@@ -319,6 +319,66 @@ func TestEnrichFromHttpHandlesBloomValidationQueryParams(t *testing.T) {
 	}
 }
 
+// TestApplyDirectiveDefaults_Idempotent verifies that calling ApplyDirectiveDefaults
+// a second time (as Network.Forward does) does not overwrite directives that were
+// explicitly set via HTTP query parameters between the two calls.
+// This replicates the real request flow:
+//
+//	http_server: ApplyDirectiveDefaults → EnrichFromHttp (parses query params)
+//	network.Forward: ApplyDirectiveDefaults (must NOT overwrite query params)
+func TestApplyDirectiveDefaults_Idempotent(t *testing.T) {
+	trueVal := true
+	cfgDefaults := &DirectiveDefaultsConfig{
+		EnforceHighestBlock: &trueVal,
+	}
+
+	t.Run("second_apply_does_not_overwrite_query_param", func(t *testing.T) {
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
+
+		// Step 1: http_server applies defaults (sets EnforceHighestBlock=true)
+		req.ApplyDirectiveDefaults(cfgDefaults)
+		if dir := req.Directives(); dir == nil || !dir.EnforceHighestBlock {
+			t.Fatalf("expected EnforceHighestBlock=true after first ApplyDirectiveDefaults")
+		}
+
+		// Step 2: http_server parses query params (user sets enforce-highest-block=false)
+		query := url.Values{}
+		query.Set("enforce-highest-block", "false")
+		req.EnrichFromHttp(nil, query, UserAgentTrackingModeSimplified)
+		if dir := req.Directives(); dir == nil || dir.EnforceHighestBlock {
+			t.Fatalf("expected EnforceHighestBlock=false after query param override")
+		}
+
+		// Step 3: network.Forward calls ApplyDirectiveDefaults again — must be a no-op
+		req.ApplyDirectiveDefaults(cfgDefaults)
+		if dir := req.Directives(); dir == nil || dir.EnforceHighestBlock {
+			t.Fatalf("expected EnforceHighestBlock=false after second ApplyDirectiveDefaults, but it was overwritten back to true")
+		}
+	})
+
+	t.Run("set_directives_prevents_reapplication", func(t *testing.T) {
+		// Simulates the retry path in enforceHighestBlock: clone directives → SetDirectives → Forward
+		req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber"}`))
+
+		// Caller provides fully resolved directives (e.g., cloned from parent request)
+		dr := &RequestDirectives{
+			EnforceHighestBlock: false,
+			UseUpstream:         "!prism-mainnet",
+			SkipCacheRead:       "true",
+		}
+		req.SetDirectives(dr)
+
+		// Forward calls ApplyDirectiveDefaults — must not overwrite
+		req.ApplyDirectiveDefaults(cfgDefaults)
+		if dir := req.Directives(); dir == nil || dir.EnforceHighestBlock {
+			t.Fatalf("expected EnforceHighestBlock=false after SetDirectives + ApplyDirectiveDefaults")
+		}
+		if dir := req.Directives(); dir.UseUpstream != "!prism-mainnet" {
+			t.Fatalf("expected UseUpstream to remain '!prism-mainnet'")
+		}
+	})
+}
+
 // TestHeaderOverridesConfigDefault_ValidateTransactionsRoot verifies that when the
 // config defaults set ValidateTransactionsRoot=true, a header/query-string can
 // override it to false.
