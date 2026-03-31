@@ -114,6 +114,24 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Capacity-exceeded / rate-limiting / billing" errors
 		//----------------------------------------------------------------
 
+		// OP Stack sequencer per-sender rate limit: all providers route to the
+		// same sequencer, so retrying on a different upstream is futile.
+		if strings.Contains(msg, "sender is over rate limit") {
+			capErr := common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+			if re, ok := capErr.(common.RetryableError); ok {
+				return re.WithRetryableTowardNetwork(false)
+			}
+			return capErr
+		}
+
 		if r.StatusCode == 402 ||
 			strings.Contains(msg, "reached the free tier") ||
 			strings.Contains(msg, "Monthly capacity limit") ||
