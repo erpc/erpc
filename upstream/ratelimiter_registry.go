@@ -34,6 +34,8 @@ type RateLimitersRegistry struct {
 	initializer     *util.Initializer
 }
 
+const redisRateLimiterConnectTaskName = "redis-ratelimiter-connect"
+
 func NewRateLimitersRegistry(appCtx context.Context, cfg *common.RateLimiterConfig, logger *zerolog.Logger) (*RateLimitersRegistry, error) {
 	r := &RateLimitersRegistry{
 		appCtx: appCtx,
@@ -60,7 +62,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 		r.initializer = util.NewInitializer(r.appCtx, r.logger, nil)
 
 		// Attempt Redis connection with panic recovery - don't block startup
-		connectTask := util.NewBootstrapTask("redis-ratelimiter-connect", r.connectRedisTask)
+		connectTask := util.NewBootstrapTask(redisRateLimiterConnectTaskName, r.connectRedisTask)
 		if err := r.initializer.ExecuteTasks(r.appCtx, connectTask); err != nil {
 			// Cache stays nil - rate limiting will fail-open until Redis connects
 			r.logger.Warn().Err(err).Msg("failed to initialize Redis rate limiter on first attempt (rate limiting will fail-open until connected, retrying in background)")
@@ -217,6 +219,28 @@ func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, e
 
 func (r *RateLimitersRegistry) GetBudgets() []*common.RateLimitBudgetConfig {
 	return r.cfg.Budgets
+}
+
+func (r *RateLimitersRegistry) onCacheFailure(failedCache limiter.RateLimitCache, err error) {
+	if failedCache == nil {
+		return
+	}
+
+	r.cacheMu.Lock()
+	if r.envoyCache != failedCache {
+		r.cacheMu.Unlock()
+		return
+	}
+	r.envoyCache = nil
+	r.cacheMu.Unlock()
+
+	if r.cfg != nil && r.cfg.Store != nil && r.cfg.Store.Driver == "redis" && r.initializer != nil {
+		r.logger.Warn().Err(err).Msg("cleared Redis rate limiter cache after failure, marking for reconnection")
+		r.initializer.MarkTaskAsFailed(redisRateLimiterConnectTaskName, err)
+		return
+	}
+
+	r.logger.Warn().Err(err).Msg("cleared rate limiter cache after failure (rate limiting disabled until restart)")
 }
 
 // AdjustBudget updates MaxCount for all rules in a budget matching a method (supports wildcards via GetRulesByMethod).

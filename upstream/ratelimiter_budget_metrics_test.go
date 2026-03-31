@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/envoyproxy/ratelimit/src/limiter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
@@ -33,6 +35,31 @@ func (c *delayedRateLimitCache) DoLimit(context.Context, *pb.RateLimitRequest, [
 }
 
 func (c *delayedRateLimitCache) Flush() {}
+
+type panicRateLimitCache struct{}
+
+var _ limiter.RateLimitCache = (*panicRateLimitCache)(nil)
+
+func (c *panicRateLimitCache) DoLimit(context.Context, *pb.RateLimitRequest, []*config.RateLimit) []*pb.RateLimitResponse_DescriptorStatus {
+	panic("EOF")
+}
+
+func (c *panicRateLimitCache) Flush() {}
+
+type delayedPanicRateLimitCache struct {
+	delay    time.Duration
+	panicked chan struct{}
+}
+
+var _ limiter.RateLimitCache = (*delayedPanicRateLimitCache)(nil)
+
+func (c *delayedPanicRateLimitCache) DoLimit(context.Context, *pb.RateLimitRequest, []*config.RateLimit) []*pb.RateLimitResponse_DescriptorStatus {
+	defer close(c.panicked)
+	time.Sleep(c.delay)
+	panic("EOF")
+}
+
+func (c *delayedPanicRateLimitCache) Flush() {}
 
 func histogramSampleCount(t *testing.T, hv *prometheus.HistogramVec, labels ...string) uint64 {
 	t.Helper()
@@ -69,6 +96,12 @@ func newTestBudget(t *testing.T) *RateLimiterBudget {
 	require.NoError(t, err)
 	require.NotNil(t, budget)
 	return budget
+}
+
+func newTestRequestWithAgent() *common.NormalizedRequest {
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_test"}`))
+	req.EnrichFromHttp(http.Header{"User-Agent": []string{"curl/8.0.1"}}, nil, common.UserAgentTrackingModeSimplified)
+	return req
 }
 
 func TestRateLimiterBudget_PermitTimingMetrics_Ok(t *testing.T) {
@@ -118,8 +151,8 @@ func TestRateLimiterBudget_PermitTimingMetrics_Ok(t *testing.T) {
 
 func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 	budget := newTestBudget(t)
-	telemetry.MetricNetworkAttemptReasonTotal.Reset()
 	projectID := "project-a"
+	req := newTestRequestWithAgent()
 	budget.maxTimeout = 10 * time.Millisecond
 	budget.registry.cacheMu.Lock()
 	budget.registry.envoyCache = &delayedRateLimitCache{
@@ -145,17 +178,17 @@ func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 		"timeout_fail_open",
 	)
 	beforeFailOpen := promUtil.ToFloat64(
-		telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
 			projectID,
 			"n/a",
+			"n/a",
+			"curl",
+			"test-budget",
 			"eth_test",
-			telemetry.AttemptReasonFailOpen,
-			telemetry.MetricsVariantLabel(),
-			telemetry.MetricsReleaseLabel(),
+			"limit_timeout",
 		),
 	)
-
-	ok, err := budget.TryAcquirePermit(context.Background(), projectID, nil, "eth_test", "", "", "", "")
+	ok, err := budget.TryAcquirePermit(context.Background(), projectID, req, "eth_test", "", "", "", "")
 	require.NoError(t, err)
 	assert.True(t, ok)
 
@@ -176,19 +209,231 @@ func TestRateLimiterBudget_PermitTimingMetrics_TimeoutFailOpen(t *testing.T) {
 		"timeout_fail_open",
 	)
 	afterFailOpen := promUtil.ToFloat64(
-		telemetry.MetricNetworkAttemptReasonTotal.WithLabelValues(
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
 			projectID,
 			"n/a",
+			"n/a",
+			"curl",
+			"test-budget",
 			"eth_test",
-			telemetry.AttemptReasonFailOpen,
-			telemetry.MetricsVariantLabel(),
-			telemetry.MetricsReleaseLabel(),
+			"limit_timeout",
 		),
 	)
-
 	assert.GreaterOrEqual(t, afterEval-beforeEval, uint64(1))
 	assert.GreaterOrEqual(t, afterWait-beforeWait, uint64(1))
 	assert.Equal(t, beforeFailOpen+1, afterFailOpen)
+}
+
+func TestRateLimiterBudget_PermitTimingMetrics_PanicFailOpen(t *testing.T) {
+	budget := newTestBudget(t)
+	projectID := "project-a"
+	req := newTestRequestWithAgent()
+	budget.registry.cfg.Store = &common.RateLimitStoreConfig{
+		Driver: "redis",
+		Redis:  &common.RedisConnectorConfig{URI: "redis://test"},
+	}
+	budget.registry.initializer = util.NewInitializer(context.Background(), budget.logger, &util.InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     false,
+		RetryFactor:   1,
+		RetryMinDelay: time.Second,
+		RetryMaxDelay: time.Second,
+	})
+	require.NoError(t, budget.registry.initializer.ExecuteTasks(
+		context.Background(),
+		util.NewBootstrapTask(redisRateLimiterConnectTaskName, func(context.Context) error { return nil }),
+	))
+	budget.registry.cacheMu.Lock()
+	budget.registry.envoyCache = &panicRateLimitCache{}
+	budget.registry.cacheMu.Unlock()
+
+	beforeEval := histogramSampleCount(
+		t,
+		telemetry.MetricRateLimiterPermitEvaluationDuration,
+		"test-budget",
+		"eth_test",
+		"",
+		"panic_fail_open",
+	)
+	beforeWait := histogramSampleCount(
+		t,
+		telemetry.MetricRateLimiterPermitWaitDuration,
+		"test-budget",
+		"eth_test",
+		"",
+		"panic_fail_open",
+	)
+	beforeFailOpen := promUtil.ToFloat64(
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+			projectID,
+			"n/a",
+			"n/a",
+			"curl",
+			"test-budget",
+			"eth_test",
+			"limit_panic",
+		),
+	)
+	beforeUnexpectedPanic := promUtil.ToFloat64(
+		telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+			"ratelimiter-do-limit",
+			"budget:test-budget",
+			common.ErrorFingerprint("EOF"),
+		),
+	)
+	ok, err := budget.TryAcquirePermit(context.Background(), projectID, req, "eth_test", "", "", "", "")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Nil(t, budget.registry.GetCache())
+
+	status := budget.registry.initializer.Status()
+	require.Len(t, status.Tasks, 1)
+	assert.Equal(t, util.TaskFailed, status.Tasks[0].State)
+	assert.Error(t, status.Tasks[0].Err)
+
+	afterEval := histogramSampleCount(
+		t,
+		telemetry.MetricRateLimiterPermitEvaluationDuration,
+		"test-budget",
+		"eth_test",
+		"",
+		"panic_fail_open",
+	)
+	afterWait := histogramSampleCount(
+		t,
+		telemetry.MetricRateLimiterPermitWaitDuration,
+		"test-budget",
+		"eth_test",
+		"",
+		"panic_fail_open",
+	)
+	afterFailOpen := promUtil.ToFloat64(
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+			projectID,
+			"n/a",
+			"n/a",
+			"curl",
+			"test-budget",
+			"eth_test",
+			"limit_panic",
+		),
+	)
+	afterUnexpectedPanic := promUtil.ToFloat64(
+		telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+			"ratelimiter-do-limit",
+			"budget:test-budget",
+			common.ErrorFingerprint("EOF"),
+		),
+	)
+	assert.GreaterOrEqual(t, afterEval-beforeEval, uint64(1))
+	assert.GreaterOrEqual(t, afterWait-beforeWait, uint64(1))
+	assert.Equal(t, beforeFailOpen+1, afterFailOpen)
+	assert.Equal(t, beforeUnexpectedPanic+1, afterUnexpectedPanic)
+}
+
+func TestRateLimiterBudget_PermitTimingMetrics_PanicBeforeTimeoutFailOpen(t *testing.T) {
+	budget := newTestBudget(t)
+	projectID := "project-a"
+	req := newTestRequestWithAgent()
+	budget.registry.cfg.Store = &common.RateLimitStoreConfig{
+		Driver: "redis",
+		Redis:  &common.RedisConnectorConfig{URI: "redis://test"},
+	}
+	budget.registry.initializer = util.NewInitializer(context.Background(), budget.logger, &util.InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     false,
+		RetryFactor:   1,
+		RetryMinDelay: time.Second,
+		RetryMaxDelay: time.Second,
+	})
+	require.NoError(t, budget.registry.initializer.ExecuteTasks(
+		context.Background(),
+		util.NewBootstrapTask(redisRateLimiterConnectTaskName, func(context.Context) error { return nil }),
+	))
+	budget.maxTimeout = 100 * time.Millisecond
+	budget.registry.cacheMu.Lock()
+	budget.registry.envoyCache = &panicRateLimitCache{}
+	budget.registry.cacheMu.Unlock()
+
+	beforeFailOpen := promUtil.ToFloat64(
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+			projectID,
+			"n/a",
+			"n/a",
+			"curl",
+			"test-budget",
+			"eth_test",
+			"limit_panic",
+		),
+	)
+
+	ok, err := budget.TryAcquirePermit(context.Background(), projectID, req, "eth_test", "", "", "", "")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Nil(t, budget.registry.GetCache())
+
+	afterFailOpen := promUtil.ToFloat64(
+		telemetry.MetricRateLimiterFailopenTotal.WithLabelValues(
+			projectID,
+			"n/a",
+			"n/a",
+			"curl",
+			"test-budget",
+			"eth_test",
+			"limit_panic",
+		),
+	)
+	assert.Equal(t, beforeFailOpen+1, afterFailOpen)
+}
+
+func TestRateLimiterBudget_LatePanicFromStaleCacheDoesNotClearHealthyReconnect(t *testing.T) {
+	budget := newTestBudget(t)
+	budget.registry.cfg.Store = &common.RateLimitStoreConfig{
+		Driver: "redis",
+		Redis:  &common.RedisConnectorConfig{URI: "redis://test"},
+	}
+	budget.registry.initializer = util.NewInitializer(context.Background(), budget.logger, &util.InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     false,
+		RetryFactor:   1,
+		RetryMinDelay: time.Second,
+		RetryMaxDelay: time.Second,
+	})
+	require.NoError(t, budget.registry.initializer.ExecuteTasks(
+		context.Background(),
+		util.NewBootstrapTask(redisRateLimiterConnectTaskName, func(context.Context) error { return nil }),
+	))
+
+	staleCache := &delayedPanicRateLimitCache{
+		delay:    40 * time.Millisecond,
+		panicked: make(chan struct{}),
+	}
+	healthyCache := &delayedRateLimitCache{statuses: []*pb.RateLimitResponse_DescriptorStatus{}}
+	budget.maxTimeout = 10 * time.Millisecond
+
+	budget.registry.cacheMu.Lock()
+	budget.registry.envoyCache = staleCache
+	budget.registry.cacheMu.Unlock()
+
+	ok, err := budget.TryAcquirePermit(context.Background(), "project-a", nil, "eth_test", "", "", "", "")
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	budget.registry.cacheMu.Lock()
+	budget.registry.envoyCache = healthyCache
+	budget.registry.cacheMu.Unlock()
+
+	select {
+	case <-staleCache.panicked:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for stale cache panic")
+	}
+
+	assert.Same(t, healthyCache, budget.registry.GetCache())
+
+	status := budget.registry.initializer.Status()
+	require.Len(t, status.Tasks, 1)
+	assert.Equal(t, util.TaskSucceeded, status.Tasks[0].State)
 }
 
 func TestNormalizeRateLimitMethodLabel(t *testing.T) {

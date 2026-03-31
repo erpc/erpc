@@ -298,6 +298,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 			}).
 			Persist().
 			Reply(200).
+			Delay(50 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -308,10 +309,12 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		requestBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1234567890123456789012345678901234567890","0x10"]}`)
 
 		var wg sync.WaitGroup
+		start := make(chan struct{})
 		wg.Add(2)
 		for i := 0; i < 2; i++ {
 			go func() {
 				defer wg.Done()
+				<-start
 				req := common.NewNormalizedRequest(requestBody)
 				resp, err := network.Forward(ctx, req)
 				require.NoError(t, err)
@@ -319,6 +322,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 				resp.Release()
 			}()
 		}
+		close(start)
 		wg.Wait()
 
 		assert.Equal(t, int32(1), upstreamRequestCount.Load(), "initial burst should multiplex to a single upstream call")
