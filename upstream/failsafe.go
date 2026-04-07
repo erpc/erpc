@@ -787,11 +787,15 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 
 func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	// When quantile-based timeout is configured, the failsafe-go timeout policy
-	// acts as a safety net using MaxDuration (or Duration as fallback). The actual
-	// dynamic timeout is enforced via context.WithTimeout in the executor callback.
+	// acts as a safety net. It must be at least as large as any value NewTimeoutFunc
+	// can return (including Duration used as cold-start fallback) so it never
+	// silently truncates the dynamic or fallback timeout.
 	dur := cfg.Duration.Duration()
-	if cfg.Quantile > 0 && cfg.MaxDuration.Duration() > 0 {
-		dur = cfg.MaxDuration.Duration()
+	if cfg.Quantile > 0 {
+		maxDur := cfg.MaxDuration.Duration()
+		if maxDur > dur {
+			dur = maxDur
+		}
 	}
 
 	builder := timeout.Builder[*common.NormalizedResponse](dur)
