@@ -32,7 +32,7 @@ func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scop
 
 	lg := logger.With().Str("scope", string(scope)).Str("entity", entity).Logger()
 
-	if fsCfg.Timeout != nil {
+	if fsCfg.Timeout != nil && fsCfg.Timeout.Quantile == 0 {
 		plc, err := createTimeoutPolicy(logger, fsCfg.Timeout)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(
@@ -786,16 +786,9 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 }
 
 func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
-	// When quantile-based timeout is configured, the failsafe-go timeout policy
-	// acts as a safety net. It must be at least as large as any value NewTimeoutFunc
-	// can return (including Duration used as cold-start fallback) so it never
-	// silently truncates the dynamic or fallback timeout.
 	dur := cfg.Duration.Duration()
-	if cfg.Quantile > 0 {
-		maxDur := cfg.MaxDuration.Duration()
-		if maxDur > dur {
-			dur = maxDur
-		}
+	if dur <= 0 {
+		return nil, fmt.Errorf("timeout duration must be positive, got %v", dur)
 	}
 
 	builder := timeout.Builder[*common.NormalizedResponse](dur)
