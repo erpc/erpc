@@ -644,6 +644,7 @@ func hasDirectiveInQueryParams(queryArgs url.Values) bool {
 
 // EnrichTransportFromHttp records Origin / Referer-derived origin and User-Agent before authentication
 // or directive merging. Full EnrichFromHttp still runs later (after network directive defaults).
+// Safe to call multiple times; origin/referer are only stored on the first call.
 func (r *NormalizedRequest) EnrichTransportFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
 	if r == nil {
 		return
@@ -655,6 +656,10 @@ func (r *NormalizedRequest) EnrichTransportFromHttp(headers http.Header, queryAr
 		} else {
 			r.agentName.Store(r.simplifyAgentName(userAgent))
 		}
+	}
+
+	if r.origin.Load() != nil || r.refererOrigin.Load() != nil {
+		return
 	}
 
 	if origin := strings.TrimSpace(headers.Get("Origin")); origin != "" {
