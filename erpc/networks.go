@@ -527,13 +527,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if failsafeExecutor.timeout != nil {
 				if td := failsafeExecutor.timeout(execSpanCtx, effectiveReq); td != nil {
 					var cancelFn context.CancelFunc
-					execSpanCtx, cancelFn = context.WithTimeout(
+					execSpanCtx, cancelFn = context.WithTimeoutCause(
 						execSpanCtx,
 						// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
 						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
 						//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 						//      but allow the failsafe execution to fail with timeout first for proper error handling.
 						*td+5*time.Millisecond,
+						upstream.ErrDynamicTimeoutExceeded,
 					)
 					defer cancelFn()
 				}
