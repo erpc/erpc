@@ -8,6 +8,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -116,6 +117,7 @@ func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedReques
 		origin = strings.ToLower(req.RequestOrigin())
 	}
 	if origin == "" {
+		recordOriginFailureMetric(req, "missing_origin")
 		return common.NewErrAuthUnauthorized("origin", "missing request origin")
 	}
 
@@ -137,7 +139,30 @@ func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedReques
 		}
 	}
 
+	recordOriginFailureMetric(req, "origin_not_allowed")
 	return common.NewErrAuthUnauthorized("origin", "request origin is not allowed")
+}
+
+func recordOriginFailureMetric(req *common.NormalizedRequest, reason string) {
+	project := "n/a"
+	network := "n/a"
+	agent := "unknown"
+	if req != nil {
+		if n := req.Network(); n != nil {
+			project = n.ProjectId()
+			network = req.NetworkLabel()
+		} else {
+			network = req.NetworkId()
+		}
+		agent = req.AgentName()
+	}
+	telemetry.MetricAuthFailedTotal.WithLabelValues(
+		project,
+		network,
+		"origin",
+		reason,
+		agent,
+	).Inc()
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies
