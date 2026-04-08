@@ -71,6 +71,12 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 			continue
 		}
 
+		// Origin check runs after credential validation. On failure we return
+		// immediately instead of continuing to the next strategy (unlike credential
+		// failures which append to errs and continue). This is intentional: the
+		// credential already identified the user, so the origin constraint applies
+		// to that specific user. Trying another strategy with the same credential
+		// but a different origin config would be semantically incorrect.
 		if err := enforceOriginAllowlist(az.logger, req, user); err != nil {
 			return nil, err
 		}
