@@ -188,7 +188,16 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 			user.RateLimitBudget = userData.RateLimitBudget
 		}
 		if len(userData.AllowedOrigins) > 0 {
-			user.AllowedOrigins = userData.AllowedOrigins
+			if len(userData.AllowedOrigins) > common.MaxAllowedOriginsPerKey {
+				s.logger.Warn().
+					Str("apiKey", apiKey).
+					Int("count", len(userData.AllowedOrigins)).
+					Int("max", common.MaxAllowedOriginsPerKey).
+					Msg("allowedOrigins exceeds maximum, truncating")
+				user.AllowedOrigins = userData.AllowedOrigins[:common.MaxAllowedOriginsPerKey]
+			} else {
+				user.AllowedOrigins = userData.AllowedOrigins
+			}
 		}
 		return &authFetchResult{user: user, err: nil, neg: false}, nil
 	})
