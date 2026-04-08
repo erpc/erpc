@@ -122,7 +122,14 @@ func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedReques
 	}
 
 	for _, allowedOrigin := range user.AllowedOrigins {
-		match, err := common.WildcardMatch(strings.ToLower(allowedOrigin), origin)
+		lowered := strings.ToLower(allowedOrigin)
+		if !strings.ContainsAny(lowered, "*?!") {
+			if lowered == origin {
+				return nil
+			}
+			continue
+		}
+		match, err := common.WildcardMatch(lowered, origin)
 		if err != nil {
 			if logger != nil {
 				logger.Warn().
