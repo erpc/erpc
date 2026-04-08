@@ -969,9 +969,7 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
 			}
 		}
-	} else if errors.Is(execErr, timeout.ErrExceeded) {
-		// Simply translate the failsafe library timeout error type to our own standard error type.
-		// And keep the original error as "cause" so it can be logged.
+	} else if errors.Is(execErr, timeout.ErrExceeded) || errors.Is(execErr, context.DeadlineExceeded) {
 		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
 	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
 		// Simply translate the failsafe library circuit breaker error type to our own standard error type.
