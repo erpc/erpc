@@ -268,7 +268,7 @@ var (
 		Namespace: "erpc",
 		Name:      "network_upstream_calls_per_request",
 		Help:      "Distribution of actual upstream calls required per network request.",
-		Buckets:   []float64{1, 2, 3, 4, 5, 8, 13, 21, 34},
+		Buckets:   []float64{1, 2, 3, 5, 13},
 	}, []string{"project", "network", "category", "variant", "release"})
 
 	MetricNetworkAttemptReasonTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -553,7 +553,7 @@ var (
 		Namespace: "erpc",
 		Name:      "network_evm_block_range_requested_total",
 		Help:      "Total requests observed by block-number buckets for heatmap.",
-	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
+	}, []string{"project", "network", "category", "user", "finality", "bucket", "size"})
 
 	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",

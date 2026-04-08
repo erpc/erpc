@@ -103,7 +103,12 @@ For canary/control experiment tracking, eRPC emits two low-cardinality labels on
 
 Set these as deployment-level env vars (same values for all pods in a rollout) to avoid label explosion.
 
-Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up montoring.
+#### Built-in Cardinality Guardrails
+
+- `erpc_network_upstream_calls_per_request` uses a compact 5-bucket budget (`1, 2, 3, 5, 13`) because the metric is mainly used to spot retry/hedge amplification, not exact long-tail call counts.
+- `erpc_network_evm_block_range_requested_total` is network-scoped on purpose; use it for access-pattern heatmaps, and use upstream request counters for upstream-specific drill-downs.
+
+Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up monitoring.
 
 ### Available metrics
 
