@@ -42,6 +42,35 @@ type QuicknodeFilterParams struct {
 }
 
 const DefaultQuicknodeRecheckInterval = 1 * time.Hour
+const QuicknodeHyperevmChainID int64 = 999
+
+func appendQuicknodeHyperevmArchiveSlug(chainID int64, rawURL string) string {
+	if chainID != QuicknodeHyperevmChainID || rawURL == "" {
+		return rawURL
+	}
+
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	trimmedPath := strings.TrimSuffix(parsedURL.Path, "/")
+	if strings.HasSuffix(trimmedPath, "/nanoreth") {
+		return rawURL
+	}
+
+	if trimmedPath == "" {
+		parsedURL.Path = "/nanoreth"
+	} else {
+		parsedURL.Path = trimmedPath + "/nanoreth"
+	}
+
+	if strings.HasSuffix(rawURL, "/") {
+		parsedURL.Path += "/"
+	}
+
+	return parsedURL.String()
+}
 
 func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{
@@ -183,7 +212,7 @@ func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.L
 				} else {
 					upsCopy.Id = fmt.Sprintf("quicknode-%d-%s", chainID, endpoint.ID)
 				}
-				upsCopy.Endpoint = endpoint.HttpUrl
+				upsCopy.Endpoint = appendQuicknodeHyperevmArchiveSlug(chainID, endpoint.HttpUrl)
 				upsCopy.Type = common.UpstreamTypeEvm
 
 				upstreams = append(upstreams, upsCopy)
