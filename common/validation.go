@@ -793,6 +793,11 @@ func (s *SecretStrategyConfig) Validate() error {
 	if len(s.AllowedOrigins) > MaxAllowedOriginsPerKey {
 		return fmt.Errorf("auth.*.secret.allowedOrigins exceeds maximum of %d entries", MaxAllowedOriginsPerKey)
 	}
+	for i, pattern := range s.AllowedOrigins {
+		if err := ValidatePattern(pattern); err != nil {
+			return fmt.Errorf("auth.*.secret.allowedOrigins[%d] has invalid pattern %q: %w", i, pattern, err)
+		}
+	}
 	return nil
 }
 
