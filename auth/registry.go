@@ -123,7 +123,7 @@ func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedReques
 
 	for _, allowedOrigin := range user.AllowedOrigins {
 		lowered := strings.ToLower(allowedOrigin)
-		if !strings.ContainsAny(lowered, "*?!") {
+		if !strings.ContainsAny(lowered, "*?!|&() ") {
 			if lowered == origin {
 				return nil
 			}
