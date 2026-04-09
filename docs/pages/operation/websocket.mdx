@@ -1,0 +1,223 @@
+---
+description: WebSocket support in eRPC for persistent connections and real-time subscriptions...
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+# WebSocket
+
+eRPC supports WebSocket connections on the same HTTP port. Clients can connect via `ws://` or `wss://` for persistent JSON-RPC connections and real-time subscriptions (`eth_subscribe`).
+
+## Connecting
+
+Connect to eRPC using the same URL path as HTTP, but with the `ws://` or `wss://` scheme:
+
+```
+ws://<your-erpc-hostname>/<project-id>/<network-architecture>/<chain-id>
+```
+
+```javascript
+// Browser / Node.js example
+const ws = new WebSocket("ws://localhost:4000/main/evm/1");
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_blockNumber",
+    params: []
+  }));
+};
+
+ws.onmessage = (event) => {
+  console.log(JSON.parse(event.data));
+  // { "jsonrpc": "2.0", "id": 1, "result": "0x1234567" }
+};
+```
+
+<Callout type="info">
+  WebSocket connections use the same port as HTTP — no additional configuration needed. Domain aliasing rules also apply to WebSocket connections.
+</Callout>
+
+## Regular JSON-RPC over WebSocket
+
+All JSON-RPC methods supported over HTTP also work over WebSocket. The connection is persistent, so you can send multiple requests without reconnecting:
+
+```javascript
+// Send multiple requests on the same connection
+ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }));
+ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_chainId", params: [] }));
+ws.send(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "eth_getBlockByNumber", params: ["latest", false] }));
+```
+
+Batch requests (JSON arrays) are also supported:
+
+```javascript
+ws.send(JSON.stringify([
+  { jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] },
+  { jsonrpc: "2.0", id: 2, method: "eth_chainId", params: [] }
+]));
+// Response is a JSON array
+```
+
+All eRPC features work identically for WebSocket RPC requests: caching, upstream scoring, failsafe policies (retry, hedge, circuit breaker), rate limiting, multiplexing (request deduplication), EVM integrity checks, and metrics.
+
+## Subscriptions
+
+eRPC supports `eth_subscribe` and `eth_unsubscribe` for real-time event streaming. Subscriptions require at least one upstream configured with a `ws://` or `wss://` endpoint.
+
+### eth_subscribe
+
+```javascript
+const ws = new WebSocket("ws://localhost:4000/main/evm/1");
+
+ws.onopen = () => {
+  // Subscribe to new block headers
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_subscribe",
+    params: ["newHeads"]
+  }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  
+  if (msg.id) {
+    // Subscription confirmation
+    console.log("Subscription ID:", msg.result);
+    // "0x2a151383161618ebffddfed9de4be5db"
+  }
+  
+  if (msg.method === "eth_subscription") {
+    // New block notification
+    console.log("New block:", msg.params.result.number);
+  }
+};
+```
+
+Supported subscription types (depends on upstream node capabilities):
+- `newHeads` — new block headers
+- `logs` — log entries matching a filter
+- `newPendingTransactions` — pending transaction hashes
+
+### eth_unsubscribe
+
+```javascript
+ws.send(JSON.stringify({
+  jsonrpc: "2.0",
+  id: 2,
+  method: "eth_unsubscribe",
+  params: ["0x2a151383161618ebffddfed9de4be5db"]
+}));
+// Response: { "jsonrpc": "2.0", "id": 2, "result": true }
+```
+
+### Subscription features
+
+- **ID remapping** — eRPC generates its own subscription IDs for clients, decoupled from upstream IDs. This allows transparent upstream failover.
+- **Deduplication** — if multiple clients subscribe to the same event on the same network, eRPC shares a single upstream subscription and fans out notifications to all clients.
+- **Rate limiting** — subscription requests are subject to the same project and network rate limits as regular RPC requests.
+- **Upstream scoring** — the highest-scoring WebSocket-capable upstream is selected for subscriptions.
+- **Cleanup** — when a client disconnects, all its subscriptions are automatically unsubscribed from the upstream.
+
+## WebSocket upstreams
+
+To support subscriptions, configure at least one upstream with a `ws://` or `wss://` endpoint:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      # Regular HTTP upstream (for standard RPC)
+      - id: eth-mainnet-http
+        endpoint: https://eth-mainnet.example.com
+        evm:
+          chainId: 1
+
+      # WebSocket upstream (enables subscriptions)
+      - id: eth-mainnet-ws
+        endpoint: ws://eth-mainnet.example.com:8546
+        evm:
+          chainId: 1
+        failsafe:
+          retry:
+            maxAttempts: 2
+            delay: 100ms
+          timeout:
+            duration: 30s
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        // Regular HTTP upstream
+        {
+          id: "eth-mainnet-http",
+          endpoint: "https://eth-mainnet.example.com",
+          evm: { chainId: 1 },
+        },
+        // WebSocket upstream (enables subscriptions)
+        {
+          id: "eth-mainnet-ws",
+          endpoint: "ws://eth-mainnet.example.com:8546",
+          evm: { chainId: 1 },
+          failsafe: {
+            retry: { maxAttempts: 2, delay: "100ms" },
+            timeout: { duration: "30s" },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+<Callout type="info">
+  WebSocket upstreams also serve regular JSON-RPC requests (not just subscriptions). eRPC's scoring system picks the best upstream regardless of transport — HTTP or WebSocket.
+</Callout>
+
+The WebSocket upstream client features:
+- **Persistent connection** with automatic reconnection (exponential backoff, 1s to 30s)
+- **Ping/pong keepalive** (30s interval) to detect dead connections
+- **Lazy connection** — if the upstream is unavailable at startup, eRPC retries in the background without blocking
+
+## Server configuration
+
+WebSocket server settings can be tuned via the `webSocket` section in server config. Defaults work well for most deployments:
+
+```yaml filename="erpc.yaml"
+server:
+  httpPortV4: 4000
+  webSocket:
+    # Read buffer size in bytes (default: 4096)
+    readBufferSize: 4096
+    # Write buffer size in bytes (default: 4096)
+    writeBufferSize: 4096
+    # Maximum incoming message size in bytes (default: 1048576 = 1MB)
+    maxMessageSize: 1048576
+    # Ping interval for keepalive (default: 30s)
+    pingInterval: 30s
+```
+
+## Directives
+
+[Request directives](/operation/directives) can be set via headers or query parameters on the initial WebSocket upgrade request. They apply to all requests on that connection:
+
+```javascript
+// Pass directives via query params on the WebSocket URL
+const ws = new WebSocket("ws://localhost:4000/main/evm/1?useUpstream=my-preferred-upstream");
+```
+
+The `useUpstream` directive also applies to subscription upstream selection — only WebSocket-capable upstreams matching the pattern will be considered.

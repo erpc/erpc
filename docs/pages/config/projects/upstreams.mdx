@@ -25,7 +25,8 @@ projects:
 
     # Each upstream supports 1 or more networks (i.e. evm chains)
     upstreams:
-      # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
+      # (REQUIRED) Endpoint URL supports http(s) and ws(s) schemes, along with custom schemes like "alchemy://" defined below in this docs.
+      # Use ws:// or wss:// for WebSocket upstreams (required for eth_subscribe support).
       - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
 
         # Each upstream can have an arbitrary group name which is used in metrics, as well as 
@@ -154,6 +155,7 @@ export default createConfig({
       upstreams: [
         // (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
         {
+          // Supports http(s) and ws(s) schemes. Use ws:// or wss:// for WebSocket upstreams (required for eth_subscribe).
           endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
 
           /*

@@ -88,25 +88,33 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 }
 
 type ServerConfig struct {
-	ListenV4            *bool             `yaml:"listenV4,omitempty" json:"listenV4"`
-	HttpHostV4          *string           `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
-	ListenV6            *bool             `yaml:"listenV6,omitempty" json:"listenV6"`
-	HttpHostV6          *string           `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort            *int              `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
-	HttpPortV4          *int              `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
-	HttpPortV6          *int              `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
-	MaxTimeout          *Duration         `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
-	ReadTimeout         *Duration         `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
-	WriteTimeout        *Duration         `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
-	EnableGzip          *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	TLS                 *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
-	Aliasing            *AliasingConfig   `yaml:"aliasing" json:"aliasing"`
-	WaitBeforeShutdown  *Duration         `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
-	WaitAfterShutdown   *Duration         `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
-	IncludeErrorDetails *bool             `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
-	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
-	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
-	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+	ListenV4            *bool                  `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4          *string                `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6            *bool                  `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6          *string                `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort            *int                   `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
+	HttpPortV4          *int                   `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
+	HttpPortV6          *int                   `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
+	MaxTimeout          *Duration              `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
+	ReadTimeout         *Duration              `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
+	WriteTimeout        *Duration              `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
+	EnableGzip          *bool                  `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS                 *TLSConfig             `yaml:"tls,omitempty" json:"tls"`
+	Aliasing            *AliasingConfig        `yaml:"aliasing" json:"aliasing"`
+	WaitBeforeShutdown  *Duration              `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
+	WaitAfterShutdown   *Duration              `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
+	IncludeErrorDetails *bool                  `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	TrustedIPForwarders []string               `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
+	TrustedIPHeaders    []string               `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
+	ResponseHeaders     map[string]string      `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+	WebSocket           *WebSocketServerConfig `yaml:"webSocket,omitempty" json:"webSocket"`
+}
+
+type WebSocketServerConfig struct {
+	ReadBufferSize  int       `yaml:"readBufferSize,omitempty" json:"readBufferSize"`
+	WriteBufferSize int       `yaml:"writeBufferSize,omitempty" json:"writeBufferSize"`
+	MaxMessageSize  int64     `yaml:"maxMessageSize,omitempty" json:"maxMessageSize"`
+	PingInterval    *Duration `yaml:"pingInterval,omitempty" json:"pingInterval" tstype:"Duration"`
 }
 
 type HealthCheckConfig struct {
@@ -836,8 +844,8 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                            int64                       `yaml:"chainId" json:"chainId"`
-	StatePollerInterval                Duration                    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	ChainId             int64    `yaml:"chainId" json:"chainId"`
+	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
 	// StatePollerDebounce overrides the debounce interval for the state poller.
 	// When 0 (default), the interval is dynamically inferred from the chain's
 	// observed block time, falling back to the network-level

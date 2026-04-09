@@ -420,7 +420,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 	// Send the request based on client type
 	//
 	switch clientType {
-	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds:
+	case clients.ClientTypeHttpJsonRpc, clients.ClientTypeGrpcBds, clients.ClientTypeWsJsonRpc:
 		tryForward := func(
 			ctx context.Context,
 			exec failsafe.Execution[*common.NormalizedResponse],

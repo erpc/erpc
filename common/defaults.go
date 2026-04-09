@@ -690,6 +690,23 @@ func (s *ServerConfig) SetDefaults() error {
 		s.IncludeErrorDetails = util.BoolPtr(true)
 	}
 
+	if s.WebSocket == nil {
+		s.WebSocket = &WebSocketServerConfig{}
+	}
+	if s.WebSocket.ReadBufferSize == 0 {
+		s.WebSocket.ReadBufferSize = 4096
+	}
+	if s.WebSocket.WriteBufferSize == 0 {
+		s.WebSocket.WriteBufferSize = 4096
+	}
+	if s.WebSocket.MaxMessageSize == 0 {
+		s.WebSocket.MaxMessageSize = 1 * 1024 * 1024 // 1MB
+	}
+	if s.WebSocket.PingInterval == nil {
+		d := Duration(30 * time.Second)
+		s.WebSocket.PingInterval = &d
+	}
+
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured
@@ -1188,6 +1205,8 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
 	if strings.HasPrefix(upstream.Endpoint, "http://") ||
 		strings.HasPrefix(upstream.Endpoint, "https://") ||
+		strings.HasPrefix(upstream.Endpoint, "ws://") ||
+		strings.HasPrefix(upstream.Endpoint, "wss://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
 		return nil, nil

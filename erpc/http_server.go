@@ -24,6 +24,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -48,6 +49,8 @@ type HttpServer struct {
 	trustedForwarderIPs     map[string]struct{}
 	trustedIPHeaders        []string
 	resolvedResponseHeaders map[string]string
+	subscriptionManager     *SubscriptionManager
+	activeWsConns           sync.Map // connId -> *WsConnection
 }
 
 func NewHttpServer(
@@ -80,15 +83,18 @@ func NewHttpServer(
 
 	gzipPool := util.NewGzipReaderPool()
 
+	subMgrLogger := logger.With().Str("component", "subscriptions").Logger()
+
 	srv := &HttpServer{
-		logger:         logger,
-		appCtx:         ctx,
-		serverCfg:      cfg,
-		healthCheckCfg: healthCheckCfg,
-		adminCfg:       adminCfg,
-		erpc:           erpc,
-		draining:       &draining,
-		gzipPool:       gzipPool,
+		logger:              logger,
+		appCtx:              ctx,
+		serverCfg:           cfg,
+		healthCheckCfg:      healthCheckCfg,
+		adminCfg:            adminCfg,
+		erpc:                erpc,
+		draining:            &draining,
+		gzipPool:            gzipPool,
+		subscriptionManager: NewSubscriptionManager(&subMgrLogger),
 	}
 
 	if cfg != nil {
@@ -316,6 +322,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			if !s.handleCORS(httpCtx, w, r, project.Config.CORS) || r.Method == http.MethodOptions {
 				return
 			}
+		}
+
+		// WebSocket upgrade: handle before body reading since WS upgrades don't have a JSON body
+		if websocket.IsWebSocketUpgrade(r) {
+			s.handleWebSocket(httpCtx, w, r, &lg, project, architecture, chainId)
+			return
 		}
 
 		// Handle gzipped request bodies
@@ -964,7 +976,7 @@ func (s *HttpServer) parseUrlPath(
 		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm')", ps)
 	}
 
-	if !isPost && !isOptions {
+	if !isPost && !isOptions && r.Header.Get("Upgrade") != "websocket" {
 		isHealthCheck = true
 	}
 
@@ -1435,6 +1447,11 @@ func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http servers...")
 
+	// Close all active WebSocket connections first with GoingAway status.
+	// This sends a close frame to clients so they know to reconnect,
+	// and cleans up all subscriptions before the HTTP server stops.
+	s.shutdownWebSockets(logger)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -1476,6 +1493,48 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	}
 
 	return lastErr
+}
+
+// shutdownWebSockets closes all active WebSocket connections with a GoingAway
+// close frame and waits for subscription cleanup to complete.
+func (s *HttpServer) shutdownWebSockets(logger *zerolog.Logger) {
+	count := 0
+	s.activeWsConns.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+
+	if count == 0 {
+		return
+	}
+
+	logger.Info().Int("connections", count).Msg("closing active WebSocket connections...")
+
+	var wg sync.WaitGroup
+	s.activeWsConns.Range(func(key, value interface{}) bool {
+		wsc := value.(*WsConnection)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			wsc.CloseWithGoingAway()
+		}()
+		s.activeWsConns.Delete(key)
+		return true
+	})
+
+	// Wait for all connections to close with a timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Info().Int("connections", count).Msg("all WebSocket connections closed")
+	case <-time.After(10 * time.Second):
+		logger.Warn().Int("connections", count).Msg("timed out waiting for WebSocket connections to close")
+	}
 }
 
 // conditionalGzipWriter wraps ResponseWriter and decides whether to compress
