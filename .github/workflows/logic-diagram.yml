@@ -20,7 +20,7 @@ jobs:
       - name: Logic Diagram Action
         uses: with-logic/logic-diagram-action@beta
         with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           document_id: 80090265-b8f3-4019-b0ff-5d1bc8577e70
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LOGIC_API_TOKEN: ${{ secrets.LOGIC_API_KEY }}
