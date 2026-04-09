@@ -74,13 +74,11 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 		}
 	}
 
-	err = cfg.SetDefaults(opts)
-	if err != nil {
+	if err := cfg.SetDefaults(opts); err != nil {
 		return nil, err
 	}
 
-	err = cfg.Validate()
-	if err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -335,6 +333,22 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (r *RedisConnectorConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"addr":              r.Addr,
+		"username":          r.Username,
+		"password":          "REDACTED",
+		"db":                r.DB,
+		"connPoolSize":      r.ConnPoolSize,
+		"uri":               util.RedactEndpoint(r.URI),
+		"tls":               r.TLS,
+		"initTimeout":       r.InitTimeout.String(),
+		"getTimeout":        r.GetTimeout.String(),
+		"setTimeout":        r.SetTimeout.String(),
+		"lockRetryInterval": r.LockRetryInterval.String(),
+	}, nil
+}
+
 type DynamoDBConnectorConfig struct {
 	Table             string         `yaml:"table,omitempty" json:"table"`
 	Region            string         `yaml:"region,omitempty" json:"region"`
@@ -374,6 +388,18 @@ func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (p *PostgreSQLConnectorConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
+		"table":         p.Table,
+		"minConns":      p.MinConns,
+		"maxConns":      p.MaxConns,
+		"initTimeout":   p.InitTimeout.String(),
+		"getTimeout":    p.GetTimeout.String(),
+		"setTimeout":    p.SetTimeout.String(),
+	}, nil
+}
+
 type AwsAuthConfig struct {
 	Mode            string `yaml:"mode" json:"mode" tstype:"'file' | 'env' | 'secret'"` // "file", "env", "secret"
 	CredentialsFile string `yaml:"credentialsFile" json:"credentialsFile"`
@@ -390,6 +416,16 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 		"accessKeyID":     a.AccessKeyID,
 		"secretAccessKey": "REDACTED",
 	})
+}
+
+func (a *AwsAuthConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"mode":            a.Mode,
+		"credentialsFile": a.CredentialsFile,
+		"profile":         a.Profile,
+		"accessKeyID":     a.AccessKeyID,
+		"secretAccessKey": "REDACTED",
+	}, nil
 }
 
 type ProjectConfig struct {
@@ -542,6 +578,18 @@ func (p *ProviderConfig) MarshalJSON() ([]byte, error) {
 		"upstreamIdTemplate": p.UpstreamIdTemplate,
 		"overrides":          p.Overrides,
 	})
+}
+
+func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"id":                 p.Id,
+		"vendor":             p.Vendor,
+		"settings":           "REDACTED",
+		"onlyNetworks":       p.OnlyNetworks,
+		"ignoreNetworks":     p.IgnoreNetworks,
+		"upstreamIdTemplate": p.UpstreamIdTemplate,
+		"overrides":          p.Overrides,
+	}, nil
 }
 
 type UpstreamConfig struct {
@@ -752,8 +800,8 @@ func (c *RoutingConfig) Copy() *RoutingConfig {
 }
 
 type ScoreMultiplierConfig struct {
-	Network         string              `yaml:"network" json:"network"`
-	Method          string              `yaml:"method" json:"method"`
+	Network         string              `yaml:"network,omitempty" json:"network,omitempty"`
+	Method          string              `yaml:"method,omitempty" json:"method,omitempty"`
 	Finality        []DataFinalityState `yaml:"finality,omitempty" json:"finality,omitempty" tstype:"DataFinalityState[]"`
 	Overall         *float64            `yaml:"overall" json:"overall"`
 	ErrorRate       *float64            `yaml:"errorRate" json:"errorRate"`
@@ -788,6 +836,13 @@ func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 		Endpoint: util.RedactEndpoint(u.Endpoint),
 		Alias:    (*Alias)(u),
 	})
+}
+
+func (u *UpstreamConfig) MarshalYAML() (interface{}, error) {
+	type Alias UpstreamConfig
+	cp := *u
+	cp.Endpoint = util.RedactEndpoint(u.Endpoint)
+	return (*Alias)(&cp), nil
 }
 
 type RateLimitAutoTuneConfig struct {
@@ -1321,13 +1376,30 @@ func (p RateLimitPeriod) String() string {
 	}
 }
 
+func (p RateLimitPeriod) MarshalYAML() (interface{}, error) {
+	return p.String(), nil
+}
+
 func (p RateLimitPeriod) MarshalJSON() ([]byte, error) {
 	return SonicCfg.Marshal(p.String())
 }
 
 // Backward-compat: accept Go duration strings (e.g., 1s, 1m, 1h, 24h, 7d, 30d, 365d) and map to enum.
 func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// Try as string (enum name)
+	// Try as integer enum first (YAML integer values like period: 1)
+	var i int
+	if err := unmarshal(&i); err == nil {
+		switch RateLimitPeriod(i) {
+		case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
+			RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
+			*p = RateLimitPeriod(i)
+			return nil
+		default:
+			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %d)", i)
+		}
+	}
+
+	// Try as string (enum name or duration expression)
 	var s string
 	if err := unmarshal(&s); err == nil {
 		ls := strings.ToLower(strings.TrimSpace(s))
@@ -1379,19 +1451,7 @@ func (p *RateLimitPeriod) UnmarshalYAML(unmarshal func(interface{}) error) error
 			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %s)", s)
 		}
 	}
-	// Try as integer enum
-	var i int
-	if err := unmarshal(&i); err == nil {
-		switch RateLimitPeriod(i) {
-		case RateLimitPeriodSecond, RateLimitPeriodMinute, RateLimitPeriodHour, RateLimitPeriodDay,
-			RateLimitPeriodWeek, RateLimitPeriodMonth, RateLimitPeriodYear:
-			*p = RateLimitPeriod(i)
-			return nil
-		default:
-			return fmt.Errorf("rate limiter period must be one of: second, minute, hour, day, week, month, year (got %d)", i)
-		}
-	}
-	// Not a string → invalid for our schema
+	// Neither integer nor string matched
 	return fmt.Errorf("invalid period type; expected string enum, integer enum, or duration like '1s'")
 }
 
@@ -1701,12 +1761,35 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 	return nil
 }
 
+func (c *SelectionPolicyConfig) MarshalYAML() (interface{}, error) {
+	evf := ""
+	if c.evalFunctionOriginal != "" {
+		evf = c.evalFunctionOriginal
+	} else if c.EvalFunction != nil {
+		evf = "<function>"
+	}
+	m := map[string]interface{}{
+		"evalPerMethod":    c.EvalPerMethod,
+		"resampleExcluded": c.ResampleExcluded,
+		"resampleCount":    c.ResampleCount,
+	}
+	if c.EvalInterval != 0 {
+		m["evalInterval"] = c.EvalInterval
+	}
+	if c.ResampleInterval != 0 {
+		m["resampleInterval"] = c.ResampleInterval
+	}
+	if evf != "" {
+		m["evalFunction"] = evf
+	}
+	return m, nil
+}
+
 func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 	evf := "<undefined>"
 	if c.evalFunctionOriginal != "" {
 		evf = c.evalFunctionOriginal
-	}
-	if c.EvalFunction != nil {
+	} else if c.EvalFunction != nil {
 		evf = "<function>"
 	}
 	return sonic.Marshal(map[string]interface{}{
@@ -1758,6 +1841,14 @@ func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]string{
 		"value": "REDACTED",
 	})
+}
+
+func (s *SecretStrategyConfig) MarshalYAML() (interface{}, error) {
+	return map[string]string{
+		"id":              s.Id,
+		"value":           "REDACTED",
+		"rateLimitBudget": s.RateLimitBudget,
+	}, nil
 }
 
 type DatabaseStrategyConfig struct {

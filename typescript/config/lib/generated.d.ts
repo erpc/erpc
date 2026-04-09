@@ -266,6 +266,8 @@ export interface ConnectorConfig {
     dynamodb?: DynamoDBConnectorConfig;
     postgresql?: PostgreSQLConnectorConfig;
     grpc?: GrpcConnectorConfig;
+    failsafeForGets?: (FailsafeConfig | undefined)[];
+    failsafeForSets?: (FailsafeConfig | undefined)[];
 }
 export interface GrpcConnectorConfig {
     bootstrap?: string;
@@ -411,12 +413,6 @@ export interface NetworkDefaults {
     evm?: TsEvmNetworkConfigForDefaults;
     multiplexing?: boolean;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -456,12 +452,6 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     ignoreFields?: {
@@ -481,8 +471,8 @@ export interface RoutingConfig {
     scoreLatencyQuantile?: number;
 }
 export interface ScoreMultiplierConfig {
-    network: string;
-    method: string;
+    network?: string;
+    method?: string;
     finality?: DataFinalityState[];
     overall?: number;
     errorRate?: number;
@@ -774,12 +764,6 @@ export interface NetworkConfig {
     methods?: MethodsConfig;
     multiplexing?: boolean;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
