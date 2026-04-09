@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Logic Diagram Action
-        uses: with-logic/logic-diagram-action@v1
+        uses: with-logic/logic-diagram-action@beta
         with:
           document_id: 80090265-b8f3-4019-b0ff-5d1bc8577e70
         env:
