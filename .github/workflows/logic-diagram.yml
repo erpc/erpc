@@ -1,0 +1,26 @@
+name: Logic Diagram
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  diagram:
+    if: |
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER", "MEMBER"]'), github.event.comment.author_association) &&
+      (contains(github.event.comment.body, '/generate-diagram') ||
+       contains(github.event.comment.body, '/refresh-diagram'))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Logic Diagram Action
+        uses: with-logic/logic-diagram-action@v1
+        with:
+          document_id: 80090265-b8f3-4019-b0ff-5d1bc8577e70
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOGIC_API_TOKEN: ${{ secrets.LOGIC_API_KEY }}
