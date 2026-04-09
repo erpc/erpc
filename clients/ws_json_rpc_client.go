@@ -28,7 +28,6 @@ const (
 	wsReconnectMin    = 1 * time.Second
 	wsReconnectMax    = 30 * time.Second
 	wsReconnectFactor = 2.0
-	wsMaxPendingDrain = 5 * time.Second
 )
 
 // WsJsonRpcClient implements ClientInterface for WebSocket-based JSON-RPC upstream connections.
@@ -48,12 +47,16 @@ type WsJsonRpcClient struct {
 	// Write synchronization (gorilla/websocket requires synchronized writes)
 	writeMu sync.Mutex
 
-	// Pending request tracking: JSON-RPC ID -> response channel
-	pendingMu sync.Mutex
+	// Pending request tracking: JSON-RPC ID -> response channel.
+	// Uses RWMutex because the hot path (handleMessage dispatching responses)
+	// only needs a read lock, while writes (register/deregister) are less frequent.
+	pendingMu sync.RWMutex
 	pending   map[string]chan *wsPendingResult
 
-	// Read loop lifecycle
-	readDone chan struct{}
+	// Signalled when the first connection is established (or app shutdown).
+	// readLoop blocks on this before entering its main loop.
+	connReady chan struct{}
+	connOnce  sync.Once
 
 	// Subscription notification callbacks: upstreamSubID -> handler
 	subHandlersMu sync.RWMutex
@@ -115,7 +118,7 @@ func NewWsJsonRpcClient(
 		appCtx:         appCtx,
 		logger:         logger,
 		pending:        make(map[string]chan *wsPendingResult),
-		readDone:       make(chan struct{}),
+		connReady:      make(chan struct{}),
 		subHandlers:    make(map[string]func(params []byte)),
 		errorExtractor: extractor,
 	}
@@ -125,6 +128,8 @@ func NewWsJsonRpcClient(
 		// The upstream may not be available at startup but will be retried.
 		logger.Warn().Err(err).Str("url", parsedUrl.String()).Msg("initial websocket connection failed, will retry in background")
 		go client.reconnect()
+	} else {
+		client.connOnce.Do(func() { close(client.connReady) })
 	}
 
 	go client.readLoop()
@@ -281,7 +286,12 @@ func (c *WsJsonRpcClient) connect() error {
 }
 
 func (c *WsJsonRpcClient) readLoop() {
-	defer close(c.readDone)
+	// Wait until the first connection is established (or the app shuts down)
+	select {
+	case <-c.connReady:
+	case <-c.appCtx.Done():
+		return
+	}
 
 	for {
 		if c.appCtx.Err() != nil {
@@ -293,7 +303,8 @@ func (c *WsJsonRpcClient) readLoop() {
 		c.connMu.Unlock()
 
 		if conn == nil {
-			// Connection is being re-established
+			// Connection is being re-established after a disconnect;
+			// wait briefly for reconnect to complete
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -335,9 +346,9 @@ func (c *WsJsonRpcClient) handleMessage(message []byte) {
 	if msg.ID != nil {
 		idKey := normalizeIDKey(msg.ID)
 
-		c.pendingMu.Lock()
+		c.pendingMu.RLock()
 		ch, ok := c.pending[idKey]
-		c.pendingMu.Unlock()
+		c.pendingMu.RUnlock()
 
 		if !ok {
 			c.logger.Debug().Str("id", idKey).Msg("received response for unknown request ID")
@@ -347,8 +358,7 @@ func (c *WsJsonRpcClient) handleMessage(message []byte) {
 		nr := common.NewNormalizedResponse().WithBody(io.NopCloser(strings.NewReader(string(message))))
 
 		if msg.Error != nil {
-			// Parse the error properly through the response's JsonRpcResponse
-			ch <- &wsPendingResult{resp: nr}
+			ch <- &wsPendingResult{resp: nr, err: msg.Error}
 		} else {
 			ch <- &wsPendingResult{resp: nr}
 		}
@@ -406,6 +416,9 @@ func (c *WsJsonRpcClient) reconnect() {
 		}
 
 		c.logger.Info().Msg("websocket reconnected successfully")
+
+		// Signal readLoop if this is the first successful connection
+		c.connOnce.Do(func() { close(c.connReady) })
 
 		// Notify subscription manager for re-subscription
 		c.onReconnectMu.RLock()

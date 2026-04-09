@@ -2746,7 +2746,7 @@ var NewErrNoWsUpstreamAvailable = func(networkId string) error {
 	return &ErrNoWsUpstreamAvailable{
 		BaseError{
 			Code:    ErrCodeNoWsUpstreamAvailable,
-			Message: "eth_subscribe requires a WebSocket-capable upstream, none configured",
+			Message: fmt.Sprintf("eth_subscribe requires a WebSocket-capable upstream, none configured for network %s", networkId),
 			Details: map[string]interface{}{
 				"networkId": networkId,
 			},

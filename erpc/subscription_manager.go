@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"strconv"
 	"strings"
@@ -17,63 +18,76 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
-	defaultMaxSubscriptionsPerConn = 100
-	unsubscribeTimeout             = 5 * time.Second
+	// unsubscribeTimeout is the deadline for best-effort upstream unsubscribe
+	// calls during connection cleanup. Kept short to avoid blocking shutdown.
+	unsubscribeTimeout = 5 * time.Second
 )
 
 // SubscriptionManager manages the lifecycle of WebSocket subscriptions.
 // It maps client subscription IDs to upstream subscription IDs and routes
 // notifications from upstreams to the correct client connections.
+//
+// Subscription deduplication ensures that identical subscriptions from
+// multiple clients share a single upstream subscription, reducing load
+// on upstream nodes.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
 
-	// clientSubID -> *SubscriptionEntry
-	byClientSubID sync.Map
+	// clientSubId -> *SubscriptionEntry
+	byClientSubId sync.Map
 
-	// "upstreamId:upstreamSubID" -> *SubscriptionEntry
-	byUpstreamSubID sync.Map
+	// "upstreamId:upstreamSubId" -> *SubscriptionEntry
+	byUpstreamSubId sync.Map
 
-	// Deduplication: "networkId:subType:paramsHash" -> *sharedSubscription
+	// Deduplication: "networkId:upstreamId:paramsHash" -> *sharedSubscription
 	shared sync.Map
+
+	// Prevents duplicate upstream subscriptions for the same shared key.
+	// Without singleflight, two concurrent eth_subscribe calls could both
+	// see no existing shared subscription and both create upstream subscriptions.
+	subscribeSF singleflight.Group
 }
 
 // SubscriptionEntry tracks a single active subscription per client connection.
 type SubscriptionEntry struct {
-	ClientSubID   string
-	UpstreamSubID string
-	UpstreamID    string
+	ClientSubId   string
+	UpstreamSubId string
+	UpstreamId    string
 	Upstream      common.Upstream
 	ClientConn    *WsConnection
-	NetworkID     string
-	SubType       string        // subscription type: "newHeads", "logs", "newPendingTransactions", etc.
+	NetworkId     string
+	SubType       string        // e.g. "newHeads", "logs", "newPendingTransactions"
 	Params        []interface{} // original eth_subscribe params for resubscribe on reconnect
 	SharedKey     string        // key into shared map for dedup
 }
 
-// sharedSubscription represents a single upstream subscription shared by multiple client connections.
+// sharedSubscription represents a single upstream subscription shared by
+// multiple client connections subscribing to the same event.
 type sharedSubscription struct {
 	mu            sync.Mutex
-	upstreamSubID string
-	upstreamID    string
+	upstreamSubId string
+	upstreamId    string
 	upstream      common.Upstream
-	clients       map[string]*SubscriptionEntry // clientSubID -> entry
+	clients       map[string]*SubscriptionEntry // clientSubId -> entry
 	subType       string
 	params        []interface{}
-	networkID     string
+	networkId     string
 }
 
+// NewSubscriptionManager creates a new SubscriptionManager.
 func NewSubscriptionManager(logger *zerolog.Logger) *SubscriptionManager {
 	return &SubscriptionManager{
 		logger: logger,
 	}
 }
 
-// Subscribe handles an eth_subscribe request from a client WS connection.
-// It applies rate limiting, selects a WS-capable upstream (respecting scoring and directives),
-// records metrics, and deduplicates shared subscriptions.
+// Subscribe handles an eth_subscribe request from a client WebSocket connection.
+// It validates limits, selects a WS-capable upstream, deduplicates shared
+// subscriptions, and returns a client-facing subscription ID.
 func (sm *SubscriptionManager) Subscribe(
 	ctx context.Context,
 	wsc *WsConnection,
@@ -82,64 +96,335 @@ func (sm *SubscriptionManager) Subscribe(
 	networkId string,
 ) (*common.NormalizedResponse, error) {
 	start := time.Now()
-	method := "eth_subscribe"
+	method := MethodEthSubscribe
 	lg := sm.logger.With().Str("connId", wsc.id).Str("networkId", networkId).Logger()
 
-	// Check subscription limit per connection
-	count := 0
-	wsc.subscriptions.Range(func(_, _ interface{}) bool {
-		count++
-		return true
-	})
-	if count >= defaultMaxSubscriptionsPerConn {
-		return nil, common.NewErrSubscriptionLimitExceeded(defaultMaxSubscriptionsPerConn)
+	maxSubs := wsc.server.serverCfg.WebSocket.MaxSubscriptionsPerConnection
+	if err := sm.checkSubscriptionLimit(wsc, maxSubs); err != nil {
+		return nil, err
 	}
 
-	// Get the network
 	nw, err := project.GetNetwork(ctx, networkId)
 	if err != nil {
 		return nil, err
 	}
 	nq.SetNetwork(nw)
 
-	// --- Rate limiting (project + network level) ---
-	if err := project.acquireRateLimitPermit(ctx, nq); err != nil {
-		return nil, err
-	}
-	if err := nw.acquireRateLimitPermit(ctx, nq); err != nil {
+	if err := sm.acquireRateLimits(ctx, project, nw, nq); err != nil {
 		return nil, err
 	}
 
-	// --- Metrics: request received ---
 	reqFinality := nq.Finality(ctx)
 	telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
 		project.Config.Id, nw.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(),
 	).Inc()
 
-	// Parse the JSON-RPC request to extract subscription type and params
 	jrReq, err := nq.JsonRpcRequest()
 	if err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, err
 	}
 
-	// Extract subscription type (first param) for dedup key
-	subType := ""
-	if len(jrReq.Params) > 0 {
-		if st, ok := jrReq.Params[0].(string); ok {
-			subType = st
-		}
-	}
+	subType := extractSubscriptionType(jrReq.Params)
 
-	// --- Upstream selection: sorted by score, respecting useUpstream directive ---
-	upsList, err := nw.upstreamsRegistry.GetSortedUpstreams(ctx, networkId, method)
+	selectedUpstream, err := sm.selectWsUpstream(ctx, nw, nq, networkId, method)
 	if err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, err
 	}
 
-	// Filter for WS-capable upstreams, respecting useUpstream directive
-	var selectedUpstream common.Upstream
+	lg.Debug().Str("upstreamId", selectedUpstream.Id()).Str("subType", subType).Msg("forwarding eth_subscribe to WS upstream")
+
+	sharedKey := fmt.Sprintf("%s:%s:%s", networkId, selectedUpstream.Id(), buildParamsKey(jrReq.Params))
+
+	sfr, err := sm.getOrCreateUpstreamSubscription(ctx, sharedKey, selectedUpstream, nq)
+	if err != nil {
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		if sfr != nil && sfr.upstreamResp != nil {
+			return sfr.upstreamResp, nil
+		}
+		return nil, err
+	}
+
+	clientSubId, err := generateSubscriptionId()
+	if err != nil {
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, fmt.Errorf("failed to generate subscription ID: %w", err))
+		return nil, fmt.Errorf("failed to generate subscription ID: %w", err)
+	}
+
+	entry := &SubscriptionEntry{
+		ClientSubId:   clientSubId,
+		UpstreamSubId: sfr.upstreamSubId,
+		UpstreamId:    selectedUpstream.Id(),
+		Upstream:      selectedUpstream,
+		ClientConn:    wsc,
+		NetworkId:     networkId,
+		SubType:       subType,
+		Params:        jrReq.Params,
+		SharedKey:     sharedKey,
+	}
+
+	sm.storeSubscriptionEntry(entry, selectedUpstream, wsc)
+
+	sfr.shared.mu.Lock()
+	sfr.shared.clients[clientSubId] = entry
+	sfr.shared.mu.Unlock()
+
+	sm.registerNotificationHandler(selectedUpstream, sfr.upstreamSubId)
+
+	wsc.subscriptionCount.Add(1)
+
+	lg.Info().
+		Str("clientSubId", clientSubId).
+		Str("upstreamSubId", sfr.upstreamSubId).
+		Str("upstreamId", selectedUpstream.Id()).
+		Str("subType", subType).
+		Msg("subscription established")
+
+	sm.recordSuccessMetrics(project, nw, selectedUpstream, method, reqFinality, start, nq)
+
+	return sm.buildSubscribeResponse(nq, jrReq, clientSubId), nil
+}
+
+// Unsubscribe handles an eth_unsubscribe request from a client WebSocket connection.
+func (sm *SubscriptionManager) Unsubscribe(
+	ctx context.Context,
+	wsc *WsConnection,
+	nq *common.NormalizedRequest,
+	project *PreparedProject,
+	networkId string,
+) (*common.NormalizedResponse, error) {
+	start := time.Now()
+	method := MethodEthUnsubscribe
+	lg := sm.logger.With().Str("connId", wsc.id).Str("networkId", networkId).Logger()
+
+	nw, err := project.GetNetwork(ctx, networkId)
+	if err != nil {
+		return nil, err
+	}
+	nq.SetNetwork(nw)
+
+	if err := sm.acquireRateLimits(ctx, project, nw, nq); err != nil {
+		return nil, err
+	}
+
+	reqFinality := nq.Finality(ctx)
+	telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
+		project.Config.Id, nw.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(),
+	).Inc()
+
+	jrReq, err := nq.JsonRpcRequest()
+	if err != nil {
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		return nil, err
+	}
+
+	clientSubId, err := extractClientSubId(jrReq.Params)
+	if err != nil {
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		return nil, err
+	}
+
+	entryRaw, ok := sm.byClientSubId.Load(clientSubId)
+	if !ok {
+		err := common.NewErrSubscriptionNotFound(clientSubId)
+		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
+		return nil, err
+	}
+	entry := entryRaw.(*SubscriptionEntry)
+
+	shouldUnsubUpstream := sm.removeClientFromShared(entry)
+
+	if shouldUnsubUpstream {
+		sm.forwardUnsubscribe(ctx, lg, entry, jrReq, nq)
+		sm.unregisterNotificationHandler(entry)
+	}
+
+	sm.byClientSubId.Delete(clientSubId)
+	wsc.subscriptions.Delete(clientSubId)
+	wsc.subscriptionCount.Add(-1)
+
+	lg.Info().Str("clientSubId", clientSubId).Bool("upstreamUnsubscribed", shouldUnsubUpstream).Msg("subscription removed")
+
+	upstreamId := "n/a"
+	vendor := "n/a"
+	if entry.Upstream != nil {
+		upstreamId = entry.Upstream.Id()
+		vendor = entry.Upstream.VendorName()
+	}
+	telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
+		project.Config.Id, nw.Label(), vendor, upstreamId,
+		method, "1", reqFinality.String(), "false", nq.UserId(), nq.AgentName(),
+	).Inc()
+	telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
+		project.Config.Id, nw.Label(), vendor, upstreamId,
+		method, reqFinality.String(), nq.UserId(),
+	).Observe(time.Since(start).Seconds())
+
+	resp := common.NewNormalizedResponse().WithRequest(nq)
+	jrr := &common.JsonRpcResponse{}
+	_ = jrr.SetID(jrReq.ID)
+	jrr.SetResult([]byte("true"))
+	resp.WithJsonRpcResponse(jrr)
+
+	return resp, nil
+}
+
+// CleanupConnection removes all subscriptions for a disconnected client
+// connection and sends best-effort unsubscribe requests to upstreams.
+func (sm *SubscriptionManager) CleanupConnection(wsc *WsConnection, project *PreparedProject) {
+	lg := sm.logger.With().Str("connId", wsc.id).Logger()
+
+	wsc.subscriptions.Range(func(key, value interface{}) bool {
+		entry := value.(*SubscriptionEntry)
+		clientSubId := key.(string)
+
+		shouldUnsubUpstream := sm.removeClientFromShared(entry)
+
+		if shouldUnsubUpstream {
+			ctx, cancel := context.WithTimeout(context.Background(), unsubscribeTimeout)
+			sm.cleanupUpstreamSubscription(ctx, lg, entry, project)
+			cancel()
+			sm.unregisterNotificationHandler(entry)
+		}
+
+		sm.byClientSubId.Delete(clientSubId)
+		wsc.subscriptions.Delete(clientSubId)
+		wsc.subscriptionCount.Add(-1)
+
+		return true
+	})
+
+	lg.Debug().Msg("cleaned up all subscriptions for connection")
+}
+
+// HandleUpstreamNotification is called when an upstream WebSocket client
+// receives a subscription notification. It fans out the notification to
+// all client connections sharing this upstream subscription.
+func (sm *SubscriptionManager) HandleUpstreamNotification(upstreamId, upstreamSubId string, params []byte) {
+	upstreamKey := fmt.Sprintf("%s:%s", upstreamId, upstreamSubId)
+
+	var notifParams struct {
+		Subscription string          `json:"subscription"`
+		Result       json.RawMessage `json:"result"`
+	}
+	if err := common.SonicCfg.Unmarshal(params, &notifParams); err != nil {
+		sm.logger.Warn().Err(err).Msg("failed to parse notification params")
+		return
+	}
+
+	entryRaw, ok := sm.byUpstreamSubId.Load(upstreamKey)
+	if !ok {
+		sm.logger.Debug().Str("upstreamKey", upstreamKey).Msg("notification for unknown subscription")
+		return
+	}
+	entry := entryRaw.(*SubscriptionEntry)
+
+	if sharedRaw, ok := sm.shared.Load(entry.SharedKey); ok {
+		shared := sharedRaw.(*sharedSubscription)
+		shared.mu.Lock()
+		clients := make([]*SubscriptionEntry, 0, len(shared.clients))
+		for _, e := range shared.clients {
+			clients = append(clients, e)
+		}
+		shared.mu.Unlock()
+
+		for _, clientEntry := range clients {
+			if err := clientEntry.ClientConn.WriteSubscriptionNotification(clientEntry.ClientSubId, notifParams.Result); err != nil {
+				sm.logger.Debug().Err(err).Str("clientSubId", clientEntry.ClientSubId).Msg("failed to write notification to client")
+			}
+		}
+	} else {
+		// Fallback: no shared entry, write to the single known client
+		if err := entry.ClientConn.WriteSubscriptionNotification(entry.ClientSubId, notifParams.Result); err != nil {
+			sm.logger.Debug().Err(err).Str("clientSubId", entry.ClientSubId).Msg("failed to write notification to client")
+		}
+	}
+}
+
+const (
+	MethodEthSubscribe   = "eth_subscribe"
+	MethodEthUnsubscribe = "eth_unsubscribe"
+)
+
+// IsSubscriptionMethod returns true if the method is eth_subscribe or eth_unsubscribe.
+func IsSubscriptionMethod(method string) bool {
+	return method == MethodEthSubscribe || method == MethodEthUnsubscribe
+}
+
+// IsSubscribeMethod returns true if the method is eth_subscribe.
+func IsSubscribeMethod(method string) bool {
+	return method == MethodEthSubscribe
+}
+
+// IsUnsubscribeMethod returns true if the method is eth_unsubscribe.
+func IsUnsubscribeMethod(method string) bool {
+	return method == MethodEthUnsubscribe
+}
+
+//
+// --- Helper methods: Subscribe pipeline ---
+//
+
+// checkSubscriptionLimit verifies that the connection has not exceeded
+// the maximum number of subscriptions.
+func (sm *SubscriptionManager) checkSubscriptionLimit(wsc *WsConnection, max int) error {
+	if int(wsc.subscriptionCount.Load()) >= max {
+		return common.NewErrSubscriptionLimitExceeded(max)
+	}
+	return nil
+}
+
+// acquireRateLimits acquires rate limit permits at both project and network level.
+func (sm *SubscriptionManager) acquireRateLimits(
+	ctx context.Context,
+	project *PreparedProject,
+	nw *Network,
+	nq *common.NormalizedRequest,
+) error {
+	if err := project.acquireRateLimitPermit(ctx, nq); err != nil {
+		return err
+	}
+	return nw.acquireRateLimitPermit(ctx, nq)
+}
+
+// extractSubscriptionType returns the subscription type string from the
+// first element of the params array (e.g. "newHeads", "logs").
+func extractSubscriptionType(params []interface{}) string {
+	if len(params) > 0 {
+		if st, ok := params[0].(string); ok {
+			return st
+		}
+	}
+	return ""
+}
+
+// extractClientSubId extracts the client subscription ID from unsubscribe params.
+func extractClientSubId(params []interface{}) (string, error) {
+	if len(params) == 0 {
+		return "", common.NewErrSubscriptionNotFound("")
+	}
+	clientSubId, ok := params[0].(string)
+	if !ok {
+		return "", common.NewErrSubscriptionNotFound(fmt.Sprintf("%v", params[0]))
+	}
+	return clientSubId, nil
+}
+
+// selectWsUpstream finds the highest-scoring WebSocket-capable upstream
+// for the given network, respecting the useUpstream directive if set.
+func (sm *SubscriptionManager) selectWsUpstream(
+	ctx context.Context,
+	nw *Network,
+	nq *common.NormalizedRequest,
+	networkId string,
+	method string,
+) (common.Upstream, error) {
+	upsList, err := nw.upstreamsRegistry.GetSortedUpstreams(ctx, networkId, method)
+	if err != nil {
+		return nil, err
+	}
+
 	useUpstreamPattern := ""
 	if dr := nq.Directives(); dr != nil {
 		useUpstreamPattern = dr.UseUpstream
@@ -163,336 +448,174 @@ func (sm *SubscriptionManager) Subscribe(
 				continue
 			}
 		}
-		selectedUpstream = u
-		break
+		return u, nil
 	}
 
-	if selectedUpstream == nil {
-		err := common.NewErrNoWsUpstreamAvailable(networkId)
-		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
-	}
-
-	lg.Debug().Str("upstreamId", selectedUpstream.Id()).Str("subType", subType).Msg("forwarding eth_subscribe to WS upstream")
-
-	// --- Deduplication: check if identical subscription already exists on this upstream ---
-	sharedKey := fmt.Sprintf("%s:%s:%s", networkId, selectedUpstream.Id(), buildParamsHash(jrReq.Params))
-
-	var upstreamSubID string
-	var shared *sharedSubscription
-	needsUpstreamSubscribe := false
-
-	if existing, ok := sm.shared.Load(sharedKey); ok {
-		shared = existing.(*sharedSubscription)
-		shared.mu.Lock()
-		upstreamSubID = shared.upstreamSubID
-		shared.mu.Unlock()
-		lg.Debug().Str("sharedKey", sharedKey).Msg("reusing existing upstream subscription")
-	} else {
-		needsUpstreamSubscribe = true
-	}
-
-	if needsUpstreamSubscribe {
-		// Forward the eth_subscribe request to the selected upstream
-		resp, err := selectedUpstream.Forward(ctx, nq, false)
-		if err != nil {
-			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-			return nil, err
-		}
-
-		// Extract the upstream subscription ID from the response
-		jrResp, err := resp.JsonRpcResponse()
-		if err != nil {
-			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-			return nil, err
-		}
-		if jrResp.Error != nil {
-			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, jrResp.Error)
-			return resp, nil
-		}
-
-		upstreamSubID = strings.Trim(string(jrResp.GetResultBytes()), "\"")
-		if upstreamSubID == "" {
-			err := fmt.Errorf("upstream returned empty subscription ID")
-			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-			return nil, err
-		}
-
-		shared = &sharedSubscription{
-			upstreamSubID: upstreamSubID,
-			upstreamID:    selectedUpstream.Id(),
-			upstream:      selectedUpstream,
-			clients:       make(map[string]*SubscriptionEntry),
-			subType:       subType,
-			params:        jrReq.Params,
-			networkID:     networkId,
-		}
-		sm.shared.Store(sharedKey, shared)
-	}
-
-	// Generate a client-facing subscription ID
-	clientSubID, err := generateSubscriptionID()
-	if err != nil {
-		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, fmt.Errorf("failed to generate subscription ID: %w", err))
-		return nil, fmt.Errorf("failed to generate subscription ID: %w", err)
-	}
-
-	// Create the subscription entry
-	entry := &SubscriptionEntry{
-		ClientSubID:   clientSubID,
-		UpstreamSubID: upstreamSubID,
-		UpstreamID:    selectedUpstream.Id(),
-		Upstream:      selectedUpstream,
-		ClientConn:    wsc,
-		NetworkID:     networkId,
-		SubType:       subType,
-		Params:        jrReq.Params,
-		SharedKey:     sharedKey,
-	}
-
-	upstreamKey := fmt.Sprintf("%s:%s", selectedUpstream.Id(), upstreamSubID)
-	sm.byClientSubID.Store(clientSubID, entry)
-	sm.byUpstreamSubID.Store(upstreamKey, entry)
-	wsc.subscriptions.Store(clientSubID, entry)
-
-	// Add to shared subscription's client set
-	shared.mu.Lock()
-	shared.clients[clientSubID] = entry
-	shared.mu.Unlock()
-
-	// Register notification handler on the upstream WS client (idempotent)
-	sm.registerNotificationHandler(selectedUpstream, upstreamSubID)
-
-	lg.Info().
-		Str("clientSubId", clientSubID).
-		Str("upstreamSubId", upstreamSubID).
-		Str("upstreamId", selectedUpstream.Id()).
-		Str("subType", subType).
-		Bool("shared", !needsUpstreamSubscribe).
-		Msg("subscription established")
-
-	// --- Metrics: success ---
-	telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
-		project.Config.Id, nw.Label(), selectedUpstream.VendorName(), selectedUpstream.Id(),
-		method, "1", reqFinality.String(), "false", nq.UserId(), nq.AgentName(),
-	).Inc()
-	telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
-		project.Config.Id, nw.Label(), selectedUpstream.VendorName(), selectedUpstream.Id(),
-		method, reqFinality.String(), nq.UserId(),
-	).Observe(time.Since(start).Seconds())
-
-	// Build response with client subscription ID instead of upstream's
-	clientResp := common.NewNormalizedResponse().WithRequest(nq)
-	jrr := &common.JsonRpcResponse{}
-	_ = jrr.SetID(jrReq.ID)
-	jrr.SetResult([]byte(fmt.Sprintf(`"%s"`, clientSubID)))
-	clientResp.WithJsonRpcResponse(jrr)
-
-	return clientResp, nil
+	return nil, common.NewErrNoWsUpstreamAvailable(networkId)
 }
 
-// Unsubscribe handles an eth_unsubscribe request from a client WS connection.
-func (sm *SubscriptionManager) Unsubscribe(
+// sfResult is the return type for the singleflight subscribe group.
+type sfResult struct {
+	shared        *sharedSubscription
+	upstreamResp  *common.NormalizedResponse // non-nil only if upstream returned an error response
+	upstreamSubId string
+}
+
+// getOrCreateUpstreamSubscription uses singleflight to ensure only one
+// goroutine creates the upstream subscription per dedup key. Returns the
+// shared subscription and upstream subscription ID.
+func (sm *SubscriptionManager) getOrCreateUpstreamSubscription(
 	ctx context.Context,
-	wsc *WsConnection,
+	sharedKey string,
+	selectedUpstream common.Upstream,
 	nq *common.NormalizedRequest,
-	project *PreparedProject,
-	networkId string,
-) (*common.NormalizedResponse, error) {
-	start := time.Now()
-	method := "eth_unsubscribe"
-	lg := sm.logger.With().Str("connId", wsc.id).Str("networkId", networkId).Logger()
+) (*sfResult, error) {
+	jrReq, _ := nq.JsonRpcRequest()
 
-	nw, err := project.GetNetwork(ctx, networkId)
-	if err != nil {
-		return nil, err
-	}
-	nq.SetNetwork(nw)
-
-	// --- Rate limiting ---
-	if err := project.acquireRateLimitPermit(ctx, nq); err != nil {
-		return nil, err
-	}
-	if err := nw.acquireRateLimitPermit(ctx, nq); err != nil {
-		return nil, err
-	}
-
-	reqFinality := nq.Finality(ctx)
-	telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
-		project.Config.Id, nw.Label(), method, reqFinality.String(), nq.UserId(), nq.AgentName(),
-	).Inc()
-
-	jrReq, err := nq.JsonRpcRequest()
-	if err != nil {
-		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
-	}
-
-	// Extract the client subscription ID from params
-	if len(jrReq.Params) == 0 {
-		err := common.NewErrSubscriptionNotFound("")
-		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
-	}
-	clientSubID, ok := jrReq.Params[0].(string)
-	if !ok {
-		err := common.NewErrSubscriptionNotFound(fmt.Sprintf("%v", jrReq.Params[0]))
-		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
-	}
-
-	// Look up the subscription entry
-	entryRaw, ok := sm.byClientSubID.Load(clientSubID)
-	if !ok {
-		err := common.NewErrSubscriptionNotFound(clientSubID)
-		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
-		return nil, err
-	}
-	entry := entryRaw.(*SubscriptionEntry)
-
-	// Remove this client from the shared subscription
-	shouldUnsubUpstream := sm.removeClientFromShared(entry)
-
-	if shouldUnsubUpstream {
-		// Last client using this upstream subscription — unsubscribe from upstream
-		unsubReq := common.NewNormalizedRequest(mustMarshal(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      jrReq.ID,
-			"method":  "eth_unsubscribe",
-			"params":  []interface{}{entry.UpstreamSubID},
-		}))
-		unsubReq.SetNetwork(nq.Network())
-
-		if entry.Upstream != nil {
-			_, fwdErr := entry.Upstream.Forward(ctx, unsubReq, false)
-			if fwdErr != nil {
-				lg.Warn().Err(fwdErr).Str("upstreamId", entry.UpstreamID).Msg("failed to forward eth_unsubscribe to upstream")
-			}
+	result, err, _ := sm.subscribeSF.Do(sharedKey, func() (interface{}, error) {
+		// Check inside singleflight: another call may have stored it
+		if existing, ok := sm.shared.Load(sharedKey); ok {
+			s := existing.(*sharedSubscription)
+			s.mu.Lock()
+			subId := s.upstreamSubId
+			s.mu.Unlock()
+			return &sfResult{shared: s, upstreamSubId: subId}, nil
 		}
-		sm.unregisterNotificationHandler(entry)
+
+		resp, fwdErr := selectedUpstream.Forward(ctx, nq, false)
+		if fwdErr != nil {
+			return nil, fwdErr
+		}
+
+		jrResp, jrErr := resp.JsonRpcResponse()
+		if jrErr != nil {
+			return nil, jrErr
+		}
+		if jrResp.Error != nil {
+			return &sfResult{upstreamResp: resp}, jrResp.Error
+		}
+
+		subId := strings.Trim(string(jrResp.GetResultBytes()), "\"")
+		if subId == "" {
+			return nil, fmt.Errorf("upstream returned empty subscription ID")
+		}
+
+		s := &sharedSubscription{
+			upstreamSubId: subId,
+			upstreamId:    selectedUpstream.Id(),
+			upstream:      selectedUpstream,
+			clients:       make(map[string]*SubscriptionEntry),
+			subType:       extractSubscriptionType(jrReq.Params),
+			params:        jrReq.Params,
+			networkId:     selectedUpstream.NetworkId(),
+		}
+		sm.shared.Store(sharedKey, s)
+		return &sfResult{shared: s, upstreamSubId: subId}, nil
+	})
+
+	if err != nil {
+		if sfr, ok := result.(*sfResult); ok {
+			return sfr, err
+		}
+		return nil, err
 	}
 
-	// Clean up client-side maps
-	sm.byClientSubID.Delete(clientSubID)
-	wsc.subscriptions.Delete(clientSubID)
+	return result.(*sfResult), nil
+}
 
-	lg.Info().Str("clientSubId", clientSubID).Bool("upstreamUnsubscribed", shouldUnsubUpstream).Msg("subscription removed")
+// storeSubscriptionEntry registers the entry in all lookup maps.
+func (sm *SubscriptionManager) storeSubscriptionEntry(entry *SubscriptionEntry, up common.Upstream, wsc *WsConnection) {
+	upstreamKey := fmt.Sprintf("%s:%s", up.Id(), entry.UpstreamSubId)
+	sm.byClientSubId.Store(entry.ClientSubId, entry)
+	sm.byUpstreamSubId.Store(upstreamKey, entry)
+	wsc.subscriptions.Store(entry.ClientSubId, entry)
+}
 
-	// --- Metrics: success ---
-	upstreamId := "n/a"
-	vendor := "n/a"
-	if entry.Upstream != nil {
-		upstreamId = entry.Upstream.Id()
-		vendor = entry.Upstream.VendorName()
-	}
-	telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
-		project.Config.Id, nw.Label(), vendor, upstreamId,
-		method, "1", reqFinality.String(), "false", nq.UserId(), nq.AgentName(),
-	).Inc()
-	telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
-		project.Config.Id, nw.Label(), vendor, upstreamId,
-		method, reqFinality.String(), nq.UserId(),
-	).Observe(time.Since(start).Seconds())
-
-	// Build success response
+// buildSubscribeResponse constructs the JSON-RPC response with the
+// client-facing subscription ID.
+func (sm *SubscriptionManager) buildSubscribeResponse(
+	nq *common.NormalizedRequest,
+	jrReq *common.JsonRpcRequest,
+	clientSubId string,
+) *common.NormalizedResponse {
 	resp := common.NewNormalizedResponse().WithRequest(nq)
 	jrr := &common.JsonRpcResponse{}
 	_ = jrr.SetID(jrReq.ID)
-	jrr.SetResult([]byte("true"))
+	jrr.SetResult([]byte(fmt.Sprintf(`"%s"`, clientSubId)))
 	resp.WithJsonRpcResponse(jrr)
-
-	return resp, nil
+	return resp
 }
 
-// CleanupConnection removes all subscriptions for a disconnected client connection.
-func (sm *SubscriptionManager) CleanupConnection(wsc *WsConnection, project *PreparedProject) {
-	lg := sm.logger.With().Str("connId", wsc.id).Logger()
+//
+// --- Helper methods: Unsubscribe / cleanup ---
+//
 
-	wsc.subscriptions.Range(func(key, value interface{}) bool {
-		entry := value.(*SubscriptionEntry)
-		clientSubID := key.(string)
+// forwardUnsubscribe sends an eth_unsubscribe request to the upstream
+// for the given subscription entry. Errors are logged but not returned
+// since unsubscribe is best-effort.
+func (sm *SubscriptionManager) forwardUnsubscribe(
+	ctx context.Context,
+	lg zerolog.Logger,
+	entry *SubscriptionEntry,
+	jrReq *common.JsonRpcRequest,
+	nq *common.NormalizedRequest,
+) {
+	if entry.Upstream == nil {
+		return
+	}
 
-		shouldUnsubUpstream := sm.removeClientFromShared(entry)
-
-		if shouldUnsubUpstream {
-			// Best-effort unsubscribe from upstream
-			ctx, cancel := context.WithTimeout(context.Background(), unsubscribeTimeout)
-
-			if entry.Upstream != nil {
-				nw, nwErr := project.GetNetwork(ctx, entry.NetworkID)
-				if nwErr == nil {
-					unsubReq := common.NewNormalizedRequest(mustMarshal(map[string]interface{}{
-						"jsonrpc": "2.0",
-						"id":      1,
-						"method":  "eth_unsubscribe",
-						"params":  []interface{}{entry.UpstreamSubID},
-					}))
-					unsubReq.SetNetwork(nw)
-					_, fwdErr := entry.Upstream.Forward(ctx, unsubReq, false)
-					if fwdErr != nil {
-						lg.Debug().Err(fwdErr).Str("upstreamId", entry.UpstreamID).Msg("failed to unsubscribe from upstream during cleanup")
-					}
-				}
-			}
-
-			cancel()
-			sm.unregisterNotificationHandler(entry)
-		}
-
-		// Remove from client-side maps
-		sm.byClientSubID.Delete(clientSubID)
-		wsc.subscriptions.Delete(clientSubID)
-
-		return true
+	unsubBody, marshalErr := common.SonicCfg.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      jrReq.ID,
+		"method":  MethodEthUnsubscribe,
+		"params":  []interface{}{entry.UpstreamSubId},
 	})
+	if marshalErr != nil {
+		lg.Warn().Err(marshalErr).Msg("failed to marshal eth_unsubscribe request")
+		return
+	}
 
-	lg.Debug().Msg("cleaned up all subscriptions for connection")
+	unsubReq := common.NewNormalizedRequest(unsubBody)
+	unsubReq.SetNetwork(nq.Network())
+
+	if _, fwdErr := entry.Upstream.Forward(ctx, unsubReq, false); fwdErr != nil {
+		lg.Warn().Err(fwdErr).Str("upstreamId", entry.UpstreamId).Msg("failed to forward eth_unsubscribe to upstream")
+	}
 }
 
-// HandleUpstreamNotification is called when an upstream WS client receives a subscription notification.
-// It fans out the notification to all client connections sharing this upstream subscription.
-func (sm *SubscriptionManager) HandleUpstreamNotification(upstreamID, upstreamSubID string, params []byte) {
-	upstreamKey := fmt.Sprintf("%s:%s", upstreamID, upstreamSubID)
-
-	// Parse the notification params to extract the result
-	var notifParams struct {
-		Subscription string          `json:"subscription"`
-		Result       json.RawMessage `json:"result"`
-	}
-	if err := common.SonicCfg.Unmarshal(params, &notifParams); err != nil {
-		sm.logger.Warn().Err(err).Msg("failed to parse notification params")
+// cleanupUpstreamSubscription sends a best-effort unsubscribe to the
+// upstream during connection cleanup (no existing JSON-RPC request context).
+func (sm *SubscriptionManager) cleanupUpstreamSubscription(
+	ctx context.Context,
+	lg zerolog.Logger,
+	entry *SubscriptionEntry,
+	project *PreparedProject,
+) {
+	if entry.Upstream == nil {
 		return
 	}
 
-	// Find the shared subscription and fan out to all clients
-	// First try the upstream key directly for entries
-	entryRaw, ok := sm.byUpstreamSubID.Load(upstreamKey)
-	if !ok {
-		sm.logger.Debug().Str("upstreamKey", upstreamKey).Msg("notification for unknown subscription")
+	nw, nwErr := project.GetNetwork(ctx, entry.NetworkId)
+	if nwErr != nil {
 		return
 	}
-	entry := entryRaw.(*SubscriptionEntry)
 
-	// Find the shared subscription to get all clients
-	if sharedRaw, ok := sm.shared.Load(entry.SharedKey); ok {
-		shared := sharedRaw.(*sharedSubscription)
-		shared.mu.Lock()
-		clients := make([]*SubscriptionEntry, 0, len(shared.clients))
-		for _, e := range shared.clients {
-			clients = append(clients, e)
-		}
-		shared.mu.Unlock()
+	unsubBody, marshalErr := common.SonicCfg.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  MethodEthUnsubscribe,
+		"params":  []interface{}{entry.UpstreamSubId},
+	})
+	if marshalErr != nil {
+		lg.Warn().Err(marshalErr).Msg("failed to marshal eth_unsubscribe during cleanup")
+		return
+	}
 
-		for _, clientEntry := range clients {
-			if err := clientEntry.ClientConn.WriteSubscriptionNotification(clientEntry.ClientSubID, notifParams.Result); err != nil {
-				sm.logger.Debug().Err(err).Str("clientSubId", clientEntry.ClientSubID).Msg("failed to write notification to client")
-			}
-		}
-	} else {
-		// Fallback: no shared entry, write to the single known client
-		if err := entry.ClientConn.WriteSubscriptionNotification(entry.ClientSubID, notifParams.Result); err != nil {
-			sm.logger.Debug().Err(err).Str("clientSubId", entry.ClientSubID).Msg("failed to write notification to client")
-		}
+	unsubReq := common.NewNormalizedRequest(unsubBody)
+	unsubReq.SetNetwork(nw)
+
+	if _, fwdErr := entry.Upstream.Forward(ctx, unsubReq, false); fwdErr != nil {
+		lg.Debug().Err(fwdErr).Str("upstreamId", entry.UpstreamId).Msg("failed to unsubscribe from upstream during cleanup")
 	}
 }
 
@@ -510,7 +633,7 @@ func (sm *SubscriptionManager) removeClientFromShared(entry *SubscriptionEntry) 
 	shared := sharedRaw.(*sharedSubscription)
 
 	shared.mu.Lock()
-	delete(shared.clients, entry.ClientSubID)
+	delete(shared.clients, entry.ClientSubId)
 	remaining := len(shared.clients)
 	shared.mu.Unlock()
 
@@ -521,30 +644,56 @@ func (sm *SubscriptionManager) removeClientFromShared(entry *SubscriptionEntry) 
 	return false
 }
 
-func (sm *SubscriptionManager) registerNotificationHandler(up common.Upstream, upstreamSubID string) {
-	upstreamID := up.Id()
+//
+// --- Helper methods: Notification routing ---
+//
 
-	// Access the WsJsonRpcClient to register per-subscription notification handler
+func (sm *SubscriptionManager) registerNotificationHandler(up common.Upstream, upstreamSubId string) {
+	upstreamId := up.Id()
+
 	if concreteUp, ok := up.(*upstream.Upstream); ok {
 		if wsClient, ok := concreteUp.Client.(*clients.WsJsonRpcClient); ok {
-			wsClient.RegisterSubscriptionHandler(upstreamSubID, func(params []byte) {
-				sm.HandleUpstreamNotification(upstreamID, upstreamSubID, params)
+			wsClient.RegisterSubscriptionHandler(upstreamSubId, func(params []byte) {
+				sm.HandleUpstreamNotification(upstreamId, upstreamSubId, params)
 			})
 		}
 	}
 }
 
 func (sm *SubscriptionManager) unregisterNotificationHandler(entry *SubscriptionEntry) {
-	upstreamKey := fmt.Sprintf("%s:%s", entry.UpstreamID, entry.UpstreamSubID)
-	sm.byUpstreamSubID.Delete(upstreamKey)
+	upstreamKey := fmt.Sprintf("%s:%s", entry.UpstreamId, entry.UpstreamSubId)
+	sm.byUpstreamSubId.Delete(upstreamKey)
 
 	if entry.Upstream != nil {
 		if concreteUp, ok := entry.Upstream.(*upstream.Upstream); ok {
 			if wsClient, ok := concreteUp.Client.(*clients.WsJsonRpcClient); ok {
-				wsClient.UnregisterSubscriptionHandler(entry.UpstreamSubID)
+				wsClient.UnregisterSubscriptionHandler(entry.UpstreamSubId)
 			}
 		}
 	}
+}
+
+//
+// --- Helper methods: Metrics ---
+//
+
+func (sm *SubscriptionManager) recordSuccessMetrics(
+	project *PreparedProject,
+	nw *Network,
+	up common.Upstream,
+	method string,
+	finality common.DataFinalityState,
+	start time.Time,
+	nq *common.NormalizedRequest,
+) {
+	telemetry.CounterHandle(telemetry.MetricNetworkSuccessfulRequests,
+		project.Config.Id, nw.Label(), up.VendorName(), up.Id(),
+		method, "1", finality.String(), "false", nq.UserId(), nq.AgentName(),
+	).Inc()
+	telemetry.ObserverHandle(telemetry.MetricNetworkRequestDuration,
+		project.Config.Id, nw.Label(), up.VendorName(), up.Id(),
+		method, finality.String(), nq.UserId(),
+	).Observe(time.Since(start).Seconds())
 }
 
 func (sm *SubscriptionManager) recordFailureMetrics(
@@ -572,12 +721,13 @@ func (sm *SubscriptionManager) recordFailureMetrics(
 	).Observe(time.Since(start).Seconds())
 }
 
-// IsSubscriptionMethod returns true if the method is eth_subscribe or eth_unsubscribe.
-func IsSubscriptionMethod(method string) bool {
-	return method == "eth_subscribe" || method == "eth_unsubscribe"
-}
+//
+// --- Utility functions ---
+//
 
-func generateSubscriptionID() (string, error) {
+// generateSubscriptionId creates a cryptographically random subscription ID
+// in the form "0x" + 32 hex characters (16 random bytes).
+func generateSubscriptionId() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -585,19 +735,13 @@ func generateSubscriptionID() (string, error) {
 	return "0x" + hex.EncodeToString(b), nil
 }
 
-// buildParamsHash creates a stable hash key from subscription params for deduplication.
-func buildParamsHash(params []interface{}) string {
+// buildParamsKey creates a stable hash key from subscription params for deduplication.
+func buildParamsKey(params []interface{}) string {
 	data, err := common.SonicCfg.Marshal(params)
 	if err != nil {
 		return fmt.Sprintf("%v", params)
 	}
-	return string(data)
-}
-
-func mustMarshal(v interface{}) []byte {
-	data, err := common.SonicCfg.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("mustMarshal failed: %v", err))
-	}
-	return data
+	h := fnv.New64a()
+	_, _ = h.Write(data)
+	return fmt.Sprintf("%x", h.Sum64())
 }

@@ -111,10 +111,11 @@ type ServerConfig struct {
 }
 
 type WebSocketServerConfig struct {
-	ReadBufferSize  int       `yaml:"readBufferSize,omitempty" json:"readBufferSize"`
-	WriteBufferSize int       `yaml:"writeBufferSize,omitempty" json:"writeBufferSize"`
-	MaxMessageSize  int64     `yaml:"maxMessageSize,omitempty" json:"maxMessageSize"`
-	PingInterval    *Duration `yaml:"pingInterval,omitempty" json:"pingInterval" tstype:"Duration"`
+	ReadBufferSize             int       `yaml:"readBufferSize,omitempty" json:"readBufferSize"`
+	WriteBufferSize            int       `yaml:"writeBufferSize,omitempty" json:"writeBufferSize"`
+	MaxMessageSize             int64     `yaml:"maxMessageSize,omitempty" json:"maxMessageSize"`
+	PingInterval               *Duration `yaml:"pingInterval,omitempty" json:"pingInterval" tstype:"Duration"`
+	MaxSubscriptionsPerConnection int    `yaml:"maxSubscriptionsPerConnection,omitempty" json:"maxSubscriptionsPerConnection"`
 }
 
 type HealthCheckConfig struct {

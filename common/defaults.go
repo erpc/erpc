@@ -706,6 +706,9 @@ func (s *ServerConfig) SetDefaults() error {
 		d := Duration(30 * time.Second)
 		s.WebSocket.PingInterval = &d
 	}
+	if s.WebSocket.MaxSubscriptionsPerConnection == 0 {
+		s.WebSocket.MaxSubscriptionsPerConnection = 100
+	}
 
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
