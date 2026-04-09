@@ -2499,7 +2499,8 @@ var NewErrConsensusDispute = func(message string, participants []ParticipantInfo
 			Message: message,
 			Cause:   errors.Join(causes...),
 			Details: map[string]interface{}{
-				"participants": participants,
+				"participants":           participants,
+				"retryableTowardNetwork": false,
 			},
 		},
 	}
@@ -2533,7 +2534,8 @@ var NewErrConsensusLowParticipants = func(message string, participants []Partici
 			Message: message,
 			Cause:   errors.Join(causes...),
 			Details: map[string]interface{}{
-				"participants": participants,
+				"participants":           participants,
+				"retryableTowardNetwork": false,
 			},
 		},
 	}

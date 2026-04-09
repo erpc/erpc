@@ -268,6 +268,39 @@ func TestIsRetryableTowardNetwork_UserReportedScenario(t *testing.T) {
 	})
 }
 
+func TestIsRetryableTowardNetwork_ConsensusErrors(t *testing.T) {
+	t.Run("ErrConsensusDispute_NotRetryable", func(t *testing.T) {
+		disputeErr := NewErrConsensusDispute(
+			"not enough agreement among responses",
+			[]ParticipantInfo{
+				{Upstream: "up-1", ResultHash: "hash1"},
+				{Upstream: "up-2", ResultHash: "hash2"},
+			},
+			nil,
+		)
+
+		result := IsRetryableTowardNetwork(disputeErr)
+
+		assert.False(t, result,
+			"ErrConsensusDispute should NOT be retryable — retrying spawns another consensus round that exhausts the same upstream pool")
+	})
+
+	t.Run("ErrConsensusLowParticipants_NotRetryable", func(t *testing.T) {
+		lowErr := NewErrConsensusLowParticipants(
+			"not enough participants",
+			[]ParticipantInfo{
+				{Upstream: "up-1", ErrSummary: "timeout"},
+			},
+			nil,
+		)
+
+		result := IsRetryableTowardNetwork(lowErr)
+
+		assert.False(t, result,
+			"ErrConsensusLowParticipants should NOT be retryable — if upstreams were unavailable, immediate retry won't help")
+	})
+}
+
 func TestHasErrorCode_NestedErrors(t *testing.T) {
 	t.Run("FindsCodeInNestedError", func(t *testing.T) {
 		innerErr := NewErrJsonRpcExceptionInternal(-32000, -32014, "missing trie node", nil, nil)
