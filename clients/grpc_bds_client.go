@@ -37,6 +37,7 @@ type GrpcBdsClient interface {
 	GetType() ClientType
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 	SetHeaders(h map[string]string)
+	QueryClient() evm.QueryServiceClient
 }
 
 type GenericGrpcBdsClient struct {
@@ -44,6 +45,7 @@ type GenericGrpcBdsClient struct {
 	headers   map[string]string
 	conn      *grpc.ClientConn
 	rpcClient evm.RPCQueryServiceClient
+	queryClient evm.QueryServiceClient
 
 	projectId       string
 	upstream        common.Upstream
@@ -166,6 +168,7 @@ func NewGrpcBdsClient(
 
 	client.conn = conn
 	client.rpcClient = evm.NewRPCQueryServiceClient(conn)
+	client.queryClient = evm.NewQueryServiceClient(conn)
 
 	// Setup graceful shutdown
 	go func() {
@@ -279,6 +282,12 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleGetBlockReceipts(ctx, req, jrReq)
 	case "eth_chainId":
 		resp, err = c.handleChainId(ctx, req, jrReq)
+	case "eth_queryBlocks", "eth_queryTransactions", "eth_queryLogs", "eth_queryTraces", "eth_queryTransfers":
+		err := common.NewErrEndpointUnsupported(
+			fmt.Errorf("query methods must use streaming API, not SendRequest"),
+		)
+		common.SetTraceSpanError(span, err)
+		return nil, err
 	default:
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
@@ -933,6 +942,13 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 	for k, v := range h {
 		c.headers[k] = v
 	}
+}
+
+func (c *GenericGrpcBdsClient) QueryClient() evm.QueryServiceClient {
+	if c == nil {
+		return nil
+	}
+	return c.queryClient
 }
 
 // Helper functions for conversion

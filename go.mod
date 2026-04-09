@@ -44,12 +44,13 @@ require (
 	golang.org/x/net v0.50.0
 	golang.org/x/sync v0.19.0
 	google.golang.org/grpc v1.79.1
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20260223183747-e5f7847e3689
 
-replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20250926125802-923aabcd7cef
+replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20260409195441-e36c239c171c
 
 require (
 	cel.dev/expr v0.25.1 // indirect
@@ -162,7 +163,6 @@ require (
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 )
 
 require (

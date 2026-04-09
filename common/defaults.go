@@ -663,6 +663,27 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.HttpPortV6 == nil {
 		s.HttpPortV6 = util.IntPtr(5000) // Default: avoid 4001 (metrics)
 	}
+	if s.GrpcEnabled == nil {
+		s.GrpcEnabled = util.BoolPtr(false)
+	}
+	if s.GrpcHostV4 == nil {
+		s.GrpcHostV4 = util.StringPtr("0.0.0.0")
+	}
+	if s.GrpcPortV4 == nil {
+		s.GrpcPortV4 = util.IntPtr(50051)
+	}
+	if s.GrpcHostV6 == nil {
+		s.GrpcHostV6 = util.StringPtr("[::]")
+	}
+	if s.GrpcPortV6 == nil {
+		s.GrpcPortV6 = util.IntPtr(50051)
+	}
+	if s.GrpcMaxRecvMsgSize == nil {
+		s.GrpcMaxRecvMsgSize = util.IntPtr(100 * 1024 * 1024)
+	}
+	if s.GrpcMaxSendMsgSize == nil {
+		s.GrpcMaxSendMsgSize = util.IntPtr(100 * 1024 * 1024)
+	}
 	if s.MaxTimeout == nil {
 		d := Duration(150 * time.Second)
 		s.MaxTimeout = &d

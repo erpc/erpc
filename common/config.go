@@ -93,6 +93,13 @@ type ServerConfig struct {
 	HttpPort            *int              `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
 	HttpPortV4          *int              `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
 	HttpPortV6          *int              `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
+	GrpcEnabled         *bool             `yaml:"grpcEnabled,omitempty" json:"grpcEnabled"`
+	GrpcHostV4          *string           `yaml:"grpcHostV4,omitempty" json:"grpcHostV4"`
+	GrpcPortV4          *int              `yaml:"grpcPortV4,omitempty" json:"grpcPortV4"`
+	GrpcHostV6          *string           `yaml:"grpcHostV6,omitempty" json:"grpcHostV6"`
+	GrpcPortV6          *int              `yaml:"grpcPortV6,omitempty" json:"grpcPortV6"`
+	GrpcMaxRecvMsgSize  *int              `yaml:"grpcMaxRecvMsgSize,omitempty" json:"grpcMaxRecvMsgSize"`
+	GrpcMaxSendMsgSize  *int              `yaml:"grpcMaxSendMsgSize,omitempty" json:"grpcMaxSendMsgSize"`
 	MaxTimeout          *Duration         `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
 	ReadTimeout         *Duration         `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
 	WriteTimeout        *Duration         `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`

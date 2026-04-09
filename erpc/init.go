@@ -98,6 +98,18 @@ func Init(
 			}
 		}()
 	}
+	if cfg.Server != nil && cfg.Server.GrpcEnabled != nil && *cfg.Server.GrpcEnabled {
+		grpcServer, err := NewGrpcServer(appCtx, &logger, cfg.Server, erpcInstance)
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := grpcServer.Start(&logger); err != nil {
+				logger.Error().Msgf("failed to start gRPC server: %v", err)
+				util.OsExit(util.ExitCodeHttpServerFailed)
+			}
+		}()
+	}
 	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
 		if cfg.Metrics.ErrorLabelMode != "" {
 			common.SetErrorLabelMode(cfg.Metrics.ErrorLabelMode)

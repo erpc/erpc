@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -252,6 +253,13 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	if method, err := nq.Method(); err == nil {
+		switch strings.ToLower(method) {
+		case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
+			return handleQueryHTTPForward(ctx, network, nq)
+		}
+	}
+
 	switch network.cfg.Architecture {
 	case common.ArchitectureEvm:
 		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
