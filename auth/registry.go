@@ -78,7 +78,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		// credential already identified the user, so the origin constraint applies
 		// to that specific user. Trying another strategy with the same credential
 		// but a different origin config would be semantically incorrect.
-		if err := enforceOriginAllowlist(az.logger, req, user); err != nil {
+		if err := enforceOriginAllowlist(az.logger, req, user, string(az.cfg.Type)); err != nil {
 			return nil, err
 		}
 
@@ -107,7 +107,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
 }
 
-func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedRequest, user *common.User) error {
+func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedRequest, user *common.User, strategyType string) error {
 	if user == nil || len(user.AllowedOrigins) == 0 {
 		return nil
 	}
@@ -117,7 +117,7 @@ func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedReques
 		origin = strings.ToLower(req.RequestOrigin())
 	}
 	if origin == "" {
-		recordOriginFailureMetric(req, "missing_origin")
+		recordOriginFailureMetric(req, strategyType, "missing_origin")
 		return common.NewErrAuthUnauthorized("origin", "missing request origin")
 	}
 
@@ -146,11 +146,11 @@ func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedReques
 		}
 	}
 
-	recordOriginFailureMetric(req, "origin_not_allowed")
+	recordOriginFailureMetric(req, strategyType, "origin_not_allowed")
 	return common.NewErrAuthUnauthorized("origin", "request origin is not allowed")
 }
 
-func recordOriginFailureMetric(req *common.NormalizedRequest, reason string) {
+func recordOriginFailureMetric(req *common.NormalizedRequest, strategy string, reason string) {
 	project := "n/a"
 	network := "n/a"
 	agent := "unknown"
@@ -166,7 +166,7 @@ func recordOriginFailureMetric(req *common.NormalizedRequest, reason string) {
 	telemetry.MetricAuthFailedTotal.WithLabelValues(
 		project,
 		network,
-		"origin",
+		strategy,
 		reason,
 		agent,
 	).Inc()
