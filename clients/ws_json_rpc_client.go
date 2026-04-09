@@ -62,9 +62,9 @@ type WsJsonRpcClient struct {
 	subHandlersMu sync.RWMutex
 	subHandlers   map[string]func(params []byte)
 
-	// Reconnect callback (for subscription recovery)
-	onReconnectMu sync.RWMutex
-	onReconnect   func()
+	// Disconnect callback for subscription management
+	onDisconnectMu sync.RWMutex
+	onDisconnect   func()
 
 	// Error extractor for architecture-specific error normalization
 	errorExtractor common.JsonRpcErrorExtractor
@@ -144,6 +144,11 @@ func NewWsJsonRpcClient(
 
 func (c *WsJsonRpcClient) GetType() ClientType {
 	return ClientTypeWsJsonRpc
+}
+
+// IsConnected returns true if the upstream WebSocket connection is currently established.
+func (c *WsJsonRpcClient) IsConnected() bool {
+	return c.connected.Load()
 }
 
 func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -251,12 +256,12 @@ func (c *WsJsonRpcClient) UnregisterSubscriptionHandler(upstreamSubID string) {
 	c.subHandlersMu.Unlock()
 }
 
-// SetOnReconnect sets a callback that fires after a successful reconnection.
-// Used by the subscription manager to re-subscribe after upstream reconnect.
-func (c *WsJsonRpcClient) SetOnReconnect(callback func()) {
-	c.onReconnectMu.Lock()
-	c.onReconnect = callback
-	c.onReconnectMu.Unlock()
+// SetOnDisconnect sets a callback that fires when the upstream WS connection drops.
+// Used by the subscription manager to close client connections that depend on this upstream.
+func (c *WsJsonRpcClient) SetOnDisconnect(callback func()) {
+	c.onDisconnectMu.Lock()
+	c.onDisconnect = callback
+	c.onDisconnectMu.Unlock()
 }
 
 func (c *WsJsonRpcClient) connect() error {
@@ -321,6 +326,14 @@ func (c *WsJsonRpcClient) readLoop() {
 			}
 			c.connected.Store(false)
 			c.drainPending(common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("websocket connection lost: %w", err)))
+
+			c.onDisconnectMu.RLock()
+			dcb := c.onDisconnect
+			c.onDisconnectMu.RUnlock()
+			if dcb != nil {
+				go dcb()
+			}
+
 			c.reconnect()
 			continue
 		}
@@ -419,14 +432,6 @@ func (c *WsJsonRpcClient) reconnect() {
 
 		// Signal readLoop if this is the first successful connection
 		c.connOnce.Do(func() { close(c.connReady) })
-
-		// Notify subscription manager for re-subscription
-		c.onReconnectMu.RLock()
-		cb := c.onReconnect
-		c.onReconnectMu.RUnlock()
-		if cb != nil {
-			go cb()
-		}
 
 		return
 	}

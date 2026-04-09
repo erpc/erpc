@@ -94,7 +94,7 @@ func NewHttpServer(
 		erpc:                erpc,
 		draining:            &draining,
 		gzipPool:            gzipPool,
-		subscriptionManager: NewSubscriptionManager(&subMgrLogger),
+		subscriptionManager: NewSubscriptionManager(ctx, &subMgrLogger, cfg.WebSocket),
 	}
 
 	if cfg != nil {

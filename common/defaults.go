@@ -709,7 +709,10 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.WebSocket.MaxSubscriptionsPerConnection == 0 {
 		s.WebSocket.MaxSubscriptionsPerConnection = 100
 	}
-
+	if s.WebSocket.HealthCheckInterval == nil {
+		d := Duration(10 * time.Second)
+		s.WebSocket.HealthCheckInterval = &d
+	}
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured

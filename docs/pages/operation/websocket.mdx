@@ -122,6 +122,20 @@ ws.send(JSON.stringify({
 - **Upstream scoring** — the highest-scoring WebSocket-capable upstream is selected for subscriptions.
 - **Cleanup** — when a client disconnects, all its subscriptions are automatically unsubscribed from the upstream.
 
+### Connection health and automatic failover
+
+eRPC actively monitors upstream WebSocket connections and protects clients from stale or broken subscriptions:
+
+- **Upstream disconnect** — when an upstream WebSocket connection drops, all client connections with active subscriptions on that upstream are immediately closed with a `1001 Going Away` close frame. This ensures clients reconnect and re-subscribe to a healthy upstream rather than holding zombie subscriptions that never deliver data.
+
+- **Upstream health check** — eRPC periodically checks whether each upstream serving subscriptions is still the highest-scoring WebSocket upstream for its network (configurable via `healthCheckInterval`, default 10s). If a better upstream becomes available — due to block head lag, error rate, throttling, or any other factor tracked by eRPC's [scoring system](/config/projects/upstreams#priority--routing) — client connections are closed so they re-subscribe to the better upstream. This means subscriptions automatically migrate to healthier upstreams without client-side logic.
+
+- **Connection guard** — if `eth_subscribe` fails for any reason (no upstream WebSocket connected, upstream error, etc.), eRPC returns the error and then closes the client connection with `1001 Going Away`. This forces the client to reconnect rather than sitting idle on a connection that can't serve subscriptions.
+
+<Callout type="info">
+  Clients receive a `1001 Going Away` close frame when disconnected due to upstream health changes. Most WebSocket client libraries handle reconnection automatically.
+</Callout>
+
 ## WebSocket upstreams
 
 To support subscriptions, configure at least one upstream with a `ws://` or `wss://` endpoint:
@@ -211,6 +225,10 @@ server:
     pingInterval: 30s
     # Maximum active subscriptions per WebSocket connection (default: 100)
     maxSubscriptionsPerConnection: 100
+    # How often to check if subscriptions are on the best upstream (default: 10s)
+    # Uses eRPC's scoring system — if a higher-scored WS upstream becomes
+    # available, clients are disconnected so they re-subscribe to the better one.
+    healthCheckInterval: 10s
 ```
 
 ## Directives

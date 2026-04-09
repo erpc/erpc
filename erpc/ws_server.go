@@ -285,6 +285,12 @@ func (wsc *WsConnection) handleSubscriptionMethod(requestCtx context.Context, nq
 		}
 		wsc.writeErrorResponse(nq, err, startedAt, wsc.server.serverCfg.IncludeErrorDetails)
 		common.EndRequestSpan(requestCtx, nil, err)
+
+		// If subscribe failed, close the connection so the client reconnects
+		// to a potentially healthier endpoint rather than sitting idle.
+		if IsSubscribeMethod(method) {
+			wsc.closeWithCode(websocket.CloseGoingAway, "subscription failed")
+		}
 		return
 	}
 

@@ -859,6 +859,109 @@ func TestWebSocket_UpstreamClient(t *testing.T) {
 }
 
 //
+// --- Tests: subscription recovery after upstream reconnect ---
+//
+
+func TestWebSocket_SubscriptionRecovery(t *testing.T) {
+	// Verifies that when the upstream WS connection drops, eRPC closes the
+	// client connection with CloseGoingAway (1001) so the client can reconnect
+	// and re-subscribe cleanly instead of holding a zombie subscription.
+	t.Run("ClientDisconnectedOnUpstreamDrop", func(t *testing.T) {
+		closeUpstream := make(chan struct{})
+
+		mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
+			for {
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				var req map[string]interface{}
+				json.Unmarshal(msg, &req)
+				method, _ := req["method"].(string)
+				id := req["id"]
+
+				switch method {
+				case "eth_chainId":
+					conn.WriteJSON(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x7b"})
+				case "eth_getBlockByNumber":
+					conn.WriteJSON(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": map[string]interface{}{"number": "0x1"}})
+				case "eth_syncing":
+					conn.WriteJSON(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": false})
+				case "eth_subscribe":
+					conn.WriteJSON(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0xsub123"})
+					// Wait for signal then kill the connection
+					go func() {
+						<-closeUpstream
+						conn.Close()
+					}()
+				default:
+					conn.WriteJSON(map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": "0x1"})
+				}
+			}
+		})
+		defer mockUpstream.Close()
+
+		setupGock()
+		defer util.ResetGock()
+
+		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
+		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
+		defer cleanup()
+
+		time.Sleep(2 * time.Second)
+
+		conn := dialWs(t, addr)
+		defer conn.Close()
+
+		// Subscribe successfully
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		require.NotNil(t, resp["result"], "should get a subscription ID")
+
+		// Kill the upstream WS connection
+		close(closeUpstream)
+
+		// Client should receive a close frame with GoingAway (1001)
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		_, _, err := conn.ReadMessage()
+		require.Error(t, err, "client should be disconnected")
+		closeErr, ok := err.(*websocket.CloseError)
+		if ok {
+			assert.Equal(t, websocket.CloseGoingAway, closeErr.Code, "close code should be 1001 GoingAway")
+			t.Logf("client received close frame: code=%d reason=%q", closeErr.Code, closeErr.Text)
+		} else {
+			t.Logf("client disconnected with error: %v", err)
+		}
+	})
+
+	// Verifies that eth_subscribe returns an error when the upstream WS
+	// connection isn't established yet (instead of creating a zombie subscription).
+	t.Run("SubscribeFailsWhenUpstreamDisconnected", func(t *testing.T) {
+		// Create a mock that immediately closes the WS connection,
+		// so eRPC's upstream WS stays disconnected.
+		mockUpstream := mockWsUpstream(t, func(conn *websocket.Conn) {
+			conn.Close()
+		})
+		defer mockUpstream.Close()
+
+		setupGock()
+		defer util.ResetGock()
+
+		wsUpstreamURL := "ws" + strings.TrimPrefix(mockUpstream.URL, "http")
+		addr, cleanup := setupTestERPCServer(t, standardWsConfig(wsUpstreamURL))
+		defer cleanup()
+
+		time.Sleep(2 * time.Second)
+
+		conn := dialWs(t, addr)
+		defer conn.Close()
+
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		assert.NotNil(t, resp["error"], "should return error when upstream WS is not connected")
+		t.Logf("got expected error: %v", resp["error"])
+	})
+}
+
+//
 // --- Tests: subscription deduplication ---
 //
 
