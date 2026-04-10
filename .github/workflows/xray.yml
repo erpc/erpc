@@ -33,19 +33,27 @@ jobs:
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
       contains(fromJSON('["OWNER", "MEMBER"]'), github.event.comment.author_association) &&
-      contains(github.event.comment.body, '/xray') &&
-      !github.event.issue.pull_request.head.repo.fork
+      contains(github.event.comment.body, '/xray')
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - name: Check for fork
+        id: fork-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IS_FORK=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.repo.fork')
+          echo "is_fork=$IS_FORK" >> $GITHUB_OUTPUT
+      - if: steps.fork-check.outputs.is_fork != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
         with:
           ref: refs/pull/${{ github.event.issue.number }}/head
           fetch-depth: 0
-      - uses: kasrakhosravi/xray@main
+      - if: steps.fork-check.outputs.is_fork != 'true'
+        uses: kasrakhosravi/xray@main
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
