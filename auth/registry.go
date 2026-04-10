@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -70,7 +72,17 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 			continue
 		}
 
-		// Attach user to the request early so downstream labels (user/agent) can be populated
+		// Origin check runs after credential validation. On failure we return
+		// immediately instead of continuing to the next strategy (unlike credential
+		// failures which append to errs and continue). This is intentional: the
+		// credential already identified the user, so the origin constraint applies
+		// to that specific user. Trying another strategy with the same credential
+		// but a different origin config would be semantically incorrect.
+		if err := enforceOriginAllowlist(az.logger, req, user, string(az.cfg.Type)); err != nil {
+			return nil, err
+		}
+
+		// Attach user to the request only after full auth success (credential + origin)
 		if user != nil && req != nil {
 			req.SetUser(user)
 		}
@@ -93,6 +105,71 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 
 	// If no strategy matched or succeeded, consider the request unauthorized
 	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+}
+
+func enforceOriginAllowlist(logger *zerolog.Logger, req *common.NormalizedRequest, user *common.User, strategyType string) error {
+	if user == nil || len(user.AllowedOrigins) == 0 {
+		return nil
+	}
+
+	origin := ""
+	if req != nil {
+		origin = strings.ToLower(req.RequestOrigin())
+	}
+	if origin == "" {
+		recordOriginFailureMetric(req, strategyType, "missing_origin")
+		return common.NewErrAuthUnauthorized("origin", "missing request origin")
+	}
+
+	for _, allowedOrigin := range user.AllowedOrigins {
+		lowered := strings.ToLower(allowedOrigin)
+		if !strings.ContainsAny(lowered, "*?!|&() ") {
+			if lowered == origin {
+				return nil
+			}
+			continue
+		}
+		match, err := common.WildcardMatch(lowered, origin)
+		if err != nil {
+			if logger != nil {
+				logger.Warn().
+					Str("userId", user.Id).
+					Str("pattern", allowedOrigin).
+					Str("origin", origin).
+					Err(err).
+					Msg("invalid allowedOrigins pattern, skipping")
+			}
+			continue
+		}
+		if match {
+			return nil
+		}
+	}
+
+	recordOriginFailureMetric(req, strategyType, "origin_not_allowed")
+	return common.NewErrAuthUnauthorized("origin", "request origin is not allowed")
+}
+
+func recordOriginFailureMetric(req *common.NormalizedRequest, strategy string, reason string) {
+	project := "n/a"
+	network := "n/a"
+	agent := "unknown"
+	if req != nil {
+		if n := req.Network(); n != nil {
+			project = n.ProjectId()
+			network = req.NetworkLabel()
+		} else {
+			network = req.NetworkId()
+		}
+		agent = req.AgentName()
+	}
+	telemetry.MetricAuthFailedTotal.WithLabelValues(
+		project,
+		network,
+		strategy,
+		reason,
+		agent,
+	).Inc()
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies

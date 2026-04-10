@@ -12,6 +12,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const MaxAllowedOriginsPerKey = 50
+
 func (c *Config) Validate() error {
 	if c.Server != nil {
 		if err := c.Server.Validate(); err != nil {
@@ -787,6 +789,14 @@ func (s *NetworkStrategyConfig) Validate() error {
 func (s *SecretStrategyConfig) Validate() error {
 	if s.Value == "" {
 		return fmt.Errorf("auth.*.secret.value is required")
+	}
+	if len(s.AllowedOrigins) > MaxAllowedOriginsPerKey {
+		return fmt.Errorf("auth.*.secret.allowedOrigins exceeds maximum of %d entries", MaxAllowedOriginsPerKey)
+	}
+	for i, pattern := range s.AllowedOrigins {
+		if err := ValidatePattern(pattern); err != nil {
+			return fmt.Errorf("auth.*.secret.allowedOrigins[%d] has invalid pattern %q: %w", i, pattern, err)
+		}
 	}
 	return nil
 }

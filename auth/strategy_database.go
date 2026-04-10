@@ -159,9 +159,10 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 		}
 
 		var userData struct {
-			UserId          string `json:"userId"`
-			Enabled         *bool  `json:"enabled,omitempty"`
-			RateLimitBudget string `json:"rateLimitBudget,omitempty"`
+			UserId          string   `json:"userId"`
+			Enabled         *bool    `json:"enabled,omitempty"`
+			RateLimitBudget string   `json:"rateLimitBudget,omitempty"`
+			AllowedOrigins  []string `json:"allowedOrigins,omitempty"`
 		}
 		if err := json.Unmarshal(valueBytes, &userData); err != nil {
 			s.logger.Error().Err(err).Str("apiKey", apiKey).RawJSON("data", valueBytes).Msg("failed to parse user data from database")
@@ -185,6 +186,30 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 		user := &common.User{Id: userData.UserId}
 		if userData.RateLimitBudget != "" {
 			user.RateLimitBudget = userData.RateLimitBudget
+		}
+		if len(userData.AllowedOrigins) > 0 {
+			origins := userData.AllowedOrigins
+			if len(origins) > common.MaxAllowedOriginsPerKey {
+				s.logger.Warn().
+					Str("apiKey", apiKey).
+					Int("count", len(origins)).
+					Int("max", common.MaxAllowedOriginsPerKey).
+					Msg("allowedOrigins exceeds maximum, truncating")
+				origins = origins[:common.MaxAllowedOriginsPerKey]
+			}
+			valid := make([]string, 0, len(origins))
+			for _, pattern := range origins {
+				if err := common.ValidatePattern(pattern); err != nil {
+					s.logger.Warn().
+						Str("apiKey", apiKey).
+						Str("pattern", pattern).
+						Err(err).
+						Msg("dropping invalid allowedOrigins pattern from DB record")
+					continue
+				}
+				valid = append(valid, pattern)
+			}
+			user.AllowedOrigins = valid
 		}
 		return &authFetchResult{user: user, err: nil, neg: false}, nil
 	})
@@ -276,6 +301,10 @@ func (s *DatabaseStrategy) InvalidateCache(apiKey string) {
 		s.cache.Del(apiKey)
 		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key cache entry")
 	}
+	if s.negCache != nil {
+		s.negCache.Del(apiKey)
+		s.logger.Debug().Str("apiKey", apiKey).Msg("invalidated API key negative cache entry")
+	}
 }
 
 // ClearCache clears all cached API keys
@@ -283,6 +312,10 @@ func (s *DatabaseStrategy) ClearCache() {
 	if s.cache != nil {
 		s.cache.Clear()
 		s.logger.Info().Msg("cleared all API key cache entries")
+	}
+	if s.negCache != nil {
+		s.negCache.Clear()
+		s.logger.Info().Msg("cleared all API key negative cache entries")
 	}
 }
 

@@ -327,6 +327,10 @@ type NormalizedRequest struct {
 
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
+
+	// HTTP origin metadata captured during ingress enrichment for auth enforcement.
+	origin        atomic.Value
+	refererOrigin atomic.Value
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -638,10 +642,13 @@ func hasDirectiveInQueryParams(queryArgs url.Values) bool {
 	return false
 }
 
-func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
-	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
-
-	// Extract user agent (always needed)
+// EnrichTransportFromHttp records Origin / Referer-derived origin and User-Agent before authentication
+// or directive merging. Full EnrichFromHttp still runs later (after network directive defaults).
+// Safe to call multiple times; origin/referer are only stored on the first call.
+func (r *NormalizedRequest) EnrichTransportFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+	if r == nil {
+		return
+	}
 	userAgent := r.getUserAgent(headers, queryArgs)
 	if userAgent != "" {
 		if mode == UserAgentTrackingModeRaw {
@@ -650,6 +657,22 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 			r.agentName.Store(r.simplifyAgentName(userAgent))
 		}
 	}
+
+	if r.origin.Load() != nil || r.refererOrigin.Load() != nil {
+		return
+	}
+
+	if origin := strings.TrimSpace(headers.Get("Origin")); origin != "" {
+		r.origin.Store(origin)
+	} else if refererOrigin := extractRefererOrigin(headers.Get("Referer")); refererOrigin != "" {
+		r.refererOrigin.Store(refererOrigin)
+	}
+}
+
+func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Values, mode UserAgentTrackingMode) {
+	hasDirectives := hasDirectiveInHeaders(headers) || hasDirectiveInQueryParams(queryArgs)
+
+	r.EnrichTransportFromHttp(headers, queryArgs, mode)
 
 	if !hasDirectives {
 		return
@@ -982,6 +1005,40 @@ func (r *NormalizedRequest) ClientIP() string {
 	return "n/a"
 }
 
+func (r *NormalizedRequest) Origin() string {
+	if r == nil {
+		return ""
+	}
+	if v := r.origin.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func (r *NormalizedRequest) RefererOrigin() string {
+	if r == nil {
+		return ""
+	}
+	if v := r.refererOrigin.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func (r *NormalizedRequest) RequestOrigin() string {
+	if r == nil {
+		return ""
+	}
+	if origin := r.Origin(); origin != "" {
+		return origin
+	}
+	return r.RefererOrigin()
+}
+
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm
 func (r *NormalizedRequest) EvmBlockRef() interface{} {
 	if r == nil {
@@ -1143,6 +1200,12 @@ func (r *NormalizedRequest) CopyHttpContextFrom(source *NormalizedRequest) {
 	// Copy the user agent information
 	if agentName := source.agentName.Load(); agentName != nil {
 		r.agentName.Store(agentName)
+	}
+	if origin := source.Origin(); origin != "" {
+		r.origin.Store(origin)
+	}
+	if refererOrigin := source.RefererOrigin(); refererOrigin != "" {
+		r.refererOrigin.Store(refererOrigin)
 	}
 
 	// Also copy the user if it exists
@@ -1310,6 +1373,17 @@ func (r *NormalizedRequest) simplifyAgentName(userAgent string) string {
 	}
 
 	return "other"
+}
+
+func extractRefererOrigin(referer string) string {
+	if referer == "" {
+		return ""
+	}
+	parsed, err := url.Parse(strings.TrimSpace(referer))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 func (r *NormalizedRequest) NextUpstream() (Upstream, error) {

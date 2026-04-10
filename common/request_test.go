@@ -62,6 +62,29 @@ func TestUpstreamSelection_NonRetryableError_Skipped(t *testing.T) {
 	}
 }
 
+func TestNormalizedRequest_RequestOriginFromOriginHeader(t *testing.T) {
+	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+	req.EnrichFromHttp(http.Header{
+		"Origin":  []string{"https://app.example.com"},
+		"Referer": []string{"https://ignored.example.com/path"},
+	}, nil, UserAgentTrackingModeSimplified)
+
+	if got := req.RequestOrigin(); got != "https://app.example.com" {
+		t.Fatalf("expected origin header to win, got %q", got)
+	}
+}
+
+func TestNormalizedRequest_RequestOriginFromRefererHeader(t *testing.T) {
+	req := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`))
+	req.EnrichFromHttp(http.Header{
+		"Referer": []string{"https://app.example.com/dashboard?tab=rpc"},
+	}, nil, UserAgentTrackingModeSimplified)
+
+	if got := req.RequestOrigin(); got != "https://app.example.com" {
+		t.Fatalf("expected referer origin fallback, got %q", got)
+	}
+}
+
 // TestUpstreamSelection_RetryableError_ClearedInSameCall tests that retryable errors
 // are cleared and upstream is returned in the SAME call (no wasted attempts).
 // This implements "try others first, then come back to retry" within a single NextUpstream call.

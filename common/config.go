@@ -891,8 +891,8 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                            int64                       `yaml:"chainId" json:"chainId"`
-	StatePollerInterval                Duration                    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	ChainId             int64    `yaml:"chainId" json:"chainId"`
+	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
 	// StatePollerDebounce overrides the debounce interval for the state poller.
 	// When 0 (default), the interval is dynamically inferred from the chain's
 	// observed block time, falling back to the network-level
@@ -1833,14 +1833,23 @@ type SecretStrategyConfig struct {
 	Id    string `yaml:"id" json:"id"`
 	Value string `yaml:"value" json:"value"`
 	// RateLimitBudget, if set, is applied to the authenticated user from this strategy
-	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	AllowedOrigins  []string `yaml:"allowedOrigins,omitempty" json:"allowedOrigins,omitempty"`
 }
 
-// custom json marshaller to redact the secret value
+// custom json marshaller to redact the secret value while respecting omitempty semantics
 func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(map[string]string{
+	m := map[string]interface{}{
+		"id":    s.Id,
 		"value": "REDACTED",
-	})
+	}
+	if s.RateLimitBudget != "" {
+		m["rateLimitBudget"] = s.RateLimitBudget
+	}
+	if len(s.AllowedOrigins) > 0 {
+		m["allowedOrigins"] = s.AllowedOrigins
+	}
+	return sonic.Marshal(m)
 }
 
 func (s *SecretStrategyConfig) MarshalYAML() (interface{}, error) {
