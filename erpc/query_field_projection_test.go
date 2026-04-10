@@ -27,6 +27,24 @@ func TestProjectBlockFieldsPreservesIdentity(t *testing.T) {
 	require.Zero(t, block.GasUsed)
 }
 
+func TestProjectBlockForResponseClonesBeforeProjection(t *testing.T) {
+	original := &evm.BlockHeader{
+		Number:     42,
+		Hash:       []byte{0xaa},
+		ParentHash: []byte{0xbb},
+		Timestamp:  123,
+	}
+
+	projected := projectBlockForResponse(original, &evm.BlockFieldSelection{Hash: true})
+	cursor := cursorFromBlock(original)
+
+	require.NotSame(t, original, projected)
+	require.Equal(t, []byte{0xbb}, cursor.ParentHash)
+	require.Equal(t, []byte{0xbb}, original.ParentHash)
+	require.Nil(t, projected.ParentHash)
+	require.Equal(t, []byte{0xaa}, projected.Hash)
+}
+
 func TestProjectTraceFields(t *testing.T) {
 	trace := &evm.Trace{
 		From:            []byte{0x1},

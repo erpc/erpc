@@ -33,8 +33,7 @@ func (qe *QueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBloc
 			continue
 		}
 		last = header
-		ProjectBlockFields(header, req.BlockFields)
-		blocks = append(blocks, header)
+		blocks = append(blocks, projectBlockForResponse(header, req.BlockFields))
 		if len(blocks) >= int(limit) {
 			if iter.HasMore() {
 				cursor = cursorFromBlock(last)
@@ -86,9 +85,7 @@ func (qe *QueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.Que
 		}
 		txs = append(txs, matched...)
 		if req.BlockFields != nil {
-			blockCopy := proto.Clone(header).(*evm.BlockHeader)
-			ProjectBlockFields(blockCopy, req.BlockFields)
-			blocks = append(blocks, blockCopy)
+			blocks = append(blocks, projectBlockForResponse(header, req.BlockFields))
 		}
 		if len(txs) >= int(limit) {
 			break
@@ -139,9 +136,7 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 			}
 			if req.BlockFields != nil && header != nil {
 				if _, ok := blockMap[header.Number]; !ok {
-					blockCopy := proto.Clone(header).(*evm.BlockHeader)
-					ProjectBlockFields(blockCopy, req.BlockFields)
-					blockMap[header.Number] = blockCopy
+					blockMap[header.Number] = projectBlockForResponse(header, req.BlockFields)
 				}
 			}
 			if req.TransactionFields != nil {
@@ -212,8 +207,7 @@ func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTrac
 		}
 		out = append(out, filtered...)
 		if req.BlockFields != nil && header != nil {
-			blockCopy := proto.Clone(header).(*evm.BlockHeader)
-			ProjectBlockFields(blockCopy, req.BlockFields)
+			blockCopy := projectBlockForResponse(header, req.BlockFields)
 			blocks[blockCopy.Number] = blockCopy
 		}
 		if len(out) >= int(limit) {
@@ -545,6 +539,15 @@ func cursorFromBlock(block *evm.BlockHeader) *evm.CursorBlock {
 		Hash:       block.Hash,
 		ParentHash: block.ParentHash,
 	}
+}
+
+func projectBlockForResponse(block *evm.BlockHeader, sel *evm.BlockFieldSelection) *evm.BlockHeader {
+	if block == nil {
+		return nil
+	}
+	blockCopy := proto.Clone(block).(*evm.BlockHeader)
+	ProjectBlockFields(blockCopy, sel)
+	return blockCopy
 }
 
 func cursorFromNumber(num uint64) *evm.CursorBlock {
