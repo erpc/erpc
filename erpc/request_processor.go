@@ -76,7 +76,9 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	}
 
 	method := queryMethodFromProto(queryReq)
-	if _, err := project.AuthenticateConsumer(ctx, nil, method, input.AuthPayload); err != nil {
+	authReq := common.NewNormalizedRequest(buildJSONRPCRequest(method, []interface{}{}))
+	authReq.SetClientIP(input.ClientIP)
+	if _, err := project.AuthenticateConsumer(ctx, authReq, method, input.AuthPayload); err != nil {
 		return err
 	}
 

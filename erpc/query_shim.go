@@ -125,8 +125,6 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 	blockMap := map[uint64]*evm.BlockHeader{}
 	txMap := map[string]*evm.Transaction{}
 	for _, log := range rawLogs {
-		ProjectLogFields(log, req.LogFields)
-		logs = append(logs, log)
 		if req.BlockFields != nil || req.TransactionFields != nil {
 			header, txs, err := qe.fetchBlockViaForward(ctx, log.BlockNumber, true)
 			if err != nil {
@@ -150,6 +148,7 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 				}
 			}
 		}
+		logs = append(logs, projectLogForResponse(log, req.LogFields))
 	}
 	blocks := mapsValuesUint64(blockMap)
 	txs := mapsValuesString(txMap)
@@ -576,6 +575,15 @@ func projectBlockForResponse(block *evm.BlockHeader, sel *evm.BlockFieldSelectio
 	blockCopy := proto.Clone(block).(*evm.BlockHeader)
 	ProjectBlockFields(blockCopy, sel)
 	return blockCopy
+}
+
+func projectLogForResponse(log *evm.Log, sel *evm.LogFieldSelection) *evm.Log {
+	if log == nil {
+		return nil
+	}
+	logCopy := proto.Clone(log).(*evm.Log)
+	ProjectLogFields(logCopy, sel)
+	return logCopy
 }
 
 func cursorFromNumber(num uint64) *evm.CursorBlock {

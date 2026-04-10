@@ -31,6 +31,10 @@ type GrpcServer struct {
 	logger    *zerolog.Logger
 	server    *grpc.Server
 
+	trustedForwarderNets []net.IPNet
+	trustedForwarderIPs  map[string]struct{}
+	trustedIPHeaders     []string
+
 	evm.UnimplementedRPCQueryServiceServer
 	evm.UnimplementedQueryServiceServer
 }
@@ -47,6 +51,35 @@ func NewGrpcServer(
 		erpc:      erpcInstance,
 		processor: NewRequestProcessor(erpcInstance, logger),
 		logger:    logger,
+	}
+	if cfg != nil {
+		gs.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
+		for _, entry := range cfg.TrustedIPForwarders {
+			val := strings.TrimSpace(entry)
+			if val == "" {
+				continue
+			}
+			if strings.Contains(val, "/") {
+				if _, ipnet, err := net.ParseCIDR(val); err == nil && ipnet != nil {
+					gs.trustedForwarderNets = append(gs.trustedForwarderNets, *ipnet)
+				} else {
+					logger.Warn().Str("trustedForwarder", val).Msg("invalid CIDR in trusted forwarders; ignoring")
+				}
+				continue
+			}
+			if ip := net.ParseIP(val); ip != nil {
+				gs.trustedForwarderIPs[ip.String()] = struct{}{}
+			} else {
+				logger.Warn().Str("trustedForwarder", val).Msg("invalid IP in trusted forwarders; ignoring")
+			}
+		}
+		for _, h := range cfg.TrustedIPHeaders {
+			h = strings.ToLower(strings.TrimSpace(h))
+			if h == "" {
+				continue
+			}
+			gs.trustedIPHeaders = append(gs.trustedIPHeaders, h)
+		}
 	}
 
 	opts := []grpc.ServerOption{
@@ -106,7 +139,7 @@ func (gs *GrpcServer) extractRequestInput(ctx context.Context, method string) (*
 		Architecture: fallback(firstMD(md, "x-erpc-architecture"), "evm"),
 		ChainId:      chainID,
 		AuthPayload:  ap,
-		ClientIP:     grpcClientIP(ctx, md),
+		ClientIP:     gs.grpcClientIP(ctx, md),
 		UserAgent:    firstMD(md, "user-agent"),
 	}, nil
 }
@@ -463,17 +496,48 @@ func fallback(v, def string) string {
 	return v
 }
 
-func grpcClientIP(ctx context.Context, md metadata.MD) string {
-	if forwarded := firstMD(md, "x-forwarded-for"); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		return strings.TrimSpace(parts[0])
+func (gs *GrpcServer) grpcClientIP(ctx context.Context, md metadata.MD) string {
+	remoteIP := grpcPeerIP(ctx)
+	if remoteIP == nil {
+		return ""
 	}
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-		host, _, err := net.SplitHostPort(p.Addr.String())
-		if err == nil {
-			return host
+	if !gs.isTrustedForwarder(remoteIP) {
+		return remoteIP.String()
+	}
+	for _, hdr := range gs.trustedIPHeaders {
+		if hdr == "" {
+			continue
 		}
-		return p.Addr.String()
+		if v := firstMD(md, hdr); v != "" {
+			ips := parseXForwardedFor(v)
+			if ip := trimRightTrustedAndPick(ips, gs.isTrustedForwarder); ip != nil {
+				return ip.String()
+			}
+		}
 	}
-	return ""
+	return remoteIP.String()
+}
+
+func (gs *GrpcServer) isTrustedForwarder(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if gs.trustedForwarderIPs != nil {
+		if _, ok := gs.trustedForwarderIPs[ip.String()]; ok {
+			return true
+		}
+	}
+	for i := range gs.trustedForwarderNets {
+		if gs.trustedForwarderNets[i].Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func grpcPeerIP(ctx context.Context) net.IP {
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		return parseRemoteIP(p.Addr.String())
+	}
+	return nil
 }

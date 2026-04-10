@@ -650,6 +650,42 @@ func TestShimQueryLogs_HydratesParentsAndDeduplicates(t *testing.T) {
 	assert.Nil(t, resp.CursorBlock)
 }
 
+func TestShimQueryLogs_DescUsesAscendingEthGetLogsRange(t *testing.T) {
+	log1 := makeLogResult(2, 0, 0, "0xaaa", "0x00000000000000000000000000000000000000aa")
+	log2 := makeLogResult(5, 0, 0, "0xbbb", "0x00000000000000000000000000000000000000bb")
+
+	network := newRouterBackedQueryNetwork(t, func(ctx context.Context, req *common.NormalizedRequest, jrq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+		switch jrq.Method {
+		case "eth_getLogs":
+			filter, ok := jrq.Params[0].(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, "0x2", filter["fromBlock"])
+			assert.Equal(t, "0x5", filter["toBlock"])
+			return jsonResultResponse(t, req, []interface{}{log1, log2}), nil
+		case "eth_getBlockByNumber":
+			blockRef, _ := jrq.Params[0].(string)
+			blockNumber, err := common.HexToUint64(blockRef)
+			require.NoError(t, err)
+			return jsonResultResponse(t, req, makeBlockResult(blockNumber, nil)), nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", jrq.Method)
+		}
+	})
+
+	resp, err := shimQueryLogs(context.Background(), network, "parent", &QueryRequest{
+		Method:    "eth_queryLogs",
+		FromBlock: 5,
+		ToBlock:   2,
+		Order:     "desc",
+		Limit:     10,
+		Fields:    &QueryFieldSelection{Logs: []string{"blockNumber", "logIndex"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Logs, 2)
+	assert.Equal(t, "0x5", resp.Logs[0]["blockNumber"])
+	assert.Equal(t, "0x2", resp.Logs[1]["blockNumber"])
+}
+
 func TestShimQueryTraces_UsesTraceBlockAndDebugFallback(t *testing.T) {
 	t.Run("TraceBlock", func(t *testing.T) {
 		tx := makeTransactionResult("0xaaa", 1, 0, "0x0000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000002", "0x12345678")

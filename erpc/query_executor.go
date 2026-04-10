@@ -122,10 +122,6 @@ func (qe *QueryExecutor) supportsQueryMethods(ups common.Upstream) bool {
 	return ok && client.QueryClient() != nil
 }
 
-func (qe *QueryExecutor) resolveBlockRange(ctx context.Context, from, to *string) (uint64, uint64, error) {
-	return qe.resolveQueryBounds(ctx, valueOrEmpty(from), valueOrEmpty(to), evm.SortOrder_ASC, nil)
-}
-
 func (qe *QueryExecutor) resolveQueryBounds(ctx context.Context, from, to string, order evm.SortOrder, cursor *evm.CursorBlock) (uint64, uint64, error) {
 	fromBlock, err := qe.resolveBlockTag(ctx, from, false)
 	if err != nil {

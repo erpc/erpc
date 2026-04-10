@@ -125,9 +125,13 @@ func shimQueryLogs(ctx context.Context, network common.Network, parentReqID inte
 			ToBlock:   &QueryCursorBlock{Number: req.ToBlock},
 		}, nil
 	}
+	filterFromBlock, filterToBlock := req.FromBlock, req.ToBlock
+	if filterFromBlock > filterToBlock {
+		filterFromBlock, filterToBlock = filterToBlock, filterFromBlock
+	}
 	filter := map[string]interface{}{
-		"fromBlock": fmt.Sprintf("0x%x", req.FromBlock),
-		"toBlock":   fmt.Sprintf("0x%x", req.ToBlock),
+		"fromBlock": fmt.Sprintf("0x%x", filterFromBlock),
+		"toBlock":   fmt.Sprintf("0x%x", filterToBlock),
 	}
 	if req.Filter != nil {
 		if len(req.Filter.LogAddresses) == 1 {

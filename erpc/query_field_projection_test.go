@@ -45,6 +45,23 @@ func TestProjectBlockForResponseClonesBeforeProjection(t *testing.T) {
 	require.Equal(t, []byte{0xaa}, projected.Hash)
 }
 
+func TestProjectLogForResponseClonesBeforeProjection(t *testing.T) {
+	original := &evm.Log{
+		BlockNumber:     42,
+		TransactionHash: []byte{0xaa},
+		LogIndex:        3,
+	}
+
+	projected := projectLogForResponse(original, &evm.LogFieldSelection{LogIndex: true})
+
+	require.NotSame(t, original, projected)
+	require.Equal(t, uint64(42), original.BlockNumber)
+	require.Equal(t, []byte{0xaa}, original.TransactionHash)
+	require.Zero(t, projected.BlockNumber)
+	require.Nil(t, projected.TransactionHash)
+	require.Equal(t, uint32(3), projected.LogIndex)
+}
+
 func TestProjectTraceFields(t *testing.T) {
 	trace := &evm.Trace{
 		From:            []byte{0x1},
