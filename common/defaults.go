@@ -2319,7 +2319,7 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		c.PreferNonEmpty = util.BoolPtr(true)
 	}
 	if c.PreferLargerResponses == nil {
-		c.PreferLargerResponses = util.BoolPtr(true)
+		c.PreferLargerResponses = util.BoolPtr(false)
 	}
 
 	// Destination defaults
