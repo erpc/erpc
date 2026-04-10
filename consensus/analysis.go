@@ -360,6 +360,18 @@ func resultToJsonRpcResponse(result *common.NormalizedResponse, exec failsafe.Ex
 // classifyAndHashResponse computes and caches the response type, hash, and size for a result.
 func classifyAndHashResponse(r *execResult, exec failsafe.Execution[*common.NormalizedResponse], config *config) {
 	if r.Err != nil {
+		// ErrUpstreamsExhausted means no upstream was reachable — always infrastructure.
+		// Its Cause wraps the shared ErrorsByUpstream map which may contain errors from
+		// other consensus participants (e.g. execution reverts). Without this guard,
+		// HasErrorCode traversal would find those foreign errors and misclassify this
+		// as a consensus-valid response, creating phantom voting groups.
+		if common.HasErrorCode(r.Err, common.ErrCodeUpstreamsExhausted) {
+			r.CachedResponseType = ResponseTypeInfrastructureError
+			r.CachedHash = "error:exhausted"
+			r.CachedResponseSize = 0
+			return
+		}
+
 		// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
 		// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
 		if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {
