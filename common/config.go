@@ -1671,6 +1671,10 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	QueryShimConcurrency        int                 `yaml:"queryShimConcurrency,omitempty" json:"queryShimConcurrency"`
+	QueryShimMaxBlockRange      int64               `yaml:"queryShimMaxBlockRange,omitempty" json:"queryShimMaxBlockRange"`
+	QueryShimMaxLimit           int                 `yaml:"queryShimMaxLimit,omitempty" json:"queryShimMaxLimit"`
+	QueryShimDefaultLimit       int                 `yaml:"queryShimDefaultLimit,omitempty" json:"queryShimDefaultLimit"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.

@@ -49,6 +49,8 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, upstre
 		return networkPreForward_eth_getLogs(ctx, network, upstreams, nq)
 	case "eth_chainid":
 		return networkPreForward_eth_chainId(ctx, network, upstreams, nq)
+	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
+		return networkPreForward_eth_query(ctx, network, upstreams, nq)
 	default:
 		return false, nil, nil
 	}

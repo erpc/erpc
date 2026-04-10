@@ -120,6 +120,10 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 						},
 						GetLogsMaxAllowedRange: 30_000,
 						GetLogsSplitOnError:    util.BoolPtr(true),
+						QueryShimConcurrency:   10,
+						QueryShimMaxBlockRange: 10_000,
+						QueryShimMaxLimit:      10_000,
+						QueryShimDefaultLimit:  100,
 					},
 					Failsafe: []*FailsafeConfig{
 						{
@@ -1873,6 +1877,18 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
+			if n.Evm.QueryShimConcurrency == 0 && defaults.Evm.QueryShimConcurrency != 0 {
+				n.Evm.QueryShimConcurrency = defaults.Evm.QueryShimConcurrency
+			}
+			if n.Evm.QueryShimMaxBlockRange == 0 && defaults.Evm.QueryShimMaxBlockRange != 0 {
+				n.Evm.QueryShimMaxBlockRange = defaults.Evm.QueryShimMaxBlockRange
+			}
+			if n.Evm.QueryShimMaxLimit == 0 && defaults.Evm.QueryShimMaxLimit != 0 {
+				n.Evm.QueryShimMaxLimit = defaults.Evm.QueryShimMaxLimit
+			}
+			if n.Evm.QueryShimDefaultLimit == 0 && defaults.Evm.QueryShimDefaultLimit != 0 {
+				n.Evm.QueryShimDefaultLimit = defaults.Evm.QueryShimDefaultLimit
+			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
@@ -2027,6 +2043,18 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.GetLogsSplitConcurrency == 0 {
 		e.GetLogsSplitConcurrency = 10
+	}
+	if e.QueryShimConcurrency == 0 {
+		e.QueryShimConcurrency = 10
+	}
+	if e.QueryShimMaxBlockRange == 0 {
+		e.QueryShimMaxBlockRange = 10_000
+	}
+	if e.QueryShimMaxLimit == 0 {
+		e.QueryShimMaxLimit = 10_000
+	}
+	if e.QueryShimDefaultLimit == 0 {
+		e.QueryShimDefaultLimit = 100
 	}
 
 	// Default methods for marking empty results as errors
