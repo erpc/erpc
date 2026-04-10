@@ -119,9 +119,7 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 		reverseLogs(rawLogs)
 	}
 	limit := queryLimit(req.GetLimit())
-	if len(rawLogs) > int(limit) {
-		rawLogs = rawLogs[:limit]
-	}
+	rawLogs, cursor := paginateLogsByBlock(rawLogs, limit)
 
 	logs := make([]*evm.Log, 0, len(rawLogs))
 	blockMap := map[uint64]*evm.BlockHeader{}
@@ -155,10 +153,6 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 	}
 	blocks := mapsValuesUint64(blockMap)
 	txs := mapsValuesString(txMap)
-	var cursor *evm.CursorBlock
-	if len(rawLogs) == int(limit) && len(rawLogs) > 0 {
-		cursor = cursorFromNumber(rawLogs[len(rawLogs)-1].BlockNumber)
-	}
 	return onPage(&evm.QueryLogsResponse{
 		Logs:         logs,
 		Transactions: txs,
@@ -528,6 +522,40 @@ func reverseLogs(logs []*evm.Log) {
 	for i, j := 0, len(logs)-1; i < j; i, j = i+1, j-1 {
 		logs[i], logs[j] = logs[j], logs[i]
 	}
+}
+
+func paginateLogsByBlock(rawLogs []*evm.Log, limit uint32) ([]*evm.Log, *evm.CursorBlock) {
+	if len(rawLogs) == 0 || limit == 0 {
+		return rawLogs, nil
+	}
+
+	page := make([]*evm.Log, 0, min(int(limit), len(rawLogs)))
+	var lastBlock uint64
+	var hasMore bool
+
+	for i := 0; i < len(rawLogs); {
+		blockNumber := rawLogs[i].BlockNumber
+		blockEnd := i + 1
+		for blockEnd < len(rawLogs) && rawLogs[blockEnd].BlockNumber == blockNumber {
+			blockEnd++
+		}
+
+		blockLogs := rawLogs[i:blockEnd]
+		if len(page) > 0 && len(page)+len(blockLogs) > int(limit) {
+			hasMore = true
+			break
+		}
+
+		page = append(page, blockLogs...)
+		lastBlock = blockNumber
+		i = blockEnd
+	}
+
+	if !hasMore {
+		return page, nil
+	}
+
+	return page, cursorFromNumber(lastBlock)
 }
 
 func cursorFromBlock(block *evm.BlockHeader) *evm.CursorBlock {
