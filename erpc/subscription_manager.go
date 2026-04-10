@@ -528,12 +528,21 @@ func (sm *SubscriptionManager) selectWsUpstream(
 				continue
 			}
 		}
-		// Only select upstreams whose WS connection is actually established.
-		// Without this check, we may return a subscription ID for an upstream
-		// that can't deliver notifications (zombie subscription).
+		// Skip upstreams that are unhealthy:
+		// - WS connection not established
+		// - Cordoned by the scoring system
+		// - State poller has no recent block (node is unresponsive)
 		if concreteUp, ok := u.(*upstream.Upstream); ok {
 			if wsClient, ok := concreteUp.Client.(*clients.WsJsonRpcClient); ok {
 				if !wsClient.IsConnected() {
+					continue
+				}
+			}
+			if concreteUp.MetricsTracker().IsCordoned(u, method) {
+				continue
+			}
+			if poller := concreteUp.EvmStatePoller(); poller != nil && !poller.IsObjectNull() {
+				if poller.LatestBlock() <= 0 {
 					continue
 				}
 			}
