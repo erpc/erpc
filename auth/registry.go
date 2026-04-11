@@ -91,6 +91,15 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
+	// If any strategy returned ErrPaymentRequired (x402), prefer that over a
+	// generic unauthorized error so the 402 response reaches the client.
+	for _, e := range errs {
+		var payErr *common.ErrPaymentRequired
+		if errors.As(e, &payErr) {
+			return nil, e
+		}
+	}
+
 	// If no strategy matched or succeeded, consider the request unauthorized
 	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
 }

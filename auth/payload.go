@@ -8,6 +8,7 @@ type AuthPayload struct {
 	Secret *SecretPayload
 	Jwt    *JwtPayload
 	Siwe   *SiwePayload
+	X402   *X402Payload
 }
 
 // This payload is used by both "secret" and "database" strategies
@@ -22,4 +23,9 @@ type JwtPayload struct {
 type SiwePayload struct {
 	Signature string
 	Message   string
+}
+
+// X402Payload carries the base64-encoded X-PAYMENT header value for x402 authentication.
+type X402Payload struct {
+	Payment string
 }

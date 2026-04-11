@@ -1810,6 +1810,7 @@ const (
 	AuthTypeJwt      AuthType = "jwt"
 	AuthTypeSiwe     AuthType = "siwe"
 	AuthTypeNetwork  AuthType = "network"
+	AuthTypeX402     AuthType = "x402"
 )
 
 type AuthConfig struct {
@@ -1827,6 +1828,7 @@ type AuthStrategyConfig struct {
 	Database *DatabaseStrategyConfig `yaml:"database,omitempty" json:"database,omitempty"`
 	Jwt      *JwtStrategyConfig      `yaml:"jwt,omitempty" json:"jwt,omitempty"`
 	Siwe     *SiweStrategyConfig     `yaml:"siwe,omitempty" json:"siwe,omitempty"`
+	X402     *X402StrategyConfig     `yaml:"x402,omitempty" json:"x402,omitempty"`
 }
 
 type SecretStrategyConfig struct {
@@ -1903,6 +1905,48 @@ type NetworkStrategyConfig struct {
 	// RateLimitBudget, if set, is applied to the authenticated user (client IP)
 	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 	IPAsUser        bool   `yaml:"ipAsUser,omitempty" json:"ipAsUser,omitempty"`
+}
+
+// X402StrategyConfig enables x402 nanopayment authentication (HTTP 402 Payment Required).
+// Clients without an API key can pay per-request via the x402 protocol. The payer's
+// wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
+type X402StrategyConfig struct {
+	// FacilitatorURL is the x402 facilitator endpoint for verify/settle operations.
+	FacilitatorURL string `yaml:"facilitatorUrl" json:"facilitatorUrl"`
+	// SellerAddress is the wallet address that receives payments (e.g. USDC on Base).
+	SellerAddress string `yaml:"sellerAddress" json:"sellerAddress"`
+	// PricePerRequest is the cost per request in atomic units (e.g. "5" for $0.000005 USDC).
+	PricePerRequest string `yaml:"pricePerRequest" json:"pricePerRequest"`
+	// Network is the x402 network name for payment (e.g. "base", "base-sepolia").
+	Network string `yaml:"network" json:"network"`
+	// Asset is the token contract address used for payment.
+	Asset string `yaml:"asset,omitempty" json:"asset,omitempty"`
+	// Scheme is the x402 payment scheme (defaults to "exact").
+	Scheme string `yaml:"scheme,omitempty" json:"scheme,omitempty"`
+	// Description is a human-readable description included in 402 responses.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// MaxTimeoutSeconds is the payment authorization validity period (default: 300).
+	MaxTimeoutSeconds int `yaml:"maxTimeoutSeconds,omitempty" json:"maxTimeoutSeconds,omitempty"`
+	// RateLimitBudget, if set, is applied to the authenticated payer.
+	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	// VerifyOnly when true skips settlement (useful for testing).
+	VerifyOnly bool `yaml:"verifyOnly,omitempty" json:"verifyOnly,omitempty"`
+}
+
+func (c *X402StrategyConfig) Validate() error {
+	if c.FacilitatorURL == "" {
+		return fmt.Errorf("auth.*.x402.facilitatorUrl is required")
+	}
+	if c.SellerAddress == "" {
+		return fmt.Errorf("auth.*.x402.sellerAddress is required")
+	}
+	if c.PricePerRequest == "" {
+		return fmt.Errorf("auth.*.x402.pricePerRequest is required")
+	}
+	if c.Network == "" {
+		return fmt.Errorf("auth.*.x402.network is required")
+	}
+	return nil
 }
 
 type LabelMode string
