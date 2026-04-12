@@ -117,6 +117,7 @@ type WebSocketServerConfig struct {
 	PingInterval                  *Duration `yaml:"pingInterval,omitempty" json:"pingInterval" tstype:"Duration"`
 	MaxSubscriptionsPerConnection int       `yaml:"maxSubscriptionsPerConnection,omitempty" json:"maxSubscriptionsPerConnection"`
 	HealthCheckInterval           *Duration `yaml:"healthCheckInterval,omitempty" json:"healthCheckInterval" tstype:"Duration"`
+	HealthCheckScoreThreshold     float64   `yaml:"healthCheckScoreThreshold,omitempty" json:"healthCheckScoreThreshold"`
 }
 
 type HealthCheckConfig struct {

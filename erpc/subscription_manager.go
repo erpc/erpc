@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/clients"
-	"github.com/gorilla/websocket"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
+	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/singleflight"
 )
@@ -133,6 +133,8 @@ func (sm *SubscriptionManager) checkUpstreamHealth(ctx context.Context) {
 		return true
 	})
 
+	threshold := sm.wsCfg.HealthCheckScoreThreshold
+
 	for _, info := range toCheck {
 		nwRaw, ok := sm.networks.Load(info.networkId)
 		if !ok {
@@ -142,7 +144,6 @@ func (sm *SubscriptionManager) checkUpstreamHealth(ctx context.Context) {
 
 		best, err := sm.selectWsUpstream(ctx, nw, nil, info.networkId, MethodEthSubscribe)
 		if err != nil {
-			// No healthy WS upstream at all -- disconnect everyone on this upstream
 			sm.logger.Warn().
 				Str("upstreamId", info.upstreamId).
 				Str("networkId", info.networkId).
@@ -151,12 +152,27 @@ func (sm *SubscriptionManager) checkUpstreamHealth(ctx context.Context) {
 			continue
 		}
 
-		if best.Id() != info.upstreamId {
+		if best.Id() == info.upstreamId {
+			continue
+		}
+
+		currentScore := nw.upstreamsRegistry.GetUpstreamScore(info.upstreamId, info.networkId, MethodEthSubscribe)
+		bestScore := nw.upstreamsRegistry.GetUpstreamScore(best.Id(), info.networkId, MethodEthSubscribe)
+
+		shouldSwitch := bestScore > currentScore
+		if threshold > 0 && currentScore > 0 {
+			shouldSwitch = (bestScore-currentScore)/currentScore >= threshold
+		}
+
+		if shouldSwitch {
 			sm.logger.Info().
 				Str("currentUpstream", info.upstreamId).
 				Str("betterUpstream", best.Id()).
 				Str("networkId", info.networkId).
-				Msg("better WS upstream available, disconnecting clients to trigger re-subscribe")
+				Float64("currentScore", currentScore).
+				Float64("bestScore", bestScore).
+				Float64("threshold", threshold).
+				Msg("better WS upstream exceeds score threshold, disconnecting clients to trigger re-subscribe")
 			sm.disconnectSubscribedClients(info.upstreamId)
 		}
 	}

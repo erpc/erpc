@@ -229,6 +229,11 @@ server:
     # Uses eRPC's scoring system — if a higher-scored WS upstream becomes
     # available, clients are disconnected so they re-subscribe to the better one.
     healthCheckInterval: 10s
+    # Minimum relative score difference before migrating subscriptions (default: 0)
+    # 0 = always switch to the highest-scoring upstream.
+    # 0.1 = only switch if the alternative scores at least 10% better.
+    # Prevents flip-flopping between upstreams with similar scores.
+    healthCheckScoreThreshold: 0
 ```
 
 ## Directives

@@ -713,6 +713,8 @@ func (s *ServerConfig) SetDefaults() error {
 		d := Duration(10 * time.Second)
 		s.WebSocket.HealthCheckInterval = &d
 	}
+	// HealthCheckScoreThreshold defaults to 0 (always switch to best upstream).
+	// Set a positive value like 0.1 to require a 10% score gap before switching.
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured
