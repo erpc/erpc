@@ -3,7 +3,6 @@ package evm
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
@@ -17,7 +16,7 @@ type QueryRequest struct {
 	FromBlock uint64
 	ToBlock   uint64
 	Order     string
-	Limit     int
+	Limit     uint64
 	Cursor    *QueryCursorBlock
 	Filter    *QueryFilter
 	Fields    *QueryFieldSelection
@@ -172,14 +171,11 @@ func parseQueryRequest(ctx context.Context, network common.Network, nq *common.N
 		}
 	}
 
-	limit := defaultLimit
+	limit := uint64(defaultLimit)
 	if rawLimit, ok := obj["limit"]; ok {
 		parsedLimit, err := parseUint64Value(rawLimit)
 		if err != nil {
 			return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid limit: %w", err))
-		}
-		if parsedLimit > uint64(math.MaxInt) {
-			return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid limit: exceeds int range"))
 		}
 		if parsedLimit > uint64(maxLimit) {
 			return nil, queryCapacityExceeded(
@@ -187,12 +183,12 @@ func parseQueryRequest(ctx context.Context, network common.Network, nq *common.N
 				map[string]interface{}{"maxLimit": maxLimit},
 			)
 		}
-		limit = int(parsedLimit)
+		limit = parsedLimit
 	}
-	if limit <= 0 {
-		limit = defaultLimit
+	if limit == 0 {
+		limit = uint64(defaultLimit)
 	}
-	if limit > maxLimit {
+	if limit > uint64(maxLimit) {
 		return nil, queryCapacityExceeded(
 			"query request exceeded max limit",
 			map[string]interface{}{"maxLimit": maxLimit},

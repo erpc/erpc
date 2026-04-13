@@ -24,7 +24,7 @@ func shimQueryBlocks(ctx context.Context, network common.Network, parentReqID in
 		return nil, err
 	}
 
-	pageBlocks := make([]map[string]interface{}, 0, minInt(len(rawBlocks), req.Limit))
+	pageBlocks := make([]map[string]interface{}, 0, len(rawBlocks))
 	var lastScanned *QueryCursorBlock
 	var hasMore bool
 
@@ -35,7 +35,7 @@ func shimQueryBlocks(ctx context.Context, network common.Network, parentReqID in
 		}
 		currentCursor := buildCursorBlock(block)
 
-		if len(pageBlocks) > 0 && len(pageBlocks)+1 > req.Limit {
+		if len(pageBlocks) > 0 && uint64(len(pageBlocks)+1) > req.Limit {
 			hasMore = true
 			break
 		}
@@ -97,7 +97,7 @@ func shimQueryTransactions(ctx context.Context, network common.Network, parentRe
 			lastScanned = currentCursor
 			continue
 		}
-		if len(transactions) > 0 && len(transactions)+len(blockTransactions) > req.Limit {
+		if len(transactions) > 0 && uint64(len(transactions)+len(blockTransactions)) > req.Limit {
 			hasMore = true
 			break
 		}
@@ -193,7 +193,7 @@ func shimQueryLogs(ctx context.Context, network common.Network, parentReqID inte
 			i++
 		}
 
-		if len(pageLogs) > 0 && len(pageLogs)+len(blockLogs) > req.Limit {
+		if len(pageLogs) > 0 && uint64(len(pageLogs)+len(blockLogs)) > req.Limit {
 			hasMore = true
 			break
 		}
@@ -293,7 +293,7 @@ func shimQueryTraces(ctx context.Context, network common.Network, parentReqID in
 			lastScanned = currentCursor
 			continue
 		}
-		if len(traces) > 0 && len(traces)+len(filtered) > req.Limit {
+		if len(traces) > 0 && uint64(len(traces)+len(filtered)) > req.Limit {
 			hasMore = true
 			break
 		}
@@ -634,13 +634,6 @@ func nextCursor(lastScanned *QueryCursorBlock, hasMore bool) *QueryCursorBlock {
 		return nil
 	}
 	return lastScanned
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func injectTransactionContext(frame map[string]interface{}, rawTransactions []interface{}, index int) {

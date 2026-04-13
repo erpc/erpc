@@ -126,7 +126,7 @@ func TestParseQueryRequest_ResolvesCursorAndSelections(t *testing.T) {
 	assert.Equal(t, uint64(3), parsed.FromBlock)
 	assert.Equal(t, uint64(120), parsed.ToBlock)
 	assert.Equal(t, "asc", parsed.Order)
-	assert.Equal(t, 25, parsed.Limit)
+	assert.Equal(t, uint64(25), parsed.Limit)
 	require.NotNil(t, parsed.Cursor)
 	assert.Equal(t, uint64(2), parsed.Cursor.Number)
 	require.NotNil(t, parsed.Filter)
@@ -880,13 +880,13 @@ func TestShimQueryTransfers_ExtractsTopLevelTransfers(t *testing.T) {
 	require.Len(t, resp.ParentBlocks, 1)
 }
 
-func TestParseQueryRequest_RejectsLimitAboveIntRange(t *testing.T) {
+func TestParseQueryRequest_RejectsLimitAboveMaxWithoutNarrowing(t *testing.T) {
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
 				QueryShimDefaultLimit:  25,
-				QueryShimMaxLimit:      1_000_000,
+				QueryShimMaxLimit:      500,
 				QueryShimMaxBlockRange: 1000,
 			},
 		},
@@ -903,7 +903,7 @@ func TestParseQueryRequest_RejectsLimitAboveIntRange(t *testing.T) {
 
 	parsed, err := parseQueryRequest(context.Background(), network, req)
 	require.Nil(t, parsed)
-	require.ErrorContains(t, err, "exceeds int range")
+	require.ErrorContains(t, err, "max limit")
 }
 
 func TestProtoTraceFromJSON_RejectsUint32Overflow(t *testing.T) {
