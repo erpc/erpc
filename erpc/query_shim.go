@@ -51,7 +51,8 @@ func (qe *EvmQueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.
 
 	txs := make([]*evm.Transaction, 0, limit)
 	blocks := make([]*evm.BlockHeader, 0)
-	var last *evm.BlockHeader
+	var lastIncluded *evm.BlockHeader
+	var hasMore bool
 	iter := newBlockIterator(fromBlock, toBlock, order)
 	for iter.Next() {
 		header, blockTxs, err := qe.fetchBlockViaForward(ctx, iter.Value(), true)
@@ -70,21 +71,23 @@ func (qe *EvmQueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.
 		if len(matched) == 0 {
 			continue
 		}
-		last = header
 		if len(txs) > 0 && len(txs)+len(matched) > int(limit) {
+			hasMore = true
 			break
 		}
 		txs = append(txs, matched...)
 		if req.BlockFields != nil {
 			blocks = append(blocks, projectBlockForResponse(header, req.BlockFields))
 		}
+		lastIncluded = header
 		if len(txs) >= int(limit) {
+			hasMore = iter.HasMore()
 			break
 		}
 	}
 	var cursor *evm.CursorBlock
-	if last != nil && len(txs) >= int(limit) {
-		cursor = cursorFromBlock(last)
+	if hasMore && lastIncluded != nil {
+		cursor = cursorFromBlock(lastIncluded)
 	}
 	return onPage(&evm.QueryTransactionsResponse{
 		Transactions: txs,
@@ -173,10 +176,10 @@ func (qe *EvmQueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryT
 	blocks := map[uint64]*evm.BlockHeader{}
 	txs := map[string]*evm.Transaction{}
 	iter := newBlockIterator(fromBlock, toBlock, order)
-	var last uint64
+	var lastIncluded uint64
+	var hasMore bool
 	for iter.Next() {
 		blockNum := iter.Value()
-		last = blockNum
 		header, blockTxs, err := qe.fetchBlockViaForward(ctx, blockNum, req.TransactionFields != nil)
 		if err != nil {
 			return err
@@ -206,6 +209,7 @@ func (qe *EvmQueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryT
 			continue
 		}
 		if len(out) > 0 && len(out)+len(filtered) > int(limit) {
+			hasMore = true
 			break
 		}
 		out = append(out, filtered...)
@@ -213,13 +217,15 @@ func (qe *EvmQueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryT
 			blockCopy := projectBlockForResponse(header, req.BlockFields)
 			blocks[blockCopy.Number] = blockCopy
 		}
+		lastIncluded = blockNum
 		if len(out) >= int(limit) {
+			hasMore = iter.HasMore()
 			break
 		}
 	}
 	var cursor *evm.CursorBlock
-	if len(out) >= int(limit) && last > 0 {
-		cursor = cursorFromNumber(last)
+	if hasMore && lastIncluded > 0 {
+		cursor = cursorFromNumber(lastIncluded)
 	}
 	return onPage(&evm.QueryTracesResponse{
 		Traces:       out,
@@ -395,6 +401,10 @@ func (qe *EvmQueryExecutor) fetchTracesViaForward(ctx context.Context, blockNum 
 }
 
 func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, method string, params interface{}) ([]byte, error) {
+	if qe.forwardSubrequestFn != nil {
+		return qe.forwardSubrequestFn(ctx, method, params)
+	}
+
 	body := buildJSONRPCRequest(method, params)
 	req := common.NewNormalizedRequest(body)
 	req.SetNetwork(qe.network)

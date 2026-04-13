@@ -13,8 +13,9 @@ import (
 )
 
 type EvmQueryExecutor struct {
-	network *Network
-	logger  *zerolog.Logger
+	network             *Network
+	logger              *zerolog.Logger
+	forwardSubrequestFn func(context.Context, string, interface{}) ([]byte, error)
 }
 
 func NewEvmQueryExecutor(network *Network, logger *zerolog.Logger) *EvmQueryExecutor {
