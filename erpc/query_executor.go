@@ -167,9 +167,6 @@ func (qe *QueryExecutor) resolveBlockTag(ctx context.Context, block string, uppe
 		if err == nil {
 			return n, nil
 		}
-		if block == "" && !upper {
-			return 0, nil
-		}
 		return 0, status.Errorf(codes.InvalidArgument, "invalid block reference: %s", block)
 	}
 }

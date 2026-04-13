@@ -62,6 +62,40 @@ func TestProjectLogForResponseClonesBeforeProjection(t *testing.T) {
 	require.Equal(t, uint32(3), projected.LogIndex)
 }
 
+func TestProjectTransactionForResponseClonesBeforeProjection(t *testing.T) {
+	original := &evm.Transaction{
+		Hash:             []byte{0xaa},
+		From:             []byte{0x01},
+		TransactionIndex: func() *uint32 { v := uint32(7); return &v }(),
+	}
+
+	projected := projectTransactionForResponse(original, &evm.TransactionFieldSelection{From: true})
+
+	require.NotSame(t, original, projected)
+	require.Equal(t, []byte{0xaa}, original.Hash)
+	require.Equal(t, uint32(7), *original.TransactionIndex)
+	require.Equal(t, []byte{0x01}, projected.From)
+	require.Nil(t, projected.TransactionIndex)
+}
+
+func TestProjectTraceForResponseClonesBeforeProjection(t *testing.T) {
+	original := &evm.Trace{
+		CallType:        evm.TraceCallType_TRACE_CALL_DELEGATECALL,
+		TransactionHash: []byte{0xaa},
+		TraceAddress:    []uint32{1, 2},
+	}
+
+	projected := projectTraceForResponse(original, &evm.TraceFieldSelection{TransactionHash: true})
+
+	require.NotSame(t, original, projected)
+	require.Equal(t, evm.TraceCallType_TRACE_CALL_DELEGATECALL, original.CallType)
+	require.Equal(t, []byte{0xaa}, original.TransactionHash)
+	require.Equal(t, []uint32{1, 2}, original.TraceAddress)
+	require.Equal(t, []byte{0xaa}, projected.TransactionHash)
+	require.Equal(t, evm.TraceCallType_TRACE_CALL_CALL, projected.CallType)
+	require.Nil(t, projected.TraceAddress)
+}
+
 func TestProjectTraceFields(t *testing.T) {
 	trace := &evm.Trace{
 		From:            []byte{0x1},

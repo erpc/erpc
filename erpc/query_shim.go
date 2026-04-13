@@ -64,8 +64,7 @@ func (qe *QueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.Que
 		matched := make([]*evm.Transaction, 0)
 		for _, tx := range blockTxs {
 			if matchTransactionFilter(tx, req.Filter) {
-				ProjectTransactionFields(tx, req.TransactionFields)
-				matched = append(matched, tx)
+				matched = append(matched, projectTransactionForResponse(tx, req.TransactionFields))
 			}
 		}
 		if len(matched) == 0 {
@@ -162,12 +161,13 @@ func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTrac
 
 	out := make([]*evm.Trace, 0, limit)
 	blocks := map[uint64]*evm.BlockHeader{}
+	txs := map[string]*evm.Transaction{}
 	iter := newBlockIterator(fromBlock, toBlock, order)
 	var last uint64
 	for iter.Next() {
 		blockNum := iter.Value()
 		last = blockNum
-		header, _, err := qe.fetchBlockViaForward(ctx, blockNum, false)
+		header, blockTxs, err := qe.fetchBlockViaForward(ctx, blockNum, req.TransactionFields != nil)
 		if err != nil {
 			return err
 		}
@@ -178,8 +178,18 @@ func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTrac
 		filtered := make([]*evm.Trace, 0, len(traces))
 		for _, trace := range traces {
 			if matchTraceFilter(trace, req.Filter) {
-				ProjectTraceFields(trace, req.TraceFields)
-				filtered = append(filtered, trace)
+				filtered = append(filtered, projectTraceForResponse(trace, req.TraceFields))
+				if req.TransactionFields != nil && len(trace.TransactionHash) > 0 {
+					txHash := string(trace.TransactionHash)
+					if _, ok := txs[txHash]; !ok {
+						for _, tx := range blockTxs {
+							if string(tx.Hash) == txHash {
+								txs[txHash] = projectTransactionForResponse(tx, req.TransactionFields)
+								break
+							}
+						}
+					}
+				}
 			}
 		}
 		if len(filtered) == 0 {
@@ -202,11 +212,12 @@ func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTrac
 		cursor = cursorFromNumber(last)
 	}
 	return onPage(&evm.QueryTracesResponse{
-		Traces:      out,
-		Blocks:      mapsValuesUint64(blocks),
-		FromBlock:   cursorFromNumber(fromBlock),
-		ToBlock:     cursorFromNumber(toBlock),
-		CursorBlock: cursor,
+		Traces:       out,
+		Transactions: mapsValuesString(txs),
+		Blocks:       mapsValuesUint64(blocks),
+		FromBlock:    cursorFromNumber(fromBlock),
+		ToBlock:      cursorFromNumber(toBlock),
+		CursorBlock:  cursor,
 	})
 }
 
@@ -217,7 +228,7 @@ func (qe *QueryExecutor) shimQueryTransfers(ctx context.Context, req *evm.QueryT
 		Order:             req.Order,
 		Limit:             req.Limit,
 		Cursor:            req.Cursor,
-		TraceFields:       &evm.TraceFieldSelection{From: true, To: true, Value: true, TransactionHash: true, TransactionIndex: true, BlockNumber: true, BlockHash: true, TraceAddress: true, BlockTimestamp: true, TraceType: true},
+		TraceFields:       &evm.TraceFieldSelection{TraceType: true, CallType: true, From: true, To: true, Value: true, TransactionHash: true, TransactionIndex: true, BlockNumber: true, BlockHash: true, TraceAddress: true, BlockTimestamp: true},
 		BlockFields:       req.BlockFields,
 		TransactionFields: req.TransactionFields,
 	}
@@ -605,6 +616,24 @@ func projectLogForResponse(log *evm.Log, sel *evm.LogFieldSelection) *evm.Log {
 	logCopy := proto.Clone(log).(*evm.Log)
 	ProjectLogFields(logCopy, sel)
 	return logCopy
+}
+
+func projectTransactionForResponse(tx *evm.Transaction, sel *evm.TransactionFieldSelection) *evm.Transaction {
+	if tx == nil {
+		return nil
+	}
+	txCopy := proto.Clone(tx).(*evm.Transaction)
+	ProjectTransactionFields(txCopy, sel)
+	return txCopy
+}
+
+func projectTraceForResponse(trace *evm.Trace, sel *evm.TraceFieldSelection) *evm.Trace {
+	if trace == nil {
+		return nil
+	}
+	traceCopy := proto.Clone(trace).(*evm.Trace)
+	ProjectTraceFields(traceCopy, sel)
+	return traceCopy
 }
 
 func cursorFromNumber(num uint64) *evm.CursorBlock {
