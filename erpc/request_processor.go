@@ -88,7 +88,7 @@ func (rp *RequestProcessor) ProcessQueryStream(
 		return err
 	}
 
-	executor := NewQueryExecutor(network, rp.logger)
+	executor := NewEvmQueryExecutor(network, rp.logger)
 	return executor.Execute(ctx, queryReq, onPage)
 }
 

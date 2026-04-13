@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (qe *QueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
 
@@ -45,7 +45,7 @@ func (qe *QueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBloc
 	})
 }
 
-func (qe *QueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
 
@@ -95,7 +95,7 @@ func (qe *QueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.Que
 	})
 }
 
-func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	rawLogs, err := qe.fetchLogsViaForward(ctx, fromBlock, toBlock, req.Filter)
 	if err != nil {
 		return err
@@ -155,7 +155,7 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 	})
 }
 
-func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTracesRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTracesRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
 
@@ -221,7 +221,7 @@ func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTrac
 	})
 }
 
-func (qe *QueryExecutor) shimQueryTransfers(ctx context.Context, req *evm.QueryTransfersRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) shimQueryTransfers(ctx context.Context, req *evm.QueryTransfersRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	traceReq := &evm.QueryTracesRequest{
 		FromBlock:         req.FromBlock,
 		ToBlock:           req.ToBlock,
@@ -257,7 +257,7 @@ func (qe *QueryExecutor) shimQueryTransfers(ctx context.Context, req *evm.QueryT
 	})
 }
 
-func (qe *QueryExecutor) fetchBlockViaForward(ctx context.Context, blockNum uint64, fullTx bool) (*evm.BlockHeader, []*evm.Transaction, error) {
+func (qe *EvmQueryExecutor) fetchBlockViaForward(ctx context.Context, blockNum uint64, fullTx bool) (*evm.BlockHeader, []*evm.Transaction, error) {
 	params := []interface{}{fmt.Sprintf("0x%x", blockNum), fullTx}
 	result, err := qe.forwardSubrequest(ctx, "eth_getBlockByNumber", params)
 	if err != nil {
@@ -280,7 +280,7 @@ func (qe *QueryExecutor) fetchBlockViaForward(ctx context.Context, blockNum uint
 	return protoBlock.Header, protoBlock.FullTransactions, nil
 }
 
-func (qe *QueryExecutor) fetchLogsViaForward(ctx context.Context, fromBlock, toBlock uint64, filter *evm.LogFilter) ([]*evm.Log, error) {
+func (qe *EvmQueryExecutor) fetchLogsViaForward(ctx context.Context, fromBlock, toBlock uint64, filter *evm.LogFilter) ([]*evm.Log, error) {
 	payload := map[string]interface{}{
 		"fromBlock": fmt.Sprintf("0x%x", fromBlock),
 		"toBlock":   fmt.Sprintf("0x%x", toBlock),
@@ -334,7 +334,7 @@ func (qe *QueryExecutor) fetchLogsViaForward(ctx context.Context, fromBlock, toB
 	return out, nil
 }
 
-func (qe *QueryExecutor) fetchTracesViaForward(ctx context.Context, blockNum uint64, header *evm.BlockHeader) ([]*evm.Trace, error) {
+func (qe *EvmQueryExecutor) fetchTracesViaForward(ctx context.Context, blockNum uint64, header *evm.BlockHeader) ([]*evm.Trace, error) {
 	result, err := qe.forwardSubrequest(ctx, "trace_block", []interface{}{fmt.Sprintf("0x%x", blockNum)})
 	if err == nil {
 		var rawItems []map[string]interface{}
@@ -384,7 +384,7 @@ func (qe *QueryExecutor) fetchTracesViaForward(ctx context.Context, blockNum uin
 	return evm.TraceFromGethDebug(single, blockNum, headerHash(header), headerTimestamp(header))
 }
 
-func (qe *QueryExecutor) forwardSubrequest(ctx context.Context, method string, params interface{}) ([]byte, error) {
+func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, method string, params interface{}) ([]byte, error) {
 	body := buildJSONRPCRequest(method, params)
 	req := common.NewNormalizedRequest(body)
 	req.SetNetwork(qe.network)

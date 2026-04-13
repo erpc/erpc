@@ -29,7 +29,7 @@ func getGrpcBdsClient(ups common.Upstream) (clients.GrpcBdsClient, bool) {
 	return client, ok
 }
 
-func (qe *QueryExecutor) pipeThroughQueryBlocks(
+func (qe *EvmQueryExecutor) pipeThroughQueryBlocks(
 	ctx context.Context,
 	ups common.Upstream,
 	req *evm.QueryBlocksRequest,
@@ -64,7 +64,7 @@ func (qe *QueryExecutor) pipeThroughQueryBlocks(
 	}
 }
 
-func (qe *QueryExecutor) pipeThroughQueryTransactions(
+func (qe *EvmQueryExecutor) pipeThroughQueryTransactions(
 	ctx context.Context,
 	ups common.Upstream,
 	req *evm.QueryTransactionsRequest,
@@ -81,7 +81,7 @@ func (qe *QueryExecutor) pipeThroughQueryTransactions(
 	return recvProtoStream(stream.Recv, onPage)
 }
 
-func (qe *QueryExecutor) pipeThroughQueryLogs(
+func (qe *EvmQueryExecutor) pipeThroughQueryLogs(
 	ctx context.Context,
 	ups common.Upstream,
 	req *evm.QueryLogsRequest,
@@ -98,7 +98,7 @@ func (qe *QueryExecutor) pipeThroughQueryLogs(
 	return recvProtoStream(stream.Recv, onPage)
 }
 
-func (qe *QueryExecutor) pipeThroughQueryTraces(
+func (qe *EvmQueryExecutor) pipeThroughQueryTraces(
 	ctx context.Context,
 	ups common.Upstream,
 	req *evm.QueryTracesRequest,
@@ -115,7 +115,7 @@ func (qe *QueryExecutor) pipeThroughQueryTraces(
 	return recvProtoStream(stream.Recv, onPage)
 }
 
-func (qe *QueryExecutor) pipeThroughQueryTransfers(
+func (qe *EvmQueryExecutor) pipeThroughQueryTransfers(
 	ctx context.Context,
 	ups common.Upstream,
 	req *evm.QueryTransfersRequest,

@@ -11,16 +11,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type QueryExecutor struct {
+type EvmQueryExecutor struct {
 	network *Network
 	logger  *zerolog.Logger
 }
 
-func NewQueryExecutor(network *Network, logger *zerolog.Logger) *QueryExecutor {
-	return &QueryExecutor{network: network, logger: logger}
+func NewEvmQueryExecutor(network *Network, logger *zerolog.Logger) *EvmQueryExecutor {
+	return &EvmQueryExecutor{network: network, logger: logger}
 }
 
-func (qe *QueryExecutor) Execute(ctx context.Context, req proto.Message, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) Execute(ctx context.Context, req proto.Message, onPage func(proto.Message) error) error {
 	switch r := req.(type) {
 	case *evm.QueryBlocksRequest:
 		return qe.queryBlocks(ctx, r, onPage)
@@ -37,7 +37,7 @@ func (qe *QueryExecutor) Execute(ctx context.Context, req proto.Message, onPage 
 	}
 }
 
-func (qe *QueryExecutor) queryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) queryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, onPage func(proto.Message) error) error {
 	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
 	if err != nil {
 		return err
@@ -54,7 +54,7 @@ func (qe *QueryExecutor) queryBlocks(ctx context.Context, req *evm.QueryBlocksRe
 	return qe.shimQueryBlocks(ctx, req, fromBlock, toBlock, onPage)
 }
 
-func (qe *QueryExecutor) queryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) queryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, onPage func(proto.Message) error) error {
 	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
 	if err != nil {
 		return err
@@ -71,7 +71,7 @@ func (qe *QueryExecutor) queryTransactions(ctx context.Context, req *evm.QueryTr
 	return qe.shimQueryTransactions(ctx, req, fromBlock, toBlock, onPage)
 }
 
-func (qe *QueryExecutor) queryLogs(ctx context.Context, req *evm.QueryLogsRequest, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) queryLogs(ctx context.Context, req *evm.QueryLogsRequest, onPage func(proto.Message) error) error {
 	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
 	if err != nil {
 		return err
@@ -88,7 +88,7 @@ func (qe *QueryExecutor) queryLogs(ctx context.Context, req *evm.QueryLogsReques
 	return qe.shimQueryLogs(ctx, req, fromBlock, toBlock, onPage)
 }
 
-func (qe *QueryExecutor) queryTraces(ctx context.Context, req *evm.QueryTracesRequest, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) queryTraces(ctx context.Context, req *evm.QueryTracesRequest, onPage func(proto.Message) error) error {
 	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
 	if err != nil {
 		return err
@@ -105,7 +105,7 @@ func (qe *QueryExecutor) queryTraces(ctx context.Context, req *evm.QueryTracesRe
 	return qe.shimQueryTraces(ctx, req, fromBlock, toBlock, onPage)
 }
 
-func (qe *QueryExecutor) queryTransfers(ctx context.Context, req *evm.QueryTransfersRequest, onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) queryTransfers(ctx context.Context, req *evm.QueryTransfersRequest, onPage func(proto.Message) error) error {
 	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
 	if err != nil {
 		return err
@@ -122,12 +122,12 @@ func (qe *QueryExecutor) queryTransfers(ctx context.Context, req *evm.QueryTrans
 	return qe.shimQueryTransfers(ctx, req, fromBlock, toBlock, onPage)
 }
 
-func (qe *QueryExecutor) supportsQueryMethods(ups common.Upstream) bool {
+func (qe *EvmQueryExecutor) supportsQueryMethods(ups common.Upstream) bool {
 	client, ok := getGrpcBdsClient(ups)
 	return ok && client.QueryClient() != nil
 }
 
-func (qe *QueryExecutor) resolveQueryBounds(ctx context.Context, from, to string, order evm.SortOrder, cursor *evm.CursorBlock) (uint64, uint64, error) {
+func (qe *EvmQueryExecutor) resolveQueryBounds(ctx context.Context, from, to string, order evm.SortOrder, cursor *evm.CursorBlock) (uint64, uint64, error) {
 	fromBlock, err := qe.resolveBlockTag(ctx, from, false)
 	if err != nil {
 		return 0, 0, err
@@ -152,7 +152,7 @@ func (qe *QueryExecutor) resolveQueryBounds(ctx context.Context, from, to string
 	return fromBlock, toBlock, nil
 }
 
-func (qe *QueryExecutor) resolveBlockTag(ctx context.Context, block string, upper bool) (uint64, error) {
+func (qe *EvmQueryExecutor) resolveBlockTag(ctx context.Context, block string, upper bool) (uint64, error) {
 	switch block {
 	case "", "latest":
 		return uint64(qe.network.EvmHighestLatestBlockNumber(ctx)), nil
