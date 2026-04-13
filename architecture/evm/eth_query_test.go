@@ -44,6 +44,7 @@ func (n *queryTestNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstrea
 
 type queryTestUpstream struct {
 	supported bool
+	cfg       *common.UpstreamConfig
 }
 
 func (u *queryTestUpstream) Id() string           { return "upstream-1" }
@@ -51,6 +52,9 @@ func (u *queryTestUpstream) VendorName() string   { return "test" }
 func (u *queryTestUpstream) NetworkId() string    { return "evm:1" }
 func (u *queryTestUpstream) NetworkLabel() string { return "evm:1" }
 func (u *queryTestUpstream) Config() *common.UpstreamConfig {
+	if u.cfg != nil {
+		return u.cfg
+	}
 	return &common.UpstreamConfig{Id: "upstream-1"}
 }
 func (u *queryTestUpstream) Logger() *zerolog.Logger {
@@ -152,7 +156,13 @@ func TestNetworkPreForwardEthQuery_PassthroughWhenAnyUpstreamSupportsMethod(t *t
 	handled, resp, err := networkPreForward_eth_query(
 		context.Background(),
 		network,
-		[]common.Upstream{&queryTestUpstream{supported: true}},
+		[]common.Upstream{&queryTestUpstream{
+			supported: true,
+			cfg: &common.UpstreamConfig{
+				Id:       "upstream-1",
+				Endpoint: "grpc://bds.example:443",
+			},
+		}},
 		nq,
 	)
 
@@ -267,10 +277,22 @@ func TestNetworkPreForwardEthQuery_SkipsSubRequests(t *testing.T) {
 }
 
 func TestUpstreamSupportsQueryMethod_ConfigFallback(t *testing.T) {
+	t.Run("HttpUpstreamWithoutExplicitAllowDoesNotSupportQueryMethod", func(t *testing.T) {
+		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
+			cfg: &common.UpstreamConfig{
+				Id:       "u0",
+				Endpoint: "https://rpc.example",
+			},
+		}, "eth_queryBlocks")
+		require.NoError(t, err)
+		assert.False(t, supported)
+	})
+
 	t.Run("IgnoreBlocksMethod", func(t *testing.T) {
 		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
 			cfg: &common.UpstreamConfig{
 				Id:            "u1",
+				Endpoint:      "grpc://bds.example:443",
 				IgnoreMethods: []string{"eth_query*"},
 			},
 		}, "eth_queryBlocks")
@@ -282,6 +304,7 @@ func TestUpstreamSupportsQueryMethod_ConfigFallback(t *testing.T) {
 		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
 			cfg: &common.UpstreamConfig{
 				Id:            "u2",
+				Endpoint:      "https://rpc.example",
 				IgnoreMethods: []string{"eth_query*"},
 				AllowMethods:  []string{"eth_queryLogs"},
 			},
@@ -289,6 +312,76 @@ func TestUpstreamSupportsQueryMethod_ConfigFallback(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, supported)
 	})
+
+	t.Run("GrpcBdsUpstreamSupportsQueryMethodByDefault", func(t *testing.T) {
+		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
+			cfg: &common.UpstreamConfig{
+				Id:       "u3",
+				Endpoint: "grpc://bds.example:443",
+			},
+		}, "eth_queryTransactions")
+		require.NoError(t, err)
+		assert.True(t, supported)
+	})
+}
+
+func TestNetworkPreForwardEthQuery_ShimsWhenGenericUpstreamLacksNativeQuerySupport(t *testing.T) {
+	network := &queryTestNetwork{
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				QueryShimDefaultLimit:  100,
+				QueryShimMaxLimit:      1000,
+				QueryShimMaxBlockRange: 1000,
+			},
+		},
+		latest:    2,
+		finalized: 2,
+	}
+	network.forwardFn = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		jrq, err := req.JsonRpcRequest(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "eth_getBlockByNumber", jrq.Method)
+
+		blockRef, ok := jrq.Params[0].(string)
+		require.True(t, ok)
+		blockNumber, err := common.HexToUint64(blockRef)
+		require.NoError(t, err)
+
+		block := map[string]interface{}{
+			"number":       fmt.Sprintf("0x%x", blockNumber),
+			"hash":         fmt.Sprintf("0x%064x", blockNumber),
+			"parentHash":   fmt.Sprintf("0x%064x", blockNumber-1),
+			"timestamp":    "0x1",
+			"transactions": []interface{}{},
+		}
+		jrr, err := common.NewJsonRpcResponse(req.ID(), block, nil)
+		require.NoError(t, err)
+		return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
+	}
+
+	nq := common.NewNormalizedRequest([]byte(`{
+		"jsonrpc":"2.0",
+		"id":1,
+		"method":"eth_queryBlocks",
+		"params":[{
+			"fromBlock":"0x1",
+			"toBlock":"0x2",
+			"fields":{"blocks":["number","hash"]}
+		}]
+	}`))
+
+	handled, resp, err := networkPreForward_eth_query(context.Background(), network, []common.Upstream{
+		&queryTestConfigUpstream{
+			cfg: &common.UpstreamConfig{
+				Id:       "http-upstream",
+				Endpoint: "https://rpc.example",
+			},
+		},
+	}, nq)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.NotNil(t, resp)
 }
 
 func TestResolveBlockTag(t *testing.T) {

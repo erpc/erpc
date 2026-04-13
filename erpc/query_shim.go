@@ -96,6 +96,16 @@ func (qe *EvmQueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.
 }
 
 func (qe *EvmQueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+	if fromBlock > toBlock {
+		return onPage(&evm.QueryLogsResponse{
+			Logs:         []*evm.Log{},
+			Transactions: []*evm.Transaction{},
+			Blocks:       []*evm.BlockHeader{},
+			FromBlock:    cursorFromNumber(fromBlock),
+			ToBlock:      cursorFromNumber(toBlock),
+		})
+	}
+
 	rawLogs, err := qe.fetchLogsViaForward(ctx, fromBlock, toBlock, req.Filter)
 	if err != nil {
 		return err

@@ -13,8 +13,9 @@ import (
 )
 
 type StreamError struct {
-	Err        error
-	LastCursor *evm.CursorBlock
+	Err         error
+	LastCursor  *evm.CursorBlock
+	PageEmitted bool
 }
 
 func (e *StreamError) Error() string { return e.Err.Error() }
@@ -43,25 +44,7 @@ func (qe *EvmQueryExecutor) pipeThroughQueryBlocks(
 	if err != nil {
 		return err
 	}
-	var lastCursor *evm.CursorBlock
-	for {
-		page, err := stream.Recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return &StreamError{Err: err, LastCursor: lastCursor}
-		}
-		if page.GetCursorBlock() != nil {
-			lastCursor = page.GetCursorBlock()
-		}
-		if err := onPage(page); err != nil {
-			return err
-		}
-		if page.GetCursorBlock() == nil {
-			return nil
-		}
-	}
+	return recvProtoStream(stream.Recv, onPage)
 }
 
 func (qe *EvmQueryExecutor) pipeThroughQueryTransactions(
@@ -133,16 +116,38 @@ func (qe *EvmQueryExecutor) pipeThroughQueryTransfers(
 }
 
 func recvProtoStream[T proto.Message](recv func() (T, error), onPage func(proto.Message) error) error {
+	type cursorPage interface {
+		proto.Message
+		GetCursorBlock() *evm.CursorBlock
+	}
+
+	var lastCursor *evm.CursorBlock
+	pageEmitted := false
+
 	for {
 		page, err := recv()
 		if err == io.EOF {
 			return nil
 		}
 		if err != nil {
-			return err
+			return &StreamError{Err: err, LastCursor: lastCursor, PageEmitted: pageEmitted}
 		}
+
+		cursorBlock := (*evm.CursorBlock)(nil)
+		if cursorAware, ok := any(page).(cursorPage); ok {
+			cursorBlock = cursorAware.GetCursorBlock()
+			if cursorBlock != nil {
+				lastCursor = cursorBlock
+			}
+		}
+
 		if err := onPage(page); err != nil {
-			return err
+			return &StreamError{Err: err, LastCursor: lastCursor, PageEmitted: true}
+		}
+		pageEmitted = true
+
+		if cursorBlock == nil {
+			return nil
 		}
 	}
 }

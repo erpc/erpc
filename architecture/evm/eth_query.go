@@ -466,6 +466,47 @@ func upstreamSupportsQueryMethod(ups common.Upstream, method string) (bool, erro
 		return false, nil
 	}
 
+	cfg := ups.Config()
+	if cfg == nil {
+		return false, nil
+	}
+
+	ignored := false
+	for _, pattern := range cfg.IgnoreMethods {
+		match, err := common.WildcardMatch(pattern, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			ignored = true
+			break
+		}
+	}
+
+	explicitlyAllowed := false
+	for _, pattern := range cfg.AllowMethods {
+		match, err := common.WildcardMatch(pattern, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
+			explicitlyAllowed = true
+			break
+		}
+	}
+
+	if explicitlyAllowed {
+		return true, nil
+	}
+	if ignored {
+		return false, nil
+	}
+
+	// Only gRPC BDS upstreams support native eth_query* methods by default.
+	if !strings.HasPrefix(cfg.Endpoint, "grpc://") && !strings.HasPrefix(cfg.Endpoint, "grpc+bds://") {
+		return false, nil
+	}
+
 	type methodSupporter interface {
 		ShouldHandleMethod(method string) (bool, error)
 	}
@@ -474,32 +515,5 @@ func upstreamSupportsQueryMethod(ups common.Upstream, method string) (bool, erro
 		return supporter.ShouldHandleMethod(method)
 	}
 
-	cfg := ups.Config()
-	if cfg == nil {
-		return true, nil
-	}
-
-	allowed := true
-	for _, pattern := range cfg.IgnoreMethods {
-		match, err := common.WildcardMatch(pattern, method)
-		if err != nil {
-			return false, err
-		}
-		if match {
-			allowed = false
-			break
-		}
-	}
-	for _, pattern := range cfg.AllowMethods {
-		match, err := common.WildcardMatch(pattern, method)
-		if err != nil {
-			return false, err
-		}
-		if match {
-			allowed = true
-			break
-		}
-	}
-
-	return allowed, nil
+	return true, nil
 }

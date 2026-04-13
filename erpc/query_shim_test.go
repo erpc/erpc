@@ -6,6 +6,7 @@ import (
 
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestPaginateLogsByBlock_DoesNotSplitBoundaryBlock(t *testing.T) {
@@ -90,4 +91,28 @@ func TestLoadQueryLogParentData_CachesByBlockNumber(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, fetchCalls)
 	require.Same(t, first, second)
+}
+
+func TestShimQueryLogs_EmptyRangeAfterCursorDoesNotForward(t *testing.T) {
+	qe := &EvmQueryExecutor{}
+
+	called := false
+	err := qe.shimQueryLogs(context.Background(), &evm.QueryLogsRequest{}, 10, 9, func(msg proto.Message) error {
+		called = true
+
+		resp, ok := msg.(*evm.QueryLogsResponse)
+		require.True(t, ok)
+		require.Empty(t, resp.Logs)
+		require.Empty(t, resp.Transactions)
+		require.Empty(t, resp.Blocks)
+		require.NotNil(t, resp.FromBlock)
+		require.NotNil(t, resp.ToBlock)
+		require.Equal(t, uint64(10), resp.FromBlock.Number)
+		require.Equal(t, uint64(9), resp.ToBlock.Number)
+		require.Nil(t, resp.CursorBlock)
+
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, called)
 }

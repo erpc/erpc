@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"errors"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/common"
@@ -42,14 +43,11 @@ func (qe *EvmQueryExecutor) queryBlocks(ctx context.Context, req *evm.QueryBlock
 	if err != nil {
 		return err
 	}
-	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryBlocks"); err == nil {
-		for _, ups := range upstreams {
-			if qe.supportsQueryMethods(ups) {
-				if err := qe.pipeThroughQueryBlocks(ctx, ups, req, onPage); err == nil {
-					return nil
-				}
-			}
-		}
+	handled, err := qe.tryQueryUpstreams(ctx, "eth_queryBlocks", func(ups common.Upstream) error {
+		return qe.pipeThroughQueryBlocks(ctx, ups, req, onPage)
+	})
+	if handled {
+		return err
 	}
 	return qe.shimQueryBlocks(ctx, req, fromBlock, toBlock, onPage)
 }
@@ -59,14 +57,11 @@ func (qe *EvmQueryExecutor) queryTransactions(ctx context.Context, req *evm.Quer
 	if err != nil {
 		return err
 	}
-	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryTransactions"); err == nil {
-		for _, ups := range upstreams {
-			if qe.supportsQueryMethods(ups) {
-				if err := qe.pipeThroughQueryTransactions(ctx, ups, req, onPage); err == nil {
-					return nil
-				}
-			}
-		}
+	handled, err := qe.tryQueryUpstreams(ctx, "eth_queryTransactions", func(ups common.Upstream) error {
+		return qe.pipeThroughQueryTransactions(ctx, ups, req, onPage)
+	})
+	if handled {
+		return err
 	}
 	return qe.shimQueryTransactions(ctx, req, fromBlock, toBlock, onPage)
 }
@@ -76,14 +71,11 @@ func (qe *EvmQueryExecutor) queryLogs(ctx context.Context, req *evm.QueryLogsReq
 	if err != nil {
 		return err
 	}
-	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryLogs"); err == nil {
-		for _, ups := range upstreams {
-			if qe.supportsQueryMethods(ups) {
-				if err := qe.pipeThroughQueryLogs(ctx, ups, req, onPage); err == nil {
-					return nil
-				}
-			}
-		}
+	handled, err := qe.tryQueryUpstreams(ctx, "eth_queryLogs", func(ups common.Upstream) error {
+		return qe.pipeThroughQueryLogs(ctx, ups, req, onPage)
+	})
+	if handled {
+		return err
 	}
 	return qe.shimQueryLogs(ctx, req, fromBlock, toBlock, onPage)
 }
@@ -93,14 +85,11 @@ func (qe *EvmQueryExecutor) queryTraces(ctx context.Context, req *evm.QueryTrace
 	if err != nil {
 		return err
 	}
-	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryTraces"); err == nil {
-		for _, ups := range upstreams {
-			if qe.supportsQueryMethods(ups) {
-				if err := qe.pipeThroughQueryTraces(ctx, ups, req, onPage); err == nil {
-					return nil
-				}
-			}
-		}
+	handled, err := qe.tryQueryUpstreams(ctx, "eth_queryTraces", func(ups common.Upstream) error {
+		return qe.pipeThroughQueryTraces(ctx, ups, req, onPage)
+	})
+	if handled {
+		return err
 	}
 	return qe.shimQueryTraces(ctx, req, fromBlock, toBlock, onPage)
 }
@@ -110,16 +99,54 @@ func (qe *EvmQueryExecutor) queryTransfers(ctx context.Context, req *evm.QueryTr
 	if err != nil {
 		return err
 	}
-	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryTransfers"); err == nil {
-		for _, ups := range upstreams {
-			if qe.supportsQueryMethods(ups) {
-				if err := qe.pipeThroughQueryTransfers(ctx, ups, req, onPage); err == nil {
-					return nil
-				}
-			}
-		}
+	handled, err := qe.tryQueryUpstreams(ctx, "eth_queryTransfers", func(ups common.Upstream) error {
+		return qe.pipeThroughQueryTransfers(ctx, ups, req, onPage)
+	})
+	if handled {
+		return err
 	}
 	return qe.shimQueryTransfers(ctx, req, fromBlock, toBlock, onPage)
+}
+
+func (qe *EvmQueryExecutor) tryQueryUpstreams(
+	ctx context.Context,
+	method string,
+	attempt func(common.Upstream) error,
+) (handled bool, err error) {
+	upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), method)
+	if err != nil {
+		return false, nil
+	}
+
+	for _, ups := range upstreams {
+		if !qe.supportsQueryMethods(ups) {
+			continue
+		}
+
+		err := attempt(ups)
+		if err == nil {
+			return true, nil
+		}
+		if qe.canRetryQueryStream(err) {
+			continue
+		}
+		return true, err
+	}
+
+	return false, nil
+}
+
+func (qe *EvmQueryExecutor) canRetryQueryStream(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var streamErr *StreamError
+	if errors.As(err, &streamErr) {
+		return !streamErr.PageEmitted
+	}
+
+	return true
 }
 
 func (qe *EvmQueryExecutor) supportsQueryMethods(ups common.Upstream) bool {
