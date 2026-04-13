@@ -532,6 +532,17 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
+				// Set the full request URL for x402 resource field
+				if ap != nil {
+					scheme := "https"
+					if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+						scheme = proto
+					} else if r.TLS == nil {
+						scheme = "http"
+					}
+					ap.RequestURL = scheme + "://" + r.Host + r.URL.String()
+				}
+
 				if isAdmin {
 					_, err := s.erpc.AdminAuthenticate(requestCtx, nq, method, ap)
 					if err != nil {

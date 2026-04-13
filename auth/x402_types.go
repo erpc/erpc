@@ -35,14 +35,7 @@ type X402PaymentRequirementsResponse struct {
 	X402Version int                      `json:"x402Version"`
 	Error       string                   `json:"error"`
 	Accepts     []X402PaymentRequirement `json:"accepts"`
-	Resource    *X402Resource            `json:"resource,omitempty"`
-}
-
-// X402Resource is the resource descriptor in v2 payment requirements.
-type X402Resource struct {
-	URL         string `json:"url,omitempty"`
-	Description string `json:"description,omitempty"`
-	MimeType    string `json:"mimeType,omitempty"`
+	Resource    interface{}              `json:"resource,omitempty"`
 }
 
 // X402PaymentPayload is a signed payment sent by the client.
@@ -192,9 +185,18 @@ func (c *X402FacilitatorClient) Settle(ctx context.Context, payment interface{},
 		return nil, fmt.Errorf("facilitator settle returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read settle response body: %w", err)
+	}
+
 	var settleResp X402SettlementResponse
-	if err := json.NewDecoder(resp.Body).Decode(&settleResp); err != nil {
-		return nil, fmt.Errorf("failed to decode settle response: %w", err)
+	if err := json.Unmarshal(body, &settleResp); err != nil {
+		return nil, fmt.Errorf("failed to decode settle response: %w (body: %s)", err, string(body))
+	}
+
+	if !settleResp.Success {
+		settleResp.ErrorReason = fmt.Sprintf("%s (raw: %s)", settleResp.ErrorReason, string(body))
 	}
 
 	return &settleResp, nil
@@ -269,11 +271,3 @@ func extractPayerFromRaw(payment interface{}) string {
 	return ""
 }
 
-// encodePaymentRequirementsHeader base64-encodes the payment requirements for the PAYMENT-REQUIRED header.
-func encodePaymentRequirementsHeader(resp X402PaymentRequirementsResponse) string {
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return ""
-	}
-	return base64.StdEncoding.EncodeToString(data)
-}

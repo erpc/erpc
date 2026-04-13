@@ -56,6 +56,17 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 		MaxTimeoutSeconds: maxTimeout,
 	}
 
+	// Merge config-level extra fields (e.g. EIP-712 domain params) into the requirement.
+	// These serve as defaults; facilitator-provided values will override them below.
+	if len(cfg.Extra) > 0 {
+		if requirement.Extra == nil {
+			requirement.Extra = make(map[string]interface{})
+		}
+		for k, v := range cfg.Extra {
+			requirement.Extra[k] = v
+		}
+	}
+
 	facilitator := &X402FacilitatorClient{
 		BaseURL: strings.TrimRight(cfg.FacilitatorURL, "/"),
 		HTTPClient: &http.Client{
@@ -107,19 +118,19 @@ func (s *X402Strategy) Supports(ap *AuthPayload) bool {
 
 func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	if ap.X402 == nil || ap.X402.Payment == "" {
-		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse())
+		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.RequestURL))
 	}
 
 	payment, err := decodeX402Payment(ap.X402.Payment)
 	if err != nil {
 		s.logger.Debug().Err(err).Msg("failed to decode x402 payment header")
-		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse())
+		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.RequestURL))
 	}
 
 	matchedRequirement, err := findMatchingRequirement(payment, s.requirements)
 	if err != nil {
 		s.logger.Debug().Err(err).Msg("no matching x402 payment requirement for provided scheme/network")
-		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse())
+		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.RequestURL))
 	}
 
 	// Pass the raw payment (map) to the facilitator — it handles both v1 and v2 formats
@@ -133,6 +144,11 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment invalid: %s", verifyResp.InvalidReason))
 	}
 
+	// TODO: Settlement currently happens during auth, before the RPC request is forwarded
+	// to the upstream. If the upstream subsequently fails (timeout, 500, rate limit), the
+	// payer has been charged but received no service. For production, settlement should be
+	// deferred to a post-response hook (e.g. OnRequestSuccess) so payment is only collected
+	// on successful forwarding. This requires a response middleware in the auth registry.
 	if !s.cfg.VerifyOnly {
 		settleResp, err := s.facilitator.Settle(ctx, payment, *matchedRequirement)
 		if err != nil {
@@ -159,13 +175,27 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 	return user, nil
 }
 
-func (s *X402Strategy) paymentRequirementsResponse() X402PaymentRequirementsResponse {
+func (s *X402Strategy) paymentRequirementsResponse(requestURL string) X402PaymentRequirementsResponse {
 	requirements := make([]X402PaymentRequirement, len(s.requirements))
 	copy(requirements, s.requirements)
 
-	return X402PaymentRequirementsResponse{
+	resp := X402PaymentRequirementsResponse{
 		X402Version: s.x402Version,
 		Error:       "Payment required for this resource",
 		Accepts:     requirements,
 	}
+
+	if requestURL != "" {
+		desc := s.cfg.Description
+		if desc == "" {
+			desc = "eRPC x402 endpoint"
+		}
+		resp.Resource = map[string]string{
+			"url":         requestURL,
+			"mimeType":    "application/json",
+			"description": desc,
+		}
+	}
+
+	return resp
 }

@@ -1931,6 +1931,9 @@ type X402StrategyConfig struct {
 	RateLimitBudget string `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 	// VerifyOnly when true skips settlement (useful for testing).
 	VerifyOnly bool `yaml:"verifyOnly,omitempty" json:"verifyOnly,omitempty"`
+	// Extra contains additional fields merged into the payment requirement's extra object.
+	// Useful for providing EIP-712 domain params when the facilitator doesn't supply them.
+	Extra map[string]interface{} `yaml:"extra,omitempty" json:"extra,omitempty"`
 }
 
 func (c *X402StrategyConfig) Validate() error {
