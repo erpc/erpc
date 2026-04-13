@@ -16,10 +16,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,6 +37,19 @@ type GrpcServer struct {
 
 	evm.UnimplementedRPCQueryServiceServer
 	evm.UnimplementedQueryServiceServer
+}
+
+func grpcSharesHttpV4(cfg *common.ServerConfig) bool {
+	if cfg == nil || cfg.GrpcEnabled == nil || !*cfg.GrpcEnabled {
+		return false
+	}
+	if cfg.ListenV4 == nil || !*cfg.ListenV4 {
+		return false
+	}
+	if cfg.HttpHostV4 == nil || cfg.HttpPortV4 == nil || cfg.GrpcHostV4 == nil || cfg.GrpcPortV4 == nil {
+		return false
+	}
+	return *cfg.HttpHostV4 == *cfg.GrpcHostV4 && *cfg.HttpPortV4 == *cfg.GrpcPortV4
 }
 
 func NewGrpcServer(

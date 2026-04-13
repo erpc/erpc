@@ -671,16 +671,16 @@ func (s *ServerConfig) SetDefaults() error {
 		s.GrpcEnabled = util.BoolPtr(false)
 	}
 	if s.GrpcHostV4 == nil {
-		s.GrpcHostV4 = util.StringPtr("0.0.0.0")
+		s.GrpcHostV4 = s.HttpHostV4
 	}
 	if s.GrpcPortV4 == nil {
-		s.GrpcPortV4 = util.IntPtr(50051)
+		s.GrpcPortV4 = s.HttpPortV4
 	}
 	if s.GrpcHostV6 == nil {
-		s.GrpcHostV6 = util.StringPtr("[::]")
+		s.GrpcHostV6 = s.HttpHostV6
 	}
 	if s.GrpcPortV6 == nil {
-		s.GrpcPortV6 = util.IntPtr(50051)
+		s.GrpcPortV6 = s.HttpPortV6
 	}
 	if s.GrpcMaxRecvMsgSize == nil {
 		s.GrpcMaxRecvMsgSize = util.IntPtr(100 * 1024 * 1024)

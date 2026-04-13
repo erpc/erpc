@@ -98,7 +98,7 @@ func Init(
 			}
 		}()
 	}
-	if cfg.Server != nil && cfg.Server.GrpcEnabled != nil && *cfg.Server.GrpcEnabled {
+	if cfg.Server != nil && cfg.Server.GrpcEnabled != nil && *cfg.Server.GrpcEnabled && !grpcSharesHttpV4(cfg.Server) {
 		grpcServer, err := NewGrpcServer(appCtx, &logger, cfg.Server, erpcInstance)
 		if err != nil {
 			return err

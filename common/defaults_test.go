@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -142,6 +143,27 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.Nil(t, network.Failsafe[0].CircuitBreaker)
 		assert.Nil(t, network.Failsafe[0].Retry)
 	})
+}
+
+func TestServerConfigSetDefaults_GrpcPortDefaultsToHttpPort(t *testing.T) {
+	server := &ServerConfig{
+		HttpHostV4:  util.StringPtr("127.0.0.1"),
+		HttpHostV6:  util.StringPtr("[::1]"),
+		HttpPortV4:  util.IntPtr(4311),
+		HttpPortV6:  util.IntPtr(5311),
+		GrpcEnabled: util.BoolPtr(true),
+	}
+
+	err := server.SetDefaults()
+	assert.NoError(t, err)
+	assert.NotNil(t, server.GrpcHostV4)
+	assert.NotNil(t, server.GrpcHostV6)
+	assert.NotNil(t, server.GrpcPortV4)
+	assert.NotNil(t, server.GrpcPortV6)
+	assert.Equal(t, "127.0.0.1", *server.GrpcHostV4)
+	assert.Equal(t, "[::1]", *server.GrpcHostV6)
+	assert.Equal(t, 4311, *server.GrpcPortV4)
+	assert.Equal(t, 5311, *server.GrpcPortV6)
 }
 
 func TestSetDefaults_UpstreamConfig(t *testing.T) {
