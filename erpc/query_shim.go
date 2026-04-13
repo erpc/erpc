@@ -12,11 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (qe *QueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, onPage func(proto.Message) error) error {
-	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
-	if err != nil {
-		return err
-	}
+func (qe *QueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
 
@@ -49,11 +45,7 @@ func (qe *QueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBloc
 	})
 }
 
-func (qe *QueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, onPage func(proto.Message) error) error {
-	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
-	if err != nil {
-		return err
-	}
+func (qe *QueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
 
@@ -104,11 +96,7 @@ func (qe *QueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.Que
 	})
 }
 
-func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRequest, onPage func(proto.Message) error) error {
-	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
-	if err != nil {
-		return err
-	}
+func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	rawLogs, err := qe.fetchLogsViaForward(ctx, fromBlock, toBlock, req.Filter)
 	if err != nil {
 		return err
@@ -124,26 +112,32 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 	logs := make([]*evm.Log, 0, len(rawLogs))
 	blockMap := map[uint64]*evm.BlockHeader{}
 	txMap := map[string]*evm.Transaction{}
+	parentData := map[uint64]*queryLogParentData{}
 	for _, log := range rawLogs {
 		if req.BlockFields != nil || req.TransactionFields != nil {
-			header, txs, err := qe.fetchBlockViaForward(ctx, log.BlockNumber, true)
+			data, err := loadQueryLogParentData(
+				ctx,
+				parentData,
+				log.BlockNumber,
+				func(ctx context.Context, blockNum uint64) (*evm.BlockHeader, []*evm.Transaction, error) {
+					return qe.fetchBlockViaForward(ctx, blockNum, true)
+				},
+			)
 			if err != nil {
 				return err
 			}
-			if req.BlockFields != nil && header != nil {
-				if _, ok := blockMap[header.Number]; !ok {
-					blockMap[header.Number] = projectBlockForResponse(header, req.BlockFields)
+			if req.BlockFields != nil && data.header != nil {
+				if _, ok := blockMap[data.header.Number]; !ok {
+					blockMap[data.header.Number] = projectBlockForResponse(data.header, req.BlockFields)
 				}
 			}
-			if req.TransactionFields != nil {
-				for _, tx := range txs {
-					if string(tx.Hash) == string(log.TransactionHash) {
-						key := string(tx.Hash)
-						if _, ok := txMap[key]; !ok {
-							txCopy := proto.Clone(tx).(*evm.Transaction)
-							ProjectTransactionFields(txCopy, req.TransactionFields)
-							txMap[key] = txCopy
-						}
+			if req.TransactionFields != nil && len(data.txsByHash) > 0 {
+				key := string(log.TransactionHash)
+				if tx, ok := data.txsByHash[key]; ok {
+					if _, exists := txMap[key]; !exists {
+						txCopy := proto.Clone(tx).(*evm.Transaction)
+						ProjectTransactionFields(txCopy, req.TransactionFields)
+						txMap[key] = txCopy
 					}
 				}
 			}
@@ -162,11 +156,7 @@ func (qe *QueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRe
 	})
 }
 
-func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTracesRequest, onPage func(proto.Message) error) error {
-	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
-	if err != nil {
-		return err
-	}
+func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTracesRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
 
@@ -220,7 +210,7 @@ func (qe *QueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTrac
 	})
 }
 
-func (qe *QueryExecutor) shimQueryTransfers(ctx context.Context, req *evm.QueryTransfersRequest, onPage func(proto.Message) error) error {
+func (qe *QueryExecutor) shimQueryTransfers(ctx context.Context, req *evm.QueryTransfersRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
 	traceReq := &evm.QueryTracesRequest{
 		FromBlock:         req.FromBlock,
 		ToBlock:           req.ToBlock,
@@ -232,7 +222,7 @@ func (qe *QueryExecutor) shimQueryTransfers(ctx context.Context, req *evm.QueryT
 		TransactionFields: req.TransactionFields,
 	}
 	var tracesPage *evm.QueryTracesResponse
-	if err := qe.shimQueryTraces(ctx, traceReq, func(page proto.Message) error {
+	if err := qe.shimQueryTraces(ctx, traceReq, fromBlock, toBlock, func(page proto.Message) error {
 		tracesPage = page.(*evm.QueryTracesResponse)
 		return nil
 	}); err != nil {
@@ -400,6 +390,37 @@ func queryLimit(limit uint32) uint32 {
 		return 100
 	}
 	return limit
+}
+
+type queryLogParentData struct {
+	header    *evm.BlockHeader
+	txsByHash map[string]*evm.Transaction
+}
+
+func loadQueryLogParentData(
+	ctx context.Context,
+	cache map[uint64]*queryLogParentData,
+	blockNum uint64,
+	fetch func(context.Context, uint64) (*evm.BlockHeader, []*evm.Transaction, error),
+) (*queryLogParentData, error) {
+	if data, ok := cache[blockNum]; ok {
+		return data, nil
+	}
+
+	header, txs, err := fetch(ctx, blockNum)
+	if err != nil {
+		return nil, err
+	}
+
+	data := &queryLogParentData{
+		header:    header,
+		txsByHash: make(map[string]*evm.Transaction, len(txs)),
+	}
+	for _, tx := range txs {
+		data.txsByHash[string(tx.Hash)] = tx
+	}
+	cache[blockNum] = data
+	return data, nil
 }
 
 type blockIterator struct {

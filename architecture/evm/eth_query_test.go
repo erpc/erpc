@@ -20,11 +20,11 @@ type queryTestNetwork struct {
 	forwardFn func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
-func (n *queryTestNetwork) Id() string { return "evm:1" }
-func (n *queryTestNetwork) Label() string { return "evm:1" }
-func (n *queryTestNetwork) ProjectId() string { return "test-project" }
+func (n *queryTestNetwork) Id() string                               { return "evm:1" }
+func (n *queryTestNetwork) Label() string                            { return "evm:1" }
+func (n *queryTestNetwork) ProjectId() string                        { return "test-project" }
 func (n *queryTestNetwork) Architecture() common.NetworkArchitecture { return common.ArchitectureEvm }
-func (n *queryTestNetwork) Config() *common.NetworkConfig { return n.cfg }
+func (n *queryTestNetwork) Config() *common.NetworkConfig            { return n.cfg }
 func (n *queryTestNetwork) Logger() *zerolog.Logger {
 	logger := zerolog.Nop()
 	return &logger
@@ -37,30 +37,34 @@ func (n *queryTestNetwork) GetFinality(ctx context.Context, req *common.Normaliz
 	return common.DataFinalityStateFinalized
 }
 func (n *queryTestNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 { return n.latest }
-func (n *queryTestNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 { return n.finalized }
+func (n *queryTestNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+	return n.finalized
+}
 func (n *queryTestNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream { return nil }
 
 type queryTestUpstream struct {
 	supported bool
 }
 
-func (u *queryTestUpstream) Id() string { return "upstream-1" }
-func (u *queryTestUpstream) VendorName() string { return "test" }
-func (u *queryTestUpstream) NetworkId() string { return "evm:1" }
+func (u *queryTestUpstream) Id() string           { return "upstream-1" }
+func (u *queryTestUpstream) VendorName() string   { return "test" }
+func (u *queryTestUpstream) NetworkId() string    { return "evm:1" }
 func (u *queryTestUpstream) NetworkLabel() string { return "evm:1" }
-func (u *queryTestUpstream) Config() *common.UpstreamConfig { return &common.UpstreamConfig{Id: "upstream-1"} }
+func (u *queryTestUpstream) Config() *common.UpstreamConfig {
+	return &common.UpstreamConfig{Id: "upstream-1"}
+}
 func (u *queryTestUpstream) Logger() *zerolog.Logger {
 	logger := zerolog.Nop()
 	return &logger
 }
-func (u *queryTestUpstream) Vendor() common.Vendor { return nil }
+func (u *queryTestUpstream) Vendor() common.Vendor         { return nil }
 func (u *queryTestUpstream) Tracker() common.HealthTracker { return nil }
 func (u *queryTestUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *queryTestUpstream) Cordon(method string, reason string) {}
+func (u *queryTestUpstream) Cordon(method string, reason string)   {}
 func (u *queryTestUpstream) Uncordon(method string, reason string) {}
-func (u *queryTestUpstream) IgnoreMethod(method string) {}
+func (u *queryTestUpstream) IgnoreMethod(method string)            {}
 func (u *queryTestUpstream) ShouldHandleMethod(method string) (bool, error) {
 	return u.supported, nil
 }
@@ -69,31 +73,31 @@ type queryTestConfigUpstream struct {
 	cfg *common.UpstreamConfig
 }
 
-func (u *queryTestConfigUpstream) Id() string { return "upstream-config" }
-func (u *queryTestConfigUpstream) VendorName() string { return "test" }
-func (u *queryTestConfigUpstream) NetworkId() string { return "evm:1" }
-func (u *queryTestConfigUpstream) NetworkLabel() string { return "evm:1" }
+func (u *queryTestConfigUpstream) Id() string                     { return "upstream-config" }
+func (u *queryTestConfigUpstream) VendorName() string             { return "test" }
+func (u *queryTestConfigUpstream) NetworkId() string              { return "evm:1" }
+func (u *queryTestConfigUpstream) NetworkLabel() string           { return "evm:1" }
 func (u *queryTestConfigUpstream) Config() *common.UpstreamConfig { return u.cfg }
 func (u *queryTestConfigUpstream) Logger() *zerolog.Logger {
 	logger := zerolog.Nop()
 	return &logger
 }
-func (u *queryTestConfigUpstream) Vendor() common.Vendor { return nil }
+func (u *queryTestConfigUpstream) Vendor() common.Vendor         { return nil }
 func (u *queryTestConfigUpstream) Tracker() common.HealthTracker { return nil }
 func (u *queryTestConfigUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *queryTestConfigUpstream) Cordon(method string, reason string) {}
+func (u *queryTestConfigUpstream) Cordon(method string, reason string)   {}
 func (u *queryTestConfigUpstream) Uncordon(method string, reason string) {}
-func (u *queryTestConfigUpstream) IgnoreMethod(method string) {}
+func (u *queryTestConfigUpstream) IgnoreMethod(method string)            {}
 
 func TestParseQueryRequest_ResolvesCursorAndSelections(t *testing.T) {
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
-				QueryShimDefaultLimit: 25,
-				QueryShimMaxLimit:     500,
+				QueryShimDefaultLimit:  25,
+				QueryShimMaxLimit:      500,
 				QueryShimMaxBlockRange: 1000,
 			},
 		},
@@ -162,8 +166,8 @@ func TestNetworkPreForwardEthQuery_ShimsBlocks(t *testing.T) {
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
-				QueryShimDefaultLimit: 100,
-				QueryShimMaxLimit:     1000,
+				QueryShimDefaultLimit:  100,
+				QueryShimMaxLimit:      1000,
 				QueryShimMaxBlockRange: 1000,
 			},
 		},
@@ -181,10 +185,10 @@ func TestNetworkPreForwardEthQuery_ShimsBlocks(t *testing.T) {
 		require.NoError(t, err)
 
 		block := map[string]interface{}{
-			"number":     fmt.Sprintf("0x%x", blockNumber),
-			"hash":       fmt.Sprintf("0x%064x", blockNumber),
-			"parentHash": fmt.Sprintf("0x%064x", blockNumber-1),
-			"timestamp":  "0x1",
+			"number":       fmt.Sprintf("0x%x", blockNumber),
+			"hash":         fmt.Sprintf("0x%064x", blockNumber),
+			"parentHash":   fmt.Sprintf("0x%064x", blockNumber-1),
+			"timestamp":    "0x1",
 			"transactions": []interface{}{},
 		}
 		jrr, err := common.NewJsonRpcResponse(req.ID(), block, nil)
@@ -329,8 +333,8 @@ func TestParseQueryRequest_DescAndLimitErrors(t *testing.T) {
 			cfg: &common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					QueryShimDefaultLimit: 10,
-					QueryShimMaxLimit:     100,
+					QueryShimDefaultLimit:  10,
+					QueryShimMaxLimit:      100,
 					QueryShimMaxBlockRange: 100,
 				},
 			},
@@ -354,8 +358,8 @@ func TestParseQueryRequest_DescAndLimitErrors(t *testing.T) {
 			cfg: &common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					QueryShimDefaultLimit: 10,
-					QueryShimMaxLimit:     1,
+					QueryShimDefaultLimit:  10,
+					QueryShimMaxLimit:      1,
 					QueryShimMaxBlockRange: 100,
 				},
 			},
@@ -377,8 +381,8 @@ func TestParseQueryRequest_DescAndLimitErrors(t *testing.T) {
 			cfg: &common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					QueryShimDefaultLimit: 10,
-					QueryShimMaxLimit:     10,
+					QueryShimDefaultLimit:  10,
+					QueryShimMaxLimit:      10,
 					QueryShimMaxBlockRange: 1,
 				},
 			},
@@ -416,49 +420,49 @@ func TestForwardSubRequestAndFetchBlockRange(t *testing.T) {
 	})
 
 	t.Run("FetchBlockRangePreservesOrderAndSkipsNull", func(t *testing.T) {
-			var mu sync.Mutex
-			parentIDs := make([]interface{}, 0)
-			network := &queryTestNetwork{
-				cfg:       newQueryTestConfig(),
-				latest:    3,
-				finalized: 3,
+		var mu sync.Mutex
+		parentIDs := make([]interface{}, 0)
+		network := &queryTestNetwork{
+			cfg:       newQueryTestConfig(),
+			latest:    3,
+			finalized: 3,
+		}
+		network.forwardFn = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			jrq, err := req.JsonRpcRequest(ctx)
+			require.NoError(t, err)
+			blockRef, _ := jrq.Params[0].(string)
+			blockNumber, err := common.HexToUint64(blockRef)
+			require.NoError(t, err)
+
+			mu.Lock()
+			parentIDs = append(parentIDs, req.ParentRequestId())
+			mu.Unlock()
+
+			var result interface{}
+			switch blockNumber {
+			case 3:
+				result = makeBlockResult(3, nil)
+			case 2:
+				result = nil
+			case 1:
+				result = makeBlockResult(1, nil)
 			}
-			network.forwardFn = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-				jrq, err := req.JsonRpcRequest(ctx)
-				require.NoError(t, err)
-				blockRef, _ := jrq.Params[0].(string)
-				blockNumber, err := common.HexToUint64(blockRef)
-				require.NoError(t, err)
-
-				mu.Lock()
-				parentIDs = append(parentIDs, req.ParentRequestId())
-				mu.Unlock()
-
-				var result interface{}
-				switch blockNumber {
-				case 3:
-					result = makeBlockResult(3, nil)
-				case 2:
-					result = nil
-				case 1:
-					result = makeBlockResult(1, nil)
-				}
-				jrr, err := common.NewJsonRpcResponse(req.ID(), result, nil)
-				require.NoError(t, err)
-				return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
-			}
-
-			results, err := fetchBlockRange(context.Background(), network, "parent-1", 3, 1, "desc", false, 2)
+			jrr, err := common.NewJsonRpcResponse(req.ID(), result, nil)
 			require.NoError(t, err)
-			require.Len(t, results, 2)
-			first, err := blockMapFromRaw(results[0])
-			require.NoError(t, err)
-			second, err := blockMapFromRaw(results[1])
-			require.NoError(t, err)
-			assert.Equal(t, "0x3", first["number"])
-			assert.Equal(t, "0x1", second["number"])
-			assert.ElementsMatch(t, []interface{}{"parent-1", "parent-1", "parent-1"}, parentIDs)
-		})
+			return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
+		}
+
+		results, err := fetchBlockRange(context.Background(), network, "parent-1", 3, 1, "desc", false, 2)
+		require.NoError(t, err)
+		require.Len(t, results, 2)
+		first, err := blockMapFromRaw(results[0])
+		require.NoError(t, err)
+		second, err := blockMapFromRaw(results[1])
+		require.NoError(t, err)
+		assert.Equal(t, "0x3", first["number"])
+		assert.Equal(t, "0x1", second["number"])
+		assert.ElementsMatch(t, []interface{}{"parent-1", "parent-1", "parent-1"}, parentIDs)
+	})
 }
 
 func TestFilterProjectionAndDedupHelpers(t *testing.T) {
@@ -709,10 +713,10 @@ func TestShimQueryTraces_UsesTraceBlockAndDebugFallback(t *testing.T) {
 							"gasUsed": "0x5208",
 							"output":  "0x",
 						},
-						"traceAddress":      []interface{}{},
-						"subtraces":         0,
-						"transactionHash":   tx["hash"],
-						"transactionIndex":  "0x0",
+						"traceAddress":        []interface{}{},
+						"subtraces":           0,
+						"transactionHash":     tx["hash"],
+						"transactionIndex":    "0x0",
 						"transactionPosition": "0x0",
 					},
 				}), nil
@@ -826,10 +830,10 @@ func TestShimQueryTransfers_ExtractsTopLevelTransfers(t *testing.T) {
 						"gas":      "0x5208",
 						"callType": "call",
 					},
-					"result": map[string]interface{}{"gasUsed": "0x5208", "output": "0x"},
-					"traceAddress":      []interface{}{},
-					"subtraces":         1,
-					"transactionHash":   tx["hash"],
+					"result":              map[string]interface{}{"gasUsed": "0x5208", "output": "0x"},
+					"traceAddress":        []interface{}{},
+					"subtraces":           1,
+					"transactionHash":     tx["hash"],
 					"transactionPosition": "0x0",
 				},
 				map[string]interface{}{
@@ -842,10 +846,10 @@ func TestShimQueryTransfers_ExtractsTopLevelTransfers(t *testing.T) {
 						"gas":      "0x5208",
 						"callType": "call",
 					},
-					"result": map[string]interface{}{"gasUsed": "0x5208", "output": "0x"},
-					"traceAddress":      []interface{}{"0x0"},
-					"subtraces":         0,
-					"transactionHash":   tx["hash"],
+					"result":              map[string]interface{}{"gasUsed": "0x5208", "output": "0x"},
+					"traceAddress":        []interface{}{"0x0"},
+					"subtraces":           0,
+					"transactionHash":     tx["hash"],
 					"transactionPosition": "0x0",
 				},
 			}), nil
@@ -874,6 +878,95 @@ func TestShimQueryTransfers_ExtractsTopLevelTransfers(t *testing.T) {
 	assert.Equal(t, "0x5", resp.Transfers[0]["value"])
 	require.Len(t, resp.ParentTransactions, 1)
 	require.Len(t, resp.ParentBlocks, 1)
+}
+
+func TestParseQueryRequest_RejectsLimitAboveMaxBeforeIntConversion(t *testing.T) {
+	network := &queryTestNetwork{
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				QueryShimDefaultLimit:  25,
+				QueryShimMaxLimit:      500,
+				QueryShimMaxBlockRange: 1000,
+			},
+		},
+		latest:    120,
+		finalized: 118,
+	}
+
+	req := common.NewNormalizedRequest([]byte(`{
+		"jsonrpc":"2.0",
+		"id":1,
+		"method":"eth_queryBlocks",
+		"params":[{"fromBlock":"0x1","toBlock":"0x2","limit":"0xffffffffffffffff"}]
+	}`))
+
+	parsed, err := parseQueryRequest(context.Background(), network, req)
+	require.Nil(t, parsed)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max limit")
+}
+
+func TestProtoTraceFromJSON_RejectsUint32Overflow(t *testing.T) {
+	base := map[string]interface{}{
+		"traceType":        "call",
+		"callType":         "call",
+		"from":             "0x0000000000000000000000000000000000000001",
+		"to":               "0x0000000000000000000000000000000000000002",
+		"value":            "0x0",
+		"input":            "0x",
+		"output":           "0x",
+		"gas":              "0x5208",
+		"gasUsed":          "0x5208",
+		"subtraces":        "0x0",
+		"traceAddress":     []interface{}{},
+		"transactionHash":  "0x01",
+		"transactionIndex": "0x0",
+		"blockNumber":      "0x1",
+		"blockHash":        "0x02",
+	}
+
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(map[string]interface{})
+	}{
+		{
+			name:  "subtraces",
+			field: "subtraces",
+			mutate: func(trace map[string]interface{}) {
+				trace["subtraces"] = "0x100000000"
+			},
+		},
+		{
+			name:  "transactionIndex",
+			field: "transactionIndex",
+			mutate: func(trace map[string]interface{}) {
+				trace["transactionIndex"] = "0x100000000"
+			},
+		},
+		{
+			name:  "traceAddress",
+			field: "traceAddress",
+			mutate: func(trace map[string]interface{}) {
+				trace["traceAddress"] = []interface{}{"0x100000000"}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trace := map[string]interface{}{}
+			for key, value := range base {
+				trace[key] = value
+			}
+			tt.mutate(trace)
+
+			parsed, err := protoTraceFromJSON(trace)
+			require.Nil(t, parsed)
+			require.ErrorContains(t, err, tt.field)
+		})
+	}
 }
 
 func newQueryTestConfig() *common.NetworkConfig {

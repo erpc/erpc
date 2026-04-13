@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bytedance/sonic"
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 )
@@ -445,6 +445,13 @@ func parseUint64Value(raw interface{}) (uint64, error) {
 	default:
 		return 0, fmt.Errorf("unsupported quantity type %T", raw)
 	}
+}
+
+func uint32FromUint64(value uint64, field string) (uint32, error) {
+	if value > uint64(^uint32(0)) {
+		return 0, fmt.Errorf("%s exceeds uint32 range", field)
+	}
+	return uint32(value), nil
 }
 
 func normalizeFieldSelection(selection interface{}) []string {

@@ -564,10 +564,22 @@ func protoTraceFromJSON(trace map[string]interface{}) (*bdsevm.Trace, error) {
 	subtraces, _ := parseUint64Value(decoded.Subtraces)
 	transactionIndex, _ := parseUint64Value(decoded.TransactionIndex)
 	blockNumber, _ := parseUint64Value(decoded.BlockNumber)
+	subtraces32, err := uint32FromUint64(subtraces, "subtraces")
+	if err != nil {
+		return nil, err
+	}
+	transactionIndex32, err := uint32FromUint64(transactionIndex, "transactionIndex")
+	if err != nil {
+		return nil, err
+	}
 	var traceAddress []uint32
 	for _, idx := range decoded.TraceAddress {
 		value, _ := parseUint64Value(idx)
-		traceAddress = append(traceAddress, uint32(value))
+		value32, err := uint32FromUint64(value, "traceAddress")
+		if err != nil {
+			return nil, err
+		}
+		traceAddress = append(traceAddress, value32)
 	}
 	var timestamp *uint64
 	if decoded.BlockTimestamp != nil {
@@ -607,10 +619,10 @@ func protoTraceFromJSON(trace map[string]interface{}) (*bdsevm.Trace, error) {
 		Gas:              gas,
 		GasUsed:          gasUsed,
 		Error:            decoded.Error,
-		Subtraces:        uint32(subtraces),
+		Subtraces:        subtraces32,
 		TraceAddress:     traceAddress,
 		TransactionHash:  txHash,
-		TransactionIndex: uint32(transactionIndex),
+		TransactionIndex: transactionIndex32,
 		BlockNumber:      blockNumber,
 		BlockHash:        blockHash,
 		BlockTimestamp:   timestamp,

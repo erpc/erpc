@@ -38,7 +38,8 @@ func (qe *QueryExecutor) Execute(ctx context.Context, req proto.Message, onPage 
 }
 
 func (qe *QueryExecutor) queryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, onPage func(proto.Message) error) error {
-	if _, _, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor()); err != nil {
+	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
+	if err != nil {
 		return err
 	}
 	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryBlocks"); err == nil {
@@ -50,11 +51,12 @@ func (qe *QueryExecutor) queryBlocks(ctx context.Context, req *evm.QueryBlocksRe
 			}
 		}
 	}
-	return qe.shimQueryBlocks(ctx, req, onPage)
+	return qe.shimQueryBlocks(ctx, req, fromBlock, toBlock, onPage)
 }
 
 func (qe *QueryExecutor) queryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, onPage func(proto.Message) error) error {
-	if _, _, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor()); err != nil {
+	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
+	if err != nil {
 		return err
 	}
 	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryTransactions"); err == nil {
@@ -66,11 +68,12 @@ func (qe *QueryExecutor) queryTransactions(ctx context.Context, req *evm.QueryTr
 			}
 		}
 	}
-	return qe.shimQueryTransactions(ctx, req, onPage)
+	return qe.shimQueryTransactions(ctx, req, fromBlock, toBlock, onPage)
 }
 
 func (qe *QueryExecutor) queryLogs(ctx context.Context, req *evm.QueryLogsRequest, onPage func(proto.Message) error) error {
-	if _, _, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor()); err != nil {
+	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
+	if err != nil {
 		return err
 	}
 	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryLogs"); err == nil {
@@ -82,11 +85,12 @@ func (qe *QueryExecutor) queryLogs(ctx context.Context, req *evm.QueryLogsReques
 			}
 		}
 	}
-	return qe.shimQueryLogs(ctx, req, onPage)
+	return qe.shimQueryLogs(ctx, req, fromBlock, toBlock, onPage)
 }
 
 func (qe *QueryExecutor) queryTraces(ctx context.Context, req *evm.QueryTracesRequest, onPage func(proto.Message) error) error {
-	if _, _, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor()); err != nil {
+	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
+	if err != nil {
 		return err
 	}
 	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryTraces"); err == nil {
@@ -98,11 +102,12 @@ func (qe *QueryExecutor) queryTraces(ctx context.Context, req *evm.QueryTracesRe
 			}
 		}
 	}
-	return qe.shimQueryTraces(ctx, req, onPage)
+	return qe.shimQueryTraces(ctx, req, fromBlock, toBlock, onPage)
 }
 
 func (qe *QueryExecutor) queryTransfers(ctx context.Context, req *evm.QueryTransfersRequest, onPage func(proto.Message) error) error {
-	if _, _, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor()); err != nil {
+	fromBlock, toBlock, err := qe.resolveQueryBounds(ctx, req.GetFromBlock(), req.GetToBlock(), req.GetOrder(), req.GetCursor())
+	if err != nil {
 		return err
 	}
 	if upstreams, err := qe.network.upstreamsRegistry.GetSortedUpstreams(ctx, qe.network.Id(), "eth_queryTransfers"); err == nil {
@@ -114,7 +119,7 @@ func (qe *QueryExecutor) queryTransfers(ctx context.Context, req *evm.QueryTrans
 			}
 		}
 	}
-	return qe.shimQueryTransfers(ctx, req, onPage)
+	return qe.shimQueryTransfers(ctx, req, fromBlock, toBlock, onPage)
 }
 
 func (qe *QueryExecutor) supportsQueryMethods(ups common.Upstream) bool {
@@ -167,11 +172,4 @@ func (qe *QueryExecutor) resolveBlockTag(ctx context.Context, block string, uppe
 		}
 		return 0, status.Errorf(codes.InvalidArgument, "invalid block reference: %s", block)
 	}
-}
-
-func valueOrEmpty(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

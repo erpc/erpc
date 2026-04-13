@@ -177,6 +177,12 @@ func parseQueryRequest(ctx context.Context, network common.Network, nq *common.N
 		if err != nil {
 			return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid limit: %w", err))
 		}
+		if parsedLimit > uint64(maxLimit) {
+			return nil, queryCapacityExceeded(
+				"query request exceeded max limit",
+				map[string]interface{}{"maxLimit": maxLimit},
+			)
+		}
 		limit = int(parsedLimit)
 	}
 	if limit <= 0 {
