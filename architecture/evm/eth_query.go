@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
@@ -176,6 +177,9 @@ func parseQueryRequest(ctx context.Context, network common.Network, nq *common.N
 		parsedLimit, err := parseUint64Value(rawLimit)
 		if err != nil {
 			return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid limit: %w", err))
+		}
+		if parsedLimit > uint64(math.MaxInt) {
+			return nil, common.NewErrInvalidRequest(fmt.Errorf("invalid limit: exceeds int range"))
 		}
 		if parsedLimit > uint64(maxLimit) {
 			return nil, queryCapacityExceeded(

@@ -880,13 +880,13 @@ func TestShimQueryTransfers_ExtractsTopLevelTransfers(t *testing.T) {
 	require.Len(t, resp.ParentBlocks, 1)
 }
 
-func TestParseQueryRequest_RejectsLimitAboveMaxBeforeIntConversion(t *testing.T) {
+func TestParseQueryRequest_RejectsLimitAboveIntRange(t *testing.T) {
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
 				QueryShimDefaultLimit:  25,
-				QueryShimMaxLimit:      500,
+				QueryShimMaxLimit:      1_000_000,
 				QueryShimMaxBlockRange: 1000,
 			},
 		},
@@ -903,8 +903,7 @@ func TestParseQueryRequest_RejectsLimitAboveMaxBeforeIntConversion(t *testing.T)
 
 	parsed, err := parseQueryRequest(context.Background(), network, req)
 	require.Nil(t, parsed)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "max limit")
+	require.ErrorContains(t, err, "exceeds int range")
 }
 
 func TestProtoTraceFromJSON_RejectsUint32Overflow(t *testing.T) {
