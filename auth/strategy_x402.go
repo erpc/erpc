@@ -119,19 +119,19 @@ func (s *X402Strategy) Supports(ap *AuthPayload) bool {
 
 func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	if ap.X402 == nil || ap.X402.Payment == "" {
-		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.RequestURL))
+		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.x402RequestURL()))
 	}
 
 	payment, err := decodeX402Payment(ap.X402.Payment)
 	if err != nil {
 		s.logger.Debug().Err(err).Msg("failed to decode x402 payment header")
-		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.RequestURL))
+		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.x402RequestURL()))
 	}
 
 	matchedRequirement, err := findMatchingRequirement(payment, s.requirements)
 	if err != nil {
 		s.logger.Debug().Err(err).Msg("no matching x402 payment requirement for provided scheme/network")
-		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.RequestURL))
+		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.x402RequestURL()))
 	}
 
 	// Resolve metric labels from the request context.

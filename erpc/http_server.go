@@ -533,15 +533,16 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				// Set the full request URL for x402 resource field
-				if ap != nil {
+				// Set the full request URL for x402 402 response resource field.
+				// Only computed when an x402 payload is present.
+				if ap != nil && ap.Type == common.AuthTypeX402 && ap.X402 != nil {
 					scheme := "https"
 					if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 						scheme = proto
 					} else if r.TLS == nil {
 						scheme = "http"
 					}
-					ap.RequestURL = scheme + "://" + r.Host + r.URL.String()
+					ap.X402.RequestURL = scheme + "://" + r.Host + r.URL.String()
 				}
 
 				if isAdmin {
