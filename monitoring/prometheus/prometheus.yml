@@ -11,12 +11,19 @@ scrape_configs:
       - targets:
           - 'localhost:9090'
 
-  - job_name: 'erpc'
+  - job_name: 'erpc-local'
     static_configs:
       - targets:
           - 'host.docker.internal:4001'
-          # This option is used when running the grafana/prometheus via Railway
-          - 'REPLACE_SERVICE_ENDPOINT_HERE:REPLACE_SERVICE_PORT_HERE' 
+
+  - job_name: 'erpc-x402-fly'
+    scheme: https
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 'erpc-x402-test.fly.dev:443'
+        labels:
+          environment: 'fly'
 
 alerting:
   alertmanagers:

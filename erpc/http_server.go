@@ -25,6 +25,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -145,6 +146,19 @@ func NewHttpServer(
 	}
 
 	h := srv.createRequestHandler()
+
+	// Expose /metrics on the main HTTP port so external Prometheus scrapers
+	// (e.g. from a separate Fly app) can reach it without needing a second public port.
+	metricsHandler := promhttp.Handler()
+	innerH := h
+	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/metrics" {
+			metricsHandler.ServeHTTP(w, r)
+			return
+		}
+		innerH.ServeHTTP(w, r)
+	})
+
 	if cfg.EnableGzip != nil && *cfg.EnableGzip {
 		h = gzipHandler(h)
 	}
