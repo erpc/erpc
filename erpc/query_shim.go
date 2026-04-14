@@ -400,14 +400,17 @@ func (qe *EvmQueryExecutor) fetchTracesViaForward(ctx context.Context, blockNum 
 	return evm.TraceFromGethDebug(single, blockNum, headerHash(header), headerTimestamp(header))
 }
 
-func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, method string, params interface{}) ([]byte, error) {
+func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, method string, params []interface{}) ([]byte, error) {
 	if qe.forwardSubrequestFn != nil {
 		return qe.forwardSubrequestFn(ctx, method, params)
 	}
 
-	body := buildJSONRPCRequest(method, params)
-	req := common.NewNormalizedRequest(body)
+	jrq := common.NewJsonRpcRequest(method, params)
+	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	req.SetNetwork(qe.network)
+	if qe.parentRequestId != nil {
+		req.SetParentRequestId(qe.parentRequestId)
+	}
 	req.ApplyDirectiveDefaults(qe.network.Config().DirectiveDefaults)
 	resp, err := qe.network.Forward(ctx, req)
 	if err != nil {

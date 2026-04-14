@@ -100,6 +100,7 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	}
 
 	executor := NewEvmQueryExecutor(network, rp.logger)
+	executor.parentRequestId = nq.ID()
 	return executor.Execute(ctx, queryReq, onPage)
 }
 

@@ -123,12 +123,11 @@ func TestShimQueryLogs_EmptyRangeAfterCursorDoesNotForward(t *testing.T) {
 
 func TestShimQueryTransactions_ReturnsCursorWhenNextBlockWouldOverflowLimit(t *testing.T) {
 	qe := &EvmQueryExecutor{
-		forwardSubrequestFn: func(ctx context.Context, method string, params interface{}) ([]byte, error) {
+		forwardSubrequestFn: func(ctx context.Context, method string, params []interface{}) ([]byte, error) {
 			switch method {
 			case "eth_getBlockByNumber":
-				args, ok := params.([]interface{})
-				require.True(t, ok)
-				blockRef, ok := args[0].(string)
+				require.True(t, len(params) > 0)
+				blockRef, ok := params[0].(string)
 				require.True(t, ok)
 
 				switch blockRef {
@@ -167,12 +166,11 @@ func TestShimQueryTransactions_ReturnsCursorWhenNextBlockWouldOverflowLimit(t *t
 
 func TestShimQueryTraces_ReturnsCursorWhenNextBlockWouldOverflowLimit(t *testing.T) {
 	qe := &EvmQueryExecutor{
-		forwardSubrequestFn: func(ctx context.Context, method string, params interface{}) ([]byte, error) {
+		forwardSubrequestFn: func(ctx context.Context, method string, params []interface{}) ([]byte, error) {
 			switch method {
 			case "eth_getBlockByNumber":
-				args, ok := params.([]interface{})
-				require.True(t, ok)
-				blockRef, ok := args[0].(string)
+				require.True(t, len(params) > 0)
+				blockRef, ok := params[0].(string)
 				require.True(t, ok)
 
 				switch blockRef {
@@ -184,9 +182,8 @@ func TestShimQueryTraces_ReturnsCursorWhenNextBlockWouldOverflowLimit(t *testing
 					return nil, fmt.Errorf("unexpected block ref %s", blockRef)
 				}
 			case "trace_block":
-				args, ok := params.([]interface{})
-				require.True(t, ok)
-				blockRef, ok := args[0].(string)
+				require.True(t, len(params) > 0)
+				blockRef, ok := params[0].(string)
 				require.True(t, ok)
 
 				switch blockRef {
