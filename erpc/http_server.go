@@ -630,18 +630,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				var networkId string
 
 				if architecture == "" || chainId == "" {
-					var req map[string]interface{}
-					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
-						common.EndRequestSpan(requestCtx, nil, err)
-						return
-					}
-					if networkIdFromBody, ok := req["networkId"].(string); ok {
-						networkId = networkIdFromBody
-						parts := strings.Split(networkId, ":")
-						if len(parts) == 2 {
-							architecture = parts[0]
-							chainId = parts[1]
+					if bodyBytes := nq.Body(); len(bodyBytes) > 0 {
+						var req map[string]interface{}
+						if err := common.SonicCfg.Unmarshal(bodyBytes, &req); err != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, err)
+							return
+						}
+						if networkIdFromBody, ok := req["networkId"].(string); ok {
+							networkId = networkIdFromBody
+							parts := strings.Split(networkId, ":")
+							if len(parts) == 2 {
+								architecture = parts[0]
+								chainId = parts[1]
+							}
 						}
 					}
 				} else {
