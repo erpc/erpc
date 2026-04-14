@@ -86,7 +86,41 @@ func networkPreForward_eth_query(
 		}
 	}
 
+	if !isQueryShimEnabled(network, method) {
+		return false, nil, nil
+	}
+
 	return executeQueryShim(ctx, network, nq)
+}
+
+func isQueryShimEnabled(network common.Network, method string) bool {
+	cfg := network.Config()
+	if cfg == nil || cfg.Evm == nil {
+		return false
+	}
+
+	if cfg.Evm.QueryShimEnabled != nil && !*cfg.Evm.QueryShimEnabled {
+		return false
+	}
+	if cfg.Evm.QueryShimEnabled == nil {
+		return false
+	}
+
+	if len(cfg.Evm.QueryShimAllowedMethods) == 0 {
+		return true
+	}
+
+	for _, allowed := range cfg.Evm.QueryShimAllowedMethods {
+		match, err := common.WildcardMatch(allowed, method)
+		if err != nil {
+			continue
+		}
+		if match {
+			return true
+		}
+	}
+
+	return false
 }
 
 func executeQueryShim(

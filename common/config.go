@@ -898,8 +898,8 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                            int64                       `yaml:"chainId" json:"chainId"`
-	StatePollerInterval                Duration                    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	ChainId             int64    `yaml:"chainId" json:"chainId"`
+	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
 	// StatePollerDebounce overrides the debounce interval for the state poller.
 	// When 0 (default), the interval is dynamically inferred from the chain's
 	// observed block time, falling back to the network-level
@@ -1671,6 +1671,8 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	QueryShimEnabled            *bool               `yaml:"queryShimEnabled,omitempty" json:"queryShimEnabled"`
+	QueryShimAllowedMethods     []string            `yaml:"queryShimAllowedMethods,omitempty" json:"queryShimAllowedMethods"`
 	QueryShimConcurrency        int                 `yaml:"queryShimConcurrency,omitempty" json:"queryShimConcurrency"`
 	QueryShimMaxBlockRange      int64               `yaml:"queryShimMaxBlockRange,omitempty" json:"queryShimMaxBlockRange"`
 	QueryShimMaxLimit           int                 `yaml:"queryShimMaxLimit,omitempty" json:"queryShimMaxLimit"`

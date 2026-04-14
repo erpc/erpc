@@ -172,10 +172,12 @@ func TestNetworkPreForwardEthQuery_PassthroughWhenUpstreamExplicitlyAllowsQueryM
 }
 
 func TestNetworkPreForwardEthQuery_ShimsWhenGrpcUpstreamHasNoExplicitAllow(t *testing.T) {
+	enabled := true
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
+				QueryShimEnabled:       &enabled,
 				QueryShimDefaultLimit:  100,
 				QueryShimMaxLimit:      1000,
 				QueryShimMaxBlockRange: 1000,
@@ -231,10 +233,12 @@ func TestNetworkPreForwardEthQuery_ShimsWhenGrpcUpstreamHasNoExplicitAllow(t *te
 }
 
 func TestNetworkPreForwardEthQuery_ShimsBlocks(t *testing.T) {
+	enabled := true
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
+				QueryShimEnabled:       &enabled,
 				QueryShimDefaultLimit:  100,
 				QueryShimMaxLimit:      1000,
 				QueryShimMaxBlockRange: 1000,
@@ -384,10 +388,12 @@ func TestUpstreamSupportsQueryMethod_ConfigFallback(t *testing.T) {
 }
 
 func TestNetworkPreForwardEthQuery_ShimsWhenGenericUpstreamLacksNativeQuerySupport(t *testing.T) {
+	enabled := true
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
+				QueryShimEnabled:       &enabled,
 				QueryShimDefaultLimit:  100,
 				QueryShimMaxLimit:      1000,
 				QueryShimMaxBlockRange: 1000,
@@ -1120,9 +1126,11 @@ func TestProtoTraceFromJSON_RejectsUint32Overflow(t *testing.T) {
 }
 
 func newQueryTestConfig() *common.NetworkConfig {
+	enabled := true
 	return &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
 		Evm: &common.EvmNetworkConfig{
+			QueryShimEnabled:       &enabled,
 			QueryShimConcurrency:   4,
 			QueryShimDefaultLimit:  100,
 			QueryShimMaxLimit:      1000,

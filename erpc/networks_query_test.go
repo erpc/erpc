@@ -85,6 +85,7 @@ func defaultQueryNetworkConfig() *common.NetworkConfig {
 		Architecture: common.ArchitectureEvm,
 		Evm: &common.EvmNetworkConfig{
 			ChainId:                123,
+			QueryShimEnabled:       util.BoolPtr(true),
 			QueryShimDefaultLimit:  100,
 			QueryShimMaxLimit:      1000,
 			QueryShimMaxBlockRange: 1000,
