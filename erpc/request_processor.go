@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -70,12 +72,34 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	queryReq proto.Message,
 	onPage func(proto.Message) error,
 ) error {
+	start := time.Now()
+	ctx, span := common.StartSpan(ctx, "QueryStream.Handle")
+	defer span.End()
+
 	project, err := rp.erpc.GetProject(input.ProjectId)
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 
 	method := queryMethodFromProto(queryReq)
+	networkID := fmt.Sprintf("%s:%s", input.Architecture, input.ChainId)
+
+	span.SetAttributes(
+		attribute.String("query.method", method),
+		attribute.String("project.id", input.ProjectId),
+		attribute.String("network.id", networkID),
+	)
+
+	lg := rp.logger.With().
+		Str("component", "queryStream").
+		Str("projectId", input.ProjectId).
+		Str("networkId", networkID).
+		Str("method", method).
+		Str("clientIP", input.ClientIP).
+		Logger()
+
+	lg.Info().Msgf("processing query stream request")
 
 	nq := common.NewNormalizedRequestFromJsonRpcRequest(
 		common.NewJsonRpcRequest(method, []interface{}{}),
@@ -87,24 +111,39 @@ func (rp *RequestProcessor) ProcessQueryStream(
 
 	user, err := project.AuthenticateConsumer(ctx, nq, method, input.AuthPayload)
 	if err != nil {
+		lg.Debug().Err(err).Msgf("query stream authentication failed")
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 	nq.SetUser(user)
 
-	networkID := fmt.Sprintf("%s:%s", input.Architecture, input.ChainId)
 	network, err := project.GetNetwork(ctx, networkID)
 	if err != nil {
+		lg.Debug().Err(err).Msgf("failed to resolve network for query stream")
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 	nq.SetNetwork(network)
 
 	if err := project.AcquireRateLimitPermit(ctx, nq); err != nil {
+		lg.Debug().Err(err).Msgf("query stream rate limited")
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 
-	executor := NewEvmQueryExecutor(network, rp.logger)
+	executor := NewEvmQueryExecutor(network, &lg)
 	executor.parentRequestId = nq.ID()
-	return executor.Execute(ctx, queryReq, onPage)
+	err = executor.Execute(ctx, queryReq, onPage)
+
+	dur := time.Since(start)
+	if err != nil {
+		lg.Info().Err(err).Dur("durationMs", dur).Msgf("query stream completed with error")
+		common.SetTraceSpanError(span, err)
+	} else {
+		lg.Info().Dur("durationMs", dur).Msgf("query stream completed successfully")
+	}
+
+	return err
 }
 
 func queryMethodFromProto(req proto.Message) string {

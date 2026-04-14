@@ -8,6 +8,7 @@ import (
 
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -98,7 +99,8 @@ func TestLoadQueryLogParentData_CachesByBlockNumber(t *testing.T) {
 }
 
 func TestShimQueryLogs_EmptyRangeAfterCursorDoesNotForward(t *testing.T) {
-	qe := &EvmQueryExecutor{}
+	nopLogger := zerolog.Nop()
+	qe := &EvmQueryExecutor{logger: &nopLogger}
 
 	called := false
 	err := qe.shimQueryLogs(context.Background(), &evm.QueryLogsRequest{}, 10, 9, func(msg proto.Message) error {
@@ -122,7 +124,9 @@ func TestShimQueryLogs_EmptyRangeAfterCursorDoesNotForward(t *testing.T) {
 }
 
 func TestShimQueryTransactions_ReturnsCursorWhenNextBlockWouldOverflowLimit(t *testing.T) {
+	nopLogger := zerolog.Nop()
 	qe := &EvmQueryExecutor{
+		logger: &nopLogger,
 		forwardSubrequestFn: func(ctx context.Context, method string, params []interface{}) ([]byte, error) {
 			switch method {
 			case "eth_getBlockByNumber":
@@ -165,7 +169,9 @@ func TestShimQueryTransactions_ReturnsCursorWhenNextBlockWouldOverflowLimit(t *t
 }
 
 func TestShimQueryTraces_ReturnsCursorWhenNextBlockWouldOverflowLimit(t *testing.T) {
+	nopLogger := zerolog.Nop()
 	qe := &EvmQueryExecutor{
+		logger: &nopLogger,
 		forwardSubrequestFn: func(ctx context.Context, method string, params []interface{}) ([]byte, error) {
 			switch method {
 			case "eth_getBlockByNumber":

@@ -40,11 +40,13 @@ func (qe *EvmQueryExecutor) pipeThroughQueryBlocks(
 	if !ok || client.QueryClient() == nil {
 		return fmt.Errorf("upstream %s does not support query streaming", ups.Id())
 	}
+	qe.logger.Debug().Str("upstreamId", ups.Id()).Msgf("opening QueryBlocks stream to upstream")
 	stream, err := client.QueryClient().QueryBlocks(ctx, req)
 	if err != nil {
+		qe.logger.Debug().Err(err).Str("upstreamId", ups.Id()).Msgf("failed to open QueryBlocks stream")
 		return err
 	}
-	return recvProtoStream(stream.Recv, onPage)
+	return qe.recvProtoStream(func() (proto.Message, error) { return stream.Recv() }, onPage, "eth_queryBlocks", ups.Id())
 }
 
 func (qe *EvmQueryExecutor) pipeThroughQueryTransactions(
@@ -57,11 +59,12 @@ func (qe *EvmQueryExecutor) pipeThroughQueryTransactions(
 	if !ok || client.QueryClient() == nil {
 		return fmt.Errorf("upstream %s does not support query streaming", ups.Id())
 	}
+	qe.logger.Debug().Str("upstreamId", ups.Id()).Msgf("opening QueryTransactions stream to upstream")
 	stream, err := client.QueryClient().QueryTransactions(ctx, req)
 	if err != nil {
 		return err
 	}
-	return recvProtoStream(stream.Recv, onPage)
+	return qe.recvProtoStream(func() (proto.Message, error) { return stream.Recv() }, onPage, "eth_queryTransactions", ups.Id())
 }
 
 func (qe *EvmQueryExecutor) pipeThroughQueryLogs(
@@ -74,11 +77,12 @@ func (qe *EvmQueryExecutor) pipeThroughQueryLogs(
 	if !ok || client.QueryClient() == nil {
 		return fmt.Errorf("upstream %s does not support query streaming", ups.Id())
 	}
+	qe.logger.Debug().Str("upstreamId", ups.Id()).Msgf("opening QueryLogs stream to upstream")
 	stream, err := client.QueryClient().QueryLogs(ctx, req)
 	if err != nil {
 		return err
 	}
-	return recvProtoStream(stream.Recv, onPage)
+	return qe.recvProtoStream(func() (proto.Message, error) { return stream.Recv() }, onPage, "eth_queryLogs", ups.Id())
 }
 
 func (qe *EvmQueryExecutor) pipeThroughQueryTraces(
@@ -91,11 +95,12 @@ func (qe *EvmQueryExecutor) pipeThroughQueryTraces(
 	if !ok || client.QueryClient() == nil {
 		return fmt.Errorf("upstream %s does not support query streaming", ups.Id())
 	}
+	qe.logger.Debug().Str("upstreamId", ups.Id()).Msgf("opening QueryTraces stream to upstream")
 	stream, err := client.QueryClient().QueryTraces(ctx, req)
 	if err != nil {
 		return err
 	}
-	return recvProtoStream(stream.Recv, onPage)
+	return qe.recvProtoStream(func() (proto.Message, error) { return stream.Recv() }, onPage, "eth_queryTraces", ups.Id())
 }
 
 func (qe *EvmQueryExecutor) pipeThroughQueryTransfers(
@@ -108,14 +113,15 @@ func (qe *EvmQueryExecutor) pipeThroughQueryTransfers(
 	if !ok || client.QueryClient() == nil {
 		return fmt.Errorf("upstream %s does not support query streaming", ups.Id())
 	}
+	qe.logger.Debug().Str("upstreamId", ups.Id()).Msgf("opening QueryTransfers stream to upstream")
 	stream, err := client.QueryClient().QueryTransfers(ctx, req)
 	if err != nil {
 		return err
 	}
-	return recvProtoStream(stream.Recv, onPage)
+	return qe.recvProtoStream(func() (proto.Message, error) { return stream.Recv() }, onPage, "eth_queryTransfers", ups.Id())
 }
 
-func recvProtoStream[T proto.Message](recv func() (T, error), onPage func(proto.Message) error) error {
+func (qe *EvmQueryExecutor) recvProtoStream(recv func() (proto.Message, error), onPage func(proto.Message) error, method string, upstreamId string) error {
 	type cursorPage interface {
 		proto.Message
 		GetCursorBlock() *evm.CursorBlock
@@ -123,16 +129,20 @@ func recvProtoStream[T proto.Message](recv func() (T, error), onPage func(proto.
 
 	var lastCursor *evm.CursorBlock
 	pageEmitted := false
+	pageCount := 0
 
 	for {
 		page, err := recv()
 		if err == io.EOF {
+			qe.logger.Debug().Str("upstreamId", upstreamId).Str("method", method).Int("pagesReceived", pageCount).Msgf("upstream query stream completed (EOF)")
 			return nil
 		}
 		if err != nil {
+			qe.logger.Debug().Err(err).Str("upstreamId", upstreamId).Str("method", method).Int("pagesReceived", pageCount).Bool("pageEmitted", pageEmitted).Msgf("upstream query stream error")
 			return &StreamError{Err: err, LastCursor: lastCursor, PageEmitted: pageEmitted}
 		}
 
+		pageCount++
 		cursorBlock := (*evm.CursorBlock)(nil)
 		if cursorAware, ok := any(page).(cursorPage); ok {
 			cursorBlock = cursorAware.GetCursorBlock()
@@ -141,12 +151,15 @@ func recvProtoStream[T proto.Message](recv func() (T, error), onPage func(proto.
 			}
 		}
 
+		qe.logger.Trace().Str("upstreamId", upstreamId).Str("method", method).Int("page", pageCount).Interface("cursor", cursorBlock).Msgf("received page from upstream query stream")
+
 		if err := onPage(page); err != nil {
 			return &StreamError{Err: err, LastCursor: lastCursor, PageEmitted: true}
 		}
 		pageEmitted = true
 
 		if cursorBlock == nil {
+			qe.logger.Debug().Str("upstreamId", upstreamId).Str("method", method).Int("pagesReceived", pageCount).Msgf("upstream query stream completed (no cursor)")
 			return nil
 		}
 	}

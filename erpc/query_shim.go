@@ -7,14 +7,19 @@ import (
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
 func (qe *EvmQueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryBlocksRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+	_, shimSpan := common.StartDetailSpan(ctx, "Query.ShimBlocks")
+	defer shimSpan.End()
+
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
+	qe.logger.Debug().Uint64("fromBlock", fromBlock).Uint64("toBlock", toBlock).Uint32("limit", limit).Msgf("starting shimQueryBlocks")
 
 	blocks := make([]*evm.BlockHeader, 0, limit)
 	var last *evm.BlockHeader
@@ -46,8 +51,12 @@ func (qe *EvmQueryExecutor) shimQueryBlocks(ctx context.Context, req *evm.QueryB
 }
 
 func (qe *EvmQueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.QueryTransactionsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+	_, shimSpan := common.StartDetailSpan(ctx, "Query.ShimTransactions")
+	defer shimSpan.End()
+
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
+	qe.logger.Debug().Uint64("fromBlock", fromBlock).Uint64("toBlock", toBlock).Uint32("limit", limit).Msgf("starting shimQueryTransactions")
 
 	txs := make([]*evm.Transaction, 0, limit)
 	blocks := make([]*evm.BlockHeader, 0)
@@ -99,6 +108,11 @@ func (qe *EvmQueryExecutor) shimQueryTransactions(ctx context.Context, req *evm.
 }
 
 func (qe *EvmQueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLogsRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+	_, shimSpan := common.StartDetailSpan(ctx, "Query.ShimLogs")
+	defer shimSpan.End()
+
+	qe.logger.Debug().Uint64("fromBlock", fromBlock).Uint64("toBlock", toBlock).Msgf("starting shimQueryLogs")
+
 	if fromBlock > toBlock {
 		return onPage(&evm.QueryLogsResponse{
 			Logs:         []*evm.Log{},
@@ -169,8 +183,12 @@ func (qe *EvmQueryExecutor) shimQueryLogs(ctx context.Context, req *evm.QueryLog
 }
 
 func (qe *EvmQueryExecutor) shimQueryTraces(ctx context.Context, req *evm.QueryTracesRequest, fromBlock, toBlock uint64, onPage func(proto.Message) error) error {
+	_, shimSpan := common.StartDetailSpan(ctx, "Query.ShimTraces")
+	defer shimSpan.End()
+
 	order := req.GetOrder()
 	limit := queryLimit(req.GetLimit())
+	qe.logger.Debug().Uint64("fromBlock", fromBlock).Uint64("toBlock", toBlock).Uint32("limit", limit).Msgf("starting shimQueryTraces")
 
 	out := make([]*evm.Trace, 0, limit)
 	blocks := map[uint64]*evm.BlockHeader{}
@@ -405,6 +423,12 @@ func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, method string
 		return qe.forwardSubrequestFn(ctx, method, params)
 	}
 
+	ctx, span := common.StartDetailSpan(ctx, "Query.ForwardSubrequest")
+	defer span.End()
+	span.SetAttributes(attribute.String("subrequest.method", method))
+
+	qe.logger.Trace().Str("method", method).Interface("params", params).Msgf("forwarding query shim subrequest")
+
 	jrq := common.NewJsonRpcRequest(method, params)
 	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	req.SetNetwork(qe.network)
@@ -414,9 +438,17 @@ func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, method string
 	req.ApplyDirectiveDefaults(qe.network.Config().DirectiveDefaults)
 	resp, err := qe.network.Forward(ctx, req)
 	if err != nil {
+		qe.logger.Trace().Err(err).Str("method", method).Msgf("query shim subrequest failed")
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
-	return parseJSONRPCResult(ctx, resp)
+	result, err := parseJSONRPCResult(ctx, resp)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return nil, err
+	}
+	qe.logger.Trace().Str("method", method).Int("resultLen", len(result)).Msgf("query shim subrequest completed")
+	return result, nil
 }
 
 func queryLimit(limit uint32) uint32 {
