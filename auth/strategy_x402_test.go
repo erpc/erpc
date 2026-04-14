@@ -237,17 +237,43 @@ func TestX402Strategy_VerifyOnly_SkipsSettle(t *testing.T) {
 }
 
 func TestX402Strategy_FailedVerification_Returns401(t *testing.T) {
+	// This test exercises the VerifyOnly (dry-run) path where verify returns
+	// IsValid: false. Without VerifyOnly, the strategy skips verify and goes
+	// straight to settle — so this must explicitly enable VerifyOnly.
+	verifyCalled := false
 	facilitator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/verify" {
+			verifyCalled = true
 			json.NewEncoder(w).Encode(X402VerifyResponse{
 				IsValid:       false,
 				InvalidReason: "insufficient funds",
 			})
+			return
 		}
+		if r.URL.Path == "/supported" {
+			json.NewEncoder(w).Encode(X402SupportedResponse{})
+			return
+		}
+		t.Errorf("unexpected request to %s (verify-only should not call settle)", r.URL.Path)
+		http.NotFound(w, r)
 	}))
 	defer facilitator.Close()
-	s := newTestX402Strategy(t, facilitator.URL)
+
+	logger := zerolog.Nop()
+	s, err := NewX402Strategy(&logger, &common.X402StrategyConfig{
+		FacilitatorURL:    facilitator.URL,
+		SellerAddress:     "0xSeller",
+		PricePerRequest:   "5",
+		Network:           "base",
+		Asset:             "0xUSDC",
+		Scheme:            "exact",
+		MaxTimeoutSeconds: 300,
+		VerifyOnly:        true,
+	})
+	if err != nil {
+		t.Fatalf("NewX402Strategy: %v", err)
+	}
 
 	paymentHeader := makePaymentHeader("exact", "base")
 	ap := &AuthPayload{
@@ -255,12 +281,15 @@ func TestX402Strategy_FailedVerification_Returns401(t *testing.T) {
 		X402: &X402Payload{Payment: paymentHeader},
 	}
 
-	user, err := s.Authenticate(context.Background(), nil, ap)
+	user, authErr := s.Authenticate(context.Background(), nil, ap)
 	if user != nil {
 		t.Fatalf("expected nil user, got %v", user)
 	}
-	if !common.HasErrorCode(err, common.ErrCodeAuthUnauthorized) {
-		t.Fatalf("expected ErrAuthUnauthorized, got %T: %v", err, err)
+	if !verifyCalled {
+		t.Fatal("expected /verify to be called")
+	}
+	if !common.HasErrorCode(authErr, common.ErrCodeAuthUnauthorized) {
+		t.Fatalf("expected ErrAuthUnauthorized, got %T: %v", authErr, authErr)
 	}
 }
 
