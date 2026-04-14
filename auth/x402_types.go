@@ -3,11 +3,16 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
+	"time"
 )
 
 // x402 protocol types and facilitator client, inlined to avoid heavy transitive
@@ -89,6 +94,67 @@ type x402FacilitatorRequest struct {
 type X402FacilitatorClient struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	// CDP auth fields (optional — only for api.cdp.coinbase.com)
+	cdpKeyID     string
+	cdpKeySecret ed25519.PrivateKey
+}
+
+// NewX402FacilitatorClient creates a facilitator client, optionally with CDP JWT auth.
+func NewX402FacilitatorClient(baseURL, cdpKeyID, cdpKeySecretB64 string) (*X402FacilitatorClient, error) {
+	c := &X402FacilitatorClient{
+		BaseURL:    baseURL,
+		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		cdpKeyID:   cdpKeyID,
+	}
+	if cdpKeyID != "" && cdpKeySecretB64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(cdpKeySecretB64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode CDP API key secret: %w", err)
+		}
+		// Ed25519 key: 64 bytes (32 seed + 32 public) or 32 seed
+		if len(decoded) == 64 {
+			c.cdpKeySecret = ed25519.NewKeyFromSeed(decoded[:32])
+		} else if len(decoded) == 32 {
+			c.cdpKeySecret = ed25519.NewKeyFromSeed(decoded)
+		} else {
+			return nil, fmt.Errorf("unexpected CDP key length: %d (expected 32 or 64)", len(decoded))
+		}
+	}
+	return c, nil
+}
+
+// signRequest adds a CDP JWT Authorization header if credentials are configured.
+func (c *X402FacilitatorClient) signRequest(req *http.Request) error {
+	if c.cdpKeySecret == nil {
+		return nil
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	parsedURL, _ := url.Parse(c.BaseURL)
+	uri := req.Method + " " + parsedURL.Host + req.URL.Path
+
+	header := base64URLEncode([]byte(fmt.Sprintf(
+		`{"alg":"EdDSA","typ":"JWT","kid":"%s","nonce":"%x"}`,
+		c.cdpKeyID, nonce,
+	)))
+	payload := base64URLEncode([]byte(fmt.Sprintf(
+		`{"sub":"%s","iss":"cdp","aud":["cdp_service"],"nbf":%d,"exp":%d,"uri":"%s"}`,
+		c.cdpKeyID, now, now+120, uri,
+	)))
+	message := header + "." + payload
+	sig := ed25519.Sign(c.cdpKeySecret, []byte(message))
+	jwt := message + "." + base64URLEncode(sig)
+
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	return nil
+}
+
+func base64URLEncode(data []byte) string {
+	s := base64.RawURLEncoding.EncodeToString(data)
+	return strings.TrimRight(s, "=")
 }
 
 // Supported fetches the payment types supported by the facilitator.
@@ -96,6 +162,9 @@ func (c *X402FacilitatorClient) Supported(ctx context.Context) (*X402SupportedRe
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/supported", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create supported request: %w", err)
+	}
+	if err := c.signRequest(httpReq); err != nil {
+		return nil, fmt.Errorf("failed to sign supported request: %w", err)
 	}
 
 	resp, err := c.HTTPClient.Do(httpReq)
@@ -133,6 +202,9 @@ func (c *X402FacilitatorClient) Verify(ctx context.Context, payment interface{},
 		return nil, fmt.Errorf("failed to create verify request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if err := c.signRequest(httpReq); err != nil {
+		return nil, fmt.Errorf("failed to sign verify request: %w", err)
+	}
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -173,6 +245,9 @@ func (c *X402FacilitatorClient) Settle(ctx context.Context, payment interface{},
 		return nil, fmt.Errorf("failed to create settle request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if err := c.signRequest(httpReq); err != nil {
+		return nil, fmt.Errorf("failed to sign settle request: %w", err)
+	}
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {

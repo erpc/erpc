@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -68,11 +67,13 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 		}
 	}
 
-	facilitator := &X402FacilitatorClient{
-		BaseURL: strings.TrimRight(cfg.FacilitatorURL, "/"),
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+	facilitator, err := NewX402FacilitatorClient(
+		strings.TrimRight(cfg.FacilitatorURL, "/"),
+		cfg.CDPApiKeyID,
+		cfg.CDPApiKeySecret,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create facilitator client: %w", err)
 	}
 
 	// The "upto" scheme is a v2 feature; default to v2 when configured.
