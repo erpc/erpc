@@ -143,23 +143,29 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 	}
 
 	// ──────────────────────────────────────────────────────────────────────
-	// For both "exact" and "upTo" schemes: settle immediately during auth.
+	// "upto" scheme (Permit2): verify signature during auth, defer settlement
+	// until after a successful upstream response. If upstream fails, we don't
+	// settle and the Permit2 authorization expires unused — user keeps money.
 	//
-	// Per Circle's guidance the verify endpoint cannot guarantee fund
-	// availability (race conditions with shared wallets), so we skip it
-	// and go straight to settle/submit — the only endpoint that atomically
-	// locks and transfers funds. This also saves a round-trip (~200-300ms).
-	//
-	// Ideally the "upTo" scheme would defer settlement until after a
-	// successful upstream response (so the payer isn't charged on failure).
-	// However, without a hold/lock mechanism in the x402 facilitator API,
-	// deferring settlement means verify-only during auth — and verify
-	// can't guarantee funds. An attacker with a valid signature but empty
-	// wallet could send unlimited free requests. Until facilitators add a
-	// pre-auth/hold mechanism, we settle upfront for both schemes.
-	//
-	// TODO: When facilitators support fund locking (reserve → charge/release),
-	// switch "upTo" to: hold during auth → settle on success / release on failure.
+	// This is safe because Permit2 verification is a real cryptographic
+	// signature check (unlike Circle's verify which can't guarantee funds).
+	// ──────────────────────────────────────────────────────────────────────
+	if matchedRequirement.Scheme == "upto" {
+		user, err := s.authenticateWithVerify(ctx, payment, matchedRequirement, project, network, facilitator)
+		if err != nil {
+			return nil, err
+		}
+		capturedPayment := payment
+		capturedReq := *matchedRequirement
+		user.X402SettleFunc = func(settleCtx context.Context) error {
+			return s.settlePayment(settleCtx, capturedPayment, capturedReq, project, network, facilitator)
+		}
+		return user, nil
+	}
+
+	// ──────────────────────────────────────────────────────────────────────
+	// "exact" scheme: settle immediately during auth, skip verify.
+	// Circle's verify can't guarantee funds — settle is the source of truth.
 	// ──────────────────────────────────────────────────────────────────────
 	return s.authenticateWithSettle(ctx, payment, matchedRequirement, project, network, facilitator)
 }

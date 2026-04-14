@@ -674,6 +674,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
+				// Settle deferred x402 "upto" payment after successful response.
+				if user := nq.User(); user != nil && user.X402SettleFunc != nil {
+					if err := user.X402SettleFunc(requestCtx); err != nil {
+						rlg.Warn().Err(err).Str("userId", user.Id).Msg("x402 upto settlement failed")
+					}
+					user.X402SettleFunc = nil
+				}
+
 				responses[index] = resp
 				common.EndRequestSpan(requestCtx, resp, nil)
 			}(i, reqBody, headers, queryArgs)
