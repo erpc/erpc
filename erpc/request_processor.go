@@ -76,15 +76,26 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	}
 
 	method := queryMethodFromProto(queryReq)
-	authReq := common.NewNormalizedRequest(buildJSONRPCRequest(method, []interface{}{}))
-	authReq.SetClientIP(input.ClientIP)
-	if _, err := project.AuthenticateConsumer(ctx, authReq, method, input.AuthPayload); err != nil {
+
+	nq := common.NewNormalizedRequestFromJsonRpcRequest(
+		common.NewJsonRpcRequest(method, []interface{}{}),
+	)
+	nq.SetClientIP(input.ClientIP)
+
+	user, err := project.AuthenticateConsumer(ctx, nq, method, input.AuthPayload)
+	if err != nil {
 		return err
 	}
+	nq.SetUser(user)
 
 	networkID := fmt.Sprintf("%s:%s", input.Architecture, input.ChainId)
 	network, err := project.GetNetwork(ctx, networkID)
 	if err != nil {
+		return err
+	}
+	nq.SetNetwork(network)
+
+	if err := project.AcquireRateLimitPermit(ctx, nq); err != nil {
 		return err
 	}
 
