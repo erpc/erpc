@@ -199,6 +199,13 @@ func (c *X402FacilitatorClient) Verify(ctx context.Context, x402Version int, pay
 		return nil, fmt.Errorf("failed to marshal verify request: %w", err)
 	}
 
+	// Debug: log the verify request body (truncated) to diagnose CDP rejections.
+	if len(data) > 2000 {
+		fmt.Printf("[x402-debug] verify request body (truncated): %s...\n", string(data[:2000]))
+	} else {
+		fmt.Printf("[x402-debug] verify request body: %s\n", string(data))
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/verify", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create verify request: %w", err)
@@ -214,14 +221,24 @@ func (c *X402FacilitatorClient) Verify(ctx context.Context, x402Version int, pay
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("facilitator verify returned status %d: %s", resp.StatusCode, string(body))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	// CDP returns 400 with a valid verify response body for invalid payloads.
+	// Parse the body for both 200 and 400 status codes.
+	var verifyResp X402VerifyResponse
+	if err := json.Unmarshal(body, &verifyResp); err != nil {
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("facilitator verify returned status %d: %s", resp.StatusCode, string(body))
+		}
+		return nil, fmt.Errorf("failed to decode verify response: %w", err)
 	}
 
-	var verifyResp X402VerifyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&verifyResp); err != nil {
-		return nil, fmt.Errorf("failed to decode verify response: %w", err)
+	// If we got a parseable response with status >= 400, surface it as an invalid payment
+	// rather than an HTTP error.
+	if resp.StatusCode >= 400 && !verifyResp.IsValid {
+		return &verifyResp, nil
+	} else if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("facilitator verify returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	if verifyResp.Payer == "" {

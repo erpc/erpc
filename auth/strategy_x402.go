@@ -111,6 +111,15 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 		}
 	}
 
+	// V2 requirements must NOT include V1-only fields (maxAmountRequired,
+	// description, resource, mimeType). These cause CDP to reject payloads.
+	if x402Version >= 2 {
+		requirement.MaxAmountRequired = "" // V2 uses "amount" only
+		requirement.Description = ""       // V2 puts this in the top-level "resource" object
+		requirement.Resource = ""
+		requirement.MimeType = ""
+	}
+
 	return &X402Strategy{
 		logger:       logger,
 		cfg:          cfg,
