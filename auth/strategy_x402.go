@@ -75,7 +75,11 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 		},
 	}
 
+	// The "upto" scheme is a v2 feature; default to v2 when configured.
 	x402Version := 1
+	if scheme == "upto" {
+		x402Version = 2
+	}
 
 	// Fetch supported payment kinds from the facilitator to get extra fields
 	// (e.g. Circle Gateway's verifyingContract, name, version).
@@ -97,6 +101,11 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 					}
 				}
 				break
+			}
+			// If the facilitator doesn't list our exact scheme but reports a
+			// higher version for our network, adopt that version.
+			if kind.Network == requirement.Network && kind.X402Version > x402Version {
+				x402Version = kind.X402Version
 			}
 		}
 	}
