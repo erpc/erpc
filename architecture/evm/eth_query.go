@@ -461,6 +461,11 @@ func mapsToInterfaces(items []map[string]interface{}) []interface{} {
 	return out
 }
 
+// upstreamSupportsQueryMethod checks whether an upstream can handle eth_query*
+// methods via the JSON-RPC forwarding path. Only upstreams that explicitly
+// declare support via AllowMethods are considered capable. gRPC upstreams
+// support queries via the streaming API (handled by EvmQueryExecutor), not
+// via JSON-RPC forwarding, so they are not considered here.
 func upstreamSupportsQueryMethod(ups common.Upstream, method string) (bool, error) {
 	if ups == nil {
 		return false, nil
@@ -471,49 +476,15 @@ func upstreamSupportsQueryMethod(ups common.Upstream, method string) (bool, erro
 		return false, nil
 	}
 
-	ignored := false
-	for _, pattern := range cfg.IgnoreMethods {
-		match, err := common.WildcardMatch(pattern, method)
-		if err != nil {
-			return false, err
-		}
-		if match {
-			ignored = true
-			break
-		}
-	}
-
-	explicitlyAllowed := false
 	for _, pattern := range cfg.AllowMethods {
 		match, err := common.WildcardMatch(pattern, method)
 		if err != nil {
 			return false, err
 		}
 		if match {
-			explicitlyAllowed = true
-			break
+			return true, nil
 		}
 	}
 
-	if explicitlyAllowed {
-		return true, nil
-	}
-	if ignored {
-		return false, nil
-	}
-
-	// Only gRPC BDS upstreams support native eth_query* methods by default.
-	if !strings.HasPrefix(cfg.Endpoint, "grpc://") && !strings.HasPrefix(cfg.Endpoint, "grpc+bds://") {
-		return false, nil
-	}
-
-	type methodSupporter interface {
-		ShouldHandleMethod(method string) (bool, error)
-	}
-
-	if supporter, ok := ups.(methodSupporter); ok {
-		return supporter.ShouldHandleMethod(method)
-	}
-
-	return true, nil
+	return false, nil
 }
