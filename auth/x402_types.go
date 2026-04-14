@@ -86,6 +86,7 @@ type X402SupportedResponse struct {
 
 // x402FacilitatorRequest is the JSON body sent to the facilitator for verify/settle.
 type x402FacilitatorRequest struct {
+	X402Version         int                    `json:"x402Version"`
 	PaymentPayload      interface{}            `json:"paymentPayload"`
 	PaymentRequirements X402PaymentRequirement `json:"paymentRequirements"`
 }
@@ -186,8 +187,9 @@ func (c *X402FacilitatorClient) Supported(ctx context.Context) (*X402SupportedRe
 	return &supported, nil
 }
 
-func (c *X402FacilitatorClient) Verify(ctx context.Context, payment interface{}, requirement X402PaymentRequirement) (*X402VerifyResponse, error) {
+func (c *X402FacilitatorClient) Verify(ctx context.Context, x402Version int, payment interface{}, requirement X402PaymentRequirement) (*X402VerifyResponse, error) {
 	req := x402FacilitatorRequest{
+		X402Version:         x402Version,
 		PaymentPayload:      payment,
 		PaymentRequirements: requirement,
 	}
@@ -229,8 +231,9 @@ func (c *X402FacilitatorClient) Verify(ctx context.Context, payment interface{},
 	return &verifyResp, nil
 }
 
-func (c *X402FacilitatorClient) Settle(ctx context.Context, payment interface{}, requirement X402PaymentRequirement) (*X402SettlementResponse, error) {
+func (c *X402FacilitatorClient) Settle(ctx context.Context, x402Version int, payment interface{}, requirement X402PaymentRequirement) (*X402SettlementResponse, error) {
 	req := x402FacilitatorRequest{
+		X402Version:         x402Version,
 		PaymentPayload:      payment,
 		PaymentRequirements: requirement,
 	}

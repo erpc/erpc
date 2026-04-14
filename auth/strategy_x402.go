@@ -184,7 +184,7 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 // Used by both the "exact" inline path and the "upTo" deferred closure.
 func (s *X402Strategy) settlePayment(ctx context.Context, payment interface{}, req X402PaymentRequirement, project, network, facilitator string) error {
 	settleStart := time.Now()
-	settleResp, err := s.facilitator.Settle(ctx, payment, req)
+	settleResp, err := s.facilitator.Settle(ctx, s.x402Version, payment, req)
 	settleDur := time.Since(settleStart).Seconds()
 	if err != nil {
 		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "error").Observe(settleDur)
@@ -229,7 +229,7 @@ func (s *X402Strategy) authenticateWithSettle(ctx context.Context, payment inter
 // authenticateWithVerify uses the verify endpoint for VerifyOnly/dry-run mode.
 func (s *X402Strategy) authenticateWithVerify(ctx context.Context, payment interface{}, req *X402PaymentRequirement, project, network, facilitator string) (*common.User, error) {
 	verifyStart := time.Now()
-	verifyResp, err := s.facilitator.Verify(ctx, payment, *req)
+	verifyResp, err := s.facilitator.Verify(ctx, s.x402Version, payment, *req)
 	verifyDur := time.Since(verifyStart).Seconds()
 	if err != nil {
 		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "verify", "error").Observe(verifyDur)
