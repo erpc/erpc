@@ -669,9 +669,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if resp != nil {
 						go resp.Release()
 					}
+					// Upstream failed — do NOT settle x402 "upTo" payments so the
+					// payer is not charged for a request that returned no value.
+					// ("exact" payments are already settled during auth.)
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
+				}
+
+				// For x402 "upTo" scheme: settle the deferred payment now that
+				// the upstream responded successfully. Retries up to 5× in the
+				// background if the facilitator is temporarily unavailable.
+				// For "exact" or non-x402 users, X402SettleFunc is nil — this is a no-op.
+				if user := nq.User(); user != nil {
+					user.SettleX402WithRetry(requestCtx, &rlg, 5)
 				}
 
 				responses[index] = resp

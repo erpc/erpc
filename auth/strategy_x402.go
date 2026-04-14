@@ -137,9 +137,103 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 	// Resolve metric labels from the request context.
 	project, network, facilitator := s.metricLabels(req)
 
-	// Pass the raw payment (map) to the facilitator — it handles both v1 and v2 formats
+	if s.cfg.VerifyOnly {
+		// VerifyOnly mode: call verify for testing/dry-run without collecting payment.
+		return s.authenticateWithVerify(ctx, payment, matchedRequirement, project, network, facilitator)
+	}
+
+	// ──────────────────────────────────────────────────────────────────────
+	// "upTo" scheme: defer settlement until after a successful upstream
+	// response. The payer authorizes UP TO a max amount; we settle for the
+	// full price only when we deliver a result. On upstream failure we simply
+	// don't settle — the payer keeps their money.
+	//
+	// We extract the payer address locally from the signed payment (no
+	// facilitator round-trip) so auth completes in microseconds.
+	// ──────────────────────────────────────────────────────────────────────
+	if matchedRequirement.Scheme == "upTo" {
+		payer := extractPayerFromRaw(payment)
+		if payer == "" {
+			payer = "x402-unknown"
+		}
+
+		user := &common.User{Id: strings.ToLower(payer)}
+		if s.cfg.RateLimitBudget != "" {
+			user.RateLimitBudget = s.cfg.RateLimitBudget
+		}
+
+		// Capture values for the deferred closure.
+		capturedPayment := payment
+		capturedReq := *matchedRequirement
+		user.X402SettleFunc = func(settleCtx context.Context) error {
+			return s.settlePayment(settleCtx, capturedPayment, capturedReq, project, network, facilitator)
+		}
+
+		s.logger.Debug().Str("payer", user.Id).Msg("x402 upTo payment accepted (settlement deferred until successful response)")
+		return user, nil
+	}
+
+	// ──────────────────────────────────────────────────────────────────────
+	// "exact" scheme: settle immediately during auth, before forwarding.
+	//
+	// Per Circle's guidance the verify endpoint cannot guarantee fund
+	// availability (race conditions with shared wallets), so we skip it
+	// and go straight to settle/submit — the only endpoint that atomically
+	// locks and transfers funds. This also saves a round-trip (~200-300ms).
+	// ──────────────────────────────────────────────────────────────────────
+	return s.authenticateWithSettle(ctx, payment, matchedRequirement, project, network, facilitator)
+}
+
+// settlePayment calls the facilitator settle/submit endpoint and emits metrics.
+// Used by both the "exact" inline path and the "upTo" deferred closure.
+func (s *X402Strategy) settlePayment(ctx context.Context, payment interface{}, req X402PaymentRequirement, project, network, facilitator string) error {
+	settleStart := time.Now()
+	settleResp, err := s.facilitator.Settle(ctx, payment, req)
+	settleDur := time.Since(settleStart).Seconds()
+	if err != nil {
+		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "error").Observe(settleDur)
+		telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "error").Inc()
+		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_error").Inc()
+		return fmt.Errorf("settlement request failed: %w", err)
+	}
+	telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "ok").Observe(settleDur)
+	telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "ok").Inc()
+
+	if !settleResp.Success {
+		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_rejected").Inc()
+		return fmt.Errorf("settlement rejected: %s", settleResp.ErrorReason)
+	}
+	telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settled").Inc()
+	return nil
+}
+
+// authenticateWithSettle settles payment immediately during auth (used for "exact" scheme).
+func (s *X402Strategy) authenticateWithSettle(ctx context.Context, payment interface{}, req *X402PaymentRequirement, project, network, facilitator string) (*common.User, error) {
+	if err := s.settlePayment(ctx, payment, *req, project, network, facilitator); err != nil {
+		s.logger.Warn().Err(err).Msg("x402 exact payment settlement failed")
+		return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment failed: %v", err))
+	}
+
+	// Extract payer from the settlement — we can get it from the raw payload
+	// since we skipped verify.
+	payer := extractPayerFromRaw(payment)
+	if payer == "" {
+		payer = "x402-unknown"
+	}
+
+	user := &common.User{Id: strings.ToLower(payer)}
+	if s.cfg.RateLimitBudget != "" {
+		user.RateLimitBudget = s.cfg.RateLimitBudget
+	}
+
+	s.logger.Debug().Str("payer", user.Id).Msg("x402 exact payment settled")
+	return user, nil
+}
+
+// authenticateWithVerify uses the verify endpoint for VerifyOnly/dry-run mode.
+func (s *X402Strategy) authenticateWithVerify(ctx context.Context, payment interface{}, req *X402PaymentRequirement, project, network, facilitator string) (*common.User, error) {
 	verifyStart := time.Now()
-	verifyResp, err := s.facilitator.Verify(ctx, payment, *matchedRequirement)
+	verifyResp, err := s.facilitator.Verify(ctx, payment, *req)
 	verifyDur := time.Since(verifyStart).Seconds()
 	if err != nil {
 		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "verify", "error").Observe(verifyDur)
@@ -158,44 +252,15 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 	}
 	telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "verify_valid").Inc()
 
-	// TODO: Settlement currently happens during auth, before the RPC request is forwarded
-	// to the upstream. If the upstream subsequently fails (timeout, 500, rate limit), the
-	// payer has been charged but received no service. For production, settlement should be
-	// deferred to a post-response hook (e.g. OnRequestSuccess) so payment is only collected
-	// on successful forwarding. This requires a response middleware in the auth registry.
-	if !s.cfg.VerifyOnly {
-		settleStart := time.Now()
-		settleResp, err := s.facilitator.Settle(ctx, payment, *matchedRequirement)
-		settleDur := time.Since(settleStart).Seconds()
-		if err != nil {
-			telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "error").Observe(settleDur)
-			telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "error").Inc()
-			telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_error").Inc()
-			s.logger.Warn().Err(err).Msg("x402 payment settlement failed")
-			return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment settlement failed: %v", err))
-		}
-		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "ok").Observe(settleDur)
-		telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "ok").Inc()
-
-		if !settleResp.Success {
-			telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_rejected").Inc()
-			s.logger.Warn().Str("reason", settleResp.ErrorReason).Msg("x402 settlement unsuccessful")
-			return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("settlement failed: %s", settleResp.ErrorReason))
-		}
-		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settled").Inc()
-	}
-
 	payer := verifyResp.Payer
 	if payer == "" {
 		payer = "x402-unknown"
 	}
-
 	user := &common.User{Id: strings.ToLower(payer)}
 	if s.cfg.RateLimitBudget != "" {
 		user.RateLimitBudget = s.cfg.RateLimitBudget
 	}
-
-	s.logger.Debug().Str("payer", user.Id).Msg("x402 payment authenticated")
+	s.logger.Debug().Str("payer", user.Id).Msg("x402 payment verified (verify-only mode)")
 	return user, nil
 }
 
