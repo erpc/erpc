@@ -997,13 +997,20 @@ func (r *NormalizedRequest) ClientIP() string {
 }
 
 // SetTransportMeta attaches transport-neutral metadata (HTTP headers, gRPC metadata, etc.)
+// Safe for use during single-threaded request setup; concurrent calls require external sync.
 func (r *NormalizedRequest) SetTransportMeta(key, value string) {
 	if r == nil {
 		return
 	}
+	r.Lock()
+	defer r.Unlock()
 	meta := r.loadOrInitTransportMeta()
-	meta[key] = value
-	r.transportMeta.Store(meta)
+	clone := make(map[string]string, len(meta)+1)
+	for k, v := range meta {
+		clone[k] = v
+	}
+	clone[key] = value
+	r.transportMeta.Store(clone)
 }
 
 // TransportMeta returns a single transport metadata value by key

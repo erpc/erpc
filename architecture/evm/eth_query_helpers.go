@@ -88,6 +88,9 @@ func fetchBlockRange(
 
 	blockNumbers := make([]uint64, 0, blockSpan(from, to))
 	if strings.EqualFold(order, "desc") {
+		if from < to {
+			return nil, nil
+		}
 		for n := from; ; n-- {
 			blockNumbers = append(blockNumbers, n)
 			if n == to {

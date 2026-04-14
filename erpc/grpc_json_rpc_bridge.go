@@ -36,5 +36,8 @@ func parseJSONRPCResult(ctx context.Context, resp *common.NormalizedResponse) (j
 	if jrr.Error != nil {
 		return nil, jrr.Error
 	}
-	return json.RawMessage(jrr.GetResultBytes()), nil
+	src := jrr.GetResultBytes()
+	out := make(json.RawMessage, len(src))
+	copy(out, src)
+	return out, nil
 }
