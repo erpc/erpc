@@ -15,14 +15,14 @@ import (
 )
 
 const (
-	CompositeTypeNone               = "none"
-	CompositeTypeLogsSplitOnError   = "logs-split-on-error"
-	CompositeTypeLogsSplitProactive = "logs-split-proactive"
-	CompositeTypeQueryBlocksShim    = "query-blocks-shim"
+	CompositeTypeNone                  = "none"
+	CompositeTypeLogsSplitOnError      = "logs-split-on-error"
+	CompositeTypeLogsSplitProactive    = "logs-split-proactive"
+	CompositeTypeQueryBlocksShim       = "query-blocks-shim"
 	CompositeTypeQueryTransactionsShim = "query-transactions-shim"
-	CompositeTypeQueryLogsShim      = "query-logs-shim"
-	CompositeTypeQueryTracesShim    = "query-traces-shim"
-	CompositeTypeQueryTransfersShim = "query-transfers-shim"
+	CompositeTypeQueryLogsShim         = "query-logs-shim"
+	CompositeTypeQueryTracesShim       = "query-traces-shim"
+	CompositeTypeQueryTransfersShim    = "query-transfers-shim"
 )
 
 const RequestContextKey ContextKey = "rq"
@@ -332,6 +332,9 @@ type NormalizedRequest struct {
 
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
+
+	// Transport-neutral metadata populated by ingress adapters (HTTP headers, gRPC metadata, etc.)
+	transportMeta atomic.Value // map[string]string
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -991,6 +994,46 @@ func (r *NormalizedRequest) ClientIP() string {
 		}
 	}
 	return "n/a"
+}
+
+// SetTransportMeta attaches transport-neutral metadata (HTTP headers, gRPC metadata, etc.)
+func (r *NormalizedRequest) SetTransportMeta(key, value string) {
+	if r == nil {
+		return
+	}
+	meta := r.loadOrInitTransportMeta()
+	meta[key] = value
+	r.transportMeta.Store(meta)
+}
+
+// TransportMeta returns a single transport metadata value by key
+func (r *NormalizedRequest) TransportMeta(key string) string {
+	if r == nil {
+		return ""
+	}
+	if m := r.transportMeta.Load(); m != nil {
+		if meta, ok := m.(map[string]string); ok {
+			return meta[key]
+		}
+	}
+	return ""
+}
+
+// SetAgentName stores the agent name directly without HTTP-specific parsing
+func (r *NormalizedRequest) SetAgentName(name string) {
+	if r == nil || name == "" {
+		return
+	}
+	r.agentName.Store(name)
+}
+
+func (r *NormalizedRequest) loadOrInitTransportMeta() map[string]string {
+	if existing := r.transportMeta.Load(); existing != nil {
+		if m, ok := existing.(map[string]string); ok {
+			return m
+		}
+	}
+	return make(map[string]string)
 }
 
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm

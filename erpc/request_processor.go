@@ -81,6 +81,9 @@ func (rp *RequestProcessor) ProcessQueryStream(
 		common.NewJsonRpcRequest(method, []interface{}{}),
 	)
 	nq.SetClientIP(input.ClientIP)
+	if input.UserAgent != "" {
+		nq.SetAgentName(input.UserAgent)
+	}
 
 	user, err := project.AuthenticateConsumer(ctx, nq, method, input.AuthPayload)
 	if err != nil {
