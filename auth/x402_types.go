@@ -222,6 +222,7 @@ func (c *X402FacilitatorClient) Verify(ctx context.Context, x402Version int, pay
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	fmt.Printf("[x402-debug] verify response: status=%d body=%s\n", resp.StatusCode, string(body))
 
 	// CDP returns 400 with a valid verify response body for invalid payloads.
 	// Parse the body for both 200 and 400 status codes.
