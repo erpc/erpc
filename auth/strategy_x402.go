@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -133,16 +134,29 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.RequestURL))
 	}
 
+	// Resolve metric labels from the request context.
+	project, network, facilitator := s.metricLabels(req)
+
 	// Pass the raw payment (map) to the facilitator — it handles both v1 and v2 formats
+	verifyStart := time.Now()
 	verifyResp, err := s.facilitator.Verify(ctx, payment, *matchedRequirement)
+	verifyDur := time.Since(verifyStart).Seconds()
 	if err != nil {
+		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "verify", "error").Observe(verifyDur)
+		telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "verify", "error").Inc()
+		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "verify_error").Inc()
 		s.logger.Warn().Err(err).Msg("x402 payment verification failed")
 		return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment verification failed: %v", err))
 	}
+	telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "verify", "ok").Observe(verifyDur)
+	telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "verify", "ok").Inc()
+
 	if !verifyResp.IsValid {
+		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "verify_invalid").Inc()
 		s.logger.Debug().Str("reason", verifyResp.InvalidReason).Msg("x402 payment invalid")
 		return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment invalid: %s", verifyResp.InvalidReason))
 	}
+	telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "verify_valid").Inc()
 
 	// TODO: Settlement currently happens during auth, before the RPC request is forwarded
 	// to the upstream. If the upstream subsequently fails (timeout, 500, rate limit), the
@@ -150,15 +164,25 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 	// deferred to a post-response hook (e.g. OnRequestSuccess) so payment is only collected
 	// on successful forwarding. This requires a response middleware in the auth registry.
 	if !s.cfg.VerifyOnly {
+		settleStart := time.Now()
 		settleResp, err := s.facilitator.Settle(ctx, payment, *matchedRequirement)
+		settleDur := time.Since(settleStart).Seconds()
 		if err != nil {
+			telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "error").Observe(settleDur)
+			telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "error").Inc()
+			telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_error").Inc()
 			s.logger.Warn().Err(err).Msg("x402 payment settlement failed")
 			return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment settlement failed: %v", err))
 		}
+		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "ok").Observe(settleDur)
+		telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "ok").Inc()
+
 		if !settleResp.Success {
+			telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_rejected").Inc()
 			s.logger.Warn().Str("reason", settleResp.ErrorReason).Msg("x402 settlement unsuccessful")
 			return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("settlement failed: %s", settleResp.ErrorReason))
 		}
+		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settled").Inc()
 	}
 
 	payer := verifyResp.Payer
@@ -173,6 +197,37 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 
 	s.logger.Debug().Str("payer", user.Id).Msg("x402 payment authenticated")
 	return user, nil
+}
+
+// metricLabels resolves project, network, and facilitator labels for metrics.
+func (s *X402Strategy) metricLabels(req *common.NormalizedRequest) (project, network, facilitator string) {
+	project = "n/a"
+	network = s.cfg.Network
+	facilitator = s.facilitatorLabel()
+	if req != nil {
+		if n := req.Network(); n != nil {
+			project = n.ProjectId()
+			network = req.NetworkLabel()
+		}
+	}
+	return
+}
+
+// facilitatorLabel returns a short label for the facilitator URL (e.g. "circle", "x402org").
+func (s *X402Strategy) facilitatorLabel() string {
+	url := s.facilitator.BaseURL
+	if strings.Contains(url, "x402.org") {
+		return "x402org"
+	}
+	if strings.Contains(url, "circle") {
+		return "circle"
+	}
+	// Fallback: extract hostname
+	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(url, "https://"), "http://"), "/")
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return "unknown"
 }
 
 func (s *X402Strategy) paymentRequirementsResponse(requestURL string) X402PaymentRequirementsResponse {
