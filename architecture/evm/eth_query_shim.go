@@ -35,7 +35,7 @@ func shimQueryBlocks(ctx context.Context, network common.Network, parentReqID in
 		}
 		currentCursor := buildCursorBlock(block)
 
-		if len(pageBlocks) > 0 && uint64(len(pageBlocks)+1) > req.Limit {
+		if uint64(len(pageBlocks)) >= req.Limit {
 			hasMore = true
 			break
 		}

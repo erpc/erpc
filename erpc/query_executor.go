@@ -283,6 +283,14 @@ func (qe *EvmQueryExecutor) resolveQueryBounds(ctx context.Context, from, to str
 		} else {
 			fromBlock = cursor.Number + 1
 		}
+		if fromBlock > toBlock {
+			qe.logger.Debug().
+				Uint64("cursorNumber", cursor.Number).
+				Uint64("fromBlock", fromBlock).
+				Uint64("toBlock", toBlock).
+				Msgf("cursor adjustment exhausted query range, returning empty bounds")
+			return fromBlock, toBlock, nil
+		}
 		qe.logger.Trace().
 			Uint64("cursorNumber", cursor.Number).
 			Str("order", order.String()).
