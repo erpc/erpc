@@ -143,16 +143,43 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 	}
 
 	// ──────────────────────────────────────────────────────────────────────
-	// "upTo" scheme: defer settlement until after a successful upstream
-	// response. The payer authorizes UP TO a max amount; we settle for the
-	// full price only when we deliver a result. On upstream failure we simply
-	// don't settle — the payer keeps their money.
+	// "upTo" scheme: verify the payment signature first (catches forgeries),
+	// then defer settlement until after a successful upstream response.
+	// The payer authorizes UP TO a max amount; we settle for the full price
+	// only when we deliver a result. On upstream failure we don't settle —
+	// the payer keeps their money.
 	//
-	// We extract the payer address locally from the signed payment (no
-	// facilitator round-trip) so auth completes in microseconds.
+	// Note: Circle warns that verify cannot guarantee fund *availability*
+	// (race conditions with shared wallets), but it still validates the
+	// cryptographic signature. This prevents attackers from crafting fake
+	// payments to get free RPC calls.
 	// ──────────────────────────────────────────────────────────────────────
 	if matchedRequirement.Scheme == "upTo" {
-		payer := extractPayerFromRaw(payment)
+		// Verify signature to reject forged payments before serving the request.
+		verifyStart := time.Now()
+		verifyResp, err := s.facilitator.Verify(ctx, payment, *matchedRequirement)
+		verifyDur := time.Since(verifyStart).Seconds()
+		if err != nil {
+			telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "verify", "error").Observe(verifyDur)
+			telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "verify", "error").Inc()
+			telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "verify_error").Inc()
+			s.logger.Warn().Err(err).Msg("x402 upTo payment verification failed")
+			return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment verification failed: %v", err))
+		}
+		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "verify", "ok").Observe(verifyDur)
+		telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "verify", "ok").Inc()
+
+		if !verifyResp.IsValid {
+			telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "verify_invalid").Inc()
+			s.logger.Debug().Str("reason", verifyResp.InvalidReason).Msg("x402 upTo payment invalid")
+			return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment invalid: %s", verifyResp.InvalidReason))
+		}
+		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "verify_valid").Inc()
+
+		payer := verifyResp.Payer
+		if payer == "" {
+			payer = extractPayerFromRaw(payment)
+		}
 		if payer == "" {
 			payer = "x402-unknown"
 		}
@@ -162,14 +189,14 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 			user.RateLimitBudget = s.cfg.RateLimitBudget
 		}
 
-		// Capture values for the deferred closure.
+		// Capture values for the deferred settlement closure.
 		capturedPayment := payment
 		capturedReq := *matchedRequirement
 		user.X402SettleFunc = func(settleCtx context.Context) error {
 			return s.settlePayment(settleCtx, capturedPayment, capturedReq, project, network, facilitator)
 		}
 
-		s.logger.Debug().Str("payer", user.Id).Msg("x402 upTo payment accepted (settlement deferred until successful response)")
+		s.logger.Debug().Str("payer", user.Id).Msg("x402 upTo payment verified (settlement deferred until successful response)")
 		return user, nil
 	}
 
