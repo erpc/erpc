@@ -67,20 +67,9 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 		}
 	}
 
-	facilitator, err := NewX402FacilitatorClient(
-		strings.TrimRight(cfg.FacilitatorURL, "/"),
-		cfg.CDPApiKeyID,
-		cfg.CDPApiKeySecret,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create facilitator client: %w", err)
-	}
+	facilitator := NewX402FacilitatorClient(strings.TrimRight(cfg.FacilitatorURL, "/"))
 
-	// The "upto" scheme is a v2 feature; default to v2 when configured.
 	x402Version := 1
-	if scheme == "upto" {
-		x402Version = 2
-	}
 
 	// Fetch supported payment kinds from the facilitator to get extra fields
 	// (e.g. Circle Gateway's verifyingContract, name, version).
@@ -110,22 +99,6 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 			}
 		}
 	}
-
-	// V2 requirements must NOT include V1-only fields (maxAmountRequired,
-	// description, resource, mimeType). These cause CDP to reject payloads.
-	if x402Version >= 2 {
-		requirement.MaxAmountRequired = "" // V2 uses "amount" only
-		requirement.Description = ""       // V2 puts this in the top-level "resource" object
-		requirement.Resource = ""
-		requirement.MimeType = ""
-	}
-
-	logger.Info().
-		Str("scheme", requirement.Scheme).
-		Str("network", requirement.Network).
-		Int("x402Version", x402Version).
-		Interface("extra", requirement.Extra).
-		Msg("x402 strategy initialized")
 
 	return &X402Strategy{
 		logger:       logger,
@@ -168,36 +141,10 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 		return s.authenticateWithVerify(ctx, payment, matchedRequirement, project, network, facilitator)
 	}
 
-	// ──────────────────────────────────────────────────────────────────────
-	// "upto" scheme (Permit2): verify signature during auth, defer settlement
-	// until after a successful upstream response. If upstream fails, we don't
-	// settle and the Permit2 authorization expires unused — user keeps money.
-	//
-	// This is safe because Permit2 verification is a real cryptographic
-	// signature check (unlike Circle's verify which can't guarantee funds).
-	// ──────────────────────────────────────────────────────────────────────
-	if matchedRequirement.Scheme == "upto" {
-		user, err := s.authenticateWithVerify(ctx, payment, matchedRequirement, project, network, facilitator)
-		if err != nil {
-			return nil, err
-		}
-		capturedPayment := payment
-		capturedReq := *matchedRequirement
-		user.X402SettleFunc = func(settleCtx context.Context) error {
-			return s.settlePayment(settleCtx, capturedPayment, capturedReq, project, network, facilitator)
-		}
-		return user, nil
-	}
-
-	// ──────────────────────────────────────────────────────────────────────
-	// "exact" scheme: settle immediately during auth, skip verify.
-	// Circle's verify can't guarantee funds — settle is the source of truth.
-	// ──────────────────────────────────────────────────────────────────────
 	return s.authenticateWithSettle(ctx, payment, matchedRequirement, project, network, facilitator)
 }
 
-// settlePayment calls the facilitator settle/submit endpoint and emits metrics.
-// Used by both the "exact" inline path and the "upTo" deferred closure.
+// settlePayment calls the facilitator settle endpoint and emits metrics.
 func (s *X402Strategy) settlePayment(ctx context.Context, payment interface{}, req X402PaymentRequirement, project, network, facilitator string) error {
 	settleStart := time.Now()
 	settleResp, err := s.facilitator.Settle(ctx, s.x402Version, payment, req)

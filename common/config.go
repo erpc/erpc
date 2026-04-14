@@ -1934,10 +1934,6 @@ type X402StrategyConfig struct {
 	// Extra contains additional fields merged into the payment requirement's extra object.
 	// Useful for providing EIP-712 domain params when the facilitator doesn't supply them.
 	Extra map[string]interface{} `yaml:"extra,omitempty" json:"extra,omitempty"`
-	// CDPApiKeyID is the CDP API key ID for authenticated facilitator access (e.g. Coinbase CDP).
-	CDPApiKeyID string `yaml:"cdpApiKeyId,omitempty" json:"cdpApiKeyId,omitempty"`
-	// CDPApiKeySecret is the base64-encoded Ed25519 private key for CDP JWT auth.
-	CDPApiKeySecret string `yaml:"cdpApiKeySecret,omitempty" json:"cdpApiKeySecret,omitempty"`
 }
 
 func (c *X402StrategyConfig) Validate() error {
