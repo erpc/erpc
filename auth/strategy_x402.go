@@ -120,6 +120,13 @@ func NewX402Strategy(logger *zerolog.Logger, cfg *common.X402StrategyConfig) (*X
 		requirement.MimeType = ""
 	}
 
+	logger.Info().
+		Str("scheme", requirement.Scheme).
+		Str("network", requirement.Network).
+		Int("x402Version", x402Version).
+		Interface("extra", requirement.Extra).
+		Msg("x402 strategy initialized")
+
 	return &X402Strategy{
 		logger:       logger,
 		cfg:          cfg,
