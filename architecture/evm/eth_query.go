@@ -239,8 +239,8 @@ func parseQueryRequest(ctx context.Context, network common.Network, nq *common.N
 	}
 
 	if fromBlock != toBlock {
-		rangeSize := int64(blockSpan(fromBlock, toBlock))
-		if rangeSize > maxBlockRange {
+		rangeSize := blockSpan(fromBlock, toBlock)
+		if rangeSize > uint64(maxBlockRange) {
 			return nil, queryCapacityExceeded(
 				"query request exceeded max block range",
 				map[string]interface{}{"maxBlockRange": maxBlockRange},

@@ -297,8 +297,13 @@ func (qe *EvmQueryExecutor) resolveBlockTag(ctx context.Context, block string, u
 	switch block {
 	case "", "latest":
 		return uint64(qe.network.EvmHighestLatestBlockNumber(ctx)), nil
-	case "finalized", "safe":
+	case "finalized":
 		return uint64(qe.network.EvmHighestFinalizedBlockNumber(ctx)), nil
+	case "safe":
+		if finalized := qe.network.EvmHighestFinalizedBlockNumber(ctx); finalized > 0 {
+			return uint64(finalized), nil
+		}
+		return uint64(qe.network.EvmHighestLatestBlockNumber(ctx)), nil
 	case "earliest":
 		return 0, nil
 	case "pending":

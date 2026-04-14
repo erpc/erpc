@@ -518,11 +518,11 @@ func deepCopyQueryValue(value interface{}) interface{} {
 	}
 }
 
-func blockSpan(from uint64, to uint64) int {
+func blockSpan(from uint64, to uint64) uint64 {
 	if from >= to {
-		return int(from-to) + 1
+		return from - to + 1
 	}
-	return int(to-from) + 1
+	return to - from + 1
 }
 
 func blockMapFromRaw(raw json.RawMessage) (map[string]interface{}, error) {
