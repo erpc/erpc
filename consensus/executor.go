@@ -381,18 +381,13 @@ func (e *executor) executeParticipant(
 	// Execute using the pre-created cancellable attempt execution
 	result := innerFn(attemptExecution)
 
-	// Check for cancellation after execution; release any produced result before dropping it
+	// Track post-execution cancellations for observability, but do NOT discard the result.
+	// The result is still valid and should participate in consensus analysis.
+	// Discarding here caused 0 groups → ErrConsensusLowParticipants "participants: null".
 	if ctx.Err() != nil {
 		telemetry.MetricConsensusCancellations.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).
 			Inc()
-		if result != nil {
-			if releasable, ok := any(result.Result).(interface{ Release() }); ok && releasable != nil {
-				releasable.Release()
-			}
-		}
-		responseChan <- nil
-		return
 	}
 
 	if result == nil {
