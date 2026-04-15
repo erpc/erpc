@@ -298,7 +298,24 @@ collectLoop:
 						attempts[ai].Cancel(nil)
 					}
 				}
-				drainResponsesInBackground(responseChan, i, maxToSpawn)
+
+				// Brief wait to salvage responses from participants that are completing.
+				// After cancel, in-flight executions finish quickly. Without this,
+				// ctx.Done() racing responseChan means we can exit with 0 responses
+				// even though participants are about to send valid results.
+				deadline := time.After(100 * time.Millisecond)
+				for j := i; j < maxToSpawn; j++ {
+					select {
+					case resp := <-responseChan:
+						i++
+						if resp != nil {
+							responses = append(responses, resp)
+						}
+					case <-deadline:
+						drainResponsesInBackground(responseChan, i, maxToSpawn)
+						break collectLoop
+					}
+				}
 			}
 			break collectLoop
 		}
