@@ -7,6 +7,7 @@ import (
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -430,6 +431,9 @@ func (qe *EvmQueryExecutor) forwardSubrequest(ctx context.Context, method string
 	qe.logger.Trace().Str("method", method).Interface("params", params).Msgf("forwarding query shim subrequest")
 
 	jrq := common.NewJsonRpcRequest(method, params)
+	if err := jrq.SetID(util.RandomID()); err != nil {
+		return nil, err
+	}
 	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	req.SetNetwork(qe.network)
 	if qe.parentRequestId != nil {
