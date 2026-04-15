@@ -835,21 +835,21 @@ func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
 }
 
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
-	type Alias UpstreamConfig
+	type UJAlias UpstreamConfig
 	return sonic.Marshal(&struct {
 		Endpoint string `json:"endpoint"`
-		*Alias
+		*UJAlias
 	}{
 		Endpoint: util.RedactEndpoint(u.Endpoint),
-		Alias:    (*Alias)(u),
+		UJAlias:    (*UJAlias)(u),
 	})
 }
 
 func (u *UpstreamConfig) MarshalYAML() (interface{}, error) {
-	type Alias UpstreamConfig
+	type UYAlias UpstreamConfig
 	cp := *u
 	cp.Endpoint = util.RedactEndpoint(u.Endpoint)
-	return (*Alias)(&cp), nil
+	return (*UYAlias)(&cp), nil
 }
 
 type RateLimitAutoTuneConfig struct {
