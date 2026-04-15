@@ -145,7 +145,7 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 }
 
 // settlePayment calls the facilitator settle endpoint and emits metrics.
-func (s *X402Strategy) settlePayment(ctx context.Context, payment interface{}, req X402PaymentRequirement, project, network, facilitator string) error {
+func (s *X402Strategy) settlePayment(ctx context.Context, payment interface{}, req X402PaymentRequirement, project, network, facilitator string) (*X402SettlementResponse, error) {
 	settleStart := time.Now()
 	settleResp, err := s.facilitator.Settle(ctx, s.x402Version, payment, req)
 	settleDur := time.Since(settleStart).Seconds()
@@ -153,29 +153,33 @@ func (s *X402Strategy) settlePayment(ctx context.Context, payment interface{}, r
 		telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "error").Observe(settleDur)
 		telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "error").Inc()
 		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_error").Inc()
-		return fmt.Errorf("settlement request failed: %w", err)
+		return nil, fmt.Errorf("settlement request failed: %w", err)
 	}
 	telemetry.ObserverHandle(telemetry.MetricX402FacilitatorRequestDuration, project, network, facilitator, "settle", "ok").Observe(settleDur)
 	telemetry.CounterHandle(telemetry.MetricX402FacilitatorRequestTotal, project, network, facilitator, "settle", "ok").Inc()
 
 	if !settleResp.Success {
 		telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settle_rejected").Inc()
-		return fmt.Errorf("settlement rejected: %s", settleResp.ErrorReason)
+		return nil, fmt.Errorf("settlement rejected: %s", settleResp.ErrorReason)
 	}
 	telemetry.CounterHandle(telemetry.MetricX402PaymentTotal, project, network, facilitator, "settled").Inc()
-	return nil
+	return settleResp, nil
 }
 
 // authenticateWithSettle settles payment immediately during auth (used for "exact" scheme).
 func (s *X402Strategy) authenticateWithSettle(ctx context.Context, payment interface{}, req *X402PaymentRequirement, project, network, facilitator string) (*common.User, error) {
-	if err := s.settlePayment(ctx, payment, *req, project, network, facilitator); err != nil {
+	settleResp, err := s.settlePayment(ctx, payment, *req, project, network, facilitator)
+	if err != nil {
 		s.logger.Warn().Err(err).Msg("x402 exact payment settlement failed")
 		return nil, common.NewErrAuthUnauthorized("x402", fmt.Sprintf("payment failed: %v", err))
 	}
 
-	// Extract payer from the settlement — we can get it from the raw payload
-	// since we skipped verify.
-	payer := extractPayerFromRaw(payment)
+	// Prefer the facilitator-verified payer address from the settle response;
+	// fall back to client-supplied payload only if the facilitator didn't return one.
+	payer := settleResp.Payer
+	if payer == "" {
+		payer = extractPayerFromRaw(payment)
+	}
 	if payer == "" {
 		payer = "x402-unknown"
 	}
