@@ -1907,7 +1907,7 @@ type NetworkStrategyConfig struct {
 	IPAsUser        bool   `yaml:"ipAsUser,omitempty" json:"ipAsUser,omitempty"`
 }
 
-// X402StrategyConfig enables x402 nanopayment authentication (HTTP 402 Payment Required).
+// X402StrategyConfig enables x402 payment authentication (HTTP 402 Payment Required).
 // Clients without an API key can pay per-request via the x402 protocol. The payer's
 // wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
 type X402StrategyConfig struct {
