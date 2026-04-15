@@ -127,6 +127,14 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.x402RequestURL()))
 	}
 
+	// Ensure the payment includes the resource URL — some clients (e.g. Circle
+	// GatewayClient) omit it, but facilitators require it for settlement.
+	if _, ok := payment["resource"]; !ok {
+		if reqURL := ap.x402RequestURL(); reqURL != "" {
+			payment["resource"] = reqURL
+		}
+	}
+
 	matchedRequirement, err := findMatchingRequirement(payment, s.requirements)
 	if err != nil {
 		s.logger.Debug().Err(err).Msg("no matching x402 payment requirement for provided scheme/network")
