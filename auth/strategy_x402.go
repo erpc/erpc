@@ -277,6 +277,16 @@ func (s *X402Strategy) facilitatorLabel() string {
 func (s *X402Strategy) paymentRequirementsResponse(requestURL string) X402PaymentRequirementsResponse {
 	requirements := make([]X402PaymentRequirement, len(s.requirements))
 	copy(requirements, s.requirements)
+	// Deep-copy the Extra map so downstream code can't mutate strategy state.
+	for i, r := range requirements {
+		if r.Extra != nil {
+			cp := make(map[string]interface{}, len(r.Extra))
+			for k, v := range r.Extra {
+				cp[k] = v
+			}
+			requirements[i].Extra = cp
+		}
+	}
 
 	resp := X402PaymentRequirementsResponse{
 		X402Version: s.x402Version,
