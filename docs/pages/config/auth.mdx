@@ -15,6 +15,7 @@ The appropriate strategy will be activated based on request payload. For example
 - [`network`](#network)
 - [`jwt`](#jwt)
 - [`siwe`](#siwe)
+- [`x402`](#x402)
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -647,9 +648,104 @@ curl -X POST https://localhost:4000 \
   # ...
 ```
 
+## `x402` strategy
+
+The [x402 protocol](https://www.x402.org/) enables HTTP-native pay-per-request authentication using stablecoins (e.g. USDC). Clients without an API key receive an HTTP 402 response containing payment requirements. A compatible x402 client signs a payment, attaches it to the retry, and eRPC settles it via a facilitator before forwarding the request upstream.
+
+The payer's wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
+
+<Callout type="info">
+    Currently only the **exact** scheme (EIP-3009 `transferWithAuthorization`) is supported. The **upto** scheme (Permit2, deferred settlement) will be added when facilitator support matures.
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: x402
+        x402:
+          # Required: facilitator endpoint for verify/settle operations.
+          facilitatorUrl: "https://x402.org/facilitator"
+          # Required: wallet address that receives payments.
+          sellerAddress: "0xYourWalletAddress"
+          # Required: cost per request in atomic units (e.g. "1" = 0.000001 USDC).
+          pricePerRequest: "1"
+          # Required: x402 network identifier.
+          network: "eip155:8453"    # Base mainnet
+          # Optional: token contract address (defaults to USDC).
+          asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+          # Optional: human-readable description in 402 responses.
+          description: "My RPC endpoint"
+          # Optional: payment authorization validity period in seconds (default: 300).
+          maxTimeoutSeconds: 300
+          # Optional: rate limit budget applied per payer wallet.
+          rateLimitBudget: x402-tier
+          # Optional: skip settlement, only verify (useful for testing).
+          verifyOnly: false
+          # Optional: extra fields merged into payment requirements (e.g. EIP-712 domain params).
+          extra:
+            name: "USDC"
+            version: "2"
+    upstreams:
+    # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      auth: {
+        strategies: [
+          {
+            type: "x402",
+            x402: {
+              facilitatorUrl: "https://x402.org/facilitator",
+              sellerAddress: "0xYourWalletAddress",
+              pricePerRequest: "1",
+              network: "eip155:8453",
+              asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              description: "My RPC endpoint",
+              maxTimeoutSeconds: 300,
+              rateLimitBudget: "x402-tier",
+              verifyOnly: false,
+              extra: {
+                name: "USDC",
+                version: "2",
+              },
+            },
+          },
+        ],
+      },
+      upstreams: [
+        // ...
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+Clients using the [x402 SDK](https://github.com/coinbase/x402) or [Circle Gateway](https://developers.circle.com/x402) will automatically handle the 402 flow. No special headers are needed from the client — the x402 library wraps `fetch` and manages payment signing transparently.
+
+#### Grafana
+
+x402 payment metrics are available in the bundled Grafana dashboard under the **x402 Payments** row:
+- **x402 Payments** — settled, rejected, and errored payment counts by project/network/facilitator.
+- **x402 Facilitator Requests** — verify/settle request counts and status.
+- **x402 Facilitator Latency** — p50/p95 latency for facilitator operations.
+
 #### Roadmap
 
 On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
 
 <br />
 - [ ] Allow defining rate-limits per user (vs across all users), for more granular control over usage.
+- [ ] Support the x402 **upto** scheme (Permit2) for deferred settlement — user is only charged after a successful upstream response.

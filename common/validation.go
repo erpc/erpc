@@ -745,6 +745,13 @@ func (s *AuthStrategyConfig) Validate() error {
 		if err := s.Database.Validate(); err != nil {
 			return err
 		}
+	case AuthTypeX402:
+		if s.X402 == nil {
+			return fmt.Errorf("auth.*.x402 is required for x402 strategy")
+		}
+		if err := s.X402.Validate(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("auth.*.type '%s' is invalid must be one of: %v", s.Type, []AuthType{
 			AuthTypeNetwork,
@@ -752,6 +759,7 @@ func (s *AuthStrategyConfig) Validate() error {
 			AuthTypeJwt,
 			AuthTypeSiwe,
 			AuthTypeDatabase,
+			AuthTypeX402,
 		})
 	}
 	return nil

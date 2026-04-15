@@ -416,6 +416,26 @@ var (
 		Help:      "Total requests observed by block-number buckets for heatmap.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
 
+	// x402 facilitator metrics
+	MetricX402FacilitatorRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "x402_facilitator_request_duration_seconds",
+		Help:      "Duration of HTTP requests to x402 facilitator endpoints (verify, settle, supported).",
+		Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+	}, []string{"project", "network", "facilitator", "operation", "status"})
+
+	MetricX402FacilitatorRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "x402_facilitator_request_total",
+		Help:      "Total number of requests to x402 facilitator endpoints.",
+	}, []string{"project", "network", "facilitator", "operation", "status"})
+
+	MetricX402PaymentTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "x402_payment_total",
+		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
+	}, []string{"project", "network", "facilitator", "outcome"})
+
 	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_evm_get_logs_range_requested",

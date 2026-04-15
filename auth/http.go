@@ -77,9 +77,20 @@ func NewPayloadFromHttp(method string, remoteAddr string, headers http.Header, a
 				Message:   normalizeSiweMessage(msg),
 			}
 		}
+	} else if payment := headers.Get("X-PAYMENT"); payment != "" {
+		ap.Type = common.AuthTypeX402
+		ap.X402 = &X402Payload{
+			Payment: payment,
+		}
+	} else if payment := headers.Get("Payment-Signature"); payment != "" {
+		ap.Type = common.AuthTypeX402
+		ap.X402 = &X402Payload{
+			Payment: payment,
+		}
 	}
 
 	// Default to network strategy when no other auth signals are present.
+	// The x402 strategy also supports this type to return 402 for unpaid requests.
 	if ap.Type == "" {
 		ap.Type = common.AuthTypeNetwork
 	}

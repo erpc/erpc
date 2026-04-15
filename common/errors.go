@@ -542,6 +542,28 @@ func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
 	return http.StatusUnauthorized
 }
 
+type ErrPaymentRequired struct {
+	BaseError
+	// PaymentRequirements holds the raw x402 PaymentRequirementsResponse to return to the client.
+	PaymentRequirements interface{} `json:"-"`
+}
+
+const ErrCodePaymentRequired ErrorCode = "ErrPaymentRequired"
+
+var NewErrPaymentRequired = func(paymentRequirements interface{}) error {
+	return &ErrPaymentRequired{
+		BaseError: BaseError{
+			Code:    ErrCodePaymentRequired,
+			Message: "payment required for this resource",
+		},
+		PaymentRequirements: paymentRequirements,
+	}
+}
+
+func (e *ErrPaymentRequired) ErrorStatusCode() int {
+	return http.StatusPaymentRequired
+}
+
 type ErrAuthRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeAuthRateLimitRuleExceeded ErrorCode = "ErrAuthRateLimitRuleExceeded"
