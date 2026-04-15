@@ -236,89 +236,71 @@ func (e *executor) executeConsensus(
 
 collectLoop:
 	for i := 0; i < maxToSpawn; i++ {
-		select {
-		case resp := <-responseChan:
-			if resp != nil {
-				responses = append(responses, resp)
-				if !shortCircuited {
-					analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
-					winner = e.determineWinner(lg, analysis)
-					if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
-						shortCircuited = true
-						shortCircuitReason = reason
+		var resp *execResult
 
-						// In fire-and-forget mode, let remaining requests complete in background
-						// without cancelling them. This is useful for write operations like
-						// eth_sendRawTransaction where we want to broadcast to all nodes.
-						if e.config.fireAndForget {
-							lg.Debug().
-								Str("reason", reason).
-								Int("remaining", maxToSpawn-i-1).
-								Msg("fire-and-forget mode: letting remaining requests complete in background")
-
-							// Drain remaining responses in background without cancelling
-							// The HTTP requests will complete naturally
-							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
-						} else {
-							// Normal mode: cancel remaining requests immediately to save resources
-							cancelRemaining()
-							// Explicitly cancel all outstanding attempt executions to abort in-flight work
-							for ai := range attempts {
-								if attempts[ai] != nil {
-									attempts[ai].Cancel(nil)
-								}
-							}
-							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
-						}
-						break collectLoop
-					}
-				}
-			}
-		case <-ctx.Done():
-			lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
-			// Record collection phase cancellation
-			telemetry.MetricConsensusCancellations.
-				WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).
-				Inc()
-
-			// In fire-and-forget mode, let remaining requests complete in background
-			// even when parent context is cancelled. This is critical for transaction
-			// broadcasting where we want all nodes to receive the transaction regardless
-			// of whether the client's HTTP connection dropped.
-			if e.config.fireAndForget {
+		if e.config.fireAndForget {
+			// Fire-and-forget: participants use context.WithoutCancel so they won't see
+			// parent cancellation. We still need ctx.Done() to return to the caller
+			// promptly while background requests complete naturally.
+			select {
+			case resp = <-responseChan:
+			case <-ctx.Done():
+				lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
+				telemetry.MetricConsensusCancellations.
+					WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).
+					Inc()
 				lg.Debug().
 					Int("remaining", maxToSpawn-i).
 					Msg("fire-and-forget mode: letting remaining requests complete despite parent cancellation")
 				drainResponsesInBackground(responseChan, i, maxToSpawn)
-			} else {
-				// Normal mode: cancel remaining requests to save resources
-				cancelRemaining()
-				for ai := range attempts {
-					if attempts[ai] != nil {
-						attempts[ai].Cancel(nil)
-					}
-				}
+				break collectLoop
+			}
+		} else {
+			// Normal mode: read directly from the channel without racing ctx.Done().
+			// Every participant is guaranteed to write exactly once to responseChan
+			// (see executeParticipant: all exit paths write, panic recovery writes,
+			// channel is buffered to maxToSpawn so writes never block).
+			// After parent context cancellation, participants see it via propagation
+			// (cancellableCtx is a child of ctx) and complete quickly.
+			resp = <-responseChan
+		}
 
-				// Brief wait to salvage responses from participants that are completing.
-				// After cancel, in-flight executions finish quickly. Without this,
-				// ctx.Done() racing responseChan means we can exit with 0 responses
-				// even though participants are about to send valid results.
-				deadline := time.After(100 * time.Millisecond)
-				for j := i; j < maxToSpawn; j++ {
-					select {
-					case resp := <-responseChan:
-						i++
-						if resp != nil {
-							responses = append(responses, resp)
+		if resp != nil {
+			responses = append(responses, resp)
+			if !shortCircuited {
+				analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
+				winner = e.determineWinner(lg, analysis)
+				if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
+					shortCircuited = true
+					shortCircuitReason = reason
+
+					if e.config.fireAndForget {
+						lg.Debug().
+							Str("reason", reason).
+							Int("remaining", maxToSpawn-i-1).
+							Msg("fire-and-forget mode: letting remaining requests complete in background")
+						drainResponsesInBackground(responseChan, i+1, maxToSpawn)
+					} else {
+						cancelRemaining()
+						for ai := range attempts {
+							if attempts[ai] != nil {
+								attempts[ai].Cancel(nil)
+							}
 						}
-					case <-deadline:
-						drainResponsesInBackground(responseChan, i, maxToSpawn)
-						break collectLoop
+						drainResponsesInBackground(responseChan, i+1, maxToSpawn)
 					}
+					break collectLoop
 				}
 			}
-			break collectLoop
 		}
+	}
+
+	// Track if context was cancelled during collection (observability).
+	if ctx.Err() != nil && !shortCircuited && !e.config.fireAndForget {
+		lg.Warn().Err(ctx.Err()).Msg("Context was cancelled during response collection")
+		telemetry.MetricConsensusCancellations.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).
+			Inc()
 	}
 
 	if analysis == nil {
