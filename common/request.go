@@ -333,8 +333,6 @@ type NormalizedRequest struct {
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
 
-	// Transport-neutral metadata populated by ingress adapters (HTTP headers, gRPC metadata, etc.)
-	transportMeta atomic.Value // map[string]string
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -996,36 +994,6 @@ func (r *NormalizedRequest) ClientIP() string {
 	return "n/a"
 }
 
-// SetTransportMeta attaches transport-neutral metadata (HTTP headers, gRPC metadata, etc.)
-// Safe for use during single-threaded request setup; concurrent calls require external sync.
-func (r *NormalizedRequest) SetTransportMeta(key, value string) {
-	if r == nil {
-		return
-	}
-	r.Lock()
-	defer r.Unlock()
-	meta := r.loadOrInitTransportMeta()
-	clone := make(map[string]string, len(meta)+1)
-	for k, v := range meta {
-		clone[k] = v
-	}
-	clone[key] = value
-	r.transportMeta.Store(clone)
-}
-
-// TransportMeta returns a single transport metadata value by key
-func (r *NormalizedRequest) TransportMeta(key string) string {
-	if r == nil {
-		return ""
-	}
-	if m := r.transportMeta.Load(); m != nil {
-		if meta, ok := m.(map[string]string); ok {
-			return meta[key]
-		}
-	}
-	return ""
-}
-
 // SetAgentName stores the agent name directly without HTTP-specific parsing
 func (r *NormalizedRequest) SetAgentName(name string) {
 	if r == nil || name == "" {
@@ -1034,14 +1002,6 @@ func (r *NormalizedRequest) SetAgentName(name string) {
 	r.agentName.Store(name)
 }
 
-func (r *NormalizedRequest) loadOrInitTransportMeta() map[string]string {
-	if existing := r.transportMeta.Load(); existing != nil {
-		if m, ok := existing.(map[string]string); ok {
-			return m
-		}
-	}
-	return make(map[string]string)
-}
 
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm
 func (r *NormalizedRequest) EvmBlockRef() interface{} {
