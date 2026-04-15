@@ -11,15 +11,15 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func shimQueryBlocks(ctx context.Context, network common.Network, parentReqID interface{}, req *QueryRequest) (*QueryResponse, error) {
+func shimQueryBlocks(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, qs *common.EvmQueryShimConfig, req *QueryRequest) (*QueryResponse, error) {
 	if queryRangeIsEmpty(req) {
 		return &QueryResponse{
 			FromBlock: &QueryCursorBlock{Number: req.FromBlock},
 			ToBlock:   &QueryCursorBlock{Number: req.ToBlock},
 		}, nil
 	}
-	concurrency, _, _, _ := queryShimConfig(network)
-	rawBlocks, err := fetchBlockRange(ctx, network, parentReqID, req.FromBlock, req.ToBlock, req.Order, false, concurrency)
+	concurrency, _, _, _ := queryShimConfig(qs)
+	rawBlocks, err := fetchBlockRange(ctx, network, parentReqID, pinToUpstreamId, req.FromBlock, req.ToBlock, req.Order, false, concurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -52,15 +52,15 @@ func shimQueryBlocks(ctx context.Context, network common.Network, parentReqID in
 	}, nil
 }
 
-func shimQueryTransactions(ctx context.Context, network common.Network, parentReqID interface{}, req *QueryRequest) (*QueryResponse, error) {
+func shimQueryTransactions(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, qs *common.EvmQueryShimConfig, req *QueryRequest) (*QueryResponse, error) {
 	if queryRangeIsEmpty(req) {
 		return &QueryResponse{
 			FromBlock: &QueryCursorBlock{Number: req.FromBlock},
 			ToBlock:   &QueryCursorBlock{Number: req.ToBlock},
 		}, nil
 	}
-	concurrency, _, _, _ := queryShimConfig(network)
-	rawBlocks, err := fetchBlockRange(ctx, network, parentReqID, req.FromBlock, req.ToBlock, req.Order, true, concurrency)
+	concurrency, _, _, _ := queryShimConfig(qs)
+	rawBlocks, err := fetchBlockRange(ctx, network, parentReqID, pinToUpstreamId, req.FromBlock, req.ToBlock, req.Order, true, concurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func shimQueryTransactions(ctx context.Context, network common.Network, parentRe
 	}, nil
 }
 
-func shimQueryLogs(ctx context.Context, network common.Network, parentReqID interface{}, req *QueryRequest) (*QueryResponse, error) {
+func shimQueryLogs(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, qs *common.EvmQueryShimConfig, req *QueryRequest) (*QueryResponse, error) {
 	if queryRangeIsEmpty(req) {
 		return &QueryResponse{
 			FromBlock: &QueryCursorBlock{Number: req.FromBlock},
@@ -164,7 +164,7 @@ func shimQueryLogs(ctx context.Context, network common.Network, parentReqID inte
 		}
 	}
 
-	result, err := forwardSubRequest(ctx, network, parentReqID, "eth_getLogs", []interface{}{filter})
+	result, err := forwardSubRequest(ctx, network, parentReqID, pinToUpstreamId, "eth_getLogs", []interface{}{filter})
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +206,7 @@ func shimQueryLogs(ctx context.Context, network common.Network, parentReqID inte
 			))
 		}
 
-		block, err := fetchBlockByNumber(ctx, network, parentReqID, blockNumber, req.Fields.Blocks != nil)
+		block, err := fetchBlockByNumber(ctx, network, parentReqID, pinToUpstreamId, blockNumber, req.Fields.Blocks != nil)
 		if err != nil {
 			return nil, err
 		}
@@ -223,7 +223,7 @@ func shimQueryLogs(ctx context.Context, network common.Network, parentReqID inte
 				if txHash == "" {
 					continue
 				}
-				tx, err := fetchTransactionByHash(ctx, network, parentReqID, txHash)
+				tx, err := fetchTransactionByHash(ctx, network, parentReqID, pinToUpstreamId, txHash)
 				if err != nil {
 					return nil, err
 				}
@@ -248,15 +248,15 @@ func shimQueryLogs(ctx context.Context, network common.Network, parentReqID inte
 	}, nil
 }
 
-func shimQueryTraces(ctx context.Context, network common.Network, parentReqID interface{}, req *QueryRequest) (*QueryResponse, error) {
+func shimQueryTraces(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, qs *common.EvmQueryShimConfig, req *QueryRequest) (*QueryResponse, error) {
 	if queryRangeIsEmpty(req) {
 		return &QueryResponse{
 			FromBlock: &QueryCursorBlock{Number: req.FromBlock},
 			ToBlock:   &QueryCursorBlock{Number: req.ToBlock},
 		}, nil
 	}
-	concurrency, _, _, _ := queryShimConfig(network)
-	rawBlocks, err := fetchBlockRange(ctx, network, parentReqID, req.FromBlock, req.ToBlock, req.Order, true, concurrency)
+	concurrency, _, _, _ := queryShimConfig(qs)
+	rawBlocks, err := fetchBlockRange(ctx, network, parentReqID, pinToUpstreamId, req.FromBlock, req.ToBlock, req.Order, true, concurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func shimQueryTraces(ctx context.Context, network common.Network, parentReqID in
 		}
 		currentCursor := buildCursorBlock(block)
 
-		blockTraces, err := fetchTracesForBlock(ctx, network, parentReqID, block)
+		blockTraces, err := fetchTracesForBlock(ctx, network, parentReqID, pinToUpstreamId, block)
 		if err != nil {
 			return nil, err
 		}
@@ -308,7 +308,7 @@ func shimQueryTraces(ctx context.Context, network common.Network, parentReqID in
 				if txHash == "" || txHash == "0x" {
 					continue
 				}
-				tx, err := fetchTransactionByHash(ctx, network, parentReqID, txHash)
+				tx, err := fetchTransactionByHash(ctx, network, parentReqID, pinToUpstreamId, txHash)
 				if err != nil {
 					return nil, err
 				}
@@ -334,7 +334,7 @@ func shimQueryTraces(ctx context.Context, network common.Network, parentReqID in
 	}, nil
 }
 
-func shimQueryTransfers(ctx context.Context, network common.Network, parentReqID interface{}, req *QueryRequest) (*QueryResponse, error) {
+func shimQueryTransfers(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, qs *common.EvmQueryShimConfig, req *QueryRequest) (*QueryResponse, error) {
 	if queryRangeIsEmpty(req) {
 		return &QueryResponse{
 			FromBlock: &QueryCursorBlock{Number: req.FromBlock},
@@ -364,7 +364,7 @@ func shimQueryTransfers(ctx context.Context, network common.Network, parentReqID
 		},
 	}
 
-	traceResp, err := shimQueryTraces(ctx, network, parentReqID, traceReq)
+	traceResp, err := shimQueryTraces(ctx, network, parentReqID, pinToUpstreamId, qs, traceReq)
 	if err != nil {
 		return nil, err
 	}
@@ -397,8 +397,8 @@ func shimQueryTransfers(ctx context.Context, network common.Network, parentReqID
 	}, nil
 }
 
-func fetchBlockByNumber(ctx context.Context, network common.Network, parentReqID interface{}, blockNumber uint64, fullTx bool) (map[string]interface{}, error) {
-	result, err := forwardSubRequest(ctx, network, parentReqID, "eth_getBlockByNumber", []interface{}{fmt.Sprintf("0x%x", blockNumber), fullTx})
+func fetchBlockByNumber(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, blockNumber uint64, fullTx bool) (map[string]interface{}, error) {
+	result, err := forwardSubRequest(ctx, network, parentReqID, pinToUpstreamId, "eth_getBlockByNumber", []interface{}{fmt.Sprintf("0x%x", blockNumber), fullTx})
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			return nil, nil
@@ -411,8 +411,8 @@ func fetchBlockByNumber(ctx context.Context, network common.Network, parentReqID
 	return blockMapFromRaw(result)
 }
 
-func fetchTransactionByHash(ctx context.Context, network common.Network, parentReqID interface{}, txHash string) (map[string]interface{}, error) {
-	result, err := forwardSubRequest(ctx, network, parentReqID, "eth_getTransactionByHash", []interface{}{txHash})
+func fetchTransactionByHash(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, txHash string) (map[string]interface{}, error) {
+	result, err := forwardSubRequest(ctx, network, parentReqID, pinToUpstreamId, "eth_getTransactionByHash", []interface{}{txHash})
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			return nil, nil
@@ -429,7 +429,7 @@ func fetchTransactionByHash(ctx context.Context, network common.Network, parentR
 	return tx, nil
 }
 
-func fetchTracesForBlock(ctx context.Context, network common.Network, parentReqID interface{}, block map[string]interface{}) ([]map[string]interface{}, error) {
+func fetchTracesForBlock(ctx context.Context, network common.Network, parentReqID interface{}, pinToUpstreamId string, block map[string]interface{}) ([]map[string]interface{}, error) {
 	blockNumber, _ := parseUint64Value(block["number"])
 	blockHashHex, _ := block["hash"].(string)
 	blockHash, _ := common.HexToBytes(blockHashHex)
@@ -445,7 +445,7 @@ func fetchTracesForBlock(ctx context.Context, network common.Network, parentReqI
 	}
 
 	rawTransactions, _ := block["transactions"].([]interface{})
-	traceResult, err := forwardSubRequest(ctx, network, parentReqID, "trace_block", []interface{}{blockNumberHex})
+	traceResult, err := forwardSubRequest(ctx, network, parentReqID, pinToUpstreamId, "trace_block", []interface{}{blockNumberHex})
 	if err == nil {
 		if bytes.Equal(traceResult, []byte("null")) {
 			return nil, nil
@@ -472,6 +472,7 @@ func fetchTracesForBlock(ctx context.Context, network common.Network, parentReqI
 		ctx,
 		network,
 		parentReqID,
+		pinToUpstreamId,
 		"debug_traceBlockByNumber",
 		[]interface{}{blockNumberHex, map[string]interface{}{"tracer": "callTracer"}},
 	)

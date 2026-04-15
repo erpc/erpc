@@ -41,10 +41,10 @@ type GrpcBdsClient interface {
 }
 
 type GenericGrpcBdsClient struct {
-	Url       *url.URL
-	headers   map[string]string
-	conn      *grpc.ClientConn
-	rpcClient evm.RPCQueryServiceClient
+	Url         *url.URL
+	headers     map[string]string
+	conn        *grpc.ClientConn
+	rpcClient   evm.RPCQueryServiceClient
 	queryClient evm.QueryServiceClient
 
 	projectId       string

@@ -28,6 +28,7 @@ func forwardSubRequest(
 	ctx context.Context,
 	network common.Network,
 	parentReqID interface{},
+	pinToUpstreamId string,
 	method string,
 	params []interface{},
 ) ([]byte, error) {
@@ -40,6 +41,9 @@ func forwardSubRequest(
 	req.SetNetwork(network)
 	req.SetParentRequestId(parentReqID)
 	req.ApplyDirectiveDefaults(network.Config().DirectiveDefaults)
+	if pinToUpstreamId != "" {
+		req.SetDirectives(&common.RequestDirectives{UseUpstream: pinToUpstreamId})
+	}
 
 	resp, err := network.Forward(ctx, req)
 	if err != nil {
@@ -76,6 +80,7 @@ func fetchBlockRange(
 	ctx context.Context,
 	network common.Network,
 	parentReqID interface{},
+	pinToUpstreamId string,
 	from uint64,
 	to uint64,
 	order string,
@@ -120,6 +125,7 @@ func fetchBlockRange(
 				ctx,
 				network,
 				parentReqID,
+				pinToUpstreamId,
 				"eth_getBlockByNumber",
 				[]interface{}{fmt.Sprintf("0x%x", num), fullTx},
 			)
@@ -352,53 +358,26 @@ func buildCursorBlock(block map[string]interface{}) *QueryCursorBlock {
 	return cursor
 }
 
-func flattenGethCallTrace(callFrame map[string]interface{}, traceAddress []uint32) []map[string]interface{} {
-	if callFrame == nil {
-		return nil
-	}
-
-	node := cloneMap(callFrame)
-	address := make([]interface{}, 0, len(traceAddress))
-	for _, idx := range traceAddress {
-		address = append(address, fmt.Sprintf("0x%x", idx))
-	}
-	node["traceAddress"] = address
-
-	out := []map[string]interface{}{node}
-	children, _ := callFrame["calls"].([]interface{})
-	for i, childRaw := range children {
-		child, ok := childRaw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		childTraceAddress := append(append([]uint32(nil), traceAddress...), uint32(i))
-		out = append(out, flattenGethCallTrace(child, childTraceAddress)...)
-	}
-
-	return out
-}
-
-func queryShimConfig(network common.Network) (concurrency int, maxBlockRange int64, maxLimit int, defaultLimit int) {
+func queryShimConfig(qs *common.EvmQueryShimConfig) (concurrency int, maxBlockRange int64, maxLimit int, defaultLimit int) {
 	concurrency = defaultQueryShimConcurrency
 	maxBlockRange = defaultQueryShimMaxBlockRange
 	maxLimit = defaultQueryShimMaxLimit
 	defaultLimit = defaultQueryShimDefaultLimit
 
-	cfg := network.Config()
-	if cfg == nil || cfg.Evm == nil {
+	if qs == nil {
 		return
 	}
-	if cfg.Evm.QueryShimConcurrency > 0 {
-		concurrency = cfg.Evm.QueryShimConcurrency
+	if qs.Concurrency > 0 {
+		concurrency = qs.Concurrency
 	}
-	if cfg.Evm.QueryShimMaxBlockRange > 0 {
-		maxBlockRange = cfg.Evm.QueryShimMaxBlockRange
+	if qs.MaxBlockRange > 0 {
+		maxBlockRange = qs.MaxBlockRange
 	}
-	if cfg.Evm.QueryShimMaxLimit > 0 {
-		maxLimit = cfg.Evm.QueryShimMaxLimit
+	if qs.MaxLimit > 0 {
+		maxLimit = qs.MaxLimit
 	}
-	if cfg.Evm.QueryShimDefaultLimit > 0 {
-		defaultLimit = cfg.Evm.QueryShimDefaultLimit
+	if qs.DefaultLimit > 0 {
+		defaultLimit = qs.DefaultLimit
 	}
 
 	return

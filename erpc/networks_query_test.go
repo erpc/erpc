@@ -36,7 +36,15 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, ntwCfg *common.Net
 		Id:       "rpc1",
 		Type:     common.UpstreamTypeEvm,
 		Endpoint: "http://rpc1.localhost",
-		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+			QueryShim: &common.EvmQueryShimConfig{
+				Enabled:       util.BoolPtr(true),
+				DefaultLimit:  100,
+				MaxLimit:      1000,
+				MaxBlockRange: 1000,
+			},
+		},
 	}
 
 	vr := thirdparty.NewVendorsRegistry()
@@ -84,15 +92,23 @@ func defaultQueryNetworkConfig() *common.NetworkConfig {
 	return &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
 		Evm: &common.EvmNetworkConfig{
-			ChainId:                123,
-			QueryShimEnabled:       util.BoolPtr(true),
-			QueryShimDefaultLimit:  100,
-			QueryShimMaxLimit:      1000,
-			QueryShimMaxBlockRange: 1000,
+			ChainId: 123,
 		},
 		Failsafe: []*common.FailsafeConfig{{
 			Retry: &common.RetryPolicyConfig{MaxAttempts: 1},
 		}},
+	}
+}
+
+func defaultQueryShimUpstreamConfig() *common.EvmUpstreamConfig {
+	return &common.EvmUpstreamConfig{
+		ChainId: 123,
+		QueryShim: &common.EvmQueryShimConfig{
+			Enabled:       util.BoolPtr(true),
+			DefaultLimit:  100,
+			MaxLimit:      1000,
+			MaxBlockRange: 1000,
+		},
 	}
 }
 

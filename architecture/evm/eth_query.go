@@ -58,16 +58,25 @@ type QueryResponse struct {
 	CursorBlock        *QueryCursorBlock
 }
 
-func networkPreForward_eth_query(
+func upstreamPreForward_eth_query(
 	ctx context.Context,
 	network common.Network,
-	upstreams []common.Upstream,
+	upstream common.Upstream,
 	nq *common.NormalizedRequest,
 ) (handled bool, resp *common.NormalizedResponse, err error) {
-	if nq == nil || network == nil {
+	if nq == nil || network == nil || upstream == nil {
 		return false, nil, nil
 	}
 	if nq.ParentRequestId() != nil {
+		return false, nil, nil
+	}
+
+	cfg := upstream.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.QueryShim == nil {
+		return false, nil, nil
+	}
+	qs := cfg.Evm.QueryShim
+	if qs.Enabled == nil || !*qs.Enabled {
 		return false, nil, nil
 	}
 
@@ -75,42 +84,21 @@ func networkPreForward_eth_query(
 	if err != nil {
 		return true, nil, err
 	}
-
-	for _, ups := range upstreams {
-		supported, err := upstreamSupportsQueryMethod(ups, method)
-		if err != nil {
-			return true, nil, err
-		}
-		if supported {
-			return false, nil, nil
-		}
-	}
-
-	if !isQueryShimEnabled(network, method) {
+	if !isQueryShimMethodAllowed(qs, method) {
 		return false, nil, nil
 	}
 
-	return executeQueryShim(ctx, network, nq)
+	return executeQueryShim(ctx, network, upstream.Id(), qs, nq)
 }
 
-func isQueryShimEnabled(network common.Network, method string) bool {
-	cfg := network.Config()
-	if cfg == nil || cfg.Evm == nil {
+func isQueryShimMethodAllowed(qs *common.EvmQueryShimConfig, method string) bool {
+	if qs == nil {
 		return false
 	}
-
-	if cfg.Evm.QueryShimEnabled != nil && !*cfg.Evm.QueryShimEnabled {
-		return false
-	}
-	if cfg.Evm.QueryShimEnabled == nil {
-		return false
-	}
-
-	if len(cfg.Evm.QueryShimAllowedMethods) == 0 {
+	if len(qs.AllowedMethods) == 0 {
 		return true
 	}
-
-	for _, allowed := range cfg.Evm.QueryShimAllowedMethods {
+	for _, allowed := range qs.AllowedMethods {
 		match, err := common.WildcardMatch(allowed, method)
 		if err != nil {
 			continue
@@ -119,16 +107,17 @@ func isQueryShimEnabled(network common.Network, method string) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
 func executeQueryShim(
 	ctx context.Context,
 	network common.Network,
+	pinToUpstreamId string,
+	qs *common.EvmQueryShimConfig,
 	nq *common.NormalizedRequest,
 ) (handled bool, resp *common.NormalizedResponse, err error) {
-	queryReq, err := parseQueryRequest(ctx, network, nq)
+	queryReq, err := parseQueryRequest(ctx, network, qs, nq)
 	if err != nil {
 		return true, nil, err
 	}
@@ -149,15 +138,15 @@ func executeQueryShim(
 	var qr *QueryResponse
 	switch strings.ToLower(queryReq.Method) {
 	case "eth_queryblocks":
-		qr, err = shimQueryBlocks(ctx, network, nq.ID(), queryReq)
+		qr, err = shimQueryBlocks(ctx, network, nq.ID(), pinToUpstreamId, qs, queryReq)
 	case "eth_querytransactions":
-		qr, err = shimQueryTransactions(ctx, network, nq.ID(), queryReq)
+		qr, err = shimQueryTransactions(ctx, network, nq.ID(), pinToUpstreamId, qs, queryReq)
 	case "eth_querylogs":
-		qr, err = shimQueryLogs(ctx, network, nq.ID(), queryReq)
+		qr, err = shimQueryLogs(ctx, network, nq.ID(), pinToUpstreamId, qs, queryReq)
 	case "eth_querytraces":
-		qr, err = shimQueryTraces(ctx, network, nq.ID(), queryReq)
+		qr, err = shimQueryTraces(ctx, network, nq.ID(), pinToUpstreamId, qs, queryReq)
 	case "eth_querytransfers":
-		qr, err = shimQueryTransfers(ctx, network, nq.ID(), queryReq)
+		qr, err = shimQueryTransfers(ctx, network, nq.ID(), pinToUpstreamId, qs, queryReq)
 	default:
 		err = common.NewErrInvalidRequest(fmt.Errorf("unsupported query method: %s", queryReq.Method))
 	}
@@ -173,7 +162,7 @@ func executeQueryShim(
 	return true, common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr), nil
 }
 
-func parseQueryRequest(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (*QueryRequest, error) {
+func parseQueryRequest(ctx context.Context, network common.Network, qs *common.EvmQueryShimConfig, nq *common.NormalizedRequest) (*QueryRequest, error) {
 	jrq, err := nq.JsonRpcRequest(ctx)
 	if err != nil {
 		return nil, err
@@ -192,7 +181,7 @@ func parseQueryRequest(ctx context.Context, network common.Network, nq *common.N
 		return nil, err
 	}
 
-	concurrency, maxBlockRange, maxLimit, defaultLimit := queryShimConfig(network)
+	concurrency, maxBlockRange, maxLimit, defaultLimit := queryShimConfig(qs)
 	_ = concurrency
 
 	order := "asc"
@@ -493,32 +482,4 @@ func mapsToInterfaces(items []map[string]interface{}) []interface{} {
 		out = append(out, item)
 	}
 	return out
-}
-
-// upstreamSupportsQueryMethod checks whether an upstream can handle eth_query*
-// methods via the JSON-RPC forwarding path. Only upstreams that explicitly
-// declare support via AllowMethods are considered capable. gRPC upstreams
-// support queries via the streaming API (handled by EvmQueryExecutor), not
-// via JSON-RPC forwarding, so they are not considered here.
-func upstreamSupportsQueryMethod(ups common.Upstream, method string) (bool, error) {
-	if ups == nil {
-		return false, nil
-	}
-
-	cfg := ups.Config()
-	if cfg == nil {
-		return false, nil
-	}
-
-	for _, pattern := range cfg.AllowMethods {
-		match, err := common.WildcardMatch(pattern, method)
-		if err != nil {
-			return false, err
-		}
-		if match {
-			return true, nil
-		}
-	}
-
-	return false, nil
 }

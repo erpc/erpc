@@ -532,6 +532,15 @@ export interface EvmUpstreamConfig {
    * @deprecated: should be removed in a future release
    */
   maxAvailableRecentBlocks?: number /* int64 */;
+  queryShim?: EvmQueryShimConfig;
+}
+export interface EvmQueryShimConfig {
+  enabled?: boolean;
+  allowedMethods?: string[];
+  concurrency?: number /* int */;
+  maxBlockRange?: number /* int64 */;
+  maxLimit?: number /* int */;
+  defaultLimit?: number /* int */;
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.

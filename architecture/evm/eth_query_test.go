@@ -99,14 +99,15 @@ func TestParseQueryRequest_ResolvesCursorAndSelections(t *testing.T) {
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				QueryShimDefaultLimit:  25,
-				QueryShimMaxLimit:      500,
-				QueryShimMaxBlockRange: 1000,
-			},
+			Evm:          &common.EvmNetworkConfig{},
 		},
 		latest:    120,
 		finalized: 118,
+	}
+	qs := &common.EvmQueryShimConfig{
+		DefaultLimit:  25,
+		MaxLimit:      500,
+		MaxBlockRange: 1000,
 	}
 
 	req := common.NewNormalizedRequest([]byte(`{
@@ -123,7 +124,7 @@ func TestParseQueryRequest_ResolvesCursorAndSelections(t *testing.T) {
 		}]
 	}`))
 
-	parsed, err := parseQueryRequest(context.Background(), network, req)
+	parsed, err := parseQueryRequest(context.Background(), network, qs, req)
 	require.NoError(t, err)
 	require.NotNil(t, parsed)
 
@@ -139,7 +140,7 @@ func TestParseQueryRequest_ResolvesCursorAndSelections(t *testing.T) {
 	assert.Equal(t, []string{"number"}, parsed.Fields.Blocks)
 }
 
-func TestNetworkPreForwardEthQuery_PassthroughWhenUpstreamExplicitlyAllowsQueryMethod(t *testing.T) {
+func TestUpstreamPreForwardEthQuery_PassthroughWhenNoShimEnabled(t *testing.T) {
 	nq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks","params":[{}]}`))
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
@@ -148,21 +149,18 @@ func TestNetworkPreForwardEthQuery_PassthroughWhenUpstreamExplicitlyAllowsQueryM
 		},
 		latest:    10,
 		finalized: 10,
-		forwardFn: func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return nil, fmt.Errorf("should not be called")
-		},
 	}
 
-	handled, resp, err := networkPreForward_eth_query(
+	handled, resp, err := upstreamPreForward_eth_query(
 		context.Background(),
 		network,
-		[]common.Upstream{&queryTestConfigUpstream{
+		&queryTestConfigUpstream{
 			cfg: &common.UpstreamConfig{
 				Id:           "query-http-upstream",
 				Endpoint:     "https://query-node.example",
 				AllowMethods: []string{"eth_query*"},
 			},
-		}},
+		},
 		nq,
 	)
 
@@ -171,17 +169,12 @@ func TestNetworkPreForwardEthQuery_PassthroughWhenUpstreamExplicitlyAllowsQueryM
 	assert.Nil(t, resp)
 }
 
-func TestNetworkPreForwardEthQuery_ShimsWhenGrpcUpstreamHasNoExplicitAllow(t *testing.T) {
+func TestUpstreamPreForwardEthQuery_ShimsWhenShimEnabled(t *testing.T) {
 	enabled := true
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				QueryShimEnabled:       &enabled,
-				QueryShimDefaultLimit:  100,
-				QueryShimMaxLimit:      1000,
-				QueryShimMaxBlockRange: 1000,
-			},
+			Evm:          &common.EvmNetworkConfig{},
 		},
 		latest:    2,
 		finalized: 2,
@@ -219,11 +212,17 @@ func TestNetworkPreForwardEthQuery_ShimsWhenGrpcUpstreamHasNoExplicitAllow(t *te
 		}]
 	}`))
 
-	handled, resp, err := networkPreForward_eth_query(context.Background(), network, []common.Upstream{
-		&queryTestConfigUpstream{
-			cfg: &common.UpstreamConfig{
-				Id:       "grpc-upstream",
-				Endpoint: "grpc://bds.example:443",
+	handled, resp, err := upstreamPreForward_eth_query(context.Background(), network, &queryTestConfigUpstream{
+		cfg: &common.UpstreamConfig{
+			Id:       "shim-upstream",
+			Endpoint: "https://rpc.example",
+			Evm: &common.EvmUpstreamConfig{
+				QueryShim: &common.EvmQueryShimConfig{
+					Enabled:       &enabled,
+					DefaultLimit:  100,
+					MaxLimit:      1000,
+					MaxBlockRange: 1000,
+				},
 			},
 		},
 	}, nq)
@@ -232,17 +231,12 @@ func TestNetworkPreForwardEthQuery_ShimsWhenGrpcUpstreamHasNoExplicitAllow(t *te
 	require.NotNil(t, resp)
 }
 
-func TestNetworkPreForwardEthQuery_ShimsBlocks(t *testing.T) {
+func TestUpstreamPreForwardEthQuery_ShimsBlocks(t *testing.T) {
 	enabled := true
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				QueryShimEnabled:       &enabled,
-				QueryShimDefaultLimit:  100,
-				QueryShimMaxLimit:      1000,
-				QueryShimMaxBlockRange: 1000,
-			},
+			Evm:          &common.EvmNetworkConfig{},
 		},
 		latest:    2,
 		finalized: 2,
@@ -280,7 +274,19 @@ func TestNetworkPreForwardEthQuery_ShimsBlocks(t *testing.T) {
 		}]
 	}`))
 
-	handled, resp, err := networkPreForward_eth_query(context.Background(), network, nil, nq)
+	handled, resp, err := upstreamPreForward_eth_query(context.Background(), network, &queryTestConfigUpstream{
+		cfg: &common.UpstreamConfig{
+			Id: "shim-upstream",
+			Evm: &common.EvmUpstreamConfig{
+				QueryShim: &common.EvmQueryShimConfig{
+					Enabled:       &enabled,
+					DefaultLimit:  100,
+					MaxLimit:      1000,
+					MaxBlockRange: 1000,
+				},
+			},
+		},
+	}, nq)
 	require.NoError(t, err)
 	require.True(t, handled)
 	require.NotNil(t, resp)
@@ -306,98 +312,56 @@ func TestNetworkPreForwardEthQuery_ShimsBlocks(t *testing.T) {
 	assert.Nil(t, payload["cursorBlock"])
 }
 
-func TestFlattenGethCallTrace(t *testing.T) {
-	flat := flattenGethCallTrace(map[string]interface{}{
-		"type": "CALL",
-		"calls": []interface{}{
-			map[string]interface{}{
-				"type": "CALL",
-				"calls": []interface{}{
-					map[string]interface{}{"type": "CREATE"},
-				},
-			},
-		},
-	}, nil)
-
-	require.Len(t, flat, 3)
-	assert.Empty(t, flat[0]["traceAddress"])
-	assert.Equal(t, []interface{}{"0x0"}, flat[1]["traceAddress"])
-	assert.Equal(t, []interface{}{"0x0", "0x0"}, flat[2]["traceAddress"])
-}
-
-func TestNetworkPreForwardEthQuery_SkipsSubRequests(t *testing.T) {
+func TestUpstreamPreForwardEthQuery_SkipsSubRequests(t *testing.T) {
+	enabled := true
 	nq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks","params":[{}]}`))
 	nq.SetParentRequestId(123)
 
-	handled, resp, err := networkPreForward_eth_query(context.Background(), &queryTestNetwork{
+	handled, resp, err := upstreamPreForward_eth_query(context.Background(), &queryTestNetwork{
 		cfg:       newQueryTestConfig(),
 		latest:    10,
 		finalized: 9,
-	}, nil, nq)
+	}, &queryTestConfigUpstream{
+		cfg: &common.UpstreamConfig{
+			Id: "shim-upstream",
+			Evm: &common.EvmUpstreamConfig{
+				QueryShim: &common.EvmQueryShimConfig{Enabled: &enabled},
+			},
+		},
+	}, nq)
 	require.NoError(t, err)
 	assert.False(t, handled)
 	assert.Nil(t, resp)
 }
 
-func TestUpstreamSupportsQueryMethod_ConfigFallback(t *testing.T) {
-	t.Run("HttpUpstreamWithoutExplicitAllowDoesNotSupportQueryMethod", func(t *testing.T) {
-		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
-			cfg: &common.UpstreamConfig{
-				Id:       "u0",
-				Endpoint: "https://rpc.example",
-			},
-		}, "eth_queryBlocks")
-		require.NoError(t, err)
-		assert.False(t, supported)
+func TestIsQueryShimMethodAllowed(t *testing.T) {
+	enabled := true
+	t.Run("NilConfig", func(t *testing.T) {
+		assert.False(t, isQueryShimMethodAllowed(nil, "eth_queryBlocks"))
 	})
-
-	t.Run("GrpcUpstreamWithoutExplicitAllowDoesNotSupportQueryMethod", func(t *testing.T) {
-		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
-			cfg: &common.UpstreamConfig{
-				Id:       "u1",
-				Endpoint: "grpc://bds.example:443",
-			},
-		}, "eth_queryBlocks")
-		require.NoError(t, err)
-		assert.False(t, supported)
+	t.Run("EmptyAllowedMethods_AllowsAll", func(t *testing.T) {
+		qs := &common.EvmQueryShimConfig{Enabled: &enabled}
+		assert.True(t, isQueryShimMethodAllowed(qs, "eth_queryBlocks"))
+		assert.True(t, isQueryShimMethodAllowed(qs, "eth_queryLogs"))
 	})
-
-	t.Run("AllowMethodsEnablesQuerySupport", func(t *testing.T) {
-		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
-			cfg: &common.UpstreamConfig{
-				Id:           "u2",
-				Endpoint:     "https://rpc.example",
-				AllowMethods: []string{"eth_queryLogs"},
-			},
-		}, "eth_queryLogs")
-		require.NoError(t, err)
-		assert.True(t, supported)
+	t.Run("ExplicitAllowedMethods", func(t *testing.T) {
+		qs := &common.EvmQueryShimConfig{Enabled: &enabled, AllowedMethods: []string{"eth_queryLogs"}}
+		assert.True(t, isQueryShimMethodAllowed(qs, "eth_queryLogs"))
+		assert.False(t, isQueryShimMethodAllowed(qs, "eth_queryBlocks"))
 	})
-
-	t.Run("AllowMethodsWildcardEnablesQuerySupport", func(t *testing.T) {
-		supported, err := upstreamSupportsQueryMethod(&queryTestConfigUpstream{
-			cfg: &common.UpstreamConfig{
-				Id:           "u3",
-				Endpoint:     "https://query-node.example",
-				AllowMethods: []string{"eth_query*"},
-			},
-		}, "eth_queryTransactions")
-		require.NoError(t, err)
-		assert.True(t, supported)
+	t.Run("WildcardAllowedMethods", func(t *testing.T) {
+		qs := &common.EvmQueryShimConfig{Enabled: &enabled, AllowedMethods: []string{"eth_query*"}}
+		assert.True(t, isQueryShimMethodAllowed(qs, "eth_queryBlocks"))
+		assert.True(t, isQueryShimMethodAllowed(qs, "eth_queryTransactions"))
 	})
 }
 
-func TestNetworkPreForwardEthQuery_ShimsWhenGenericUpstreamLacksNativeQuerySupport(t *testing.T) {
+func TestUpstreamPreForwardEthQuery_ShimsWhenUpstreamHasQueryShimConfig(t *testing.T) {
 	enabled := true
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				QueryShimEnabled:       &enabled,
-				QueryShimDefaultLimit:  100,
-				QueryShimMaxLimit:      1000,
-				QueryShimMaxBlockRange: 1000,
-			},
+			Evm:          &common.EvmNetworkConfig{},
 		},
 		latest:    2,
 		finalized: 2,
@@ -435,11 +399,17 @@ func TestNetworkPreForwardEthQuery_ShimsWhenGenericUpstreamLacksNativeQuerySuppo
 		}]
 	}`))
 
-	handled, resp, err := networkPreForward_eth_query(context.Background(), network, []common.Upstream{
-		&queryTestConfigUpstream{
-			cfg: &common.UpstreamConfig{
-				Id:       "http-upstream",
-				Endpoint: "https://rpc.example",
+	handled, resp, err := upstreamPreForward_eth_query(context.Background(), network, &queryTestConfigUpstream{
+		cfg: &common.UpstreamConfig{
+			Id:       "http-upstream",
+			Endpoint: "https://rpc.example",
+			Evm: &common.EvmUpstreamConfig{
+				QueryShim: &common.EvmQueryShimConfig{
+					Enabled:       &enabled,
+					DefaultLimit:  100,
+					MaxLimit:      1000,
+					MaxBlockRange: 1000,
+				},
 			},
 		},
 	}, nq)
@@ -489,21 +459,18 @@ func TestParseQueryRequest_DescAndLimitErrors(t *testing.T) {
 		network := &queryTestNetwork{
 			cfg: &common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					QueryShimDefaultLimit:  10,
-					QueryShimMaxLimit:      100,
-					QueryShimMaxBlockRange: 100,
-				},
+				Evm:          &common.EvmNetworkConfig{},
 			},
 			latest:    50,
 			finalized: 45,
 		}
+		qs := &common.EvmQueryShimConfig{DefaultLimit: 10, MaxLimit: 100, MaxBlockRange: 100}
 		req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks",
 			"params":[{"fromBlock":"0x1","toBlock":"0xa","order":"desc","cursor":{"number":"0x5"}}]
 		}`))
 
-		parsed, err := parseQueryRequest(context.Background(), network, req)
+		parsed, err := parseQueryRequest(context.Background(), network, qs, req)
 		require.NoError(t, err)
 		assert.Equal(t, "desc", parsed.Order)
 		assert.Equal(t, uint64(4), parsed.FromBlock)
@@ -514,21 +481,19 @@ func TestParseQueryRequest_DescAndLimitErrors(t *testing.T) {
 		network := &queryTestNetwork{
 			cfg: &common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					QueryShimDefaultLimit:  10,
-					QueryShimMaxLimit:      1,
-					QueryShimMaxBlockRange: 100,
-				},
+				Evm:          &common.EvmNetworkConfig{},
 			},
 			latest:    10,
 			finalized: 10,
 		}
+		qs := &common.EvmQueryShimConfig{DefaultLimit: 10, MaxLimit: 1, MaxBlockRange: 100}
+		_ = qs
 		req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks",
 			"params":[{"fromBlock":"0x1","toBlock":"0x2","limit":"0x2"}]
 		}`))
 
-		_, err := parseQueryRequest(context.Background(), network, req)
+		_, err := parseQueryRequest(context.Background(), network, qs, req)
 		require.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal))
 	})
@@ -537,21 +502,18 @@ func TestParseQueryRequest_DescAndLimitErrors(t *testing.T) {
 		network := &queryTestNetwork{
 			cfg: &common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					QueryShimDefaultLimit:  10,
-					QueryShimMaxLimit:      10,
-					QueryShimMaxBlockRange: 1,
-				},
+				Evm:          &common.EvmNetworkConfig{},
 			},
 			latest:    10,
 			finalized: 10,
 		}
+		qs := &common.EvmQueryShimConfig{DefaultLimit: 10, MaxLimit: 10, MaxBlockRange: 1}
 		req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks",
 			"params":[{"fromBlock":"0x1","toBlock":"0x2"}]
 		}`))
 
-		_, err := parseQueryRequest(context.Background(), network, req)
+		_, err := parseQueryRequest(context.Background(), network, qs, req)
 		require.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal))
 	})
@@ -571,7 +533,7 @@ func TestForwardSubRequestAndFetchBlockRange(t *testing.T) {
 			return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
 		}
 
-		result, err := forwardSubRequest(context.Background(), network, 55, "eth_getBlockByNumber", []interface{}{"0x1", false})
+		result, err := forwardSubRequest(context.Background(), network, 55, "", "eth_getBlockByNumber", []interface{}{"0x1", false})
 		require.NoError(t, err)
 		assert.Equal(t, []byte("null"), result)
 	})
@@ -609,7 +571,7 @@ func TestForwardSubRequestAndFetchBlockRange(t *testing.T) {
 			return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
 		}
 
-		results, err := fetchBlockRange(context.Background(), network, "parent-1", 3, 1, "desc", false, 2)
+		results, err := fetchBlockRange(context.Background(), network, "parent-1", "", 3, 1, "desc", false, 2)
 		require.NoError(t, err)
 		require.Len(t, results, 2)
 		first, err := blockMapFromRaw(results[0])
@@ -716,7 +678,7 @@ func TestShimQueryBlocks_RespectsPagination(t *testing.T) {
 		return jsonResultResponse(t, req, makeBlockResult(blockNumber, nil)), nil
 	})
 
-	resp, err := shimQueryBlocks(context.Background(), network, "parent", &QueryRequest{
+	resp, err := shimQueryBlocks(context.Background(), network, "parent", "", nil, &QueryRequest{
 		Method:    "eth_queryBlocks",
 		FromBlock: 1,
 		ToBlock:   3,
@@ -752,7 +714,7 @@ func TestShimQueryTransactions_FiltersAndKeepsFirstBlockAligned(t *testing.T) {
 		}
 	})
 
-	resp, err := shimQueryTransactions(context.Background(), network, "parent", &QueryRequest{
+	resp, err := shimQueryTransactions(context.Background(), network, "parent", "", nil, &QueryRequest{
 		Method:    "eth_queryTransactions",
 		FromBlock: 1,
 		ToBlock:   2,
@@ -792,7 +754,7 @@ func TestShimQueryLogs_HydratesParentsAndDeduplicates(t *testing.T) {
 		}
 	})
 
-	resp, err := shimQueryLogs(context.Background(), network, "parent", &QueryRequest{
+	resp, err := shimQueryLogs(context.Background(), network, "parent", "", nil, &QueryRequest{
 		Method:    "eth_queryLogs",
 		FromBlock: 1,
 		ToBlock:   2,
@@ -833,7 +795,7 @@ func TestShimQueryLogs_DescUsesAscendingEthGetLogsRange(t *testing.T) {
 		}
 	})
 
-	resp, err := shimQueryLogs(context.Background(), network, "parent", &QueryRequest{
+	resp, err := shimQueryLogs(context.Background(), network, "parent", "", nil, &QueryRequest{
 		Method:    "eth_queryLogs",
 		FromBlock: 5,
 		ToBlock:   2,
@@ -884,7 +846,7 @@ func TestShimQueryTraces_UsesTraceBlockAndDebugFallback(t *testing.T) {
 			}
 		})
 
-		resp, err := shimQueryTraces(context.Background(), network, "parent", &QueryRequest{
+		resp, err := shimQueryTraces(context.Background(), network, "parent", "", nil, &QueryRequest{
 			Method:    "eth_queryTraces",
 			FromBlock: 1,
 			ToBlock:   1,
@@ -927,7 +889,7 @@ func TestShimQueryTraces_UsesTraceBlockAndDebugFallback(t *testing.T) {
 			}
 		})
 
-		resp, err := shimQueryTraces(context.Background(), network, "parent", &QueryRequest{
+		resp, err := shimQueryTraces(context.Background(), network, "parent", "", nil, &QueryRequest{
 			Method:    "eth_queryTraces",
 			FromBlock: 1,
 			ToBlock:   1,
@@ -957,7 +919,7 @@ func TestShimQueryTraces_ErrorsWhenNoTraceMethodsSupported(t *testing.T) {
 		}
 	})
 
-	_, err := shimQueryTraces(context.Background(), network, "parent", &QueryRequest{
+	_, err := shimQueryTraces(context.Background(), network, "parent", "", nil, &QueryRequest{
 		Method:    "eth_queryTraces",
 		FromBlock: 1,
 		ToBlock:   1,
@@ -1017,7 +979,7 @@ func TestShimQueryTransfers_ExtractsTopLevelTransfers(t *testing.T) {
 		}
 	})
 	topLevel := true
-	resp, err := shimQueryTransfers(context.Background(), network, "parent", &QueryRequest{
+	resp, err := shimQueryTransfers(context.Background(), network, "parent", "", nil, &QueryRequest{
 		Method:    "eth_queryTransfers",
 		FromBlock: 1,
 		ToBlock:   1,
@@ -1041,15 +1003,12 @@ func TestParseQueryRequest_RejectsLimitAboveMaxWithoutNarrowing(t *testing.T) {
 	network := &queryTestNetwork{
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				QueryShimDefaultLimit:  25,
-				QueryShimMaxLimit:      500,
-				QueryShimMaxBlockRange: 1000,
-			},
+			Evm:          &common.EvmNetworkConfig{},
 		},
 		latest:    120,
 		finalized: 118,
 	}
+	qs := &common.EvmQueryShimConfig{DefaultLimit: 25, MaxLimit: 500, MaxBlockRange: 1000}
 
 	req := common.NewNormalizedRequest([]byte(`{
 		"jsonrpc":"2.0",
@@ -1058,7 +1017,7 @@ func TestParseQueryRequest_RejectsLimitAboveMaxWithoutNarrowing(t *testing.T) {
 		"params":[{"fromBlock":"0x1","toBlock":"0x2","limit":"0xffffffffffffffff"}]
 	}`))
 
-	parsed, err := parseQueryRequest(context.Background(), network, req)
+	parsed, err := parseQueryRequest(context.Background(), network, qs, req)
 	require.Nil(t, parsed)
 	require.ErrorContains(t, err, "max limit")
 }
@@ -1126,16 +1085,9 @@ func TestProtoTraceFromJSON_RejectsUint32Overflow(t *testing.T) {
 }
 
 func newQueryTestConfig() *common.NetworkConfig {
-	enabled := true
 	return &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
-		Evm: &common.EvmNetworkConfig{
-			QueryShimEnabled:       &enabled,
-			QueryShimConcurrency:   4,
-			QueryShimDefaultLimit:  100,
-			QueryShimMaxLimit:      1000,
-			QueryShimMaxBlockRange: 1000,
-		},
+		Evm:          &common.EvmNetworkConfig{},
 	}
 }
 

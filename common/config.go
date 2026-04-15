@@ -924,6 +924,38 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsSplitOnError *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
 	// @deprecated: should be removed in a future release
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+
+	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+}
+
+type EvmQueryShimConfig struct {
+	Enabled        *bool    `yaml:"enabled,omitempty" json:"enabled"`
+	AllowedMethods []string `yaml:"allowedMethods,omitempty" json:"allowedMethods"`
+	Concurrency    int      `yaml:"concurrency,omitempty" json:"concurrency"`
+	MaxBlockRange  int64    `yaml:"maxBlockRange,omitempty" json:"maxBlockRange"`
+	MaxLimit       int      `yaml:"maxLimit,omitempty" json:"maxLimit"`
+	DefaultLimit   int      `yaml:"defaultLimit,omitempty" json:"defaultLimit"`
+}
+
+func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &EvmQueryShimConfig{
+		Concurrency:   c.Concurrency,
+		MaxBlockRange: c.MaxBlockRange,
+		MaxLimit:      c.MaxLimit,
+		DefaultLimit:  c.DefaultLimit,
+	}
+	if c.Enabled != nil {
+		v := *c.Enabled
+		copied.Enabled = &v
+	}
+	if c.AllowedMethods != nil {
+		copied.AllowedMethods = make([]string, len(c.AllowedMethods))
+		copy(copied.AllowedMethods, c.AllowedMethods)
+	}
+	return copied
 }
 
 // EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -1011,6 +1043,9 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.DeprecatedGetLogsSplitOnError != nil {
 		v := *c.DeprecatedGetLogsSplitOnError
 		copied.DeprecatedGetLogsSplitOnError = &v
+	}
+	if c.QueryShim != nil {
+		copied.QueryShim = c.QueryShim.Copy()
 	}
 
 	return copied
@@ -1671,12 +1706,6 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
-	QueryShimEnabled            *bool               `yaml:"queryShimEnabled,omitempty" json:"queryShimEnabled"`
-	QueryShimAllowedMethods     []string            `yaml:"queryShimAllowedMethods,omitempty" json:"queryShimAllowedMethods"`
-	QueryShimConcurrency        int                 `yaml:"queryShimConcurrency,omitempty" json:"queryShimConcurrency"`
-	QueryShimMaxBlockRange      int64               `yaml:"queryShimMaxBlockRange,omitempty" json:"queryShimMaxBlockRange"`
-	QueryShimMaxLimit           int                 `yaml:"queryShimMaxLimit,omitempty" json:"queryShimMaxLimit"`
-	QueryShimDefaultLimit       int                 `yaml:"queryShimDefaultLimit,omitempty" json:"queryShimDefaultLimit"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.
