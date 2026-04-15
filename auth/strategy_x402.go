@@ -127,11 +127,19 @@ func (s *X402Strategy) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrPaymentRequired(s.paymentRequirementsResponse(ap.x402RequestURL()))
 	}
 
-	// Ensure the payment includes the resource URL — some clients (e.g. Circle
+	// Ensure the payment includes the resource object — some clients (e.g. Circle
 	// GatewayClient) omit it, but facilitators require it for settlement.
 	if _, ok := payment["resource"]; !ok {
 		if reqURL := ap.x402RequestURL(); reqURL != "" {
-			payment["resource"] = reqURL
+			desc := s.cfg.Description
+			if desc == "" {
+				desc = "eRPC x402 endpoint"
+			}
+			payment["resource"] = map[string]string{
+				"url":         reqURL,
+				"mimeType":    "application/json",
+				"description": desc,
+			}
 		}
 	}
 
