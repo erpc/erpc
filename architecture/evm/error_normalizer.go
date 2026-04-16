@@ -97,7 +97,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.EvmBlockRangeTooLarge,
 			)
-		} else if strings.Contains(msg, "specify less number of address") {
+		} else if strings.Contains(msg, "specify less number of address") ||
+			// Alchemy/DRPC: "exceed max addresses or topics per search position"
+			strings.Contains(msg, "addresses or topics per search position") ||
+			// Infura: "This query contains N filters. The current limit is 5000."
+			(strings.Contains(msg, "filters") && strings.Contains(msg, "current limit is")) {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
