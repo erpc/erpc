@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"errors"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +39,84 @@ func newTestRequest() *common.NormalizedRequest {
 func validResponse() *common.NormalizedResponse {
 	jrpc, _ := common.NewJsonRpcResponse(1, []interface{}{"0x1"}, nil)
 	return common.NewNormalizedResponse().WithJsonRpcResponse(jrpc)
+}
+
+func validResponseWithValue(value string) *common.NormalizedResponse {
+	jrpc, _ := common.NewJsonRpcResponse(1, []interface{}{value}, nil)
+	return common.NewNormalizedResponse().WithJsonRpcResponse(jrpc)
+}
+
+type trackingReadCloser struct {
+	closeCount *atomic.Int32
+}
+
+func (t *trackingReadCloser) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (t *trackingReadCloser) Close() error {
+	if t.closeCount != nil {
+		t.closeCount.Add(1)
+	}
+	return nil
+}
+
+func validResponseWithCloser(value string, closeCount *atomic.Int32) *common.NormalizedResponse {
+	return validResponseWithValue(value).WithBody(&trackingReadCloser{closeCount: closeCount})
+}
+
+type stubExecution struct {
+	ctx context.Context
+}
+
+func (s *stubExecution) Context() context.Context { return s.ctx }
+func (s *stubExecution) Attempts() int            { return 1 }
+func (s *stubExecution) Executions() int          { return 1 }
+func (s *stubExecution) Retries() int             { return 0 }
+func (s *stubExecution) Hedges() int              { return 0 }
+func (s *stubExecution) StartTime() time.Time     { return time.Now() }
+func (s *stubExecution) ElapsedTime() time.Duration {
+	return 0
+}
+func (s *stubExecution) LastResult() *common.NormalizedResponse { return nil }
+func (s *stubExecution) LastError() error                       { return nil }
+func (s *stubExecution) IsFirstAttempt() bool                   { return true }
+func (s *stubExecution) IsRetry() bool                          { return false }
+func (s *stubExecution) IsHedge() bool                          { return false }
+func (s *stubExecution) AttemptStartTime() time.Time            { return time.Now() }
+func (s *stubExecution) ElapsedAttemptTime() time.Duration      { return 0 }
+func (s *stubExecution) IsCanceled() bool                       { return s.ctx != nil && s.ctx.Err() != nil }
+func (s *stubExecution) Canceled() <-chan struct{} {
+	if s.ctx == nil {
+		return nil
+	}
+	return s.ctx.Done()
+}
+func (s *stubExecution) RecordResult(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+	return result
+}
+func (s *stubExecution) InitializeRetry() *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+	return nil
+}
+func (s *stubExecution) Cancel(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) {}
+func (s *stubExecution) IsCanceledWithResult() (bool, *failsafeCommon.PolicyResult[*common.NormalizedResponse]) {
+	return s.IsCanceled(), nil
+}
+func (s *stubExecution) CopyWithResult(result *failsafeCommon.PolicyResult[*common.NormalizedResponse]) failsafe.Execution[*common.NormalizedResponse] {
+	return s
+}
+func (s *stubExecution) CopyForCancellable() failsafe.Execution[*common.NormalizedResponse] {
+	return s
+}
+func (s *stubExecution) CopyForHedge() failsafe.Execution[*common.NormalizedResponse] {
+	return s
+}
+func (s *stubExecution) CopyForCancellableWithValue(key, value any) failsafe.Execution[*common.NormalizedResponse] {
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &stubExecution{ctx: context.WithValue(ctx, key, value)}
 }
 
 // TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants verifies
@@ -121,6 +200,51 @@ func TestConsensus_ContextCancelAfterExecution_DoesNotReturnLowParticipants(t *t
 	}
 }
 
+// TestExecuteParticipant_PostExecutionCancel_PreservesResult locks down the
+// exact bug window at the smallest unit boundary: ctx is canceled after the
+// participant finishes innerFn but before executeParticipant decides whether
+// to forward the result. A naive implementation drops the result as nil and
+// creates a false low-participants analysis downstream.
+func TestExecuteParticipant_PostExecutionCancel_PreservesResult(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	e := &executor{
+		consensusPolicy: &consensusPolicy{
+			config: &config{},
+			logger: &logger,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var bodyClosed atomic.Int32
+	expected := validResponseWithCloser("0xfeed", &bodyClosed)
+	responseCh := make(chan *execResult, 1)
+
+	e.executeParticipant(
+		ctx,
+		&logger,
+		&stubExecution{ctx: ctx},
+		metricsLabels{},
+		func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+			cancel()
+			return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Result: expected}
+		},
+		0,
+		responseCh,
+	)
+
+	select {
+	case got := <-responseCh:
+		require.NotNil(t, got, "post-execution cancellation must still forward the completed result")
+		require.Same(t, expected, got.Result)
+		require.NoError(t, got.Err)
+		require.Equal(t, int32(0), bodyClosed.Load(), "executeParticipant must not release a still-valid result")
+	case <-time.After(time.Second):
+		t.Fatal("executeParticipant did not forward its result within 1s")
+	}
+}
+
 // TestConsensus_CallerAbandons_ParticipantsStillComplete verifies that when the
 // caller abandons the request (ctx cancelled), the analyzer goroutine keeps
 // running and all participants get a chance to execute their innerFn. This is
@@ -186,6 +310,71 @@ func TestConsensus_CallerAbandons_ParticipantsStillComplete(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "all three participants should complete after unblock")
 }
 
+// TestConsensus_TwoParticipants_CancelAfterExecution_DoesNotReturnLowParticipants
+// covers the smallest quorum boundary that still requires agreement. This is
+// the most failure-prone production shape: only two eligible participants, both
+// finish real work, and the caller disconnects before analysis completes.
+func TestConsensus_TwoParticipants_CancelAfterExecution_DoesNotReturnLowParticipants(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+
+	pol := NewConsensusPolicyBuilder().
+		WithMaxParticipants(2).
+		WithAgreementThreshold(2).
+		WithLogger(&logger).
+		Build()
+
+	req := newTestRequest()
+
+	var started atomic.Int32
+	allStarted := make(chan struct{})
+	completeInnerFn := make(chan struct{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(ctx, common.RequestContextKey, req)
+
+	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
+
+	type result struct {
+		resp *common.NormalizedResponse
+		err  error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			if started.Add(1) == 2 {
+				close(allStarted)
+			}
+			<-completeInnerFn
+			return validResponse(), nil
+		})
+		resultCh <- result{resp, err}
+	}()
+
+	<-allStarted
+	cancel()
+	close(completeInnerFn)
+
+	select {
+	case r := <-resultCh:
+		if r.err != nil {
+			require.Falsef(t,
+				common.HasErrorCode(r.err, common.ErrCodeConsensusLowParticipants),
+				"must not report ErrConsensusLowParticipants when both 2/2 responses are valid: %v", r.err,
+			)
+			require.True(t,
+				errors.Is(r.err, context.Canceled) || errors.Is(r.err, context.DeadlineExceeded),
+				"unexpected error after caller abandon at 2/2 boundary: %v", r.err,
+			)
+		} else {
+			require.NotNil(t, r.resp)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("consensus did not return within 2s at the 2/2 participant boundary")
+	}
+}
+
 // TestConsensus_ShortCircuit_CallerGetsWinnerBeforeSlowParticipants verifies
 // that short-circuit still works under Option D: once enough matching
 // responses arrive to give one group an unassailable lead, the caller
@@ -233,6 +422,49 @@ func TestConsensus_ShortCircuit_CallerGetsWinnerBeforeSlowParticipants(t *testin
 	// Unblock the slow participant so the analyzer can finish in the background
 	// and the test doesn't leak a goroutine.
 	close(slowRelease)
+}
+
+// TestConsensus_ShortCircuit_ReleasesLateResponses verifies the cleanup side of
+// the refactor: once the caller has been released on short-circuit, a later
+// non-winning response still has to be released exactly once. Without this,
+// the branch fixes correctness but leaks response buffers in the background.
+func TestConsensus_ShortCircuit_ReleasesLateResponses(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+
+	pol := NewConsensusPolicyBuilder().
+		WithMaxParticipants(3).
+		WithAgreementThreshold(1).
+		WithLogger(&logger).
+		Build()
+
+	req := newTestRequest()
+
+	var callCount atomic.Int32
+	var slowBodyClosed atomic.Int32
+	slowRelease := make(chan struct{})
+
+	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
+	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
+
+	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		switch callCount.Add(1) {
+		case 1, 2:
+			return validResponseWithValue("0x1"), nil
+		default:
+			<-slowRelease
+			return validResponseWithCloser("0x2", &slowBodyClosed), nil
+		}
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, int32(0), slowBodyClosed.Load(), "slow response should not be released before it finishes")
+
+	close(slowRelease)
+
+	require.Eventually(t, func() bool {
+		return slowBodyClosed.Load() == 1
+	}, time.Second, 10*time.Millisecond, "late post-short-circuit response should be released exactly once")
 }
 
 // TestConsensus_HappyPath_NoCancel verifies the refactor does not break the
