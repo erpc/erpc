@@ -104,6 +104,16 @@ Auto-detected chain IDs add one upstream call per network at startup and slow ro
 - `networks.*.evm.chainId` — under [Networks](/config/projects/networks)
 - `upstreams.*.evm.chainId` — under [Upstreams](/config/projects/upstreams)
 
+## WebSocket subscriptions
+
+If you serve [`eth_subscribe`](/operation/websocket) traffic, a few additional notes:
+
+- **One upstream subscription per (network, filter)** — eRPC de-duplicates across clients. 1,000 clients subscribed to the same `logs` filter consume one upstream subscription, not 1,000.
+- **Per-network memory for reorg tracking** — eRPC keeps a bounded ring of the last N canonical block headers per network (default 256, tune via [`indexer.canonicalChainDepth`](/operation/websocket#indexer-configuration)) plus an index of delivered logs keyed by `blockHash`. Upper bound is roughly `ring-depth × logs-per-block × payload-size`. On logs-heavy chains (~50 logs/block, ~400 B each) that is well under 10 MB per network — dominated by log payload, not ring metadata.
+- **Pod-local reorg view** — client WS connections are sticky to one pod. The `removed: true` re-emission that pod sends reflects *that pod's* local observation of the canonical chain. Cross-pod exactly-once reorg delivery is not provided; if required, rely on upstream consensus policies.
+- **Slow-client policy** — each subscription gets a bounded notification buffer. A slow client drops its *own* oldest queued notifications rather than blocking upstream delivery or other clients. No tuning knob; scale connections horizontally if drops become meaningful.
+- **`waitBeforeShutdown` still applies** — WS connections are drained during the grace window along with HTTP requests. A 30s `waitBeforeShutdown` is a safe default when a load balancer sits in front of eRPC.
+
 ## Healthcheck and zero-downtime rollout
 
 Configure a [Healthcheck](/operation/healthcheck) readiness probe so your orchestrator stops routing to a pod before it shuts down.

@@ -285,3 +285,13 @@ Network aliases are short names configured inside a project's `networks[]` block
 <Callout type="tip">
 	Append `.llms.txt` to this URL (or use the **AI** link above) to fetch the entire expanded reference as plain markdown for an AI assistant.
 </Callout>
+
+## WebSocket
+
+You can also connect via WebSocket using the same URL path with a `ws://` or `wss://` scheme:
+
+```
+ws://localhost:4000/main/evm/1
+```
+
+WebSocket connections support all JSON-RPC methods, batch requests, and real-time subscriptions (`eth_subscribe`). Read more in the [WebSocket](/operation/websocket) page.

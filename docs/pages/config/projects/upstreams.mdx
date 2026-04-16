@@ -40,6 +40,8 @@ The smallest workable upstream is just an endpoint. Everything else has sensible
 	yaml={`projects:
   - id: main
     upstreams:
+      # Endpoint URL supports http(s) and ws(s) schemes. Use ws:// or wss:// for
+      # WebSocket upstreams (required for eth_subscribe support).
       - endpoint: https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
         # eRPC auto-detects the chain ID and applies default failsafe (15s timeout,
         # 2 retries, circuit breaker at 80% failure rate).`}

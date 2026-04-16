@@ -297,6 +297,8 @@ Compression is **on by default** with Zstandard. Tune via `compression.*`:
 
 `threshold` (default `1024` bytes) — values smaller than this are stored uncompressed because the codec overhead outweighs savings. Bumping this up reduces CPU at the cost of disk; bumping down does the opposite.
 
+For `eth_getBlockByNumber` requests that use a moving tag (`"latest"`, `"finalized"`, `"safe"`), eRPC keys the cache entry by the concrete block number — the response's own number on write, the network's tracked tip on read. That means a burst of concurrent tag queries landing on the same tip coalesces onto one cached entry, but once the tip advances the key changes and the next request forwards upstream. You don't have to worry about a `"latest"` query returning a block that's multiple tips stale just because the TTL hasn't expired.
+
 Compression is particularly effective for:
 
 - Large block responses (`eth_getBlockByNumber` with full transactions)
