@@ -334,11 +334,19 @@ func (e *executor) runAnalyzer(
 		if resp == nil {
 			continue
 		}
-		responses = append(responses, resp)
 
 		if shortCircuited {
-			continue // still draining for memory release; analysis is frozen
+			// Analysis is frozen at the short-circuit moment. Any response
+			// that arrives after is NOT in analysis.groups, so
+			// releaseNonWinningResponses won't cover it. Release it here,
+			// mirroring the old drainResponsesInBackground behavior.
+			if resp.Result != nil {
+				resp.Result.Release()
+			}
+			continue
 		}
+
+		responses = append(responses, resp)
 
 		analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
 		winner = e.determineWinner(lg, analysis)
@@ -1052,6 +1060,28 @@ func (e *executor) startConsensusSpan(ctx context.Context, labels metricsLabels,
 }
 
 func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startTime time.Time, result *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis, labels metricsLabels, span trace.Span) {
+	// Defensive: analysis is nil on the catastrophic-path where the analyzer
+	// goroutine panicked before any responses could be classified. Emit
+	// minimal metrics and mark the span error rather than nil-dereferencing.
+	if analysis == nil {
+		outcome := "generic_error"
+		if result != nil && result.Error != nil {
+			common.SetTraceSpanError(span, result.Error)
+		}
+		span.SetAttributes(attribute.String("consensus.outcome", outcome))
+		duration := time.Since(startTime).Seconds()
+		telemetry.MetricConsensusTotal.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			Inc()
+		telemetry.MetricConsensusDuration.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			Observe(duration)
+		telemetry.MetricConsensusErrors.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			Inc()
+		return
+	}
+
 	// Determine if consensus was achieved based on the highest count group
 	best := analysis.getBestByCount()
 	hasConsensus := best != nil && best.Count >= e.agreementThreshold

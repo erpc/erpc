@@ -11,9 +11,11 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
+	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func init() {
@@ -358,4 +360,37 @@ func TestConsensus_FireAndForget_CallerCancelDoesNotStopParticipants(t *testing.
 	require.Eventually(t, func() bool {
 		return innerFnCompletes.Load() == 3
 	}, time.Second, 10*time.Millisecond, "all fire-and-forget participants should complete after unblock")
+}
+
+// TestRecordMetricsAndTracing_NilAnalysis_DoesNotPanic covers the catastrophic
+// path where the analyzer goroutine panics before any responses are
+// classified and hands the caller an outcome with nil analysis. The caller
+// must not trigger a secondary nil-pointer dereference when recording
+// metrics — it should emit a minimal outcome and return.
+func TestRecordMetricsAndTracing_NilAnalysis_DoesNotPanic(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	e := &executor{
+		consensusPolicy: &consensusPolicy{
+			config: &config{agreementThreshold: 1},
+			logger: &logger,
+		},
+	}
+
+	req := newTestRequest()
+	labels := metricsLabels{
+		projectId:   "test-proj",
+		networkId:   "test-net",
+		category:    "eth_getLogs",
+		finalityStr: "latest",
+		method:      "eth_getLogs",
+	}
+	span := trace.SpanFromContext(context.Background()) // noop span
+
+	result := &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+		Error: errors.New("simulated analyzer panic"),
+	}
+
+	require.NotPanics(t, func() {
+		e.recordMetricsAndTracing(req, time.Now(), result, nil /* analysis */, labels, span)
+	})
 }
