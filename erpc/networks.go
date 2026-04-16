@@ -13,6 +13,7 @@ import (
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
@@ -53,6 +54,15 @@ type Network struct {
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
 	initializer              *util.Initializer
+
+	// latestBlockShared / finalizedBlockShared make the network's block tags
+	// cross-pod monotonic. Without them, different eRPC instances could return
+	// regressing values (e.g. 100 then 97) when their local upstream state
+	// pollers are briefly out of step — a client polling through a load
+	// balancer would see the regression and treat it as a data-integrity
+	// failure. May be nil in tests or when shared state is unavailable.
+	latestBlockShared    data.CounterInt64SharedVariable
+	finalizedBlockShared data.CounterInt64SharedVariable
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -111,38 +121,14 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
 	defer span.End()
 
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	var maxBlock int64 = 0
-	for _, u := range upstreams {
-		statePoller := u.EvmStatePoller()
-		if statePoller == nil {
-			continue
-		}
-
-		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
-		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest latest block calculation")
-			continue
-		}
-
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_blockNumber" as it's a common method that would be used to get latest block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_blockNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest latest block calculation")
-				continue
-			}
-		}
-
-		// Use effective latest block which considers blockAvailability.upper config
-		// (e.g., if upstream has latestBlockMinus: 5, use latest-5 instead of latest)
-		upBlock := u.EvmEffectiveLatestBlock()
-		if upBlock > maxBlock {
-			maxBlock = upBlock
-		}
-	}
-	span.SetAttributes(attribute.Int64("highest_latest_block", maxBlock))
-	return maxBlock
+	result := n.evmHighestBlockNumber(
+		ctx,
+		"eth_blockNumber",
+		(*upstream.Upstream).EvmEffectiveLatestBlock,
+		n.latestBlockShared,
+	)
+	span.SetAttributes(attribute.Int64("highest_latest_block", result))
+	return result
 }
 
 func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
@@ -151,37 +137,82 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 	))
 	defer span.End()
 
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	var maxBlock int64 = 0
-	for _, u := range upstreams {
-		statePoller := u.EvmStatePoller()
-		if statePoller == nil {
+	result := n.evmHighestBlockNumber(
+		ctx,
+		"eth_getBlockByNumber",
+		(*upstream.Upstream).EvmEffectiveFinalizedBlock,
+		n.finalizedBlockShared,
+	)
+	span.SetAttributes(attribute.Int64("highest_finalized_block", result))
+	return result
+}
+
+// evmHighestBlockNumber aggregates a per-upstream block number across a
+// network and reconciles it with the cross-pod shared counter.
+//
+// Primary vs. fallback: fallback-group upstreams may run ahead of primaries
+// (e.g. 3rd-party providers vs. our own nodes). Feeding their values into
+// the shared counter causes tag translation to ask for blocks primaries
+// cannot yet serve. We therefore only use the fallback max when no primary
+// is up — "up" meaning circuit breaker closed, i.e. not a heuristic.
+//
+// Shared counter: we only ever publish forward progress. If our local max
+// exceeds the high-water mark we advance it; otherwise we return the shared
+// value unchanged. Publishing a lower value is not safe even though the
+// counter has a rollback tolerance — a large-enough drop crosses that
+// threshold and would wrongly clobber the high-water mark, producing the
+// exact cross-pod regression we want to prevent.
+func (n *Network) evmHighestBlockNumber(
+	ctx context.Context,
+	selectionMethod string,
+	blockOf func(*upstream.Upstream) int64,
+	shared data.CounterInt64SharedVariable,
+) int64 {
+	var primaryMax, fallbackMax int64
+	anyPrimaryUp := false
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		if u.EvmStatePoller() == nil {
 			continue
 		}
-
-		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest finalized block calculation")
+			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest block calculation")
 			continue
 		}
-
-		// Check if upstream is excluded by selection policy
 		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest finalized block calculation")
+			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, selectionMethod); err != nil {
+				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest block calculation")
 				continue
 			}
 		}
 
-		// Use effective finalized block which considers blockAvailability.upper config
-		upBlock := u.EvmEffectiveFinalizedBlock()
-		if upBlock > maxBlock {
-			maxBlock = upBlock
+		upBlock := blockOf(u)
+		if u.Config().Group == common.UpstreamGroupFallback {
+			if upBlock > fallbackMax {
+				fallbackMax = upBlock
+			}
+			continue
+		}
+		if !u.IsDown() {
+			anyPrimaryUp = true
+		}
+		if upBlock > primaryMax {
+			primaryMax = upBlock
 		}
 	}
-	span.SetAttributes(attribute.Int64("highest_finalized_block", maxBlock))
-	return maxBlock
+
+	localMax := primaryMax
+	if fallbackMax > 0 && !anyPrimaryUp {
+		localMax = fallbackMax
+	}
+
+	if shared == nil {
+		return localMax
+	}
+	sharedVal := shared.GetValue()
+	if localMax > sharedVal {
+		return shared.TryUpdate(ctx, localMax)
+	}
+	return sharedVal
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {

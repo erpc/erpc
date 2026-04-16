@@ -2796,3 +2796,67 @@ var NewErrEndpointNonceException = func(cause error, reason NonceExceptionReason
 func (e *ErrEndpointNonceException) ErrorStatusCode() int {
 	return http.StatusOK
 }
+
+//
+// WebSocket / Subscription errors
+//
+
+type ErrSubscriptionNotFound struct{ BaseError }
+
+const ErrCodeSubscriptionNotFound ErrorCode = "ErrSubscriptionNotFound"
+
+var NewErrSubscriptionNotFound = func(subId string) error {
+	return &ErrSubscriptionNotFound{
+		BaseError{
+			Code:    ErrCodeSubscriptionNotFound,
+			Message: "subscription not found",
+			Details: map[string]interface{}{
+				"subscriptionId": subId,
+			},
+		},
+	}
+}
+
+func (e *ErrSubscriptionNotFound) ErrorStatusCode() int {
+	return http.StatusNotFound
+}
+
+type ErrNoWsUpstreamAvailable struct{ BaseError }
+
+const ErrCodeNoWsUpstreamAvailable ErrorCode = "ErrNoWsUpstreamAvailable"
+
+var NewErrNoWsUpstreamAvailable = func(networkId string) error {
+	return &ErrNoWsUpstreamAvailable{
+		BaseError{
+			Code:    ErrCodeNoWsUpstreamAvailable,
+			Message: fmt.Sprintf("eth_subscribe requires a WebSocket-capable upstream, none configured for network %s", networkId),
+			Details: map[string]interface{}{
+				"networkId": networkId,
+			},
+		},
+	}
+}
+
+func (e *ErrNoWsUpstreamAvailable) ErrorStatusCode() int {
+	return http.StatusBadRequest
+}
+
+type ErrSubscriptionLimitExceeded struct{ BaseError }
+
+const ErrCodeSubscriptionLimitExceeded ErrorCode = "ErrSubscriptionLimitExceeded"
+
+var NewErrSubscriptionLimitExceeded = func(max int) error {
+	return &ErrSubscriptionLimitExceeded{
+		BaseError{
+			Code:    ErrCodeSubscriptionLimitExceeded,
+			Message: "maximum subscriptions per connection exceeded",
+			Details: map[string]interface{}{
+				"maxPerConnection": max,
+			},
+		},
+	}
+}
+
+func (e *ErrSubscriptionLimitExceeded) ErrorStatusCode() int {
+	return http.StatusTooManyRequests
+}

@@ -12251,6 +12251,214 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 
 		assert.Equal(t, int64(1800), highest, "Should exclude syncing nodes even when they have upper bounds configured")
 	})
+
+	t.Run("EvmHighestFinalizedBlockNumber_MonotonicAcrossPods", func(t *testing.T) {
+		// Regression guard for the "finalized tag regresses across load-balanced
+		// instances" failure mode. Without the shared counter, a caller polling
+		// through a load balancer can see a lower value than it saw on a prior
+		// poll — clients that enforce repeatable-read semantics treat that as a
+		// data-integrity violation and mark eRPC unhealthy.
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		up := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "only-node",
+			Endpoint: "http://only.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+
+		gock.New("http://only.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "test",
+			[]*common.UpstreamConfig{up}, ssr, rateLimitersRegistry, vr, pr, nil,
+			metricsTracker, 1*time.Second, nil, nil,
+		)
+
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		}
+		network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+		require.NoError(t, err)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+		require.NoError(t, network.Bootstrap(ctx))
+		time.Sleep(250 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 1)
+		u := upsList[0]
+
+		// Initial finalized: 1000
+		u.EvmStatePoller().SuggestLatestBlock(1000)
+		u.EvmStatePoller().SuggestFinalizedBlock(1000)
+		time.Sleep(50 * time.Millisecond)
+
+		got := network.EvmHighestFinalizedBlockNumber(ctx)
+		assert.Equal(t, int64(1000), got, "first observation should be 1000")
+
+		// Simulate a peer instance that has already observed a higher finalized
+		// value (1050) by pushing directly into the network-level shared
+		// counter. This is how cross-pod propagation lands on this instance.
+		require.NotNil(t, network.finalizedBlockShared, "network-level shared counter should be initialized")
+		network.finalizedBlockShared.TryUpdate(ctx, 1050)
+
+		// Even though THIS instance's local upstream state still says 1000,
+		// we must return at least 1050 — clients relying on monotonic finalized
+		// progression must never observe a regression.
+		got = network.EvmHighestFinalizedBlockNumber(ctx)
+		assert.GreaterOrEqual(t, got, int64(1050),
+			"must not regress below the shared (peer-observed) value")
+
+		// Local advances past the shared value — we return the new max.
+		u.EvmStatePoller().SuggestFinalizedBlock(1100)
+		time.Sleep(50 * time.Millisecond)
+		got = network.EvmHighestFinalizedBlockNumber(ctx)
+		assert.Equal(t, int64(1100), got, "should advance when local exceeds shared")
+
+		// Now simulate a local regression: the upstream goes syncing, so
+		// EvmHighestFinalizedBlockNumber's pre-shared max is 0. The returned
+		// value must still be ≥ 1100 (the high-water mark stored in shared).
+		u.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+		got = network.EvmHighestFinalizedBlockNumber(ctx)
+		assert.GreaterOrEqual(t, got, int64(1100),
+			"must not regress when local view temporarily drops (upstream syncing / excluded)")
+	})
+
+	t.Run("EvmHighestFinalizedBlockNumber_FallbackExcludedWhenPrimariesUp", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		primary := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "primary-node",
+			Endpoint: "http://primary.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+		fallback := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "fallback-node",
+			Endpoint: "http://fallback.localhost",
+			Group:    "fallback",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+
+		gock.New("http://primary.localhost").Post("").Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+			Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+		gock.New("http://fallback.localhost").Post("").Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), `eth_chainId`) }).
+			Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "test",
+			[]*common.UpstreamConfig{primary, fallback}, ssr, rateLimitersRegistry, vr, pr, nil,
+			metricsTracker, 1*time.Second, nil, nil,
+		)
+
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		}
+		network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+		require.NoError(t, err)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+		require.NoError(t, network.Bootstrap(ctx))
+		time.Sleep(250 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 2)
+
+		var primaryUp, fallbackUp *upstream.Upstream
+		for _, ups := range upsList {
+			if ups.Id() == "primary-node" {
+				primaryUp = ups
+			} else if ups.Id() == "fallback-node" {
+				fallbackUp = ups
+			}
+		}
+		require.NotNil(t, primaryUp)
+		require.NotNil(t, fallbackUp)
+
+		// Primary at 1000, fallback at 1050 (ahead).
+		primaryUp.EvmStatePoller().SuggestLatestBlock(1000)
+		primaryUp.EvmStatePoller().SuggestFinalizedBlock(1000)
+		fallbackUp.EvmStatePoller().SuggestLatestBlock(1050)
+		fallbackUp.EvmStatePoller().SuggestFinalizedBlock(1050)
+
+		// Wait until the seeded values are observable via the upstream's
+		// block accessors. The poller is still running in the background and
+		// may overwrite until it gives up on the unmocked endpoints, so we
+		// poll with a bounded deadline rather than sleeping blindly.
+		require.Eventually(t, func() bool {
+			return primaryUp.EvmEffectiveFinalizedBlock() == 1000 &&
+				fallbackUp.EvmEffectiveFinalizedBlock() == 1050
+		}, 2*time.Second, 10*time.Millisecond,
+			"primary/fallback block values should settle after Suggest*Block")
+
+		// With primary up: should use primary value (1000), not fallback (1050)
+		got := network.EvmHighestFinalizedBlockNumber(ctx)
+		assert.Equal(t, int64(1000), got,
+			"should use primary value when primaries are up, even if fallback is higher")
+
+		got = network.EvmHighestLatestBlockNumber(ctx)
+		assert.Equal(t, int64(1000), got,
+			"should use primary latest when primaries are up, even if fallback is higher")
+	})
 }
 
 func TestNetwork_CacheEmptyBehavior(t *testing.T) {
