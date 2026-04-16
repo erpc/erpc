@@ -308,7 +308,7 @@ func simulateRequestMetricsWithLatency(tracker *Tracker, upstream common.Upstrea
 		go func() {
 			defer wg.Done()
 			tracker.RecordUpstreamRequest(upstream, method)
-			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), true, "none", common.DataFinalityStateUnknown, "n/a")
+			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), true, "none", common.DataFinalityStateUnknown)
 		}()
 	}
 	wg.Wait()
@@ -884,7 +884,7 @@ func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
 	t.Run("success_latency_recorded_in_quantile", func(t *testing.T) {
 		ups := common.NewFakeUpstream("ups-success")
 		tracker.RecordUpstreamRequest(ups, method)
-		tracker.RecordUpstreamDuration(ups, method, 200*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "")
+		tracker.RecordUpstreamDuration(ups, method, 200*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		mt := tracker.GetUpstreamMethodMetrics(ups, method)
 		require.NotNil(t, mt)
@@ -895,7 +895,7 @@ func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
 	t.Run("error_latency_not_in_quantile", func(t *testing.T) {
 		ups := common.NewFakeUpstream("ups-error")
 		tracker.RecordUpstreamRequest(ups, method)
-		tracker.RecordUpstreamDuration(ups, method, 50*time.Millisecond, false, "none", common.DataFinalityStateUnknown, "")
+		tracker.RecordUpstreamDuration(ups, method, 50*time.Millisecond, false, "none", common.DataFinalityStateUnknown)
 
 		mt := tracker.GetUpstreamMethodMetrics(ups, method)
 		require.NotNil(t, mt)
@@ -908,7 +908,7 @@ func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
 		// This ensures fast empty responses don't inflate the latency quantile.
 		ups := common.NewFakeUpstream("ups-empty")
 		tracker.RecordUpstreamRequest(ups, method)
-		tracker.RecordUpstreamDuration(ups, method, 10*time.Millisecond, false, "none", common.DataFinalityStateUnknown, "")
+		tracker.RecordUpstreamDuration(ups, method, 10*time.Millisecond, false, "none", common.DataFinalityStateUnknown)
 
 		mt := tracker.GetUpstreamMethodMetrics(ups, method)
 		require.NotNil(t, mt)
@@ -921,7 +921,7 @@ func TestRecordUpstreamDuration_OnlySuccessInQuantile(t *testing.T) {
 		// should count. The upstream.go caller passes isSuccess=true for these.
 		ups := common.NewFakeUpstream("ups-revert")
 		tracker.RecordUpstreamRequest(ups, method)
-		tracker.RecordUpstreamDuration(ups, method, 150*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "")
+		tracker.RecordUpstreamDuration(ups, method, 150*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		mt := tracker.GetUpstreamMethodMetrics(ups, method)
 		require.NotNil(t, mt)

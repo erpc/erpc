@@ -105,7 +105,6 @@ func BenchmarkTrackerRecordUpstreamDuration(b *testing.B) {
 				true,
 				"none",
 				common.DataFinalityStateUnknown,
-				"user-1",
 			)
 			i++
 		}
@@ -206,7 +205,7 @@ func BenchmarkTrackerMixedOperations(b *testing.B) {
 			switch i % 5 {
 			case 0, 1, 2: // 60% are regular requests
 				tracker.RecordUpstreamRequest(upstream, method)
-				tracker.RecordUpstreamDuration(upstream, method, 100*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "user-1")
+				tracker.RecordUpstreamDuration(upstream, method, 100*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 			case 3: // 20% are failures
 				tracker.RecordUpstreamRequest(upstream, method)
 				tracker.RecordUpstreamFailure(upstream, method, testErr)
@@ -250,7 +249,7 @@ func BenchmarkTrackerRecordUpstreamDurationWithTimer(b *testing.B) {
 			method := methods[i%len(methods)]
 
 			// Start timer
-			timer := tracker.RecordUpstreamDurationStart(upstream, method, "none", common.DataFinalityStateUnknown, "user-1")
+			timer := tracker.RecordUpstreamDurationStart(upstream, method, "none", common.DataFinalityStateUnknown)
 
 			// Simulate some work
 			time.Sleep(1 * time.Nanosecond)

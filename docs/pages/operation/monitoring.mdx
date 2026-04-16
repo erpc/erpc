@@ -20,8 +20,8 @@ metrics:
   listenV6: false
   hostV6: "[::]"
   port: 4001
-  errorLabelMode: "verbose" # Optional: "verbose" (default) or "compact"
-  histogramBuckets: "0.01,0.1,0.5,1,5,10,60,300" # Optional: custom histogram buckets
+  errorLabelMode: "compact" # Optional: "verbose" (default) or "compact"
+  histogramBuckets: "0.05,0.5,5,30" # Optional: custom histogram buckets
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -37,8 +37,8 @@ export default createConfig({
     listenV6: false,
     hostV6: "[::]",
     port: 4001,
-    errorLabelMode: "verbose", // Optional: "verbose" (default) or "compact"
-    histogramBuckets: "0.01,0.1,0.5,1,5,10,60,300", // Optional: custom histogram buckets
+    errorLabelMode: "compact", // Optional: "verbose" (default) or "compact"
+    histogramBuckets: "0.05,0.5,5,30", // Optional: custom histogram buckets
   }
 });
 ```
@@ -53,20 +53,20 @@ eRPC provides two configuration options to help reduce metrics cardinality, whic
 
 The `errorLabelMode` setting controls how detailed error information is included in metrics labels:
 
-- `verbose`: Uses the full error message as labels (default for backward compatibility)
+- `verbose`: Uses the full error message as labels
 - `compact`: Uses only the error type as labels, reducing cardinality significantly
     
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 metrics:
-  errorLabelMode: "compact" # "verbose" or "compact"
+  errorLabelMode: "compact" # "verbose" (default) or "compact"
 ```
   </Tabs.Tab>
   <Tabs.Tab>
 ```ts filename="erpc.ts"
 metrics: {
-  errorLabelMode: "compact", // "verbose" or "compact"
+  errorLabelMode: "compact", // "verbose" (default) or "compact"
 }
 ```
   </Tabs.Tab>
@@ -80,13 +80,13 @@ You can customize histogram buckets to reduce cardinality and focus on relevant 
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 metrics:
-  histogramBuckets: "0.01,0.1,0.5,1,5,10,60,300"
+  histogramBuckets: "0.05,0.5,5,30"
 ```
   </Tabs.Tab>
   <Tabs.Tab>
 ```ts filename="erpc.ts"
 metrics: {
-  histogramBuckets: "0.01,0.1,0.5,1,5,10,60,300",
+  histogramBuckets: "0.05,0.5,5,30",
 }
 ```
   </Tabs.Tab>
@@ -105,8 +105,14 @@ Set these as deployment-level env vars (same values for all pods in a rollout) t
 
 #### Built-in Cardinality Guardrails
 
+- `erpc_upstream_request_duration_seconds` omits the `user` label.
+- `erpc_network_request_duration_seconds` uses `outcome=success|cache|error` instead of `vendor`, `upstream`, and `user`.
+- `erpc_cache_set_*_duration_seconds`, `erpc_cache_get_*_duration_seconds`, and `erpc_network_evm_get_logs_range_requested` also omit `user`.
+- `erpc_network_hedge_delay_seconds` uses a 5-bucket budget (`0.01, 0.05, 0.2, 0.7, 3`) to keep hedge telemetry cheap.
 - `erpc_network_upstream_calls_per_request` uses a compact 5-bucket budget (`1, 2, 3, 5, 13`) because the metric is mainly used to spot retry/hedge amplification, not exact long-tail call counts.
 - `erpc_network_evm_block_range_requested_total` is network-scoped on purpose; use it for access-pattern heatmaps, and use upstream request counters for upstream-specific drill-downs.
+
+Hot request counters keep `user` for drill-downs but drop `agent_name` on the largest families (`erpc_upstream_request_total`, `erpc_upstream_request_errors_total`, `erpc_network_successful_request_total`, `erpc_network_failed_request_total`, `erpc_rate_limits_total`). Keep `scoreMetricsMode: compact` unless you explicitly need per-method routing telemetry.
 
 Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up monitoring.
 

@@ -82,7 +82,6 @@ func NewAuthorizer(appCtx context.Context, logger *zerolog.Logger, projectId str
 // for example if you want only eth_getLogs to be allowed, set ignoreMethods to ["*"] and allowMethods to ["eth_getLogs"]
 func (a *Authorizer) shouldApplyToMethod(method string) bool {
 	shouldApply := true
-
 	if len(a.cfg.IgnoreMethods) > 0 {
 		for _, ignoreMethod := range a.cfg.IgnoreMethods {
 			match, err := common.WildcardMatch(ignoreMethod, method)

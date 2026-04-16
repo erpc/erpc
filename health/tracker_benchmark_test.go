@@ -39,7 +39,7 @@ func (u *upstreamStub) Cordon(string, string)   {}
 func (u *upstreamStub) Uncordon(string, string) {}
 func (u *upstreamStub) IgnoreMethod(string)     {}
 
-// labelCombo captures the full label set for MetricUpstreamRequestDuration
+// labelCombo captures the hot-path dimensions used by MetricUpstreamRequestDuration benchmarks.
 type labelCombo struct {
 	up     *upstreamStub
 	method string
@@ -76,14 +76,14 @@ func buildCombos(project string, upstreams int, methods []string, users []string
 func prewarmPerCall(combos []labelCombo, project string) {
 	for _, c := range combos {
 		telemetry.MetricUpstreamRequestDuration.
-			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String(), c.user).
+			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String()).
 			Observe(0.001)
 	}
 }
 
 func prewarmCached(tk *Tracker, combos []labelCombo) {
 	for _, c := range combos {
-		_ = tk.getUpstreamRequestDurationObserver(c.up, c.method, c.comp, c.final, c.user)
+		_ = tk.getUpstreamRequestDurationObserver(c.up, c.method, c.comp, c.final)
 	}
 }
 
@@ -112,7 +112,7 @@ func BenchmarkMetricUpstreamRequestDuration_PerCall(b *testing.B) {
 		for pb.Next() {
 			c := combos[idx]
 			telemetry.MetricUpstreamRequestDuration.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String(), c.user).
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String()).
 				Observe(0.003)
 			idx++
 			if idx >= len(combos) {
@@ -143,7 +143,7 @@ func BenchmarkMetricUpstreamRequestDuration_Cached(b *testing.B) {
 		for pb.Next() {
 			c := combos[idx]
 			// isSuccess=false to avoid quantile updates and isolate the histogram path cost
-			tk.RecordUpstreamDuration(c.up, c.method, 3*time.Millisecond, false, c.comp, c.final, c.user)
+			tk.RecordUpstreamDuration(c.up, c.method, 3*time.Millisecond, false, c.comp, c.final)
 			idx++
 			if idx >= len(combos) {
 				idx = 0
@@ -155,7 +155,7 @@ func BenchmarkMetricUpstreamRequestDuration_Cached(b *testing.B) {
 func prewarmPerCallRemoteRateLimited(combos []labelCombo, project string) {
 	for _, c := range combos {
 		telemetry.MetricRateLimitsTotal.
-			WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "<remote>", "remote", "", "upstream").
+			WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "<remote>", "remote", "", "upstream").
 			Inc()
 	}
 }
@@ -178,7 +178,7 @@ func BenchmarkUpstreamRemoteRateLimited_PerCall(b *testing.B) {
 		for pb.Next() {
 			c := combos[idx]
 			telemetry.MetricRateLimitsTotal.
-				WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "unknown", "<remote>", "remote", "", "upstream").
+				WithLabelValues(project, c.up.networkLabel, c.up.vendor, c.up.id, c.method, "", "n/a", "<remote>", "remote", "", "upstream").
 				Inc()
 			idx++
 			if idx >= len(combos) {
@@ -200,7 +200,7 @@ func BenchmarkUpstreamRemoteRateLimited_Cached(b *testing.B) {
 	tk := NewTracker(&lg, project, time.Minute)
 	// Prewarm cached handles
 	for _, c := range combos {
-		tk.getRemoteRateLimitedCounter(c.up, c.method, "n/a", "unknown", "unknown")
+		tk.getRemoteRateLimitedCounter(c.up, c.method, "n/a", "unknown")
 	}
 
 	b.ReportAllocs()
@@ -227,7 +227,7 @@ func prewarmPerCallRequestCounter(combos []labelCombo, project string) {
 	for _, c := range combos {
 		for _, a := range attempts {
 			telemetry.MetricUpstreamRequestTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user, "unknown").
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user).
 				Inc()
 		}
 	}
@@ -240,7 +240,7 @@ func prewarmPerCallErrorCounter(combos []labelCombo, project string) {
 		for _, e := range errors {
 			for _, s := range severities {
 				telemetry.MetricUpstreamErrorTotal.
-					WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user, "unknown").
+					WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user).
 					Inc()
 			}
 		}
@@ -267,7 +267,7 @@ func BenchmarkUpstreamRequestTotal_PerCall(b *testing.B) {
 			c := combos[idx]
 			a := attempts[ai]
 			telemetry.MetricUpstreamRequestTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user, "unknown").
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, a, c.comp, c.final.String(), c.user).
 				Inc()
 			idx++
 			if idx >= len(combos) {
@@ -304,7 +304,7 @@ func BenchmarkUpstreamErrorTotal_PerCall(b *testing.B) {
 			e := errors[ei]
 			s := severities[si]
 			telemetry.MetricUpstreamErrorTotal.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user, "unknown").
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, e, s, c.comp, c.final.String(), c.user).
 				Inc()
 			idx++
 			if idx >= len(combos) {

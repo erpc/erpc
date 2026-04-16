@@ -1432,7 +1432,7 @@ func (n *Network) handleBlockSkip(
 		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
 		common.ErrorFingerprint(skipErr), string(common.SeverityInfo),
 		req.CompositeType(), finality.String(),
-		req.UserId(), req.AgentName(),
+		req.UserId(),
 	).Inc()
 	errToStore := skipErr
 	if !isRetryable {

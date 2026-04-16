@@ -57,12 +57,11 @@ type Timer struct {
 	compositeType string
 	tracker       *Tracker
 	finality      common.DataFinalityState
-	userId        string
 }
 
 func (t *Timer) ObserveDuration(isSuccess bool) {
 	duration := time.Since(t.start)
-	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality, t.userId)
+	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType, t.finality)
 }
 
 // ------------------------------------
@@ -212,10 +211,9 @@ type urdoKey struct {
 	category  string
 	composite string
 	finality  string
-	user      string
 }
 
-func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method, composite string, finality common.DataFinalityState, userId string) prometheus.Observer {
+func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method, composite string, finality common.DataFinalityState) prometheus.Observer {
 	key := urdoKey{
 		project:   t.projectId,
 		vendor:    up.VendorName(),
@@ -224,7 +222,6 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 		category:  method,
 		composite: composite,
 		finality:  finality.String(),
-		user:      userId,
 	}
 	if v, ok := t.urdObsCache.Load(key); ok {
 		return v.(prometheus.Observer)
@@ -233,7 +230,7 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 		return nil
 	}
 	obs := telemetry.MetricUpstreamRequestDuration.WithLabelValues(
-		key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
+		key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality,
 	)
 	actual, _ := t.urdObsCache.LoadOrStore(key, obs)
 	return actual.(prometheus.Observer)
@@ -241,34 +238,32 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 
 // Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
 type rrltKey struct {
-	project   string
-	vendor    string
-	network   string
-	upstream  string
-	category  string
-	user      string
-	agentName string
-	finality  string
+	project  string
+	vendor   string
+	network  string
+	upstream string
+	category string
+	user     string
+	finality string
 }
 
-func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName, finality string) prometheus.Counter {
-	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName, finality}
+func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, finality string) prometheus.Counter {
+	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, finality}
 	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
 		return v.(prometheus.Counter)
 	}
 	c := telemetry.MetricRateLimitsTotal.WithLabelValues(
-		key.project,   // project
-		key.network,   // network
-		key.vendor,    // vendor
-		key.upstream,  // upstream
-		key.category,  // category
-		key.finality,  // finality
-		key.user,      // user
-		key.agentName, // agent_name
-		"<remote>",    // budget
-		"remote",      // scope (remote upstream)
-		"",            // auth
-		"upstream",    // origin
+		key.project,  // project
+		key.network,  // network
+		key.vendor,   // vendor
+		key.upstream, // upstream
+		key.category, // category
+		key.finality, // finality
+		key.user,     // user
+		"<remote>",   // budget
+		"remote",     // scope (remote upstream)
+		"",           // auth
+		"upstream",   // origin
 	)
 	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, c)
 	return actual.(prometheus.Counter)
@@ -535,7 +530,7 @@ func (t *Tracker) RecordUpstreamRequest(up common.Upstream, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState, userId string) *Timer {
+func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string, finality common.DataFinalityState) *Timer {
 	if compositeType == "" {
 		compositeType = "none"
 	}
@@ -546,11 +541,10 @@ func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method s
 		compositeType: compositeType,
 		finality:      finality,
 		tracker:       t,
-		userId:        userId,
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState, userId string) {
+func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string, finality common.DataFinalityState, _ ...string) {
 	if comp == "" {
 		comp = "none"
 	}
@@ -566,7 +560,7 @@ func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d ti
 		}
 	}
 	// Use cached observer to avoid per-request MetricVec lookups/locks.
-	if obs := t.getUpstreamRequestDurationObserver(up, method, comp, finality, userId); obs != nil {
+	if obs := t.getUpstreamRequestDurationObserver(up, method, comp, finality); obs != nil {
 		obs.Observe(sec)
 	}
 }
@@ -619,17 +613,15 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(ctx context.Context, up common
 		t.getNtwMetrics(nk).RemoteRateLimitedTotal.Add(1)
 	}
 
-	var userId, agentName, finality string
+	var userId, finality string
 	if req != nil {
 		userId = req.UserId()
-		agentName = req.AgentName()
 		finality = req.Finality(ctx).String()
 	} else {
 		userId = "n/a"
-		agentName = "unknown"
 	}
 
-	t.getRemoteRateLimitedCounter(up, method, userId, agentName, finality).Inc()
+	t.getRemoteRateLimitedCounter(up, method, userId, finality).Inc()
 }
 
 // --------------------------------------------

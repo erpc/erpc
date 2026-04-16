@@ -198,7 +198,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 			telemetry.CounterHandle(
 				telemetry.MetricRateLimitsTotal,
 				projectId, networkLabel, vendor, upstreamId, method, finality,
-				userLabel, agentName, b.Id, rules[0].Config.ScopeString(), authLabel, origin,
+				userLabel, b.Id, rules[0].Config.ScopeString(), authLabel, origin,
 			).Inc()
 		}
 		return allowed, nil
@@ -236,7 +236,7 @@ func (b *RateLimiterBudget) TryAcquirePermit(ctx context.Context, projectId stri
 		telemetry.CounterHandle(
 			telemetry.MetricRateLimitsTotal,
 			projectId, networkLabel, vendor, upstreamId, method, finality,
-			userLabel, agentName, b.Id, blockingRule.Config.ScopeString(), authLabel, origin,
+			userLabel, b.Id, blockingRule.Config.ScopeString(), authLabel, origin,
 		).Inc()
 		return false, nil
 	}

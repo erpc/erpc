@@ -700,14 +700,14 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum(increase(erpc_network_successful_request_total{\n    \n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    client_name=~\"${client_name:regex}\",\n    cluster_key=~\"${cluster_key:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",user=~\"${user:regex}\"\n    }[1m])) by (region, agent_name) > 0",
+              "expr": "sum(increase(erpc_network_successful_request_total{\n    \n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    client_name=~\"${client_name:regex}\",\n    cluster_key=~\"${cluster_key:regex}\",\n    vendor=~\"${vendor:regex}\",\n    upstream=~\"${upstream:regex}\",\n    vendor!~\"${ignore_vendor:regex}\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\",user=~\"${user:regex}\"\n    }[1m])) by (region, user) > 0",
               "interval": "",
-              "legendFormat": "{{region}} {{agent_name}}",
+              "legendFormat": "{{region}} {{user}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Total Responses (by Region and User-Agent)",
+          "title": "Total Responses (by Region and User)",
           "type": "timeseries"
         }
       ],
@@ -1452,7 +1452,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    outcome=~\"success|cache\"\n}[1m])) by (le, network, category, finality))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -1552,7 +1552,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    outcome=~\"success|cache\"\n}[1m])) by (le, network, category, finality))",
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -1655,7 +1655,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    outcome=~\"success|cache\"\n}[1m])) by (le, network, category, finality))",
               "hide": false,
               "legendFormat": "{{network}}, {{category}}, {{finality}}",
               "range": true,
@@ -1755,14 +1755,14 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",outcome=~\"success|cache\"}[1m])) by (le, network, category, finality, outcome))",
               "hide": false,
-              "legendFormat": "{{network}}, {{category}}, {{finality}}, {{vendor}}",
+              "legendFormat": "{{network}}, {{category}}, {{finality}}, {{outcome}}",
               "range": true,
               "refId": "B"
             }
           ],
-          "title": "Network vendors P99 Resp. time",
+          "title": "Network outcomes P99 Resp. time",
           "type": "timeseries"
         },
         {
@@ -1855,13 +1855,13 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality, vendor))",
-              "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",outcome=~\"success|cache\"}[1m])) by (le, network, category, finality, outcome))",
+              "legendFormat": "{{network}}, {{category}}, {{finality}}, {{outcome}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Network vendors P90 Resp. time",
+          "title": "Network outcomes P90 Resp. time",
           "type": "timeseries"
         },
         {
@@ -1960,14 +1960,14 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",vendor=~\"${vendor:regex}\",category=~\"${category:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",outcome=~\"success|cache\"}[1m])) by (le, network, category, finality, outcome))",
               "hide": false,
-              "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
+              "legendFormat": "{{network}}, {{category}}, {{finality}}, {{outcome}}",
               "range": true,
               "refId": "C"
             }
           ],
-          "title": "Network vendor P50 Resp. time",
+          "title": "Network outcomes P50 Resp. time",
           "type": "timeseries"
         },
         {
@@ -2060,9 +2060,9 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    outcome=\"error\"\n}[1m])) by (le, network, category, finality))",
               "hide": false,
-              "legendFormat": "{{network}}, {{category}}, {{finality}}, {{vendor}}",
+              "legendFormat": "{{network}}, {{category}}, {{finality}}, error",
               "range": true,
               "refId": "B"
             }
@@ -2160,8 +2160,8 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\",user=~\"${user:regex}\"}[1m])) by (le, network, category, finality, vendor))",
-              "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    outcome=\"error\"\n}[1m])) by (le, network, category, finality))",
+              "legendFormat": "{{network}}, {{category}}, {{finality}}, error",
               "range": true,
               "refId": "A"
             }
@@ -2259,9 +2259,9 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, network, category, finality, vendor))",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    category=~\"${category:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\",\n    outcome=\"error\"\n}[1m])) by (le, network, category, finality))",
               "hide": false,
-              "legendFormat": "{{network}}, {{category}}, {{vendor}}, {{finality}}",
+              "legendFormat": "{{network}}, {{category}}, {{finality}}, error",
               "range": true,
               "refId": "C"
             }
@@ -3861,7 +3861,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",category=~\"${category:regex}\",composite=\"none\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "C"
@@ -3966,7 +3966,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",category=~\"${category:regex}\",composite=\"none\",project=~\"${project:regex}\"}[1m])) by (le, project, vendor, category))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    vendor=~\"${vendor:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    project=~\"${project:regex}\"\n}[1m])) by (le, project, vendor, category))",
               "legendFormat": "{{project}}, {{vendor}}, {{category}}",
               "range": true,
               "refId": "B"
@@ -4184,7 +4184,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -4283,7 +4283,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[1m])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "B"
@@ -4388,7 +4388,7 @@
                 "uid": "${DS_GROUNDCOVER-PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\",vendor=~\"${vendor:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[30s])) by (le, project, upstream, category, finality))",
+              "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{\n    network=~\"${network:regex}\",\n    upstream=~\"${upstream:regex}\",\n    category=~\"${category:regex}\",\n    composite=\"none\",\n    vendor=~\"${vendor:regex}\",\n    project=~\"${project:regex}\",\n    finality=~\"${finality:regex}\"\n}[30s])) by (le, project, upstream, category, finality))",
               "legendFormat": "{{project}}, {{upstream}}, {{category}}, {{finality}}",
               "range": true,
               "refId": "A"
@@ -10281,8 +10281,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
-              "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
+              "expr": "histogram_quantile(0.99, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, finality))",
+              "legendFormat": "{{project}}, {{network}}, {{finality}}",
               "range": true,
               "refId": "A"
             }
@@ -10380,8 +10380,8 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",vendor=~\"${vendor:regex}\",vendor!=\"<error>\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, user, finality))",
-              "legendFormat": "{{project}}, {{network}}, {{user}}, {{finality}}",
+              "expr": "histogram_quantile(0.5, sum(rate(erpc_network_evm_get_logs_range_requested_bucket{network=~\"${network:regex}\",category=~\"${category:regex}\",project=~\"${project:regex}\",finality=~\"${finality:regex}\"}[1m])) by (le, project, network, finality))",
+              "legendFormat": "{{project}}, {{network}}, {{finality}}",
               "range": true,
               "refId": "A"
             }

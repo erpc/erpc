@@ -32,7 +32,7 @@ func TestPolicyEvaluator_DeclarativeRules(t *testing.T) {
 		ntw.metricsTracker.RecordUpstreamFailure(ups1, "eth_call", fmt.Errorf("boom"))
 
 		ntw.metricsTracker.RecordUpstreamRequest(ups2, "eth_call")
-		ntw.metricsTracker.RecordUpstreamDuration(ups2, "eth_call", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		ntw.metricsTracker.RecordUpstreamDuration(ups2, "eth_call", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		cfg := &common.SelectionPolicyConfig{
 			EvalInterval: common.Duration(50 * time.Millisecond),
@@ -79,7 +79,7 @@ func TestPolicyEvaluator_DeclarativeRules(t *testing.T) {
 		ntw.metricsTracker.RecordUpstreamRequest(ups1, "eth_call")
 		ntw.metricsTracker.RecordUpstreamFailure(ups1, "eth_call", fmt.Errorf("boom"))
 		ntw.metricsTracker.RecordUpstreamRequest(ups2, "eth_call")
-		ntw.metricsTracker.RecordUpstreamDuration(ups2, "eth_call", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown, "n/a")
+		ntw.metricsTracker.RecordUpstreamDuration(ups2, "eth_call", 10*time.Millisecond, true, "none", common.DataFinalityStateUnknown)
 
 		evalFn, err := common.CompileFunction(`
 			(upstreams) => upstreams
