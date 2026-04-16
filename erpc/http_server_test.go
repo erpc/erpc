@@ -5844,6 +5844,112 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0x22228888", result["number"], "should return the state poller's latest block")
 	})
 
+	t.Run("HonorsEnforceHighestBlockFalseQueryOverride", func(t *testing.T) {
+		// Regression test for PR #820: HTTP query param `enforce-highest-block=false`
+		// must override the config-level default `EnforceHighestBlock=true` and NOT
+		// be silently overwritten by the defensive ApplyDirectiveDefaults call in
+		// Network.Forward.
+		//
+		// Without the fix: Network.Forward re-applies defaults and sets the
+		// directive back to true; post-hook fires and re-fetches via a different
+		// upstream, returning 0x22228888.
+		//
+		// With the fix: ApplyDirectiveDefaults is idempotent, so the query override
+		// survives; post-hook sees EnforceHighestBlock=false and returns early,
+		// preserving rpc1's lagging block (0x11118888).
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(100 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 123,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+							Failsafe: []*common.FailsafeConfig{
+								{
+									Retry: &common.RetryPolicyConfig{
+										MaxAttempts: 2,
+									},
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             123,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"id":      999,
+			"method":  "eth_getBlockByNumber",
+			"params": ["latest", false]
+		}`
+
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		upstream.ReorderUpstreams(prj.upstreamsRegistry)
+
+		// Give state poller time to learn highest block across both upstreams
+		time.Sleep(500 * time.Millisecond)
+
+		// Pin to the lagging rpc1 and disable highest-block enforcement via query.
+		queryParams := map[string]string{
+			"use-upstream":          "rpc1",
+			"enforce-highest-block": "false",
+		}
+		statusCode, respHeaders, body := sendRequest(requestBody, nil, queryParams)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		var respObject map[string]interface{}
+		err = sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err, "should parse response body successfully")
+
+		result, hasResult := respObject["result"].(map[string]interface{})
+		assert.True(t, hasResult, "response should have a 'result' field")
+		assert.Equal(t, "0x11118888", result["number"],
+			"should return rpc1's lagging block because enforce-highest-block=false was honored; "+
+				"returning 0x22228888 means the post-hook fired despite the override (bug)")
+		assert.Equal(t, "rpc1", respHeaders["X-Erpc-Upstream"],
+			"should route to and stay on rpc1; a different upstream means the post-hook retried")
+	})
+
 	t.Run("ReturnsMissingDataIfAllUpstreamsReturnNull", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()

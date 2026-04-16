@@ -503,6 +503,11 @@ func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
 }
 
 // ApplyDirectiveDefaults applies the default directives from the network configuration.
+// It is a no-op if directives have already been populated (by a prior call to
+// ApplyDirectiveDefaults, SetDirectives, or EnrichFromHttp). This prevents the
+// defensive call in Network.Forward() from overwriting directives that were
+// explicitly set via HTTP headers/query params between the http_server's
+// ApplyDirectiveDefaults and Network.Forward.
 func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveDefaultsConfig) {
 	if directiveDefaults == nil {
 		return
@@ -510,9 +515,10 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	r.Lock()
 	defer r.Unlock()
 
-	if r.directives == nil {
-		r.directives = &RequestDirectives{}
+	if r.directives != nil {
+		return
 	}
+	r.directives = &RequestDirectives{}
 
 	if directiveDefaults.RetryEmpty != nil {
 		r.directives.RetryEmpty = *directiveDefaults.RetryEmpty
