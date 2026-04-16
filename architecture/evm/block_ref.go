@@ -75,10 +75,10 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 				// In case of "*" since it means any block, we can still augment it from response ref, because during cache.Get()
 				// we'll be using reverse index (i.e. ignoring ref), but after reorg invalidation is added a specific block ref is useful.
 				//
-				// TODO An ideal version stores the data for all eth_getBlockByNumber(latest) and eth_getBlockByNumber(blockNumber),
-				// and eth_getBlockByNumber(blockHash) where blockNumber/blockHash are the actual values returned in the response.
-				// So that if user gets the latest block, then cache is populated for when they provide that specific block as well.
-				// When implementing that feature remember that CacheHash() must be calculated separately for each number/hash combo.
+				// For moving-tag requests ("latest", "finalized", "safe"), the
+				// cache layer calls ResolveCacheBlockRef instead, which resolves
+				// the tag to a concrete block number so each tip advance gets
+				// its own cache key.
 				blockRef = br
 			}
 			if bn > 0 {
@@ -108,6 +108,93 @@ func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedR
 		// and "*" (composite cases) that may already be present on the request.
 		if cur := r.EvmBlockRef(); cur == nil || cur == "" {
 			r.SetEvmBlockRef(blockRef)
+		}
+	}
+
+	return blockRef, blockNumber, nil
+}
+
+// ResolveCacheBlockRef returns the block reference the cache layer should use
+// when keying an eth_getBlockByNumber("latest") response (and other moving
+// tags). Regular ExtractBlockReferenceFromRequest preserves the literal tag
+// string ("latest") as blockRef so the cache hits on repeat tag queries —
+// but that makes every request within the TTL window return the same pinned
+// response regardless of chain progression (see the bug fixed alongside this
+// helper: stale "latest" responses served from cache until TTL expiry, with
+// enforceHighestBlock explicitly skipping cached responses).
+//
+// This helper substitutes the tag with a concrete block number so each tip
+// advance is a distinct cache key: on WRITE we use the response's own block
+// number (definitive answer for what the cached payload represents); on READ
+// we consult the network's tip tracker (EvmHighestLatestBlockNumber, which
+// aggregates max over upstream pollers and the cross-pod shared counter) to
+// decide which block we'd be asking for *right now*. Within a single tip
+// the key is stable and concurrent "latest" queries coalesce onto one cached
+// entry; across tip advances the key changes and the next request forwards
+// upstream.
+//
+// The function does NOT mutate the request's EvmBlockRef — the original
+// "latest" tag is preserved on the request so downstream finality computation
+// and other tag-aware logic keeps working.
+//
+// Fallback: if the tag can't be resolved to a concrete block number (no
+// response, no network attached to the request, or the tracker hasn't seen
+// a block yet), the original tag is returned and the cache key stays
+// tag-literal — same as prior behaviour. That path should be rare in
+// production since every normal HTTP request has a Network and an upstream
+// response by the SET stage.
+func ResolveCacheBlockRef(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (string, int64, error) {
+	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+
+	// Only rewrite moving tip-bound tags. Numeric refs, block-hash refs, "*",
+	// and slower-moving tags like "earliest" are already correct.
+	if blockRef != "latest" && blockRef != "finalized" && blockRef != "safe" {
+		return blockRef, blockNumber, nil
+	}
+
+	// WRITE path: prefer the response's own block number, which is the
+	// definitive answer for what payload we're about to cache.
+	if resp != nil {
+		if _, respBN, rerr := ExtractBlockReferenceFromResponse(ctx, resp); rerr == nil && respBN > 0 {
+			hex, herr := common.NormalizeHex(respBN)
+			if herr == nil {
+				return hex, respBN, nil
+			}
+		}
+	}
+
+	// READ path (and WRITE fallback): consult the network's aggregated view
+	// of the tag's current value. Guarded against panics because this helper
+	// is purely an optimization — if the network state isn't reachable for
+	// any reason (partially-constructed Network in a test, nil upstream
+	// registry, transient initialization race), we fall back to the tag-
+	// literal blockRef and retain the previous behaviour rather than
+	// aborting a live cache operation.
+	net := req.Network()
+	if net == nil {
+		return blockRef, blockNumber, nil
+	}
+	var num int64
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				num = 0
+			}
+		}()
+		switch blockRef {
+		case "latest":
+			num = net.EvmHighestLatestBlockNumber(ctx)
+		case "finalized", "safe":
+			num = net.EvmHighestFinalizedBlockNumber(ctx)
+		}
+	}()
+	if num > 0 {
+		hex, herr := common.NormalizeHex(num)
+		if herr == nil {
+			return hex, num, nil
 		}
 	}
 

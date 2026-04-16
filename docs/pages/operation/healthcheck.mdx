@@ -27,8 +27,8 @@ server:
   #                        requests can finish, new ones are rejected. Set it to at
   #                        least (readinessProbe.periodSeconds × readinessProbe.failureThreshold) + 1s.
   #   waitAfterShutdown  – once the HTTP server is fully stopped we keep the process
-  #                        alive for this duration so load-balancers (Envoy, kube-proxy…)
-  #                        can gracefully close any still-open TCP connections.
+  #                        alive for this duration so load-balancers can gracefully
+  #                        close any still-open TCP connections.
   waitBeforeShutdown: 30s
   waitAfterShutdown: 30s
   # ...

@@ -15,6 +15,7 @@ type ClientType string
 const (
 	ClientTypeHttpJsonRpc ClientType = "HttpJsonRpc"
 	ClientTypeGrpcBds     ClientType = "GrpcBds"
+	ClientTypeWsJsonRpc   ClientType = "WsJsonRpc"
 )
 
 type ClientInterface interface {
@@ -98,7 +99,18 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
-					clientErr = fmt.Errorf("websocket client not implemented yet")
+					newClient, err = NewWsJsonRpcClient(
+						appCtx,
+						&lg,
+						manager.projectId,
+						ups,
+						parsedUrl,
+						cfg.JsonRpc,
+						manager.evmExtractor,
+					)
+					if err != nil {
+						clientErr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, err)
+					}
 				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
 					newClient, err = NewGrpcBdsClient(
 						appCtx,
