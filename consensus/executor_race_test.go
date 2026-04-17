@@ -392,12 +392,16 @@ func TestRace_ThreeParticipants_OneCancelledBeforeExec_TwoValid(t *testing.T) {
 		// responses — but given N=3 with at least 1 guaranteed valid, and
 		// the innerFn is fast, at least 2 should complete in most runs.
 		if r.err != nil {
-			// Allow low-participants ONLY if context.Canceled is also present
-			// (meaning the caller abandoned before the analyzer could report).
 			if common.HasErrorCode(r.err, common.ErrCodeConsensusLowParticipants) {
-				// This is acceptable ONLY in the true-positive case
-				t.Logf("low-participants returned — acceptable if some participants were genuinely pre-cancelled")
+				// Low-participants is correct ONLY if fewer than threshold
+				// participants actually entered innerFn. If 2+ ran (and
+				// therefore produced valid responses), reporting low-
+				// participants is the exact regression this PR fixes.
+				completed := callCount.Load()
+				assert.Less(t, completed, int32(2),
+					"ErrConsensusLowParticipants with %d completed participants (>= threshold=2) is a regression", completed)
 			}
+			// context.Canceled is always acceptable (caller abandoned).
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("mixed participation: deadlock")
@@ -856,10 +860,15 @@ func TestRace_ShortCircuitOutcomeRacesCancel(t *testing.T) {
 			select {
 			case r := <-resultCh:
 				if r.err != nil {
-					require.Falsef(t,
-						common.HasErrorCode(r.err, common.ErrCodeConsensusLowParticipants),
-						"iter %d: short-circuit + cancel race must not produce LowParticipants: %v", iter, r.err,
-					)
+					if common.HasErrorCode(r.err, common.ErrCodeConsensusLowParticipants) {
+						// Low-participants is legitimate ONLY if cancel raced
+						// before enough participants entered innerFn. If 2+
+						// participants ran (producing valid matching responses),
+						// reporting low-participants is the regression.
+						completed := callCount.Load()
+						require.Less(t, completed, int32(2),
+							"iter %d: ErrConsensusLowParticipants with %d completed participants (>= threshold) is a regression", iter, completed)
+					}
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatalf("iter %d: deadlock", iter)
