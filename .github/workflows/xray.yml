@@ -1,7 +1,7 @@
 name: xray
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, ready_for_review]
   issue_comment:
     types: [created]
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   xray-on-pr:
-    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
@@ -21,7 +21,6 @@ jobs:
           egress-policy: audit
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - uses: xray-pr/xray-pr@main
         with:
