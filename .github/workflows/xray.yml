@@ -1,7 +1,7 @@
 name: xray
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, ready_for_review]
   issue_comment:
     types: [created]
@@ -12,19 +12,26 @@ permissions:
 
 jobs:
   xray-on-pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
         with:
           egress-policy: audit
+      - name: Generate xray-pr token
+        uses: actions/create-github-app-token@v1
+        id: xray-token
+        with:
+          app-id: ${{ vars.XRAY_APP_ID }}
+          private-key: ${{ secrets.XRAY_APP_PRIVATE_KEY }}
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - uses: kasrakhosravi/xray@main
+      - uses: xray-pr/xray-pr@main
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ steps.xray-token.outputs.token }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           languages: go
 
@@ -40,21 +47,25 @@ jobs:
         uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
         with:
           egress-policy: audit
-      - name: Check for fork
-        id: fork-check
+      - name: Generate xray-pr token
+        uses: actions/create-github-app-token@v1
+        id: xray-token
+        with:
+          app-id: ${{ vars.XRAY_APP_ID }}
+          private-key: ${{ secrets.XRAY_APP_PRIVATE_KEY }}
+      - name: Get PR head SHA
+        id: pr-info
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.xray-token.outputs.token }}
         run: |
-          IS_FORK=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.repo.fork')
-          echo "is_fork=$IS_FORK" >> $GITHUB_OUTPUT
-      - if: steps.fork-check.outputs.is_fork != 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+          SHA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.sha')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
         with:
-          ref: refs/pull/${{ github.event.issue.number }}/head
+          ref: ${{ steps.pr-info.outputs.sha }}
           fetch-depth: 0
-      - if: steps.fork-check.outputs.is_fork != 'true'
-        uses: kasrakhosravi/xray@main
+      - uses: xray-pr/xray-pr@main
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ steps.xray-token.outputs.token }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           languages: go
