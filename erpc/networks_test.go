@@ -12542,3 +12542,103 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		cache.AssertExpectations(t)
 	})
 }
+
+// minimalUpstream is a stub implementation of common.Upstream used only to
+// test tierUpstreamsByGroup, which relies on Id() and Config(). All other
+// methods are unused in this test and left as panics to surface accidental
+// coupling.
+type minimalUpstream struct {
+	common.Upstream // embed to inherit nil methods; direct calls will panic
+	id              string
+	cfg             *common.UpstreamConfig
+}
+
+func (m *minimalUpstream) Id() string                      { return m.id }
+func (m *minimalUpstream) Config() *common.UpstreamConfig  { return m.cfg }
+
+func newStubUpstream(id, group string) common.Upstream {
+	return &minimalUpstream{
+		id:  id,
+		cfg: &common.UpstreamConfig{Id: id, Group: group},
+	}
+}
+
+func TestTierUpstreamsByGroup(t *testing.T) {
+	t.Run("no fallback returns input slice unchanged", func(t *testing.T) {
+		in := []common.Upstream{
+			newStubUpstream("a", ""),
+			newStubUpstream("b", ""),
+		}
+		out := tierUpstreamsByGroup(in)
+		// Same backing array (helper returns input unchanged).
+		require.Len(t, out, 2)
+		assert.Equal(t, "a", out[0].Id())
+		assert.Equal(t, "b", out[1].Id())
+	})
+
+	t.Run("defaults placed before fallbacks preserving order within tier", func(t *testing.T) {
+		// Input order mixes default / fallback — simulates the score-sorted
+		// list the request loop receives before tiering.
+		in := []common.Upstream{
+			newStubUpstream("fallback-hi", common.UpstreamGroupFallback),
+			newStubUpstream("default-lo", ""),
+			newStubUpstream("default-hi", ""),
+			newStubUpstream("fallback-lo", common.UpstreamGroupFallback),
+		}
+		out := tierUpstreamsByGroup(in)
+		require.Len(t, out, 4)
+		// Defaults first, in their original relative order.
+		assert.Equal(t, "default-lo", out[0].Id())
+		assert.Equal(t, "default-hi", out[1].Id())
+		// Fallbacks last, in their original relative order.
+		assert.Equal(t, "fallback-hi", out[2].Id())
+		assert.Equal(t, "fallback-lo", out[3].Id())
+	})
+
+	t.Run("only fallbacks still orders them after empty default tier", func(t *testing.T) {
+		in := []common.Upstream{
+			newStubUpstream("fb-1", common.UpstreamGroupFallback),
+			newStubUpstream("fb-2", common.UpstreamGroupFallback),
+		}
+		out := tierUpstreamsByGroup(in)
+		require.Len(t, out, 2)
+		assert.Equal(t, "fb-1", out[0].Id())
+		assert.Equal(t, "fb-2", out[1].Id())
+	})
+
+	t.Run("unknown group treated as default", func(t *testing.T) {
+		in := []common.Upstream{
+			newStubUpstream("fb", common.UpstreamGroupFallback),
+			newStubUpstream("custom", "experimental"),
+			newStubUpstream("def", ""),
+		}
+		out := tierUpstreamsByGroup(in)
+		require.Len(t, out, 3)
+		// Only "fallback" is recognised as fallback tier; everything else
+		// (including custom group names) stays in the primary tier.
+		assert.Equal(t, "custom", out[0].Id())
+		assert.Equal(t, "def", out[1].Id())
+		assert.Equal(t, "fb", out[2].Id())
+	})
+}
+
+func TestFailoverConfig_Enabled(t *testing.T) {
+	t.Run("nil is disabled", func(t *testing.T) {
+		var f *common.FailoverConfig
+		assert.False(t, f.Enabled())
+	})
+	t.Run("empty is disabled", func(t *testing.T) {
+		f := &common.FailoverConfig{}
+		assert.False(t, f.Enabled())
+	})
+	t.Run("onDefaultsExhausted=false is disabled", func(t *testing.T) {
+		v := false
+		f := &common.FailoverConfig{OnDefaultsExhausted: &v}
+		assert.False(t, f.Enabled())
+	})
+	t.Run("onDefaultsExhausted=true is enabled", func(t *testing.T) {
+		v := true
+		f := &common.FailoverConfig{OnDefaultsExhausted: &v}
+		assert.True(t, f.Enabled())
+	})
+}

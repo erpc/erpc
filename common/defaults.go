@@ -1869,6 +1869,14 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			v := *defaults.Multiplexing
 			n.Multiplexing = &v
 		}
+		if n.Failover == nil && defaults.Failover != nil {
+			cp := *defaults.Failover
+			if defaults.Failover.OnDefaultsExhausted != nil {
+				v := *defaults.Failover.OnDefaultsExhausted
+				cp.OnDefaultsExhausted = &v
+			}
+			n.Failover = &cp
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}
@@ -1953,7 +1961,11 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		anyUpstreamInFallbackGroup := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
 			return u.Group == UpstreamGroupFallback
 		})
-		if anyUpstreamInFallbackGroup && n.SelectionPolicy == nil {
+		// Only auto-apply the fallback-filtering selection policy if the user
+		// hasn't opted into per-request failover. When Failover.Enabled() is
+		// true the request loop handles escalation directly and needs
+		// fallback upstreams to remain in the eligible set.
+		if anyUpstreamInFallbackGroup && n.SelectionPolicy == nil && !n.Failover.Enabled() {
 			defCfg := NewDefaultNetworkConfig(upstreams)
 			n.SelectionPolicy = defCfg.SelectionPolicy
 		}

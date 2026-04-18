@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +58,10 @@ type networkState struct {
 
 	ingressMu sync.RWMutex
 	ingresses map[string]EventIngress // Name() -> ingress
+	// selector, when non-nil, narrows per-filter fan-out to a chosen
+	// subset of ingresses (defaults first, fallbacks on total failure).
+	// Nil means "treat every registered ingress as a default."
+	selector IngressSelector
 
 	// newHeads dedup: most-recently-delivered (blockNumber, blockHash)
 	// packed into a single pointer so the check+advance is a single
@@ -140,9 +145,41 @@ func (i *Indexer) Attach(eg EventEgress) (detach func()) {
 	return func() { i.egresses.Delete(eg.Name()) }
 }
 
-// EnsureFilter fans a filter subscription out to every ingress registered
-// on the given network, and tracks a per-filter refcount so
-// ReleaseFilter can decide when to tear it down upstream.
+// RegisterNetworkSelector installs a per-network IngressSelector that
+// EnsureFilter consults when deciding which ingresses to subscribe. Passing
+// nil restores the legacy "fan out to every registered ingress" behaviour.
+// The network must have been registered first.
+func (i *Indexer) RegisterNetworkSelector(networkId string, sel IngressSelector) {
+	nsRaw, ok := i.networks.Load(networkId)
+	if !ok {
+		return
+	}
+	ns := nsRaw.(*networkState)
+	ns.ingressMu.Lock()
+	ns.selector = sel
+	ns.ingressMu.Unlock()
+}
+
+// EnsureFilter subscribes a filter on this network's ingresses and tracks
+// a per-filter refcount so ReleaseFilter can decide when to tear it down
+// upstream. Selection rules:
+//
+//   - Ingresses named in the selector's default tier are grouped as
+//     pooled defaults; those named in the fallback tier are pooled
+//     fallbacks.
+//   - Ingresses the selector does not name in either tier are treated as
+//     "always include" — they receive EnsureFilter unconditionally. This
+//     preserves the original fan-out for standalone transports (Kafka,
+//     gRPC streams, …) that a WS-only selector doesn't know about.
+//   - With no selector registered, every ingress is an "always include",
+//     matching the pre-selector behaviour.
+//
+// Success semantics: the subscription is considered established — and
+// EnsureFilter returns (paramsHash, nil) — as soon as any ingress
+// (always-include or pooled default) successfully subscribed. Fallbacks
+// are only attempted when every always-include and every default failed.
+// An error is returned only if every attempted ingress failed; per-ingress
+// errors are otherwise logged and not propagated.
 func (i *Indexer) EnsureFilter(ctx context.Context, networkId, subType string, params []interface{}) (paramsHash string, err error) {
 	nsRaw, ok := i.networks.Load(networkId)
 	if !ok {
@@ -163,33 +200,116 @@ func (i *Indexer) EnsureFilter(ctx context.Context, networkId, subType string, p
 		return paramsHash, nil
 	}
 
-	// First subscriber — fan out to all ingresses. We snapshot the
-	// ingress set under rlock then call EnsureFilter without the lock
-	// held; per-ingress calls can be slow (RPC round-trip on WS).
+	// Snapshot the ingress set and selector under rlock, then do the
+	// potentially slow per-ingress RPC calls without holding any lock.
 	ns.ingressMu.RLock()
-	ings := make([]EventIngress, 0, len(ns.ingresses))
-	for _, ing := range ns.ingresses {
-		ings = append(ings, ing)
+	ings := make(map[string]EventIngress, len(ns.ingresses))
+	for name, ing := range ns.ingresses {
+		ings[name] = ing
 	}
+	sel := ns.selector
 	ns.ingressMu.RUnlock()
 
-	var firstErr error
-	for _, ing := range ings {
+	always, defaults, fallbacks := partitionIngresses(sel, ings, networkId, subType, params)
+
+	// Nothing to subscribe on — bootstrap ordering or a selector returning
+	// nothing and no standalone ingresses. Preserve the dedup window so
+	// any ingress attached later still delivers into it.
+	if len(always) == 0 && len(defaults) == 0 && len(fallbacks) == 0 {
+		return paramsHash, nil
+	}
+
+	var (
+		successCount int
+		errs         []error
+	)
+	tryOne := func(ing EventIngress) {
 		if err := ing.EnsureFilter(ctx, subType, paramsHash, params); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			errs = append(errs, err)
 			i.logger.Warn().Err(err).Str("ingress", ing.Name()).Str("networkId", networkId).
 				Str("subType", subType).Str("paramsHash", paramsHash).
 				Msg("ingress EnsureFilter failed")
+			return
+		}
+		successCount++
+	}
+
+	for _, ing := range always {
+		tryOne(ing)
+	}
+	for _, ing := range defaults {
+		tryOne(ing)
+	}
+	if successCount == 0 {
+		for _, ing := range fallbacks {
+			tryOne(ing)
 		}
 	}
-	return paramsHash, firstErr
+
+	if successCount > 0 {
+		return paramsHash, nil
+	}
+
+	// Every chosen ingress failed. Roll the refcount this caller added
+	// back so the next EnsureFilter attempt starts a fresh subscribe;
+	// only clean the dedup window when no concurrent subscriber is
+	// waiting on this filterHash.
+	ns.filterMu.Lock()
+	ns.filterRefcnt[paramsHash]--
+	if ns.filterRefcnt[paramsHash] <= 0 {
+		delete(ns.filterRefcnt, paramsHash)
+		delete(ns.filterDedup, paramsHash)
+	}
+	ns.filterMu.Unlock()
+
+	return paramsHash, errors.Join(errs...)
 }
 
-// ReleaseFilter decrements the refcount on the filter and tears the
-// subscription down on every ingress when it hits zero. Callers supply
-// paramsHash (returned by EnsureFilter) rather than params.
+// partitionIngresses splits the registered ingress set into three groups
+// based on the network's selector: always-include (ingresses the selector
+// does not mention at all), pooled defaults, and pooled fallbacks. Names
+// returned by the selector that do not correspond to a registered ingress
+// are silently dropped. Without a selector, every ingress is treated as
+// always-include.
+func partitionIngresses(sel IngressSelector, ings map[string]EventIngress, networkId, subType string, params []interface{}) (always, defaults, fallbacks []EventIngress) {
+	if sel == nil {
+		always = make([]EventIngress, 0, len(ings))
+		for _, ing := range ings {
+			always = append(always, ing)
+		}
+		return always, nil, nil
+	}
+	dNames, fNames := sel.Select(networkId, subType, params)
+	named := make(map[string]struct{}, len(dNames)+len(fNames))
+	pick := func(names []string) []EventIngress {
+		out := make([]EventIngress, 0, len(names))
+		for _, n := range names {
+			if _, dup := named[n]; dup {
+				continue
+			}
+			named[n] = struct{}{}
+			if ing, ok := ings[n]; ok {
+				out = append(out, ing)
+			}
+		}
+		return out
+	}
+	defaults = pick(dNames)
+	fallbacks = pick(fNames)
+	for name, ing := range ings {
+		if _, claimed := named[name]; claimed {
+			continue
+		}
+		always = append(always, ing)
+	}
+	return always, defaults, fallbacks
+}
+
+// ReleaseFilter decrements the refcount on the filter and, when it hits
+// zero, tears the subscription down on every registered ingress. Callers
+// supply paramsHash (returned by EnsureFilter) rather than params.
+// Ingresses that never received EnsureFilter for this paramsHash are
+// expected to no-op on RemoveFilter.
 func (i *Indexer) ReleaseFilter(ctx context.Context, networkId, subType, paramsHash string) {
 	nsRaw, ok := i.networks.Load(networkId)
 	if !ok {

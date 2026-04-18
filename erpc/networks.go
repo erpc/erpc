@@ -411,6 +411,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
+	// Failover tiering: when enabled, order default-group upstreams ahead of
+	// fallback-group ones while preserving score order within each tier. The
+	// network request loop then naturally tries defaults first and only
+	// advances to fallbacks once every default has returned a retryable
+	// error within this request.
+	if n.cfg.Failover.Enabled() {
+		upsList = tierUpstreamsByGroup(upsList)
+	}
+
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
@@ -1588,4 +1597,34 @@ func (n *Network) acquireRateLimitPermit(ctx context.Context, req *common.Normal
 	}
 
 	return nil
+}
+
+// tierUpstreamsByGroup returns a copy of ups with default-group upstreams
+// (group unset or != "fallback") ordered before fallback-group upstreams.
+// Within each tier, input order is preserved (the caller's score-based
+// sort). If the input contains no fallback-group upstreams, the original
+// slice is returned unchanged.
+func tierUpstreamsByGroup(ups []common.Upstream) []common.Upstream {
+	hasFallback := false
+	for _, u := range ups {
+		if u.Config() != nil && u.Config().Group == common.UpstreamGroupFallback {
+			hasFallback = true
+			break
+		}
+	}
+	if !hasFallback {
+		return ups
+	}
+	tiered := make([]common.Upstream, 0, len(ups))
+	for _, u := range ups {
+		if u.Config() == nil || u.Config().Group != common.UpstreamGroupFallback {
+			tiered = append(tiered, u)
+		}
+	}
+	for _, u := range ups {
+		if u.Config() != nil && u.Config().Group == common.UpstreamGroupFallback {
+			tiered = append(tiered, u)
+		}
+	}
+	return tiered
 }

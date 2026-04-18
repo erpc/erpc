@@ -127,6 +127,23 @@ projects:
           resampleInterval: 5m
           resampleCount: 10
 
+        # (OPTIONAL) Per-request failover between upstream groups.
+        # When onDefaultsExhausted is true, the request loop tries upstreams with
+        # group "default" (or unset) first and only advances to group "fallback"
+        # if every default upstream returned a retryable error within the same
+        # request. Deterministic client errors (reverts, invalid params, etc.)
+        # short-circuit without advancing.
+        #
+        # This is separate from selectionPolicy above — failover operates per
+        # request, while selectionPolicy evaluates group membership on an
+        # interval across requests. When failover is enabled, the default
+        # auto-applied selectionPolicy that filters out fallbacks is suppressed
+        # so fallbacks remain visible to the request loop.
+        #
+        # DEFAULT: false (legacy behaviour; selectionPolicy handles group gating)
+        failover:
+          onDefaultsExhausted: true
+
         # (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
         # For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
         # the request will be rate-limited to 100 RPS.
@@ -278,6 +295,25 @@ export default createConfig({
           },
 
           /**
+          * (OPTIONAL) Per-request failover between upstream groups.
+          * When onDefaultsExhausted is true, the request loop tries upstreams
+          * with group "default" (or unset) first and only advances to group
+          * "fallback" if every default upstream returned a retryable error
+          * within the same request. Deterministic client errors short-circuit
+          * without advancing.
+          *
+          * Independent of selectionPolicy — failover is per-request;
+          * selectionPolicy evaluates group membership on an interval. When
+          * failover is enabled, the default auto-applied selectionPolicy that
+          * filters out fallbacks is suppressed.
+          *
+          * DEFAULT: false (legacy behaviour; selectionPolicy handles group gating)
+          */
+          failover: {
+            onDefaultsExhausted: true,
+          },
+
+          /**
           * (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
           * For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
           * the request will be rate-limited to 100 RPS.
@@ -347,6 +383,13 @@ projects:
           maxAttempts: 3
           delay: "0ms"
 
+      # (OPTIONAL) Per-request failover between upstream groups, applied to
+      # every network unless overridden at the network level. See the per-network
+      # `failover` docs above for full semantics.
+      # Defaults to disabled (legacy behaviour).
+      failover:
+        onDefaultsExhausted: true
+
       # (OPTIONAL) Refer to "Selection Policy" section for more details about default values.
       # https://docs.erpc.cloud/config/projects/selection-policies#config
       selectionPolicy:
@@ -403,6 +446,14 @@ export default createConfig({
             maxAttempts: 3,
             delay: "0ms",
           },
+        },
+
+        // (OPTIONAL) Per-request failover between upstream groups, applied to
+        // every network unless overridden at the network level. See the
+        // per-network `failover` docs above for full semantics.
+        // Defaults to disabled (legacy behaviour).
+        failover: {
+          onDefaultsExhausted: true,
         },
 
         // (OPTIONAL) Refer to "Selection Policy" section for more details about default values.

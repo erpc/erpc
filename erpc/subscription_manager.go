@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,6 +341,7 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 	}
 
 	sm.idx.RegisterNetwork(&networkHandle{nw: nw})
+	sm.idx.RegisterNetworkSelector(networkID, &subIngressSelector{nw: nw, networkID: networkID})
 	adapterOpts := buildWsAdapterOptions(nw.cfg)
 	for _, up := range wsUpstreams {
 		adapter := wsupstream.New(up, networkID, sm.logger, adapterOpts)
@@ -353,6 +355,67 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 	}
 	sm.networks.Store(networkID, struct{}{})
 	return nil
+}
+
+// subIngressSelector routes filter subscribes through the same upstream
+// selector used by the HTTP request path: score-ordered, circuit-breaker
+// aware, and group-tiered when failover.onDefaultsExhausted is set. The
+// output is a list of EventIngress names (matching wsupstream.Adapter.Name()
+// == "ws:" + upstreamId).
+type subIngressSelector struct {
+	nw        *Network
+	networkID string
+}
+
+// Select returns (defaults, fallbacks) for a filter subscribe. Both tiers
+// are ordered by the upstream registry's score for eth_subscribe; upstreams
+// whose circuit breaker is open are skipped. Fallback-group upstreams only
+// populate the fallback tier when network-level failover.onDefaultsExhausted
+// is enabled — otherwise they mix into the defaults, matching the HTTP
+// selector's behaviour for non-failover networks.
+func (s *subIngressSelector) Select(_networkId, _subType string, _params []interface{}) (defaults, fallbacks []string) {
+	if s == nil || s.nw == nil || s.nw.upstreamsRegistry == nil {
+		return nil, nil
+	}
+	// A single method key keeps subscribe-path scoring warm across subTypes
+	// and mirrors how the HTTP path warms method-scoped sort lists.
+	ups, err := s.nw.upstreamsRegistry.GetSortedUpstreams(context.Background(), s.networkID, MethodEthSubscribe)
+	if err != nil {
+		return nil, nil
+	}
+
+	failoverOn := s.nw.cfg != nil && s.nw.cfg.Failover.Enabled()
+	for _, u := range ups {
+		up, ok := u.(*upstream.Upstream)
+		if !ok {
+			continue
+		}
+		cfg := up.Config()
+		if cfg == nil {
+			continue
+		}
+		if !isWsEndpoint(cfg.Endpoint) {
+			continue
+		}
+		if up.IsDown() {
+			continue
+		}
+		name := "ws:" + up.Id()
+		if failoverOn && cfg.Group == common.UpstreamGroupFallback {
+			fallbacks = append(fallbacks, name)
+			continue
+		}
+		defaults = append(defaults, name)
+	}
+	return defaults, fallbacks
+}
+
+func isWsEndpoint(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "ws" || parsed.Scheme == "wss"
 }
 
 // resolveSubscription validates the subType and, for filter subs,

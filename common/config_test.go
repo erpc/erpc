@@ -838,3 +838,65 @@ projects:
 		assert.Equal(t, 5, network.Failsafe[1].Retry.MaxAttempts)
 	})
 }
+
+// TestNetworkConfig_SetDefaults_FailoverSkipsAutoSelectionPolicy verifies
+// that enabling failover.onDefaultsExhausted=true suppresses the auto-applied
+// SelectionPolicy that would otherwise filter fallback-group upstreams out
+// of the eligible set. The per-request loop needs fallbacks to remain
+// visible so it can escalate to them on demand.
+func TestNetworkConfig_SetDefaults_FailoverSkipsAutoSelectionPolicy(t *testing.T) {
+	upstreams := []*UpstreamConfig{
+		{Id: "a", Endpoint: "http://a", Type: UpstreamTypeEvm},
+		{Id: "b", Endpoint: "http://b", Type: UpstreamTypeEvm, Group: UpstreamGroupFallback},
+	}
+
+	t.Run("without failover the auto policy is applied", func(t *testing.T) {
+		n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+		err := n.SetDefaults(upstreams, nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, n.SelectionPolicy, "auto SelectionPolicy should be applied when fallback upstreams exist")
+	})
+
+	t.Run("with failover enabled the auto policy is suppressed", func(t *testing.T) {
+		enabled := true
+		n := &NetworkConfig{
+			Architecture: ArchitectureEvm,
+			Evm:          &EvmNetworkConfig{ChainId: 1},
+			Failover:     &FailoverConfig{OnDefaultsExhausted: &enabled},
+		}
+		err := n.SetDefaults(upstreams, nil)
+		assert.NoError(t, err)
+		assert.Nil(t, n.SelectionPolicy, "auto SelectionPolicy should NOT be applied when failover handles escalation")
+	})
+
+	t.Run("user-supplied SelectionPolicy is preserved regardless of failover", func(t *testing.T) {
+		enabled := true
+		userPolicy := &SelectionPolicyConfig{EvalInterval: Duration(time.Minute)}
+		n := &NetworkConfig{
+			Architecture:    ArchitectureEvm,
+			Evm:             &EvmNetworkConfig{ChainId: 1},
+			Failover:        &FailoverConfig{OnDefaultsExhausted: &enabled},
+			SelectionPolicy: userPolicy,
+		}
+		err := n.SetDefaults(upstreams, nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, n.SelectionPolicy)
+		assert.Equal(t, Duration(time.Minute), n.SelectionPolicy.EvalInterval)
+	})
+}
+
+// TestNetworkConfig_SetDefaults_FailoverInheritsFromDefaults verifies that a
+// failover flag set at the NetworkDefaults level is propagated to networks
+// that don't override it.
+func TestNetworkConfig_SetDefaults_FailoverInheritsFromDefaults(t *testing.T) {
+	enabled := true
+	defaults := &NetworkDefaults{
+		Failover: &FailoverConfig{OnDefaultsExhausted: &enabled},
+	}
+	n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	err := n.SetDefaults(nil, defaults)
+	assert.NoError(t, err)
+	assert.NotNil(t, n.Failover)
+	assert.True(t, n.Failover.Enabled())
+}
+

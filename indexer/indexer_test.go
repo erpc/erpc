@@ -70,10 +70,13 @@ func (e *fakeEgress) count() int {
 }
 
 type fakeIngress struct {
-	name        string
-	ensureCalls atomic.Int32
-	removeCalls atomic.Int32
+	name           string
+	ensureCalls    atomic.Int32
+	removeCalls    atomic.Int32
 	lastParamsHash atomic.Value // string
+	// ensureErr, when set, is returned from every EnsureFilter call.
+	errMu     sync.Mutex
+	ensureErr error
 
 	startedFor NetworkHandle
 	sink       Sink
@@ -85,16 +88,36 @@ func (i *fakeIngress) Start(_ context.Context, nw NetworkHandle, sink Sink) erro
 	i.sink = sink
 	return nil
 }
+func (i *fakeIngress) setErr(err error) {
+	i.errMu.Lock()
+	i.ensureErr = err
+	i.errMu.Unlock()
+}
+func (i *fakeIngress) getErr() error {
+	i.errMu.Lock()
+	defer i.errMu.Unlock()
+	return i.ensureErr
+}
 func (i *fakeIngress) EnsureFilter(_ context.Context, _ string, paramsHash string, _ []interface{}) error {
 	i.ensureCalls.Add(1)
 	i.lastParamsHash.Store(paramsHash)
-	return nil
+	return i.getErr()
 }
 func (i *fakeIngress) RemoveFilter(_ context.Context, _, _ string) error {
 	i.removeCalls.Add(1)
 	return nil
 }
 func (i *fakeIngress) Stop(_ context.Context) error { return nil }
+
+// fakeSelector is a static IngressSelector for tests.
+type fakeSelector struct {
+	defaults  []string
+	fallbacks []string
+}
+
+func (s *fakeSelector) Select(_, _ string, _ []interface{}) ([]string, []string) {
+	return s.defaults, s.fallbacks
+}
 
 // --- tests -----------------------------------------------------------
 
@@ -397,4 +420,165 @@ func TestIndexer_UnregisteredNetwork(t *testing.T) {
 	if _, err := idx.EnsureFilter(context.Background(), "evm:missing", "logs", []interface{}{"logs"}); err == nil {
 		t.Fatal("expected error on unregistered network")
 	}
+}
+
+// registerThreeIngresses attaches three fakeIngresses named a, b, c on
+// "evm:1" and returns them. Helper for selector tests.
+func registerThreeIngresses(t *testing.T, idx *Indexer) (a, b, c *fakeIngress) {
+	t.Helper()
+	idx.RegisterNetwork(newFakeNetwork("evm:1", 0))
+	a = &fakeIngress{name: "a"}
+	b = &fakeIngress{name: "b"}
+	c = &fakeIngress{name: "c"}
+	for _, ing := range []*fakeIngress{a, b, c} {
+		if err := idx.AddIngress(context.Background(), "evm:1", ing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return
+}
+
+func TestIndexer_Selector_DefaultsOnlyHappyPath(t *testing.T) {
+	idx := newIndexer(t)
+	a, b, c := registerThreeIngresses(t, idx)
+	idx.RegisterNetworkSelector("evm:1", &fakeSelector{defaults: []string{"a", "b"}, fallbacks: []string{"c"}})
+
+	_, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if a.ensureCalls.Load() != 1 || b.ensureCalls.Load() != 1 {
+		t.Fatalf("defaults must be called once each, got a=%d b=%d", a.ensureCalls.Load(), b.ensureCalls.Load())
+	}
+	if c.ensureCalls.Load() != 0 {
+		t.Fatalf("fallback must not be touched when defaults succeed, got %d calls", c.ensureCalls.Load())
+	}
+}
+
+func TestIndexer_Selector_PartialDefaultFailureReturnsNil(t *testing.T) {
+	idx := newIndexer(t)
+	a, _, c := registerThreeIngresses(t, idx)
+	a.setErr(errTest("a is sad"))
+	idx.RegisterNetworkSelector("evm:1", &fakeSelector{defaults: []string{"a", "b"}, fallbacks: []string{"c"}})
+
+	_, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"})
+	if err != nil {
+		t.Fatalf("partial failure must not surface: %v", err)
+	}
+	if a.ensureCalls.Load() != 1 {
+		t.Fatalf("failing default must still be attempted once, got %d", a.ensureCalls.Load())
+	}
+	if c.ensureCalls.Load() != 0 {
+		t.Fatalf("fallback must not be touched when at least one default succeeded, got %d", c.ensureCalls.Load())
+	}
+}
+
+func TestIndexer_Selector_AllDefaultsFailEscalatesToFallback(t *testing.T) {
+	idx := newIndexer(t)
+	a, b, c := registerThreeIngresses(t, idx)
+	a.setErr(errTest("a"))
+	b.setErr(errTest("b"))
+	idx.RegisterNetworkSelector("evm:1", &fakeSelector{defaults: []string{"a", "b"}, fallbacks: []string{"c"}})
+
+	_, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"})
+	if err != nil {
+		t.Fatalf("escalation should return nil when fallback succeeds: %v", err)
+	}
+	if c.ensureCalls.Load() != 1 {
+		t.Fatalf("fallback must be tried after all defaults fail, got %d calls", c.ensureCalls.Load())
+	}
+}
+
+func TestIndexer_Selector_UnknownIngressIsAlwaysIncluded(t *testing.T) {
+	idx := newIndexer(t)
+	a, b, c := registerThreeIngresses(t, idx)
+	// Selector only knows about "a" and "b"; "c" stands in for a standalone
+	// ingress (e.g. Kafka) and must receive EnsureFilter unconditionally.
+	idx.RegisterNetworkSelector("evm:1", &fakeSelector{defaults: []string{"a"}, fallbacks: []string{"b"}})
+
+	if _, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.ensureCalls.Load() != 1 {
+		t.Fatalf("standalone ingress must be EnsureFiltered unconditionally, got %d calls", c.ensureCalls.Load())
+	}
+	if a.ensureCalls.Load() != 1 {
+		t.Fatalf("default must be called, got %d", a.ensureCalls.Load())
+	}
+	if b.ensureCalls.Load() != 0 {
+		t.Fatalf("fallback must not be called while a default or standalone succeeded, got %d", b.ensureCalls.Load())
+	}
+}
+
+func TestIndexer_Selector_AllFailReturnsJoinedError(t *testing.T) {
+	idx := newIndexer(t)
+	a, b, c := registerThreeIngresses(t, idx)
+	a.setErr(errTest("a"))
+	b.setErr(errTest("b"))
+	c.setErr(errTest("c"))
+	idx.RegisterNetworkSelector("evm:1", &fakeSelector{defaults: []string{"a", "b"}, fallbacks: []string{"c"}})
+
+	_, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"})
+	if err == nil {
+		t.Fatal("expected joined error when every tier fails")
+	}
+	msg := err.Error()
+	for _, want := range []string{"a", "b", "c"} {
+		if !containsStr(msg, want) {
+			t.Fatalf("joined error must include %q, got %q", want, msg)
+		}
+	}
+	// Re-attempt after fixing the ingresses must work — dedup window and
+	// refcount must have been rolled back.
+	a.setErr(nil)
+	b.setErr(nil)
+	c.setErr(nil)
+	if _, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"}); err != nil {
+		t.Fatalf("second attempt must succeed after errors clear, got %v", err)
+	}
+}
+
+func TestIndexer_NilSelector_FansOutToAllIngresses(t *testing.T) {
+	idx := newIndexer(t)
+	a, b, c := registerThreeIngresses(t, idx)
+	// No selector registered: every ingress must be tried.
+
+	h, err := idx.EnsureFilter(context.Background(), "evm:1", "logs", []interface{}{"logs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, ing := range []*fakeIngress{a, b, c} {
+		if ing.ensureCalls.Load() != 1 {
+			t.Fatalf("ingress %q: want 1 EnsureFilter call, got %d", ing.name, ing.ensureCalls.Load())
+		}
+	}
+	idx.ReleaseFilter(context.Background(), "evm:1", "logs", h)
+	for _, ing := range []*fakeIngress{a, b, c} {
+		if ing.removeCalls.Load() != 1 {
+			t.Fatalf("ingress %q: want 1 RemoveFilter call, got %d", ing.name, ing.removeCalls.Load())
+		}
+	}
+}
+
+// Test-only helpers.
+
+type errTest string
+
+func (e errTest) Error() string { return string(e) }
+
+func containsStr(haystack, needle string) bool {
+	return len(needle) == 0 || indexOf(haystack, needle) >= 0
+}
+
+func indexOf(s, substr string) int {
+	n := len(substr)
+	if n == 0 {
+		return 0
+	}
+	for i := 0; i+n <= len(s); i++ {
+		if s[i:i+n] == substr {
+			return i
+		}
+	}
+	return -1
 }

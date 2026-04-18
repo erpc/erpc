@@ -522,6 +522,27 @@ type NetworkDefaults struct {
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
+}
+
+// FailoverConfig controls within-request escalation between upstream groups.
+// Independent of SelectionPolicy (which evaluates group membership
+// periodically across requests) — Failover operates per-request only.
+type FailoverConfig struct {
+	// OnDefaultsExhausted, when true, causes the network request loop to
+	// try upstreams with group "default" (or unset) first and only advance
+	// to group "fallback" if every default upstream returned a retryable
+	// error within the same request. Deterministic client errors still
+	// short-circuit without advancing.
+	OnDefaultsExhausted *bool `yaml:"onDefaultsExhausted,omitempty" json:"onDefaultsExhausted"`
+}
+
+// Enabled reports whether any failover behaviour is configured. Nil-safe.
+func (f *FailoverConfig) Enabled() bool {
+	if f == nil {
+		return false
+	}
+	return f.OnDefaultsExhausted != nil && *f.OnDefaultsExhausted
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -1592,6 +1613,7 @@ type NetworkConfig struct {
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
