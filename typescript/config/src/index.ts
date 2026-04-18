@@ -71,6 +71,7 @@ export type {
   // Upstream related
   UpstreamConfig,
   EvmUpstreamConfig,
+  EvmQueryShimConfig,
   UpstreamIntegrityConfig,
   UpstreamIntegrityEthGetBlockReceiptsConfig,
   RoutingConfig,

@@ -15,9 +15,14 @@ import (
 )
 
 const (
-	CompositeTypeNone               = "none"
-	CompositeTypeLogsSplitOnError   = "logs-split-on-error"
-	CompositeTypeLogsSplitProactive = "logs-split-proactive"
+	CompositeTypeNone                  = "none"
+	CompositeTypeLogsSplitOnError      = "logs-split-on-error"
+	CompositeTypeLogsSplitProactive    = "logs-split-proactive"
+	CompositeTypeQueryBlocksShim       = "query-blocks-shim"
+	CompositeTypeQueryTransactionsShim = "query-transactions-shim"
+	CompositeTypeQueryLogsShim         = "query-logs-shim"
+	CompositeTypeQueryTracesShim       = "query-traces-shim"
+	CompositeTypeQueryTransfersShim    = "query-transfers-shim"
 )
 
 const RequestContextKey ContextKey = "rq"
@@ -327,6 +332,7 @@ type NormalizedRequest struct {
 
 	// Resolved client IP (set by HTTP ingress using trusted forwarders)
 	clientIP atomic.Value
+
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -987,6 +993,15 @@ func (r *NormalizedRequest) ClientIP() string {
 	}
 	return "n/a"
 }
+
+// SetAgentName stores the agent name directly without HTTP-specific parsing
+func (r *NormalizedRequest) SetAgentName(name string) {
+	if r == nil || name == "" {
+		return
+	}
+	r.agentName.Store(name)
+}
+
 
 // TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm
 func (r *NormalizedRequest) EvmBlockRef() interface{} {

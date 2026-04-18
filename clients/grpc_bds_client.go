@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -27,6 +29,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	// Import gzip to register the compressor - enables automatic gzip compression
 	// when clients send "grpc-accept-encoding: gzip" header
@@ -37,13 +40,15 @@ type GrpcBdsClient interface {
 	GetType() ClientType
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 	SetHeaders(h map[string]string)
+	QueryClient() evm.QueryServiceClient
 }
 
 type GenericGrpcBdsClient struct {
-	Url       *url.URL
-	headers   map[string]string
-	conn      *grpc.ClientConn
-	rpcClient evm.RPCQueryServiceClient
+	Url         *url.URL
+	headers     map[string]string
+	conn        *grpc.ClientConn
+	rpcClient   evm.RPCQueryServiceClient
+	queryClient evm.QueryServiceClient
 
 	projectId       string
 	upstream        common.Upstream
@@ -166,6 +171,7 @@ func NewGrpcBdsClient(
 
 	client.conn = conn
 	client.rpcClient = evm.NewRPCQueryServiceClient(conn)
+	client.queryClient = evm.NewQueryServiceClient(conn)
 
 	// Setup graceful shutdown
 	go func() {
@@ -279,6 +285,16 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		resp, err = c.handleGetBlockReceipts(ctx, req, jrReq)
 	case "eth_chainId":
 		resp, err = c.handleChainId(ctx, req, jrReq)
+	case "eth_queryBlocks":
+		resp, err = c.handleQueryBlocks(ctx, req, jrReq)
+	case "eth_queryTransactions":
+		resp, err = c.handleQueryTransactions(ctx, req, jrReq)
+	case "eth_queryLogs":
+		resp, err = c.handleQueryLogs(ctx, req, jrReq)
+	case "eth_queryTraces":
+		resp, err = c.handleQueryTraces(ctx, req, jrReq)
+	case "eth_queryTransfers":
+		resp, err = c.handleQueryTransfers(ctx, req, jrReq)
 	default:
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
@@ -935,8 +951,276 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 	}
 }
 
+func (c *GenericGrpcBdsClient) QueryClient() evm.QueryServiceClient {
+	if c == nil {
+		return nil
+	}
+	return c.queryClient
+}
+
 // Helper functions for conversion
 
 func parseHexBytes(hexStr string) ([]byte, error) {
 	return evm.HexToBytes(hexStr)
+}
+
+// ensureQueryClient returns an error if the gRPC QueryService client has not
+// been wired (e.g. when constructing the client without a live connection).
+func (c *GenericGrpcBdsClient) ensureQueryClient(method string) error {
+	if c == nil || c.queryClient == nil {
+		return fmt.Errorf("%s: gRPC QueryService client not initialized", method)
+	}
+	return nil
+}
+
+// jsonRpcParamsFor extracts params[0] from a JSON-RPC request as a raw JSON
+// object, suitable for passing to manifesto's Query*RequestFromJsonRpc helpers.
+func jsonRpcParamsFor(jrReq *common.JsonRpcRequest) (json.RawMessage, error) {
+	jrReq.RLock()
+	defer jrReq.RUnlock()
+	if len(jrReq.Params) == 0 {
+		return json.RawMessage("{}"), nil
+	}
+	raw, err := sonic.Marshal(jrReq.Params[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query params: %w", err)
+	}
+	return raw, nil
+}
+
+// buildQueryJsonRpcResponse finalizes a NormalizedResponse from a marshaled
+// JSON-RPC result payload for query methods.
+func (c *GenericGrpcBdsClient) buildQueryJsonRpcResponse(req *common.NormalizedRequest, jrReq *common.JsonRpcRequest, payload interface{}) (*common.NormalizedResponse, error) {
+	resultBytes, err := sonic.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query result: %w", err)
+	}
+	jsonRpcResp := &common.JsonRpcResponse{}
+	jrReq.RLock()
+	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
+		jrReq.RUnlock()
+		return nil, fmt.Errorf("failed to set ID: %w", err)
+	}
+	jrReq.RUnlock()
+	jsonRpcResp.SetResult(resultBytes)
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jsonRpcResp), nil
+}
+
+// recvQueryStream drains an upstream query stream and invokes onPage for each
+// received response. It returns once the stream is closed (EOF) or on error.
+func recvQueryStream[T proto.Message](recv func() (T, error), onPage func(T)) error {
+	for {
+		page, err := recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		onPage(page)
+	}
+}
+
+func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryBlocks"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryBlocksRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryBlocks params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryBlocks")
+	defer span.End()
+	stream, err := c.queryClient.QueryBlocks(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryBlocksResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryBlocksResponse) {
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryBlocksResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryTransactions"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryTransactionsRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryTransactions params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransactions")
+	defer span.End()
+	stream, err := c.queryClient.QueryTransactions(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryTransactionsResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransactionsResponse) {
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransactionsResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryLogs"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryLogsRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryLogs params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryLogs")
+	defer span.End()
+	stream, err := c.queryClient.QueryLogs(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryLogsResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryLogsResponse) {
+		aggregated.Logs = append(aggregated.Logs, page.GetLogs()...)
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryLogsResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryTraces"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryTracesRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryTraces params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTraces")
+	defer span.End()
+	stream, err := c.queryClient.QueryTraces(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryTracesResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryTracesResponse) {
+		aggregated.Traces = append(aggregated.Traces, page.GetTraces()...)
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTracesResponseToJsonRpc(aggregated))
+}
+
+func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	if err := c.ensureQueryClient("eth_queryTransfers"); err != nil {
+		return nil, err
+	}
+	rawParams, err := jsonRpcParamsFor(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	grpcReq, err := evm.QueryTransfersRequestFromJsonRpc(rawParams)
+	if err != nil {
+		return nil, fmt.Errorf("invalid eth_queryTransfers params: %w", err)
+	}
+
+	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransfers")
+	defer span.End()
+	stream, err := c.queryClient.QueryTransfers(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	aggregated := &evm.QueryTransfersResponse{}
+	if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransfersResponse) {
+		aggregated.Transfers = append(aggregated.Transfers, page.GetTransfers()...)
+		aggregated.Transactions = append(aggregated.Transactions, page.GetTransactions()...)
+		aggregated.Blocks = append(aggregated.Blocks, page.GetBlocks()...)
+		if aggregated.FromBlock == nil && page.GetFromBlock() != nil {
+			aggregated.FromBlock = page.GetFromBlock()
+		}
+		if aggregated.ToBlock == nil && page.GetToBlock() != nil {
+			aggregated.ToBlock = page.GetToBlock()
+		}
+		if page.GetCursorBlock() != nil {
+			aggregated.CursorBlock = page.GetCursorBlock()
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("gRPC stream error: %w", err)
+	}
+
+	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated))
 }

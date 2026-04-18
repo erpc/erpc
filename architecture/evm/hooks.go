@@ -91,6 +91,8 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return upstreamPreForward_eth_chainId(ctx, n, u, r)
 	case "trace_filter", "arbtrace_filter":
 		return upstreamPreForward_trace_filter(ctx, n, u, r)
+	case "eth_queryblocks", "eth_querytransactions", "eth_querylogs", "eth_querytraces", "eth_querytransfers":
+		return upstreamPreForward_eth_query(ctx, n, u, r)
 	default:
 		return false, nil, nil
 	}

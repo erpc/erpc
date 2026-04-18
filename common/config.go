@@ -93,6 +93,13 @@ type ServerConfig struct {
 	HttpPort            *int              `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
 	HttpPortV4          *int              `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
 	HttpPortV6          *int              `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
+	GrpcEnabled         *bool             `yaml:"grpcEnabled,omitempty" json:"grpcEnabled"`
+	GrpcHostV4          *string           `yaml:"grpcHostV4,omitempty" json:"grpcHostV4"`
+	GrpcPortV4          *int              `yaml:"grpcPortV4,omitempty" json:"grpcPortV4"`
+	GrpcHostV6          *string           `yaml:"grpcHostV6,omitempty" json:"grpcHostV6"`
+	GrpcPortV6          *int              `yaml:"grpcPortV6,omitempty" json:"grpcPortV6"`
+	GrpcMaxRecvMsgSize  *int              `yaml:"grpcMaxRecvMsgSize,omitempty" json:"grpcMaxRecvMsgSize"`
+	GrpcMaxSendMsgSize  *int              `yaml:"grpcMaxSendMsgSize,omitempty" json:"grpcMaxSendMsgSize"`
 	MaxTimeout          *Duration         `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
 	ReadTimeout         *Duration         `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
 	WriteTimeout        *Duration         `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
@@ -828,21 +835,21 @@ func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
 }
 
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
-	type Alias UpstreamConfig
+	type UJAlias UpstreamConfig
 	return sonic.Marshal(&struct {
 		Endpoint string `json:"endpoint"`
-		*Alias
+		*UJAlias
 	}{
 		Endpoint: util.RedactEndpoint(u.Endpoint),
-		Alias:    (*Alias)(u),
+		UJAlias:    (*UJAlias)(u),
 	})
 }
 
 func (u *UpstreamConfig) MarshalYAML() (interface{}, error) {
-	type Alias UpstreamConfig
+	type UYAlias UpstreamConfig
 	cp := *u
 	cp.Endpoint = util.RedactEndpoint(u.Endpoint)
-	return (*Alias)(&cp), nil
+	return (*UYAlias)(&cp), nil
 }
 
 type RateLimitAutoTuneConfig struct {
@@ -891,8 +898,8 @@ func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                            int64                       `yaml:"chainId" json:"chainId"`
-	StatePollerInterval                Duration                    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	ChainId             int64    `yaml:"chainId" json:"chainId"`
+	StatePollerInterval Duration `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
 	// StatePollerDebounce overrides the debounce interval for the state poller.
 	// When 0 (default), the interval is dynamically inferred from the chain's
 	// observed block time, falling back to the network-level
@@ -917,6 +924,38 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsSplitOnError *bool `yaml:"getLogsSplitOnError,omitempty" json:"-"`
 	// @deprecated: should be removed in a future release
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
+
+	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+}
+
+type EvmQueryShimConfig struct {
+	Enabled        *bool    `yaml:"enabled,omitempty" json:"enabled"`
+	AllowedMethods []string `yaml:"allowedMethods,omitempty" json:"allowedMethods"`
+	Concurrency    int      `yaml:"concurrency,omitempty" json:"concurrency"`
+	MaxBlockRange  int64    `yaml:"maxBlockRange,omitempty" json:"maxBlockRange"`
+	MaxLimit       int      `yaml:"maxLimit,omitempty" json:"maxLimit"`
+	DefaultLimit   int      `yaml:"defaultLimit,omitempty" json:"defaultLimit"`
+}
+
+func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &EvmQueryShimConfig{
+		Concurrency:   c.Concurrency,
+		MaxBlockRange: c.MaxBlockRange,
+		MaxLimit:      c.MaxLimit,
+		DefaultLimit:  c.DefaultLimit,
+	}
+	if c.Enabled != nil {
+		v := *c.Enabled
+		copied.Enabled = &v
+	}
+	if c.AllowedMethods != nil {
+		copied.AllowedMethods = make([]string, len(c.AllowedMethods))
+		copy(copied.AllowedMethods, c.AllowedMethods)
+	}
+	return copied
 }
 
 // EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -1004,6 +1043,9 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.DeprecatedGetLogsSplitOnError != nil {
 		v := *c.DeprecatedGetLogsSplitOnError
 		copied.DeprecatedGetLogsSplitOnError = &v
+	}
+	if c.QueryShim != nil {
+		copied.QueryShim = c.QueryShim.Copy()
 	}
 
 	return copied
