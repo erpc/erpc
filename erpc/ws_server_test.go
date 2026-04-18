@@ -1392,13 +1392,17 @@ func TestWebSocket_RegressionBootstrapRetriedOnEverySubscribe(t *testing.T) {
 	defer cleanup()
 	time.Sleep(2 * time.Second)
 
-	// First subscribe triggers bootstrap on the WS upstream.
+	// First subscribe triggers bootstrap on the WS upstream. The upstream
+	// subscribe is dispatched in a goroutine (wsupstream adapter fires
+	// initialSubscribe async), so we poll for it.
 	conn1 := dialWs(t, addr)
 	defer conn1.Close()
 	resp1 := sendAndReceive(t, conn1, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 	require.NotNil(t, resp1["result"])
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt64(&subscribeCount) >= 1
+	}, 3*time.Second, 20*time.Millisecond, "first client should trigger upstream subscribe")
 	first := atomic.LoadInt64(&subscribeCount)
-	require.GreaterOrEqual(t, first, int64(1), "first client should trigger upstream subscribe")
 
 	// Subsequent subscribes (different params) must also call BootstrapNetwork's
 	// idempotent path — no new upstream subscribe expected since the upstream
@@ -1408,6 +1412,9 @@ func TestWebSocket_RegressionBootstrapRetriedOnEverySubscribe(t *testing.T) {
 	defer conn2.Close()
 	resp2 := sendAndReceive(t, conn2, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 	require.NotNil(t, resp2["result"])
+	// Small stabilization window: even if a second upstream subscribe were
+	// erroneously triggered, it would happen shortly after the response.
+	time.Sleep(200 * time.Millisecond)
 	assert.Equal(t, first, atomic.LoadInt64(&subscribeCount),
 		"second client should reuse existing newHeads sub (idempotent bootstrap)")
 }
@@ -1661,15 +1668,22 @@ func TestWebSocket_RegressionInternalRequestIdsDontCollide(t *testing.T) {
 	defer cleanup()
 	time.Sleep(2 * time.Second)
 
-	// Trigger an internal upstream subscribe via a client subscribe.
+	// Trigger an internal upstream subscribe via a client subscribe. The
+	// upstream eth_subscribe is dispatched async (wsupstream adapter fires
+	// initialSubscribe in a goroutine), so poll until it arrives.
 	conn := dialWs(t, addr)
 	defer conn.Close()
 	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
 	require.NotNil(t, resp["result"])
 
+	require.Eventually(t, func() bool {
+		idMu.Lock()
+		defer idMu.Unlock()
+		return len(subscribeIds) >= 1
+	}, 3*time.Second, 20*time.Millisecond, "should have observed at least one internal eth_subscribe")
+
 	idMu.Lock()
 	defer idMu.Unlock()
-	require.NotEmpty(t, subscribeIds, "should have observed at least one internal eth_subscribe")
 
 	// Internal IDs use a large offset (>= 900M) to avoid collisions with the
 	// state poller's small integer IDs.
