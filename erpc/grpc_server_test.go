@@ -144,7 +144,7 @@ func TestHttpServer_CanSharePortWithGrpc(t *testing.T) {
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
 	require.NotNil(t, httpServer.sharedGrpcServer)
 
