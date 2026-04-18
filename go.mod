@@ -50,7 +50,7 @@ require (
 
 replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20260223183747-e5f7847e3689
 
-replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20260409195441-e36c239c171c
+replace github.com/blockchain-data-standards/manifesto v0.0.0 => github.com/blockchain-data-standards/manifesto v0.0.0-20260417185455-377cced2b921
 
 require (
 	cel.dev/expr v0.25.1 // indirect
