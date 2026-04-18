@@ -28,6 +28,8 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 // Only compress responses larger than 1KB to save CPU on small responses
@@ -40,6 +42,7 @@ type HttpServer struct {
 	adminCfg                *common.AdminConfig
 	serverV4                *http.Server
 	serverV6                *http.Server
+	sharedGrpcServer        *GrpcServer
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
@@ -151,12 +154,32 @@ func NewHttpServer(
 	}
 
 	// Create handler with timeout
-	handlerWithTimeout := TimeoutHandler(logger, h, reqMaxTimeout)
+	httpHandler := TimeoutHandler(logger, h, reqMaxTimeout)
+	handlerV4 := httpHandler
+	handlerV6 := httpHandler
+
+	if grpcSharesHttpV4(cfg) {
+		sharedGrpcServer, err := NewGrpcServer(ctx, logger, cfg, erpc)
+		if err != nil {
+			return nil, err
+		}
+		srv.sharedGrpcServer = sharedGrpcServer
+		handlerV4 = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
+				sharedGrpcServer.server.ServeHTTP(w, r)
+				return
+			}
+			httpHandler.ServeHTTP(w, r)
+		})
+		if cfg.TLS == nil || !cfg.TLS.Enabled {
+			handlerV4 = h2c.NewHandler(handlerV4, &http2.Server{})
+		}
+	}
 
 	// Create IPv4 server if configured
 	if cfg.ListenV4 != nil && *cfg.ListenV4 {
 		srv.serverV4 = &http.Server{
-			Handler:        handlerWithTimeout,
+			Handler:        handlerV4,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			IdleTimeout:    300 * time.Second,
@@ -167,7 +190,7 @@ func NewHttpServer(
 	// Create IPv6 server if configured
 	if cfg.ListenV6 != nil && *cfg.ListenV6 {
 		srv.serverV6 = &http.Server{
-			Handler:        handlerWithTimeout,
+			Handler:        handlerV6,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			IdleTimeout:    300 * time.Second,
@@ -607,18 +630,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				var networkId string
 
 				if architecture == "" || chainId == "" {
-					var req map[string]interface{}
-					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
-						common.EndRequestSpan(requestCtx, nil, err)
-						return
-					}
-					if networkIdFromBody, ok := req["networkId"].(string); ok {
-						networkId = networkIdFromBody
-						parts := strings.Split(networkId, ":")
-						if len(parts) == 2 {
-							architecture = parts[0]
-							chainId = parts[1]
+					if bodyBytes := nq.Body(); len(bodyBytes) > 0 {
+						var req map[string]interface{}
+						if err := common.SonicCfg.Unmarshal(bodyBytes, &req); err != nil {
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
+							common.EndRequestSpan(requestCtx, nil, err)
+							return
+						}
+						if networkIdFromBody, ok := req["networkId"].(string); ok {
+							networkId = networkIdFromBody
+							parts := strings.Split(networkId, ":")
+							if len(parts) == 2 {
+								architecture = parts[0]
+								chainId = parts[1]
+							}
 						}
 					}
 				} else {

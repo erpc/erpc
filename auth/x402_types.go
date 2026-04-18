@@ -291,4 +291,3 @@ func extractPayerFromRaw(payment interface{}) string {
 
 	return ""
 }
-

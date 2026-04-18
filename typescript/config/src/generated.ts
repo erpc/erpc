@@ -116,6 +116,13 @@ export interface ServerConfig {
   httpPort?: number /* int */; // Deprecated: use HttpPortV4
   httpPortV4?: number /* int */;
   httpPortV6?: number /* int */;
+  grpcEnabled?: boolean;
+  grpcHostV4?: string;
+  grpcPortV4?: number /* int */;
+  grpcHostV6?: string;
+  grpcPortV6?: number /* int */;
+  grpcMaxRecvMsgSize?: number /* int */;
+  grpcMaxSendMsgSize?: number /* int */;
   maxTimeout?: Duration;
   readTimeout?: Duration;
   writeTimeout?: Duration;
@@ -413,6 +420,9 @@ export interface ProjectConfig {
    * Configure user agent tracking at the project level
    */
   userAgentMode?: UserAgentTrackingMode;
+  forwardHeaders?: string[];
+  ignoreMethods?: string[];
+  allowMethods?: string[];
 }
 /**
  * UserAgentTrackingMode controls how user agents are recorded for metrics/labels
@@ -434,6 +444,12 @@ export interface NetworkDefaults {
   evm?: TsEvmNetworkConfigForDefaults;
   multiplexing?: boolean;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface CORSConfig {
   allowedOrigins: string[];
   allowedMethods: string[];
@@ -469,8 +485,15 @@ export interface UpstreamConfig {
   routing?: RoutingConfig;
   shadow?: ShadowUpstreamConfig;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface ShadowUpstreamConfig {
   enabled: boolean;
+  sampleRate?: number /* float64 */;
   ignoreFields?: { [key: string]: string[]};
 }
 export interface UpstreamIntegrityConfig {
@@ -498,7 +521,8 @@ export interface ScoreMultiplierConfig {
   finalizationLag?: number /* float64 */;
   misbehaviors?: number /* float64 */;
 }
-export type Alias = UpstreamConfig;
+export type UJAlias = UpstreamConfig;
+export type UYAlias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
   enabled?: boolean;
   adjustmentPeriod: Duration;
@@ -519,6 +543,12 @@ export interface JsonRpcUpstreamConfig {
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
   statePollerInterval?: Duration;
+  /**
+   * StatePollerDebounce overrides the debounce interval for the state poller.
+   * When 0 (default), the interval is dynamically inferred from the chain's
+   * observed block time, falling back to the network-level
+   * FallbackStatePollerDebounce, then to a 1s floor.
+   */
   statePollerDebounce?: Duration;
   blockAvailability?: EvmBlockAvailabilityConfig;
   getLogsAutoSplittingRangeThreshold?: number /* int64 */;
@@ -532,6 +562,15 @@ export interface EvmUpstreamConfig {
    * @deprecated: should be removed in a future release
    */
   maxAvailableRecentBlocks?: number /* int64 */;
+  queryShim?: EvmQueryShimConfig;
+}
+export interface EvmQueryShimConfig {
+  enabled?: boolean;
+  allowedMethods?: string[];
+  concurrency?: number /* int */;
+  maxBlockRange?: number /* int64 */;
+  maxLimit?: number /* int */;
+  defaultLimit?: number /* int */;
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -771,6 +810,12 @@ export interface NetworkConfig {
   methods?: MethodsConfig;
   multiplexing?: boolean;
 }
+/**
+ * Define a type alias to avoid recursion
+ */
+/**
+ * If that fails, try the old format with single failsafe object
+ */
 export interface DirectiveDefaultsConfig {
   retryEmpty?: boolean;
   retryPending?: boolean;
@@ -862,6 +907,22 @@ export interface EvmNetworkConfig {
    */
   markEmptyAsErrorMethods?: string[];
   /**
+   * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
+   * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
+   * the estimated block time, preferring fresher data at the cost of slightly more
+   * polling. Lower values reduce staleness risk; higher values reduce RPC calls.
+   * Default: 0.7 (30% under the estimated block time).
+   */
+  dynamicBlockTimeDebounceMultiplier?: number /* float64 */;
+  /**
+   * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive
+   * the retry delay when all upstreams return ErrUpstreamBlockUnavailable. When the
+   * dynamic block time is known, the delay is blockTime * this multiplier.
+   * Falls back to the static RetryPolicyConfig.BlockUnavailableDelay when block time
+   * is not yet available. Default: 0.8.
+   */
+  blockUnavailableDelayMultiplier?: number /* float64 */;
+  /**
    * IdempotentTransactionBroadcast enables idempotency handling for eth_sendRawTransaction.
    * When enabled (default), "already known" and verified "nonce too low" errors are converted
    * to success responses with the transaction hash. This allows failsafe policies (retry/hedge)
@@ -901,6 +962,7 @@ export const AuthTypeDatabase: AuthType = "database";
 export const AuthTypeJwt: AuthType = "jwt";
 export const AuthTypeSiwe: AuthType = "siwe";
 export const AuthTypeNetwork: AuthType = "network";
+export const AuthTypeX402: AuthType = "x402";
 export interface AuthConfig {
   strategies: TsAuthStrategyConfig[];
 }
@@ -914,6 +976,7 @@ export interface AuthStrategyConfig {
   database?: DatabaseStrategyConfig;
   jwt?: JwtStrategyConfig;
   siwe?: SiweStrategyConfig;
+  x402?: X402StrategyConfig;
 }
 export interface SecretStrategyConfig {
   id: string;
@@ -975,6 +1038,58 @@ export interface NetworkStrategyConfig {
    */
   rateLimitBudget?: string;
   ipAsUser?: boolean;
+}
+/**
+ * X402StrategyConfig enables x402 payment authentication (HTTP 402 Payment Required).
+ * Clients without an API key can pay per-request via the x402 protocol. The payer's
+ * wallet address becomes their eRPC user ID, enabling per-payer rate limiting and metrics.
+ */
+export interface X402StrategyConfig {
+  /**
+   * FacilitatorURL is the x402 facilitator endpoint for verify/settle operations.
+   */
+  facilitatorUrl: string;
+  /**
+   * SellerAddress is the wallet address that receives payments (e.g. USDC on Base).
+   */
+  sellerAddress: string;
+  /**
+   * PricePerRequest is the cost per request in atomic units (e.g. "5" for $0.000005 USDC).
+   */
+  pricePerRequest: string;
+  /**
+   * Network is the x402 network name for payment (e.g. "base", "base-sepolia").
+   */
+  network: string;
+  /**
+   * Asset is the token contract address used for payment.
+   */
+  asset?: string;
+  /**
+   * Scheme is the x402 payment scheme (defaults to "exact").
+   */
+  scheme?: string;
+  /**
+   * Description is a human-readable description included in 402 responses.
+   */
+  description?: string;
+  /**
+   * MaxTimeoutSeconds is the payment authorization validity period (default: 300).
+   */
+  maxTimeoutSeconds?: number /* int */;
+  /**
+   * RateLimitBudget, if set, is applied to the authenticated payer.
+   */
+  rateLimitBudget?: string;
+  /**
+   * VerifyOnly when true skips settlement (useful for testing).
+   */
+  verifyOnly?: boolean;
+  /**
+   * Extra contains additional fields merged into the payment requirement's extra object.
+   * Useful for providing EIP-712 domain params when the facilitator doesn't supply them.
+   */
+  extra?: { [key: string]: any};
 }
 export type LabelMode = string;
 export const ErrorLabelModeVerbose: LabelMode = "verbose";
