@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -228,4 +229,55 @@ func TestBackgroundPushIsDeduped(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	assert.Equal(t, int64(20), ctr.GetValue())
 	c.AssertExpectations(t)
+}
+
+// TestContinueAsyncRefresh_DoesNotLeakOnStuckWorker proves the helper
+// goroutine exits even when the refresh function blocks past its context.
+// Before the fix, the helper read from resultCh with no deadline; a worker
+// that ignored its context would leak the helper for the process lifetime.
+func TestContinueAsyncRefresh_DoesNotLeakOnStuckWorker(t *testing.T) {
+	cfg := &common.SharedStateConfig{
+		ClusterKey:      "test",
+		FallbackTimeout: common.Duration(100 * time.Millisecond),
+		LockTtl:         common.Duration(1 * time.Second),
+		LockMaxWait:     common.Duration(10 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(10 * time.Millisecond),
+	}
+	r, c := setupMockRegistry(t, cfg)
+
+	// Background reconcile paths may fire; allow but don't require them.
+	lock := &MockLock{}
+	lock.On("Unlock", mock.Anything).Return(nil).Maybe()
+	c.On("Lock", mock.Anything, mock.Anything, mock.Anything).Return(lock, nil).Maybe()
+	c.On("Get", mock.Anything, ConnectorMainIndex, mock.Anything, "value", nil).Return([]byte(""), errors.New("not found")).Maybe()
+	c.On("Set", mock.Anything, mock.Anything, "value", mock.Anything, mock.Anything).Return(nil).Maybe()
+	c.On("PublishCounterInt64", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	ctr := &counterInt64{registry: r, key: "test/stuck", ignoreRollbackOf: 1024}
+	ctr.value.Store(1)
+
+	// Worker that ignores its context and only unblocks when we say so.
+	release := make(chan struct{})
+	defer close(release)
+
+	before := runtime.NumGoroutine()
+
+	// Foreground returns quickly via updateMaxWait; worker keeps running.
+	val, err := ctr.TryUpdateIfStale(context.Background(), 1*time.Millisecond, func(ctx context.Context) (int64, error) {
+		<-release
+		return 42, nil
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), val, "foreground should return stale value")
+
+	// Helper is now waiting on resultCh. Wait longer than FallbackTimeout plus
+	// the 1s buffer so the helper's bounded timer fires.
+	time.Sleep(cfg.FallbackTimeout.Duration() + 1500*time.Millisecond)
+
+	// Helper must have exited even though the worker is still blocked.
+	// Exactly one lingering goroutine is expected (the stuck worker); the
+	// helper and any transient goroutines must be gone.
+	after := runtime.NumGoroutine()
+	assert.LessOrEqual(t, after-before, 1,
+		"expected at most the stuck worker to remain; got delta=%d", after-before)
 }
