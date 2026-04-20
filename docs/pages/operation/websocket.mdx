@@ -266,6 +266,39 @@ server:
     maxSubscriptionsPerConnection: 100
 ```
 
+## Per-frame wire tracing
+
+For targeted debugging of client subscription behaviour (early unsubscribes, missing notifications, exact frame shape), eRPC can log every inbound/outbound WS frame on a selected network to `info` level. Leave the list empty in production — enabling it turns the WS write path off gorilla's zero-copy `NextWriter` streaming onto buffered `WriteMessage` so the bytes can be captured, and each frame becomes a log entry.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+diagnostics:
+  # Per-frame logging for client WS connections whose networkId matches.
+  # Empty = off. Payload is capped at 4 KiB per event.
+  wsFrameTraceNetworkIds:
+    - "evm:1"
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  diagnostics: {
+    wsFrameTraceNetworkIds: ["evm:1"],
+  },
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+<Callout type="info">
+  The `ERPC_WS_TRACE_NETWORK` environment variable is honored as a legacy single-entry backdoor when `wsFrameTraceNetworkIds` is empty — it seeds the list with the env value. The config field takes precedence when non-empty.
+</Callout>
+
+A handful of other WS-subscription-related diagnostic events emit at `trace` level and surface when you drop `logLevel` to `trace` (globally or on a specific network logger via zerolog's context-scoped level). These cover per-upstream WS newHead non-monotonicity, and the `eth_getBlockByNumber("latest")` response-vs-tip lag check that fires when the final HTTP "latest" response is below the network's WS-tracked tip.
+
 ## Indexer configuration
 
 `eth_subscribe` fan-out and reorg-aware `removed: true` emission are handled by an internal event indexer. Most deployments can leave this unset; the tunables exist for chains with unusual reorg windows or very high log throughput.
@@ -300,6 +333,38 @@ export default createConfig({
 <Callout type="info">
   Increase `canonicalChainDepth` on chains with historically deep reorgs (e.g. some BSC incidents) or on nodes that batch-announce heads. Memory impact is dominated by the per-block log payload index, not the ring metadata.
 </Callout>
+
+## Subscription compatibility knobs
+
+### Stripping `fromBlock: "0x0"` from `eth_subscribe` logs filters
+
+Some JSON-RPC clients include `fromBlock: "0x0"` in the `eth_subscribe("logs", {…})` filter as a "from genesis" marker. `eth_subscribe` is a live-stream RPC — `fromBlock` has no standardised meaning there — and on backends that prune historical data the subscribe call fails outright. eRPC can strip the field per-network so the live stream succeeds; historical logs stay retrievable via `eth_getLogs` in the normal way.
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 196
+          # Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
+          # before forwarding to upstream. Non-zero fromBlocks pass through.
+          stripSubscribeFromBlockZero: true
+```
+
+Only the exact value `"0x0"` / `"0"` is stripped — non-zero `fromBlock` values pass through unchanged. Leave unset for chains where upstreams handle the field correctly.
+
+### HTTP / WebSocket tip-sync considerations for strict consumers
+
+Some RPC consumers compare the block number returned by HTTP `eth_getBlockByNumber("latest")` against a tip they've observed via a WebSocket `newHeads` subscription and flag any lag as a health-check failure. On fast-block chains (sub-second to a few seconds) the HTTP round-trip can trivially exceed the inter-block interval, so the HTTP response carries a block that was current when it was generated but older than a `newHeads` notification that arrived in parallel. That behaviour is inherent to HTTP-vs-push timing and is visible with or without a proxy in front.
+
+eRPC minimises the gap in three ways:
+
+- **Per-block cache keying for moving tags.** The realtime cache entry for `eth_getBlockByNumber("latest")` is keyed by the response's actual block number (and looked up by the network's currently-known tip), so each tip advance is a distinct key rather than pinning every call within the TTL to the same cached payload.
+- **`enforceHighestBlock` response rewrite.** When the upstream returns a block number below the network's tracked tip, eRPC's [integrity check](/config/failsafe/integrity) fetches the specific higher block from another upstream and returns that instead.
+- **WS newHead advances the tip tracker synchronously.** When an upstream WebSocket delivers a `newHeads` notification, eRPC updates its per-upstream tip tracker before the indexer fans the notification out to clients, so the next HTTP request on the same pod sees the fresher tip.
+
+Even so, a transient single-block lag can reach a client when the chain produces a block faster than an in-flight HTTP round-trip completes. If your consumer treats single-block HTTP-vs-WS lag as a hard failure, widen its tolerance to match the chain's block time rather than expect eRPC (or any proxy) to eliminate it.
 
 ## Directives
 
