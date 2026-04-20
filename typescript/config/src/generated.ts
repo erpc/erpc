@@ -552,6 +552,13 @@ export interface EvmUpstreamConfig {
   statePollerDebounce?: Duration;
   blockAvailability?: EvmBlockAvailabilityConfig;
   getLogsAutoSplittingRangeThreshold?: number /* int64 */;
+  /**
+   * TraceFilterAutoSplittingRangeThreshold proactively splits trace_filter and
+   * arbtrace_filter requests whose block range exceeds this value into contiguous
+   * sub-requests executed concurrently and merged before returning. Zero disables
+   * the feature.
+   */
+  traceFilterAutoSplittingRangeThreshold?: number /* int64 */;
   skipWhenSyncing?: boolean;
   integrity?: UpstreamIntegrityConfig;
   /**
@@ -884,6 +891,17 @@ export interface EvmNetworkConfig {
   getLogsMaxAllowedTopics?: number /* int64 */;
   getLogsSplitOnError?: boolean;
   getLogsSplitConcurrency?: number /* int */;
+  /**
+   * TraceFilterSplitOnError controls reactive splitting for trace_filter and
+   * arbtrace_filter requests when the upstream returns a range-too-large error.
+   * Nil disables the feature.
+   */
+  traceFilterSplitOnError?: boolean;
+  /**
+   * TraceFilterSplitConcurrency caps in-flight sub-requests when a trace_filter
+   * or arbtrace_filter request is split. Zero falls back to 10.
+   */
+  traceFilterSplitConcurrency?: number /* int */;
   /**
    * EnforceBlockAvailability controls whether the network should enforce per-upstream
    * block availability bounds (upper/lower) for methods by default. Method-level config may override.
