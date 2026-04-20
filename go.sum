@@ -23,8 +23,8 @@ github.com/StackExchange/wmi v1.2.1 h1:VIkavFPXSjcnS+O8yTq7NI32k0R5Aj+v39y29VYDO
 github.com/StackExchange/wmi v1.2.1/go.mod h1:rcmrprowKIVzvc+NUiLncP2uuArMWLCbu9SBzvHz7e8=
 github.com/alicebob/miniredis/v2 v2.36.1 h1:Dvc5oAnNOr7BIfPn7tF269U8DvRW1dBG2D5n0WrfYMI=
 github.com/alicebob/miniredis/v2 v2.36.1/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
-github.com/aramalipoor/failsafe-go v0.0.0-20260223183747-e5f7847e3689 h1:QiQB+hLuAOzKTnbATxCfF8Hu1mvbY0hJ/47WTRmdy6s=
-github.com/aramalipoor/failsafe-go v0.0.0-20260223183747-e5f7847e3689/go.mod h1:4Y0ElBvDejSTmE59wFOHPwJomW6UaSlE/EZHYtJ99UQ=
+github.com/aramalipoor/failsafe-go v0.0.0-20260420113751-603cec9ae381 h1:ilAHXv3pbJD9xVnf0bBh7Xr8t2qRZdiwy8swC+kmxmc=
+github.com/aramalipoor/failsafe-go v0.0.0-20260420113751-603cec9ae381/go.mod h1:4Y0ElBvDejSTmE59wFOHPwJomW6UaSlE/EZHYtJ99UQ=
 github.com/aws/aws-sdk-go v1.55.8 h1:JRmEUbU52aJQZ2AjX4q4Wu7t4uZjOu71uyNmaWlUkJQ=
 github.com/aws/aws-sdk-go v1.55.8/go.mod h1:ZkViS9AqA6otK+JBBNH2++sx1sgxrPKcSzPPvQkUtXk=
 github.com/benbjohnson/clock v1.1.0/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
