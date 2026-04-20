@@ -85,13 +85,15 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "limit the query to") ||
 			strings.Contains(msg, "maximum block range") ||
 			strings.Contains(msg, "range limit exceeded") ||
+			strings.Contains(msg, "too many results") ||
+			strings.Contains(msg, "try paginating") ||
 			(strings.Contains(msg, "maximum") && strings.Contains(msg, "blocks distance")) ||
 			strings.Contains(msg, "eth_getLogs is limited") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmLargeRange,
-					fmt.Sprintf("getLogs request exceeded max allowed range: %s", err.Message),
+					fmt.Sprintf("request exceeded max allowed range: %s", err.Message),
 					nil,
 					details,
 				),
@@ -106,7 +108,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmLargeRange,
-					fmt.Sprintf("getLogs request exceeded max allowed addresses: %s", err.Message),
+					fmt.Sprintf("request exceeded max allowed addresses: %s", err.Message),
 					nil,
 					details,
 				),
