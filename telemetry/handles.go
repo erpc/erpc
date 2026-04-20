@@ -20,8 +20,14 @@ type gaugeKey struct {
 	key string
 }
 
+// HistogramObservable is satisfied by both *prometheus.HistogramVec and
+// *LabeledHistogram, so ObserverHandle can cache handles for either.
+type HistogramObservable interface {
+	WithLabelValues(labels ...string) prometheus.Observer
+}
+
 type observerKey struct {
-	vec *prometheus.HistogramVec
+	vec any // holds a comparable pointer (*prometheus.HistogramVec or *LabeledHistogram)
 	key string
 }
 
@@ -72,7 +78,8 @@ func GaugeHandle(gv *prometheus.GaugeVec, labels ...string) prometheus.Gauge {
 }
 
 // ObserverHandle returns a cached child observer for the given labels.
-func ObserverHandle(hv *prometheus.HistogramVec, labels ...string) prometheus.Observer {
+// hv may be *prometheus.HistogramVec or *LabeledHistogram.
+func ObserverHandle(hv HistogramObservable, labels ...string) prometheus.Observer {
 	k := observerKey{vec: hv, key: labelsKey(labels)}
 	if v, ok := observerHandleCache.Load(k); ok {
 		return v.(prometheus.Observer)

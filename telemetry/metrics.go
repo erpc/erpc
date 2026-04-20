@@ -435,14 +435,11 @@ var (
 		Name:      "x402_payment_total",
 		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
 	}, []string{"project", "network", "facilitator", "outcome"})
-
-	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "network_evm_get_logs_range_requested",
-		Help:      "eth_getLogs requested block-range sizes.",
-		Buckets:   EvmGetLogsRangeHistogramBuckets,
-	}, []string{"project", "network", "category", "user", "finality"})
 )
+
+// MetricNetworkEvmGetLogsRangeRequested is created in SetHistogramBuckets alongside
+// the other filter-aware histograms so the HistogramLabelFilter can apply to it.
+var MetricNetworkEvmGetLogsRangeRequested *LabeledHistogram
 
 var DefaultHistogramBuckets = []float64{
 	0.05,
@@ -459,8 +456,9 @@ var EvmBlockRangeBucketSize int64 = 100000
 var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 10000, 30000}
 
 var (
-	MetricUpstreamRequestDuration,
-	MetricNetworkRequestDuration,
+	MetricUpstreamRequestDuration *LabeledHistogram
+	MetricNetworkRequestDuration  *LabeledHistogram
+
 	MetricCacheSetSuccessDuration,
 	MetricCacheSetErrorDuration,
 	MetricCacheGetSuccessHitDuration,
@@ -513,6 +511,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	if MetricUpstreamRequestDuration != nil {
 		prometheus.DefaultRegisterer.Unregister(MetricUpstreamRequestDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricNetworkRequestDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricNetworkEvmGetLogsRangeRequested)
 		prometheus.DefaultRegisterer.Unregister(MetricCacheSetSuccessDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricCacheSetErrorDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessHitDuration)
@@ -520,19 +519,29 @@ func SetHistogramBuckets(bucketsStr string) error {
 		prometheus.DefaultRegisterer.Unregister(MetricCacheGetErrorDuration)
 		prometheus.DefaultRegisterer.Unregister(MetricConsensusDuration)
 	}
-	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricUpstreamRequestDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
 		Buckets:   buckets,
 	}, []string{"project", "vendor", "network", "upstream", "category", "composite", "finality", "user"})
+	prometheus.MustRegister(MetricUpstreamRequestDuration)
 
-	MetricNetworkRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkRequestDuration = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
+	prometheus.MustRegister(MetricNetworkRequestDuration)
+
+	MetricNetworkEvmGetLogsRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_get_logs_range_requested",
+		Help:      "eth_getLogs requested block-range sizes.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "category", "user", "finality"})
+	prometheus.MustRegister(MetricNetworkEvmGetLogsRangeRequested)
 
 	MetricCacheSetSuccessDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
