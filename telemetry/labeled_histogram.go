@@ -126,3 +126,22 @@ func (lh *LabeledHistogram) WithLabelValues(vals ...string) prometheus.Observer 
 
 // Reset clears the underlying HistogramVec.
 func (lh *LabeledHistogram) Reset() { lh.vec.Reset() }
+
+// ActiveLabelValues projects full-schema values down to the retained subset.
+// Useful for callers that want to key their own caches on the effective
+// (post-filter) labels so multiple full-label tuples that resolve to the same
+// underlying series share a single cache entry.
+func (lh *LabeledHistogram) ActiveLabelValues(vals []string) []string {
+	if len(vals) != len(lh.schema) {
+		panic(fmt.Sprintf("labeled_histogram: %s expected %d label values (%v), got %d",
+			lh.metricName, len(lh.schema), lh.schema, len(vals)))
+	}
+	if len(lh.activeIdx) == len(lh.schema) {
+		return vals
+	}
+	active := make([]string, len(lh.activeIdx))
+	for i, idx := range lh.activeIdx {
+		active[i] = vals[idx]
+	}
+	return active
+}

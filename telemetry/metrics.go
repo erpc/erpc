@@ -503,9 +503,11 @@ func GetScoreMetricsMode() ScoreMetricsMode {
 }
 
 func SetHistogramBuckets(bucketsStr string) error {
-	buckets, err := ParseHistogramBuckets(bucketsStr)
-	if err != nil {
-		return err
+	buckets, parseErr := ParseHistogramBuckets(bucketsStr)
+	if parseErr != nil {
+		// Fall through with defaults so filter-aware histograms always get
+		// initialized; the caller still receives parseErr for logging.
+		buckets = DefaultHistogramBuckets
 	}
 
 	if MetricUpstreamRequestDuration != nil {
@@ -588,7 +590,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	// Clear cached handles since the Vecs were re-created.
 	ResetHandleCache()
 
-	return nil
+	return parseErr
 }
 
 func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {

@@ -79,8 +79,16 @@ func GaugeHandle(gv *prometheus.GaugeVec, labels ...string) prometheus.Gauge {
 
 // ObserverHandle returns a cached child observer for the given labels.
 // hv may be *prometheus.HistogramVec or *LabeledHistogram.
+//
+// When hv is a *LabeledHistogram with active filtering, the cache key uses
+// the post-filter label values so multiple full-label tuples that resolve
+// to the same underlying observer share a single cache entry.
 func ObserverHandle(hv HistogramObservable, labels ...string) prometheus.Observer {
-	k := observerKey{vec: hv, key: labelsKey(labels)}
+	keyLabels := labels
+	if lh, ok := hv.(*LabeledHistogram); ok {
+		keyLabels = lh.ActiveLabelValues(labels)
+	}
+	k := observerKey{vec: hv, key: labelsKey(keyLabels)}
 	if v, ok := observerHandleCache.Load(k); ok {
 		return v.(prometheus.Observer)
 	}
