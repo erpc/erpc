@@ -120,7 +120,6 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 				n.ProjectId(),
 				n.Label(),
 				"eth_getLogs",
-				nq.UserId(),
 				finalityStr,
 			).
 			Observe(rangeSize)

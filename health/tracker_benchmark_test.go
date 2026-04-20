@@ -76,7 +76,7 @@ func buildCombos(project string, upstreams int, methods []string, users []string
 func prewarmPerCall(combos []labelCombo, project string) {
 	for _, c := range combos {
 		telemetry.MetricUpstreamRequestDuration.
-			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String(), c.user).
+			WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String()).
 			Observe(0.001)
 	}
 }
@@ -112,7 +112,7 @@ func BenchmarkMetricUpstreamRequestDuration_PerCall(b *testing.B) {
 		for pb.Next() {
 			c := combos[idx]
 			telemetry.MetricUpstreamRequestDuration.
-				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String(), c.user).
+				WithLabelValues(project, c.up.vendor, c.up.networkLabel, c.up.id, c.method, c.comp, c.final.String()).
 				Observe(0.003)
 			idx++
 			if idx >= len(combos) {

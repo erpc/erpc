@@ -441,7 +441,7 @@ var (
 		Name:      "network_evm_get_logs_range_requested",
 		Help:      "eth_getLogs requested block-range sizes.",
 		Buckets:   EvmGetLogsRangeHistogramBuckets,
-	}, []string{"project", "network", "category", "user", "finality"})
+	}, []string{"project", "network", "category", "finality"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -525,14 +525,14 @@ func SetHistogramBuckets(bucketsStr string) error {
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
 		Buckets:   buckets,
-	}, []string{"project", "vendor", "network", "upstream", "category", "composite", "finality", "user"})
+	}, []string{"project", "vendor", "network", "upstream", "category", "composite", "finality"})
 
 	MetricNetworkRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
-	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
+	}, []string{"project", "network", "vendor", "upstream", "category", "finality"})
 
 	MetricCacheSetSuccessDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
