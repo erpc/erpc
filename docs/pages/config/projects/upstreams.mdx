@@ -661,6 +661,8 @@ export default createConfig({
 
 <Callout type='info'>
   getLogs limits, splitting on error, and enforcement are now configured at the <strong>network</strong> level. See <a href="/config/projects/networks#evm-networks">EVM Networks</a> → <em>eth_getLogs</em>.
+  <br /><br />
+  A parallel <code>traceFilterAutoSplittingRangeThreshold</code> upstream hint enables the same splitting behavior for <code>trace_filter</code> and <code>arbtrace_filter</code>. Network-level knobs (<code>traceFilterSplitOnError</code>, <code>traceFilterSplitConcurrency</code>) live in the same page — see <a href="/config/projects/networks#evm-networks">EVM Networks</a> → <em>trace_filter and arbtrace_filter</em>.
 </Callout>
 
 ## Block availability

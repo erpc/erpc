@@ -49,14 +49,16 @@ The poller also updates proactively when `eth_blockNumber` or `eth_getBlockByNum
 
 **Metrics**: `erpc_upstream_stale_latest_block_total`, `erpc_upstream_stale_finalized_block_total`
 
-## Range Enforcement for `eth_getLogs`
+## Range Enforcement for `eth_getLogs`, `trace_filter`, `arbtrace_filter`
 
 When `enforceGetLogsBlockRange: true`, eRPC checks that the upstream has the requested block range before sending the request:
 
 1. If `toBlock` > upstream's latest block → skip to next upstream (after forcing a fresh poll if stale)
 2. If `fromBlock` < upstream's available range (based on `maxAvailableRecentBlocks` config) → skip to next upstream
 
-**Large range handling**: eRPC can auto-split large ranges based on [`getLogsAutoSplittingRangeThreshold`](/config/projects/upstreams#eth_getlogs-max-range-automatic-splitting) or when upstream returns "range too large" errors.
+The same availability check is applied to `trace_filter` and `arbtrace_filter` since they share `fromBlock`/`toBlock` semantics with `eth_getLogs`.
+
+**Large range handling**: eRPC can auto-split large ranges based on [`getLogsAutoSplittingRangeThreshold`](/config/projects/upstreams#eth_getlogs-max-range-automatic-splitting) or when an upstream returns "range too large" errors. A parallel [`traceFilterAutoSplittingRangeThreshold`](/config/projects/networks#trace_filter-and-arbtrace_filter) controls the same behavior for trace requests.
 
 **Metrics**: `erpc_upstream_evm_get_logs_stale_upper_bound_total`, `erpc_upstream_evm_get_logs_stale_lower_bound_total`, `erpc_upstream_evm_get_logs_forced_splits_total`
 
