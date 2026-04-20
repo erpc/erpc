@@ -464,6 +464,109 @@ func TestExecuteTraceFilterSubRequests(t *testing.T) {
 	})
 }
 
+func TestNetworkPreForward_trace_filter(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("no_split_when_range_below_threshold", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}}).Maybe()
+		u := new(mockEvmUpstream)
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{TraceFilterAutoSplittingRangeThreshold: 10}}).Maybe()
+
+		req := createTestTraceFilterRequest("trace_filter", map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x5",
+		})
+		handled, resp, err := networkPreForward_trace_filter(ctx, n, []common.Upstream{u}, req)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+	})
+
+	t.Run("no_split_when_threshold_unset", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}}).Maybe()
+		u := new(mockEvmUpstream)
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
+
+		req := createTestTraceFilterRequest("trace_filter", map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0xffff",
+		})
+		handled, resp, err := networkPreForward_trace_filter(ctx, n, []common.Upstream{u}, req)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+	})
+
+	t.Run("proactive_split_uses_min_threshold_across_upstreams", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("ProjectId").Return("test").Maybe()
+		n.On("Id").Return("evm:1").Maybe()
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}}).Maybe()
+		// Effective threshold is 2 (min of 2 and 5) → range 1..5 splits into [1,2], [3,4], [5,5].
+		n.On("Forward", mock.Anything, mock.Anything).Return(
+			common.NewNormalizedResponse().WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil),
+			), nil,
+		).Times(3)
+
+		u1 := new(mockEvmUpstream)
+		u1.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{TraceFilterAutoSplittingRangeThreshold: 2}}).Maybe()
+		u1.On("Id").Return("u1").Maybe()
+		u1.On("NetworkId").Return("evm:1").Maybe()
+		u1.On("NetworkLabel").Return("evm:1").Maybe()
+		u1.On("VendorName").Return("test").Maybe()
+		u2 := new(mockEvmUpstream)
+		u2.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{TraceFilterAutoSplittingRangeThreshold: 5}}).Maybe()
+		u2.On("Id").Return("u2").Maybe()
+		u2.On("NetworkId").Return("evm:1").Maybe()
+		u2.On("NetworkLabel").Return("evm:1").Maybe()
+		u2.On("VendorName").Return("test").Maybe()
+
+		req := createTestTraceFilterRequest("trace_filter", map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x5",
+		})
+		handled, resp, err := networkPreForward_trace_filter(ctx, n, []common.Upstream{u1, u2}, req)
+		assert.True(t, handled)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		n.AssertExpectations(t)
+	})
+
+	t.Run("skips_for_sub_requests", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}}).Maybe()
+		u := new(mockEvmUpstream)
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{TraceFilterAutoSplittingRangeThreshold: 1}}).Maybe()
+
+		req := createTestTraceFilterRequest("trace_filter", map[string]interface{}{
+			"fromBlock": "0x1",
+			"toBlock":   "0x10",
+		})
+		req.SetParentRequestId("some-parent")
+
+		handled, resp, err := networkPreForward_trace_filter(ctx, n, []common.Upstream{u}, req)
+		assert.False(t, handled)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+	})
+
+	t.Run("returns_error_when_fromBlock_greater_than_toBlock", func(t *testing.T) {
+		n := new(mockNetwork)
+		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}}).Maybe()
+
+		req := createTestTraceFilterRequest("trace_filter", map[string]interface{}{
+			"fromBlock": "0x10",
+			"toBlock":   "0x1",
+		})
+		handled, _, err := networkPreForward_trace_filter(ctx, n, nil, req)
+		assert.True(t, handled)
+		assert.Error(t, err)
+	})
+}
+
 func TestNetworkPostForward_trace_filter(t *testing.T) {
 	t.Run("no_error_passes_through", func(t *testing.T) {
 		n := new(mockNetwork)
