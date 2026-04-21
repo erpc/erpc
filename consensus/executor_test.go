@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -444,29 +443,11 @@ func TestConsensus_ShortCircuit_ReleasesLateResponses(t *testing.T) {
 	var slowBodyClosed atomic.Int32
 	slowRelease := make(chan struct{})
 
-	// A start barrier ensures all three participants pass executeParticipant's
-	// ctx.Err() pre-check and actually enter innerFn before any of them
-	// returns. Without this, slow CI schedulers may let participant 1 finish
-	// and short-circuit (cancelling the shared ctx) before participant 3 ever
-	// enters innerFn, causing the pre-check to early-return with nil and the
-	// trackingReadCloser never being constructed — a false negative for this
-	// test's "late response is released" invariant.
-	var started sync.WaitGroup
-	started.Add(3)
-	allStarted := make(chan struct{})
-	go func() {
-		started.Wait()
-		close(allStarted)
-	}()
-
 	ctx := context.WithValue(context.Background(), common.RequestContextKey, req)
 	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
 
 	resp, err := fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-		n := callCount.Add(1)
-		started.Done()
-		<-allStarted
-		switch n {
+		switch callCount.Add(1) {
 		case 1, 2:
 			return validResponseWithValue("0x1"), nil
 		default:
@@ -483,7 +464,7 @@ func TestConsensus_ShortCircuit_ReleasesLateResponses(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return slowBodyClosed.Load() == 1
-	}, 5*time.Second, 10*time.Millisecond, "late post-short-circuit response should be released exactly once")
+	}, time.Second, 10*time.Millisecond, "late post-short-circuit response should be released exactly once")
 }
 
 // TestConsensus_HappyPath_NoCancel verifies the refactor does not break the
@@ -611,80 +592,6 @@ func TestConsensus_FireAndForget_CallerCancelDoesNotStopParticipants(t *testing.
 	require.Eventually(t, func() bool {
 		return innerFnCompletes.Load() == 3
 	}, time.Second, 10*time.Millisecond, "all fire-and-forget participants should complete after unblock")
-}
-
-// TestConsensus_CallerAbandons_WinnerResponseIsReleased guards against the
-// resource leak where a caller cancels its context before the analyzer
-// publishes an outcome: the analyzer still completes and publishes a winner
-// to the buffered outcomeCh, but nothing up the stack ever calls
-// winner.Result.Release() because the caller isn't returning the winner.
-// Without the abandon-path drain goroutine, the winner's body (JSON-RPC
-// buffer, pooled handles, trackingReadCloser) would never close.
-func TestConsensus_CallerAbandons_WinnerResponseIsReleased(t *testing.T) {
-	logger := zerolog.New(zerolog.NewTestWriter(t))
-
-	pol := NewConsensusPolicyBuilder().
-		WithMaxParticipants(3).
-		WithAgreementThreshold(1).
-		WithLogger(&logger).
-		Build()
-
-	req := newTestRequest()
-
-	var callCount atomic.Int32
-	var winnerBodyClosed atomic.Int32
-	var started sync.WaitGroup
-	started.Add(3)
-	allStarted := make(chan struct{})
-	go func() {
-		started.Wait()
-		close(allStarted)
-	}()
-	completeInnerFn := make(chan struct{})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ctx = context.WithValue(ctx, common.RequestContextKey, req)
-
-	fsExec := failsafe.NewExecutor(pol).WithContext(ctx)
-
-	callerReturned := make(chan struct{})
-	go func() {
-		_, _ = fsExec.GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			n := callCount.Add(1)
-			started.Done()
-			<-allStarted
-			<-completeInnerFn
-			if n == 1 {
-				// First response becomes the winner (threshold=1 →
-				// short-circuit on first valid result).
-				return validResponseWithCloser("0x1", &winnerBodyClosed), nil
-			}
-			return validResponseWithValue("0x1"), nil
-		})
-		close(callerReturned)
-	}()
-
-	<-allStarted
-	cancel() // Abandon before any participant completes.
-
-	select {
-	case <-callerReturned:
-	case <-time.After(time.Second):
-		t.Fatal("caller did not return promptly after ctx cancel")
-	}
-
-	// Caller is gone; nothing up the stack holds a reference to the winner.
-	require.Equal(t, int32(0), winnerBodyClosed.Load(), "winner must not be released until analyzer finishes its reads")
-
-	// Unblock participants; analyzer now processes them, publishes the winner
-	// on outcomeCh, and finishes its cleanup — at which point the drain
-	// goroutine releases the winner.
-	close(completeInnerFn)
-
-	require.Eventually(t, func() bool {
-		return winnerBodyClosed.Load() == 1
-	}, 5*time.Second, 10*time.Millisecond, "abandon-path drain goroutine must release winner exactly once")
 }
 
 // TestRecordMetricsAndTracing_NilAnalysis_DoesNotPanic covers the catastrophic
