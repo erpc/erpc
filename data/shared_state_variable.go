@@ -503,14 +503,28 @@ func (c *counterInt64) applyRefreshResult(initialVal int64, r refreshResult) (in
 
 func (c *counterInt64) continueAsyncRefresh(resultCh <-chan refreshResult) {
 	go func() {
-		r, ok := <-resultCh
-		if !ok {
+		// Bound the helper's lifetime. The paired refresh worker is capped by
+		// fnCtx (fallbackTimeout), but if a downstream call ignores its context
+		// the worker may never send and this goroutine would leak permanently.
+		// Cap at fallbackTimeout + a small buffer; drop the eventual value in
+		// the pathological case — the next TryUpdateIfStale will refresh again.
+		timer := time.NewTimer(c.registry.fallbackTimeout + time.Second)
+		defer timer.Stop()
+
+		select {
+		case r, ok := <-resultCh:
+			if !ok {
+				return
+			}
+			// Apply result locally; remote push is scheduled async and MUST NOT block request flow.
+			c.updateMu.Lock()
+			_, _ = c.applyRefreshResult(c.value.Load(), r)
+			c.updateMu.Unlock()
+		case <-timer.C:
+			return
+		case <-c.registry.appCtx.Done():
 			return
 		}
-		// Apply result locally; remote push is scheduled async and MUST NOT block request flow.
-		c.updateMu.Lock()
-		_, _ = c.applyRefreshResult(c.value.Load(), r)
-		c.updateMu.Unlock()
 	}()
 }
 
