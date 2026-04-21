@@ -81,9 +81,24 @@ type LabeledHistogram struct {
 	vec        *prometheus.HistogramVec
 }
 
-// NewLabeledHistogram creates a HistogramVec using the current filter.
-// The caller is responsible for registering it with prometheus.Registerer
-// (use Register/Unregister helpers below to match the existing vec lifecycle).
+// RegisterOrReplaceHistogram is the canonical way to declare an erpc histogram:
+// it unregisters the previous instance (if any), creates a LabeledHistogram
+// honoring the current filter, registers it with prometheus.DefaultRegisterer,
+// and returns it. Use this for every histogram so the filter applies
+// uniformly. Safe to call multiple times — makes SetHistogramBuckets
+// idempotent for tests and hot-reloads.
+func RegisterOrReplaceHistogram(old *LabeledHistogram, opts prometheus.HistogramOpts, schema []string) *LabeledHistogram {
+	if old != nil {
+		prometheus.DefaultRegisterer.Unregister(old)
+	}
+	lh := NewLabeledHistogram(opts, schema)
+	prometheus.MustRegister(lh)
+	return lh
+}
+
+// NewLabeledHistogram creates a HistogramVec using the current filter without
+// registering it. Prefer RegisterOrReplaceHistogram unless you need custom
+// registration (e.g. a private registry in tests).
 func NewLabeledHistogram(opts prometheus.HistogramOpts, schema []string) *LabeledHistogram {
 	filterMu.RLock()
 	idx := currentFilter.activeIndices(opts.Name, schema)
