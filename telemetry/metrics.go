@@ -190,13 +190,6 @@ var (
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
 	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user", "agent_name"})
 
-	MetricNetworkHedgeDelaySeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "network_hedge_delay_seconds",
-		Help:      "Hedge delay used for requests (seconds).",
-		Buckets:   []float64{0.01, 0.03, 0.05, 0.2, 0.3, 0.5, 0.7, 1, 3},
-	}, []string{"project", "network", "category", "finality"})
-
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
@@ -354,20 +347,6 @@ var (
 		Help:      "Total number of consensus operations attempted.",
 	}, []string{"project", "network", "category", "outcome", "finality"})
 
-	MetricConsensusResponsesCollected = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "consensus_responses_collected",
-		Help:      "Number of responses collected before consensus decision.",
-		Buckets:   prometheus.LinearBuckets(1, 1, 10),
-	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality"})
-
-	MetricConsensusAgreementCount = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "consensus_agreement_count",
-		Help:      "Number of upstreams agreeing on the most common result.",
-		Buckets:   prometheus.LinearBuckets(1, 1, 10),
-	}, []string{"project", "network", "category", "finality"})
-
 	MetricConsensusMisbehaviorDetected = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_misbehavior_detected_total",
@@ -416,14 +395,6 @@ var (
 		Help:      "Total requests observed by block-number buckets for heatmap.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
 
-	// x402 facilitator metrics
-	MetricX402FacilitatorRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "x402_facilitator_request_duration_seconds",
-		Help:      "Duration of HTTP requests to x402 facilitator endpoints (verify, settle, supported).",
-		Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
-	}, []string{"project", "network", "facilitator", "operation", "status"})
-
 	MetricX402FacilitatorRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "x402_facilitator_request_total",
@@ -435,13 +406,6 @@ var (
 		Name:      "x402_payment_total",
 		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
 	}, []string{"project", "network", "facilitator", "outcome"})
-
-	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "network_evm_get_logs_range_requested",
-		Help:      "eth_getLogs requested block-range sizes.",
-		Buckets:   EvmGetLogsRangeHistogramBuckets,
-	}, []string{"project", "network", "category", "user", "finality"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -458,15 +422,21 @@ var EvmBlockRangeBucketSize int64 = 100000
 // Histogram buckets for eth_getLogs requested block-range sizes
 var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 10000, 30000}
 
+// Histograms are populated by SetHistogramBuckets so the label filter applies.
 var (
-	MetricUpstreamRequestDuration,
-	MetricNetworkRequestDuration,
-	MetricCacheSetSuccessDuration,
-	MetricCacheSetErrorDuration,
-	MetricCacheGetSuccessHitDuration,
-	MetricCacheGetSuccessMissDuration,
-	MetricCacheGetErrorDuration,
-	MetricConsensusDuration *prometheus.HistogramVec
+	MetricUpstreamRequestDuration         *LabeledHistogram
+	MetricNetworkRequestDuration          *LabeledHistogram
+	MetricNetworkEvmGetLogsRangeRequested *LabeledHistogram
+	MetricNetworkHedgeDelaySeconds        *LabeledHistogram
+	MetricConsensusResponsesCollected     *LabeledHistogram
+	MetricConsensusAgreementCount         *LabeledHistogram
+	MetricX402FacilitatorRequestDuration  *LabeledHistogram
+	MetricConsensusDuration               *LabeledHistogram
+	MetricCacheSetSuccessDuration         *LabeledHistogram
+	MetricCacheSetErrorDuration           *LabeledHistogram
+	MetricCacheGetSuccessHitDuration      *LabeledHistogram
+	MetricCacheGetSuccessMissDuration     *LabeledHistogram
+	MetricCacheGetErrorDuration           *LabeledHistogram
 )
 
 // ScoreMetricsMode controls how score metrics are emitted.
@@ -504,82 +474,114 @@ func GetScoreMetricsMode() ScoreMetricsMode {
 	return currentScoreMetricsMode
 }
 
+// init ensures every histogram is non-nil for code that observes before
+// SetHistogramBuckets runs (tests, early startup paths).
+func init() {
+	_ = SetHistogramBuckets("")
+}
+
 func SetHistogramBuckets(bucketsStr string) error {
-	buckets, err := ParseHistogramBuckets(bucketsStr)
-	if err != nil {
-		return err
+	buckets, parseErr := ParseHistogramBuckets(bucketsStr)
+	if parseErr != nil {
+		// Fall through with defaults so histograms still initialize on parse failure.
+		buckets = DefaultHistogramBuckets
 	}
 
-	if MetricUpstreamRequestDuration != nil {
-		prometheus.DefaultRegisterer.Unregister(MetricUpstreamRequestDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricNetworkRequestDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheSetSuccessDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheSetErrorDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessHitDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessMissDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricCacheGetErrorDuration)
-		prometheus.DefaultRegisterer.Unregister(MetricConsensusDuration)
-	}
-	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricUpstreamRequestDuration = RegisterOrReplaceHistogram(MetricUpstreamRequestDuration, prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
 		Buckets:   buckets,
 	}, []string{"project", "vendor", "network", "upstream", "category", "composite", "finality", "user"})
 
-	MetricNetworkRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkRequestDuration = RegisterOrReplaceHistogram(MetricNetworkRequestDuration, prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "vendor", "upstream", "category", "finality", "user"})
 
-	MetricCacheSetSuccessDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkEvmGetLogsRangeRequested = RegisterOrReplaceHistogram(MetricNetworkEvmGetLogsRangeRequested, prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_set_success_duration_seconds",
-		Help:      "Duration of cache set operations.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+		Name:      "network_evm_get_logs_range_requested",
+		Help:      "eth_getLogs requested block-range sizes.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "category", "user", "finality"})
 
-	MetricCacheSetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricNetworkHedgeDelaySeconds = RegisterOrReplaceHistogram(MetricNetworkHedgeDelaySeconds, prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_set_error_duration_seconds",
-		Help:      "Duration of cache set errors.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+		Name:      "network_hedge_delay_seconds",
+		Help:      "Hedge delay used for requests (seconds).",
+		Buckets:   []float64{0.01, 0.03, 0.05, 0.2, 0.3, 0.5, 0.7, 1, 3},
+	}, []string{"project", "network", "category", "finality"})
 
-	MetricCacheGetSuccessHitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricConsensusResponsesCollected = RegisterOrReplaceHistogram(MetricConsensusResponsesCollected, prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_get_success_hit_duration_seconds",
-		Help:      "Duration of cache get hits.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+		Name:      "consensus_responses_collected",
+		Help:      "Number of responses collected before consensus decision.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10),
+	}, []string{"project", "network", "category", "vendors", "short_circuited", "finality"})
 
-	MetricCacheGetSuccessMissDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricConsensusAgreementCount = RegisterOrReplaceHistogram(MetricConsensusAgreementCount, prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_get_success_miss_duration_seconds",
-		Help:      "Duration of cache get misses.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+		Name:      "consensus_agreement_count",
+		Help:      "Number of upstreams agreeing on the most common result.",
+		Buckets:   prometheus.LinearBuckets(1, 1, 10),
+	}, []string{"project", "network", "category", "finality"})
 
-	MetricCacheGetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricX402FacilitatorRequestDuration = RegisterOrReplaceHistogram(MetricX402FacilitatorRequestDuration, prometheus.HistogramOpts{
 		Namespace: "erpc",
-		Name:      "cache_get_error_duration_seconds",
-		Help:      "Duration of cache get errors.",
-		Buckets:   buckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+		Name:      "x402_facilitator_request_duration_seconds",
+		Help:      "Duration of HTTP requests to x402 facilitator endpoints (verify, settle, supported).",
+		Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+	}, []string{"project", "network", "facilitator", "operation", "status"})
 
-	MetricConsensusDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	MetricConsensusDuration = RegisterOrReplaceHistogram(MetricConsensusDuration, prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "consensus_duration_seconds",
 		Help:      "Duration of consensus operations.",
 		Buckets:   buckets,
 	}, []string{"project", "network", "category", "outcome", "finality"})
 
+	MetricCacheSetSuccessDuration = RegisterOrReplaceHistogram(MetricCacheSetSuccessDuration, prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_success_duration_seconds",
+		Help:      "Duration of cache set operations.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheSetErrorDuration = RegisterOrReplaceHistogram(MetricCacheSetErrorDuration, prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_error_duration_seconds",
+		Help:      "Duration of cache set errors.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
+	MetricCacheGetSuccessHitDuration = RegisterOrReplaceHistogram(MetricCacheGetSuccessHitDuration, prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_success_hit_duration_seconds",
+		Help:      "Duration of cache get hits.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheGetSuccessMissDuration = RegisterOrReplaceHistogram(MetricCacheGetSuccessMissDuration, prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_success_miss_duration_seconds",
+		Help:      "Duration of cache get misses.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheGetErrorDuration = RegisterOrReplaceHistogram(MetricCacheGetErrorDuration, prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_error_duration_seconds",
+		Help:      "Duration of cache get errors.",
+		Buckets:   buckets,
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
 	// Clear cached handles since the Vecs were re-created.
 	ResetHandleCache()
 
-	return nil
+	return parseErr
 }
 
 func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
