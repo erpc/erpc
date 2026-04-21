@@ -190,9 +190,6 @@ var (
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
 	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user", "agent_name"})
 
-	// MetricNetworkHedgeDelaySeconds is built in SetHistogramBuckets (see below)
-	// so the label filter applies.
-
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
@@ -350,9 +347,6 @@ var (
 		Help:      "Total number of consensus operations attempted.",
 	}, []string{"project", "network", "category", "outcome", "finality"})
 
-	// MetricConsensusResponsesCollected and MetricConsensusAgreementCount are built
-	// in SetHistogramBuckets so the label filter applies.
-
 	MetricConsensusMisbehaviorDetected = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "consensus_misbehavior_detected_total",
@@ -401,9 +395,6 @@ var (
 		Help:      "Total requests observed by block-number buckets for heatmap.",
 	}, []string{"project", "network", "vendor", "upstream", "category", "user", "finality", "bucket", "size"})
 
-	// MetricX402FacilitatorRequestDuration is built in SetHistogramBuckets so the
-	// label filter applies.
-
 	MetricX402FacilitatorRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "x402_facilitator_request_total",
@@ -431,9 +422,7 @@ var EvmBlockRangeBucketSize int64 = 100000
 // Histogram buckets for eth_getLogs requested block-range sizes
 var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 10000, 30000}
 
-// All histograms are built in SetHistogramBuckets so the HistogramLabelFilter
-// applies uniformly. Declare them here as nil pointers; the init function
-// populates them.
+// Histograms are populated by SetHistogramBuckets so the label filter applies.
 var (
 	MetricUpstreamRequestDuration         *LabeledHistogram
 	MetricNetworkRequestDuration          *LabeledHistogram
@@ -485,10 +474,8 @@ func GetScoreMetricsMode() ScoreMetricsMode {
 	return currentScoreMetricsMode
 }
 
-// init registers every histogram with default buckets and no filter so tests
-// (and any code path that observes before SetHistogramBuckets runs) always
-// see non-nil metric vecs. The main binary calls SetHistogramBuckets at
-// startup to rebuild them with config-driven buckets + label filter.
+// init ensures every histogram is non-nil for code that observes before
+// SetHistogramBuckets runs (tests, early startup paths).
 func init() {
 	_ = SetHistogramBuckets("")
 }
@@ -496,8 +483,7 @@ func init() {
 func SetHistogramBuckets(bucketsStr string) error {
 	buckets, parseErr := ParseHistogramBuckets(bucketsStr)
 	if parseErr != nil {
-		// Fall through with defaults so filter-aware histograms always get
-		// initialized; the caller still receives parseErr for logging.
+		// Fall through with defaults so histograms still initialize on parse failure.
 		buckets = DefaultHistogramBuckets
 	}
 

@@ -115,10 +115,7 @@ func NewLabeledHistogram(opts prometheus.HistogramOpts, schema []string) *Labele
 	}
 }
 
-// Describe implements prometheus.Collector.
 func (lh *LabeledHistogram) Describe(ch chan<- *prometheus.Desc) { lh.vec.Describe(ch) }
-
-// Collect implements prometheus.Collector.
 func (lh *LabeledHistogram) Collect(ch chan<- prometheus.Metric) { lh.vec.Collect(ch) }
 
 // WithLabelValues accepts values for the FULL schema and filters internally to
@@ -139,7 +136,6 @@ func (lh *LabeledHistogram) WithLabelValues(vals ...string) prometheus.Observer 
 	return lh.vec.WithLabelValues(active...)
 }
 
-// Reset clears the underlying HistogramVec.
 func (lh *LabeledHistogram) Reset() { lh.vec.Reset() }
 
 // ActiveLabelValues projects full-schema values down to the retained subset.
