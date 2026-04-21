@@ -1919,14 +1919,14 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		// FIX: Using context.WithoutCancel() detaches from parent cancellation
 		cancel()
 
-		// Wait for background requests to complete
-		// This is the critical part: even though parent context is cancelled,
-		// fire-and-forget background requests should still complete
-		time.Sleep(700 * time.Millisecond)
-
-		// All mocks should be consumed - proves background requests completed
-		// despite parent context cancellation
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+		// Wait for background requests to complete. Even though parent
+		// context is cancelled, fire-and-forget background requests should
+		// still complete. We poll instead of sleeping a fixed interval
+		// because CI runners (especially with -race) can add significant
+		// slack on top of the 500 ms mock delay.
+		require.Eventually(t, func() bool {
+			return len(gock.Pending()) == util.EvmBlockTrackerMocks
+		}, 3*time.Second, 50*time.Millisecond,
 			"all sendRawTx mocks should be consumed - background requests must complete even after parent context cancelled")
 	})
 
@@ -2004,13 +2004,13 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		err := <-errChan
 		assert.Error(t, err, "should return error when context cancelled before any response")
 
-		// Wait for ALL background requests to complete despite parent cancellation
-		// This is the key test: fire-and-forget should let all requests finish
-		time.Sleep(900 * time.Millisecond)
-
-		// All mocks should be consumed - proves requests completed even though
-		// parent was cancelled before ANY result was received
-		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+		// Poll for ALL background requests to complete despite parent
+		// cancellation. Polling (instead of a fixed sleep) avoids flaking
+		// on loaded CI runners where the slowest 700 ms mock can miss a
+		// tight fixed window.
+		require.Eventually(t, func() bool {
+			return len(gock.Pending()) == util.EvmBlockTrackerMocks
+		}, 3*time.Second, 50*time.Millisecond,
 			"fire-and-forget must broadcast to all nodes even when parent cancelled before short-circuit")
 	})
 }
