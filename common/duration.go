@@ -54,3 +54,12 @@ func (d Duration) MarshalYAML() (interface{}, error) {
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return SonicCfg.Marshal(time.Duration(d).String())
 }
+
+// WithDefault returns the duration value if it's positive, otherwise returns the default value.
+// This simplifies the common pattern of applying defaults to optional duration configs.
+func (d Duration) WithDefault(defaultVal time.Duration) time.Duration {
+	if d > 0 {
+		return time.Duration(d)
+	}
+	return defaultVal
+}
