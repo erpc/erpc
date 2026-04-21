@@ -714,15 +714,15 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 		assert.Contains(t, jrr.GetResultString(), "0x")
 	})
 
-	// Insufficient funds is retryable across upstreams
-	t.Run("InsufficientFundsIsRetryableAcrossUpstreams", func(t *testing.T) {
+	// Insufficient funds should fail fast instead of retrying across upstreams.
+	t.Run("InsufficientFundsIsNotRetriedAcrossUpstreams", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 
 		requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`)
 
-		// First upstream returns "insufficient funds" - might be stale balance check
+		// Single upstream returns "insufficient funds"
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(r *http.Request) bool {
@@ -739,38 +739,41 @@ func TestNetwork_SendRawTransaction_Idempotency(t *testing.T) {
 				},
 			})
 
-		// Second upstream succeeds (has more up-to-date balance)
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return strings.Contains(body, "eth_sendRawTransaction")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  expectedTxHash,
-			})
-
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 3,
-			Delay:       common.Duration(10 * time.Millisecond),
-		})
+		upstreamConfigs := []*common.UpstreamConfig{{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}}
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+			Failsafe: []*common.FailsafeConfig{{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 3,
+					Delay:       common.Duration(10 * time.Millisecond),
+				},
+			}},
+		}
+		network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, networkConfig)
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
 
-		// Should succeed - retried to second upstream
-		require.NoError(t, err, "insufficient funds should be retryable to other upstreams")
-		require.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Contains(t, jrr.GetResultString(), expectedTxHash)
+		// Should fail fast with the deterministic balance error and never retry the same upstream.
+		require.Error(t, err, "insufficient funds should not be retried to other upstreams")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+			"expected ErrCodeEndpointExecutionException but got: %v", err)
+		assert.Nil(t, resp)
+		assert.Equal(t, util.EvmBlockTrackerMocks, len(gock.Pending()),
+			"insufficient funds should not trigger retry attempts")
 	})
 
 	// Verification call returns error (not null) - should return original nonce error
