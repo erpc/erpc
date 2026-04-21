@@ -213,13 +213,18 @@ func (e *executor) executeConsensus(
 
 	// outcomeCh is buffered so the analyzer can signal the caller and
 	// continue to tracking/release without blocking on the caller still being
-	// there. If the caller abandons on ctx.Done() before receiving, the
-	// buffered value is simply left behind and garbage-collected.
+	// there. If the caller abandons on ctx.Done() before receiving, a drain
+	// goroutine takes the buffered value and releases the winner.
 	outcomeCh := make(chan consensusOutcome, 1)
+	// analyzerDone closes when the analyzer has finished every read of the
+	// winner (tracking, misbehavior export, releaseNonWinningResponses). The
+	// abandon-path drain goroutine waits on this before releasing the winner
+	// to avoid racing trackAndPunishMisbehavingUpstreams on winner.Result.
+	analyzerDone := make(chan struct{})
 	go e.runAnalyzer(
 		lg, originalReq, labels, parentExecution,
 		responseChan, attempts, maxToSpawn, cancelRemaining,
-		outcomeCh, collectionSpan,
+		outcomeCh, analyzerDone, collectionSpan,
 	)
 
 	// Caller's select: prefer winner when available; bail on ctx cancel.
@@ -236,9 +241,40 @@ func (e *executor) executeConsensus(
 			e.recordMetricsAndTracing(originalReq, startTime, outcome.winner, outcome.analysis, labels, consensusSpan)
 			return outcome.winner
 		default:
+			// Caller abandoned before the analyzer published an outcome.
+			// The analyzer is still going to publish exactly one outcome to
+			// the (buffered) outcomeCh and then finish its own cleanup.
+			// Since we will NOT return the winner up the stack, nobody else
+			// will call winner.Result.Release() — the winner is explicitly
+			// skipped by releaseNonWinningResponses. Leaking the winner
+			// means leaking the response body/JSON-RPC buffer. Spawn a
+			// drain goroutine that waits for the analyzer to finish reading
+			// the winner (analyzerDone), then releases it.
+			go e.drainAbandonedOutcome(outcomeCh, analyzerDone)
 			return e.handleCallerAbandoned(lg, originalReq, labels, startTime, consensusSpan, ctx.Err())
 		}
 	}
+}
+
+// drainAbandonedOutcome releases the winner response when the caller has
+// abandoned consensus before receiving. It waits for analyzerDone to be
+// closed so analyzer-side reads of winner.Result (misbehavior tracking,
+// buildMisbehaviorRecord, releaseNonWinningResponses skip-check) have
+// completed before we free the underlying buffers.
+func (e *executor) drainAbandonedOutcome(
+	outcomeCh <-chan consensusOutcome,
+	analyzerDone <-chan struct{},
+) {
+	outcome := <-outcomeCh
+	<-analyzerDone
+	if outcome.winner == nil {
+		return
+	}
+	wr, ok := any(outcome.winner.Result).(*common.NormalizedResponse)
+	if !ok || wr == nil {
+		return
+	}
+	wr.Release()
 }
 
 // handleCallerAbandoned records caller-abandon metrics and returns an error
@@ -290,6 +326,7 @@ func (e *executor) runAnalyzer(
 	maxToSpawn int,
 	cancelRemaining func(),
 	outcomeCh chan<- consensusOutcome,
+	analyzerDone chan<- struct{},
 	collectionSpan trace.Span,
 ) {
 	outcomeSent := false
@@ -300,6 +337,11 @@ func (e *executor) runAnalyzer(
 		outcomeCh <- o // non-blocking: outcomeCh is buffered size 1
 		outcomeSent = true
 	}
+
+	// analyzerDone is closed LAST (defers run LIFO). This signals to the
+	// abandon-path drain goroutine that all analyzer-side reads of
+	// winner.Result have completed and releasing it is now safe.
+	defer close(analyzerDone)
 
 	defer func() {
 		// Recover from any panic before ending the span so a panic in
