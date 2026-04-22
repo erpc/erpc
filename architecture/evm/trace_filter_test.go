@@ -505,10 +505,15 @@ func TestNetworkPreForward_trace_filter(t *testing.T) {
 		n.On("Id").Return("evm:1").Maybe()
 		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}}).Maybe()
 		// Effective threshold is 2 (min of 2 and 5) → range 1..5 splits into [1,2], [3,4], [5,5].
+		// Use a function-form return so each mock invocation builds a fresh NormalizedResponse
+		// (the executor calls Release() on each sub-response after processing).
 		n.On("Forward", mock.Anything, mock.Anything).Return(
-			common.NewNormalizedResponse().WithJsonRpcResponse(
-				common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil),
-			), nil,
+			func(ctx context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+				return common.NewNormalizedResponse().WithJsonRpcResponse(
+					common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), []byte(`[]`), nil),
+				), nil
+			},
+			nil,
 		).Times(3)
 
 		u1 := new(mockEvmUpstream)
