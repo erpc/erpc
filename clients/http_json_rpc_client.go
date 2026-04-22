@@ -179,10 +179,16 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	case err := <-errChan:
 		return nil, err
 	case <-ctx.Done():
-		err := ctx.Err()
+		// Prefer context.Cause so policy-driven sentinels (e.g. ErrDynamicTimeoutExceeded)
+		// survive upstream-level error translation instead of being flattened to plain
+		// context.DeadlineExceeded.
+		err := context.Cause(ctx)
+		if err == nil {
+			err = ctx.Err()
+		}
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			err = common.NewErrEndpointRequestTimeout(time.Since(startedAt), err)
 		} else if errors.Is(err, context.Canceled) {
 			err = common.NewErrEndpointRequestCanceled(err)
@@ -225,8 +231,11 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	// If the request context is already canceled, fail it immediately and do not queue
 	if err := req.ctx.Err(); err != nil {
 		c.batchMu.Unlock()
-		// propagate a normalized error
-		if errors.Is(err, context.DeadlineExceeded) {
+		// Prefer context.Cause so policy-driven sentinels survive.
+		if cause := context.Cause(req.ctx); cause != nil {
+			err = cause
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			req.err <- common.NewErrEndpointRequestTimeout(0, err)
 		} else {
 			req.err <- common.NewErrEndpointRequestCanceled(err)
@@ -246,7 +255,7 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	c.batchRequests[id] = req
 	ctxd, ok := req.ctx.Deadline()
 	if ctxd.After(time.Now()) && ok {
-		// Use the earliest deadline among queued requests so the batch cancels promptly
+		// Use the earliest deadline among queued requests so the batch cancels promptly.
 		if c.batchDeadline == nil || ctxd.Before(*c.batchDeadline) {
 			duration := time.Until(ctxd)
 			c.logger.Trace().Dur("deadline", duration).Msgf("setting batch deadline to earliest request deadline")
@@ -331,7 +340,10 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	for id, br := range requests {
 		if err := br.ctx.Err(); err != nil {
 			delete(requests, id)
-			if errors.Is(err, context.DeadlineExceeded) {
+			if cause := context.Cause(br.ctx); cause != nil {
+				err = cause
+			}
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 				br.err <- common.NewErrEndpointRequestTimeout(0, err)
 			} else {
 				br.err <- common.NewErrEndpointRequestCanceled(err)
@@ -422,26 +434,36 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	// pick the client from the proxy pool registry (if configured) or fallback
 	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
-		cause := context.Cause(batchCtx)
-		if cause == nil {
-			cause = batchCtx.Err()
+		batchCause := context.Cause(batchCtx)
+		if batchCause == nil {
+			batchCause = batchCtx.Err()
 		}
-		if cause != nil {
-			err = cause
+		if batchCause != nil {
+			err = batchCause
 		}
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
+		// Each request's own ctx carries the policy-driven cause (e.g.
+		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
+		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
+		// so the sentinel survives upstream-level error classification. Give the
+		// req.ctx a brief moment to propagate its cancellation if it has the same
+		// deadline as batchCtx (they fire within microseconds of each other).
+		// Each request's own ctx carries the policy-driven cause (e.g.
+		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
+		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
+		// so the sentinel survives upstream-level error classification.
+		for _, req := range requests {
+			reqErr := err
+			if rc := context.Cause(req.ctx); rc != nil {
+				reqErr = rc
 			}
-		} else if errors.Is(err, context.Canceled) {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointRequestCanceled(err)
-			}
-		} else {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointTransportFailure(c.Url, err)
+			if errors.Is(reqErr, context.DeadlineExceeded) || errors.Is(reqErr, common.ErrDynamicTimeoutExceeded) {
+				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), reqErr)
+			} else if errors.Is(reqErr, context.Canceled) {
+				req.err <- common.NewErrEndpointRequestCanceled(reqErr)
+			} else {
+				req.err <- common.NewErrEndpointTransportFailure(c.Url, reqErr)
 			}
 		}
 		return
