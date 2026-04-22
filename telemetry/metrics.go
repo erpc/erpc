@@ -425,19 +425,6 @@ var (
 		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
 	}, []string{"project", "network", "facilitator", "outcome"})
 
-	MetricNetworkEvmGetLogsRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "network_evm_get_logs_range_requested",
-		Help:      "eth_getLogs requested block-range sizes.",
-		Buckets:   EvmGetLogsRangeHistogramBuckets,
-	}, []string{"project", "network", "category", "user", "finality"})
-
-	MetricNetworkEvmTraceFilterRangeRequested = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "network_evm_trace_filter_range_requested",
-		Help:      "trace_filter/arbtrace_filter requested block-range sizes.",
-		Buckets:   EvmGetLogsRangeHistogramBuckets,
-	}, []string{"project", "network", "method", "user", "finality"})
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -456,10 +443,11 @@ var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 100
 
 // Histograms are populated by SetHistogramBuckets so the label filter applies.
 var (
-	MetricUpstreamRequestDuration         *LabeledHistogram
-	MetricNetworkRequestDuration          *LabeledHistogram
-	MetricNetworkEvmGetLogsRangeRequested *LabeledHistogram
-	MetricNetworkHedgeDelaySeconds        *LabeledHistogram
+	MetricUpstreamRequestDuration             *LabeledHistogram
+	MetricNetworkRequestDuration              *LabeledHistogram
+	MetricNetworkEvmGetLogsRangeRequested     *LabeledHistogram
+	MetricNetworkEvmTraceFilterRangeRequested *LabeledHistogram
+	MetricNetworkHedgeDelaySeconds            *LabeledHistogram
 	MetricConsensusResponsesCollected     *LabeledHistogram
 	MetricConsensusAgreementCount         *LabeledHistogram
 	MetricX402FacilitatorRequestDuration  *LabeledHistogram
@@ -536,6 +524,13 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "eth_getLogs requested block-range sizes.",
 		Buckets:   EvmGetLogsRangeHistogramBuckets,
 	}, []string{"project", "network", "category", "user", "finality"})
+
+	MetricNetworkEvmTraceFilterRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_range_requested",
+		Help:      "trace_filter/arbtrace_filter requested block-range sizes.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "method", "user", "finality"})
 
 	MetricNetworkHedgeDelaySeconds = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -633,6 +628,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	MetricUpstreamRequestDuration = registerOrReuse(MetricUpstreamRequestDuration)
 	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
+	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
 	MetricNetworkHedgeDelaySeconds = registerOrReuse(MetricNetworkHedgeDelaySeconds)
 	MetricConsensusResponsesCollected = registerOrReuse(MetricConsensusResponsesCollected)
 	MetricConsensusAgreementCount = registerOrReuse(MetricConsensusAgreementCount)
