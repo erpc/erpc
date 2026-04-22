@@ -446,12 +446,6 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		// Each request's own ctx carries the policy-driven cause (e.g.
 		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
 		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
-		// so the sentinel survives upstream-level error classification. Give the
-		// req.ctx a brief moment to propagate its cancellation if it has the same
-		// deadline as batchCtx (they fire within microseconds of each other).
-		// Each request's own ctx carries the policy-driven cause (e.g.
-		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
-		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
 		// so the sentinel survives upstream-level error classification.
 		for _, req := range requests {
 			reqErr := err

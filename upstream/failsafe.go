@@ -907,17 +907,10 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 	var err error
 	var retryExceededErr retrypolicy.ExceededError
 
-	// Timeout-policy firing takes precedence over StandardError short-circuiting.
-	// When the dynamic timeout fires mid-HTTP-request, the client wraps the
-	// cause as ErrEndpointTransportFailure (a StandardError), which would
-	// otherwise hide the timeout classification from the user. The sentinel
-	// cause is only ever set by our own context.WithTimeoutCause, so matching
-	// on it never picks up parent-context deadlines.
-	if errors.Is(execErr, ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
-		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
-	} else if serr, ok := execErr.(common.StandardError); ok {
-		err = serr
-	} else if errors.As(execErr, &retryExceededErr) {
+	// Retry-exceeded must be checked before the sentinel so that exhausted
+	// retries whose last attempt timed out are classified as retry-exceeded
+	// (with the timeout as the translated cause) rather than as a bare timeout.
+	if errors.As(execErr, &retryExceededErr) {
 		// When retry policy is exceeded (i.e. we wanted to retry based on the policy but it ultimately failed)
 		// we want to fetch the "last error" from the retry policy and wrap in our own standard error type of FailsafeRetryExceeded.
 		// This allows consistent error handling on http server level.
@@ -945,6 +938,14 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
 			}
 		}
+	} else if errors.Is(execErr, ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+		// Timeout-policy sentinel takes precedence over StandardError so that a
+		// timeout wrapped as ErrEndpointTransportFailure is still classified as a
+		// timeout. The sentinel is only set by our own context.WithTimeoutCause,
+		// so it never picks up parent-context deadlines.
+		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
+	} else if serr, ok := execErr.(common.StandardError); ok {
+		err = serr
 	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
 		// Simply translate the failsafe library circuit breaker error type to our own standard error type.
 		// And keep the original error as "cause" so it can be logged.

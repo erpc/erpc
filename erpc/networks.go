@@ -743,7 +743,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	defer req.RUnlock()
 
 	if execErr != nil {
-		if errors.Is(execErr, upstream.ErrDynamicTimeoutExceeded) {
+		if errors.Is(execErr, upstream.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
 			finality := req.Finality(ctx)
 			telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
 				n.projectId,
