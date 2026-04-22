@@ -633,6 +633,11 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 				)
 				return true
 			}
+			span.SetAttributes(
+				attribute.Bool("retry", false),
+				attribute.String("reason", "not_retryable_to_network"),
+			)
+			return false
 		}
 
 		if scope == common.ScopeNetwork && result != nil && !result.IsObjectNull() {

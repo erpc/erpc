@@ -403,6 +403,67 @@ func TestRetryPolicy_EdgeCases(t *testing.T) {
 	})
 }
 
+func TestRetryPolicy_NonRetryableTowardNetwork(t *testing.T) {
+	cfg := &common.RetryPolicyConfig{MaxAttempts: 3}
+
+	t.Run("ExplicitlyNonRetryable_StopsAfterOneAttempt", func(t *testing.T) {
+		nonRetryable := common.NewErrEndpointClientSideException(
+			errors.New("deterministic client error"),
+		).WithRetryableTowardNetwork(false)
+
+		attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, nil, nonRetryable)
+		assert.Equal(t, 1, attempts, "errors marked non-retryable toward network must not retry")
+	})
+
+	t.Run("DefaultRetryable_RetriesToMaxAttempts", func(t *testing.T) {
+		attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, nil, errors.New("generic error"))
+		assert.Equal(t, 3, attempts, "errors without an explicit non-retryable hint keep default retry behavior")
+	})
+
+	// Mixed-bundle regression: ErrUpstreamsExhausted wrapping one explicitly
+	// non-retryable child and one plain error must NOT short-circuit. Mirrors
+	// IsRetryableTowardNetwork's "any retryable child → retry" semantics and
+	// guards against a DeepSearch fan-out picking up the flag from a single
+	// child (child order via sync.Map.Range is non-deterministic).
+	t.Run("MixedExhausted_FallsThroughToDefaultRetry", func(t *testing.T) {
+		nonRetryable := common.NewErrEndpointClientSideException(
+			errors.New("deterministic child"),
+		).WithRetryableTowardNetwork(false)
+		retryable := errors.New("transient child")
+
+		exhausted := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   errors.Join(nonRetryable, retryable),
+			},
+		}
+
+		attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, nil, exhausted)
+		assert.Equal(t, 3, attempts, "mixed exhausted bundle with any retryable child must still retry")
+	})
+
+	t.Run("AllNonRetryableExhausted_StopsAfterOneAttempt", func(t *testing.T) {
+		a := common.NewErrEndpointClientSideException(
+			errors.New("deterministic a"),
+		).WithRetryableTowardNetwork(false)
+		b := common.NewErrEndpointClientSideException(
+			errors.New("deterministic b"),
+		).WithRetryableTowardNetwork(false)
+
+		exhausted := &common.ErrUpstreamsExhausted{
+			BaseError: common.BaseError{
+				Code:    common.ErrCodeUpstreamsExhausted,
+				Message: "all upstream attempts failed",
+				Cause:   errors.Join(a, b),
+			},
+		}
+
+		attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, nil, exhausted)
+		assert.Equal(t, 1, attempts, "exhausted bundle where every child is explicitly non-retryable must not retry")
+	})
+}
+
 func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {
 	t.Run("MethodInIgnoreList_IgnoresConfidence", func(t *testing.T) {
 		cfg := &common.RetryPolicyConfig{
