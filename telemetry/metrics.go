@@ -214,6 +214,12 @@ var (
 		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
 	}, []string{"project", "network", "upstream", "category", "attempt", "hedge", "finality", "user", "agent_name"})
 
+	MetricNetworkTimeoutFiredTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_timeout_fired_total",
+		Help:      "Total number of requests that were killed by the timeout policy (fixed or quantile-based).",
+	}, []string{"project", "network", "category", "finality", "scope"})
+
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",

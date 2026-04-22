@@ -29,10 +29,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// ErrDynamicTimeoutExceeded is the cause set via context.WithTimeoutCause when
-// a quantile-based dynamic timeout fires. Used to distinguish from parent
-// context deadlines (e.g. HTTP server timeouts) in TranslateFailsafeError.
-var ErrDynamicTimeoutExceeded = errors.New("dynamic timeout exceeded")
+// ErrDynamicTimeoutExceeded re-exports the common sentinel for backward
+// compatibility with callers that reference upstream.ErrDynamicTimeoutExceeded.
+var ErrDynamicTimeoutExceeded = common.ErrDynamicTimeoutExceeded
 
 // TimeoutFunc computes the timeout for a request. Returns nil when no timeout applies.
 type TimeoutFunc func(ctx context.Context, req *common.NormalizedRequest) *time.Duration
@@ -89,7 +88,7 @@ func NewUpstream(
 			if err != nil {
 				return nil, err
 			}
-			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge", "timeout")
+			policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge")
 
 			var timeoutFn TimeoutFunc
 			if fsCfg.Timeout != nil {
@@ -646,15 +645,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				if failsafeExecutor.timeout != nil {
 					if td := failsafeExecutor.timeout(ectx, nrq); td != nil {
 						var cancelFn context.CancelFunc
-						ectx, cancelFn = context.WithTimeoutCause(
-							ectx,
-							// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
-							//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-							//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
-							//      but allow the failsafe execution to fail with timeout first for proper error handling.
-							*td+5*time.Millisecond,
-							ErrDynamicTimeoutExceeded,
-						)
+						ectx, cancelFn = context.WithTimeoutCause(ectx, *td, ErrDynamicTimeoutExceeded)
 						defer cancelFn()
 					}
 				}
@@ -680,6 +671,16 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 		if execErr != nil {
 			common.SetTraceSpanError(span, execErr)
+			if errors.Is(execErr, ErrDynamicTimeoutExceeded) {
+				finality := nrq.Finality(ctx)
+				telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
+					u.ProjectId,
+					nrq.NetworkLabel(),
+					method,
+					finality.String(),
+					string(common.ScopeUpstream),
+				).Inc()
+			}
 			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
 		}
 

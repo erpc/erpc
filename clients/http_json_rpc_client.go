@@ -431,7 +431,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		}
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			for _, req := range requests {
 				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
 			}
@@ -713,7 +713,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		common.SetTraceSpanError(span, err)
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
 		} else if errors.Is(err, context.Canceled) {
 			return nil, common.NewErrEndpointRequestCanceled(err)

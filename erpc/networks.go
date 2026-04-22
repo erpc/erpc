@@ -527,15 +527,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			if failsafeExecutor.timeout != nil {
 				if td := failsafeExecutor.timeout(execSpanCtx, effectiveReq); td != nil {
 					var cancelFn context.CancelFunc
-					execSpanCtx, cancelFn = context.WithTimeoutCause(
-						execSpanCtx,
-						// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
-						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-						//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
-						//      but allow the failsafe execution to fail with timeout first for proper error handling.
-						*td+5*time.Millisecond,
-						upstream.ErrDynamicTimeoutExceeded,
-					)
+					execSpanCtx, cancelFn = context.WithTimeoutCause(execSpanCtx, *td, upstream.ErrDynamicTimeoutExceeded)
 					defer cancelFn()
 				}
 			}
@@ -751,6 +743,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	defer req.RUnlock()
 
 	if execErr != nil {
+		if errors.Is(execErr, upstream.ErrDynamicTimeoutExceeded) {
+			finality := req.Finality(ctx)
+			telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
+				n.projectId,
+				req.NetworkLabel(),
+				method,
+				finality.String(),
+				string(common.ScopeNetwork),
+			).Inc()
+		}
 		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 		// Don't override consensus results with last valid response from individual upstreams
 		// For example if 1 upstream gives empty response another 3 give "reverted" error,

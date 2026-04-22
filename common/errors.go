@@ -2000,6 +2000,11 @@ func (e *ErrEndpointServerSideException) ErrorStatusCode() int {
 	return http.StatusInternalServerError
 }
 
+// ErrDynamicTimeoutExceeded is the sentinel set as context cause by the
+// timeout policy's context.WithTimeoutCause. It distinguishes policy-driven
+// timeouts from parent-context deadlines (e.g. HTTP server timeouts).
+var ErrDynamicTimeoutExceeded = errors.New("dynamic timeout exceeded")
+
 type ErrEndpointRequestTimeout struct{ BaseError }
 
 const ErrCodeEndpointRequestTimeout = "ErrEndpointRequestTimeout"

@@ -16,7 +16,6 @@ import (
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
-	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -32,21 +31,10 @@ func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scop
 
 	lg := logger.With().Str("scope", string(scope)).Str("entity", entity).Logger()
 
-	if fsCfg.Timeout != nil && fsCfg.Timeout.Quantile == 0 {
-		plc, err := createTimeoutPolicy(logger, fsCfg.Timeout)
-		if err != nil {
-			return nil, common.NewErrFailsafeConfiguration(
-				err,
-				map[string]interface{}{
-					"scope":    scope,
-					"entity":   entity,
-					"policy":   "timeout",
-					"provider": fsCfg.Timeout,
-				},
-			)
-		}
-		policies["timeout"] = plc
-	}
+	// Timeout is applied via context.WithTimeoutCause at the request path
+	// (see Network.Forward and Upstream.Forward). We intentionally do not
+	// register a failsafe-go timeout.Policy — a single mechanism keeps error
+	// translation consistent for both fixed and quantile-based timeouts.
 
 	if fsCfg.Retry != nil {
 		p, err := createRetryPolicy(scope, fsCfg.Retry, dynamicBlockUnavailableDelay)
@@ -785,23 +773,6 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig, dynami
 	return builder.Build(), nil
 }
 
-func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
-	dur := cfg.Duration.Duration()
-	if dur <= 0 {
-		return nil, fmt.Errorf("timeout duration must be positive, got %v", dur)
-	}
-
-	builder := timeout.Builder[*common.NormalizedResponse](dur)
-
-	if logger.GetLevel() == zerolog.TraceLevel {
-		builder.OnTimeoutExceeded(func(event failsafe.ExecutionDoneEvent[*common.NormalizedResponse]) {
-			logger.Trace().Msgf("failsafe timeout policy: %v (start time: %v, elapsed: %v, attempts: %d, retries: %d, hedges: %d)", event.Error, event.StartTime().Format(time.RFC3339), event.ElapsedTime().String(), event.Attempts(), event.Retries(), event.Hedges())
-		})
-	}
-
-	return builder.Build(), nil
-}
-
 func coldStartFallback(fixedDur, maxDur time.Duration) *time.Duration {
 	fallback := fixedDur
 	if fallback == 0 {
@@ -813,9 +784,10 @@ func coldStartFallback(fixedDur, maxDur time.Duration) *time.Duration {
 	return nil
 }
 
-// NewTimeoutFunc builds a TimeoutFunc from config. When Quantile > 0, the
-// timeout is computed dynamically from method latency percentiles. Otherwise
-// it returns the fixed Duration.
+// NewTimeoutFunc builds a TimeoutFunc from config. The returned function is
+// applied at request time via context.WithTimeoutCause (see Network.Forward
+// and Upstream.Forward). When Quantile > 0 the timeout is computed per request
+// from method latency percentiles; otherwise it returns the fixed Duration.
 func NewTimeoutFunc(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) TimeoutFunc {
 	if cfg.Quantile > 0 {
 		fixedDur := cfg.Duration.Duration()
@@ -935,11 +907,15 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 	var err error
 	var retryExceededErr retrypolicy.ExceededError
 
-	// Our own standard error is returned when failsafe execution is returned and for example retry policy
-	// logic above decided it does not need to retry (e.g. reverted transaction error).
-	// Another case is an UpstreamExhausted error which is not going to be retried due to all errors being unretryable.
-	// In those cases we return the standard error object as is.
-	if serr, ok := execErr.(common.StandardError); ok {
+	// Timeout-policy firing takes precedence over StandardError short-circuiting.
+	// When the dynamic timeout fires mid-HTTP-request, the client wraps the
+	// cause as ErrEndpointTransportFailure (a StandardError), which would
+	// otherwise hide the timeout classification from the user. The sentinel
+	// cause is only ever set by our own context.WithTimeoutCause, so matching
+	// on it never picks up parent-context deadlines.
+	if errors.Is(execErr, ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
+	} else if serr, ok := execErr.(common.StandardError); ok {
 		err = serr
 	} else if errors.As(execErr, &retryExceededErr) {
 		// When retry policy is exceeded (i.e. we wanted to retry based on the policy but it ultimately failed)
@@ -969,8 +945,6 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
 			}
 		}
-	} else if errors.Is(execErr, timeout.ErrExceeded) || errors.Is(execErr, ErrDynamicTimeoutExceeded) {
-		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
 	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
 		// Simply translate the failsafe library circuit breaker error type to our own standard error type.
 		// And keep the original error as "cause" so it can be logged.
