@@ -470,6 +470,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		attribute.String("failsafe.matched_finalities", fmt.Sprintf("%v", failsafeExecutor.finalities)),
 	)
 
+	// Network-level timeout is lifecycle-scoped: it wraps the entire failsafe
+	// execution including retries and hedges. Applying it here (outside the
+	// executor) matches the documented semantics — a network timeout of 5s with
+	// 3 retries still bounds total wall-clock to 5s. Upstream-level timeout,
+	// applied per-attempt inside Upstream.Forward, is independent.
+	if failsafeExecutor.timeout != nil {
+		if td := failsafeExecutor.timeout(ectx, req); td != nil {
+			var cancelFn context.CancelFunc
+			ectx, cancelFn = context.WithTimeoutCause(ectx, *td, common.ErrDynamicTimeoutExceeded)
+			defer cancelFn()
+		}
+	}
+
 	// Track time from failsafe executor start to first callback invocation
 	failsafeStartTime := time.Now()
 
@@ -524,13 +537,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					return nil, ctxErr
 				}
 			}
-			if failsafeExecutor.timeout != nil {
-				if td := failsafeExecutor.timeout(execSpanCtx, effectiveReq); td != nil {
-					var cancelFn context.CancelFunc
-					execSpanCtx, cancelFn = context.WithTimeoutCause(execSpanCtx, *td, upstream.ErrDynamicTimeoutExceeded)
-					defer cancelFn()
-				}
-			}
+			// Network-scope timeout was applied at Forward entry (lifecycle-scoped).
+			// Per-attempt enforcement here would double-apply and break retry budgets.
 
 			// Try all upstreams in a single execution before returning to failsafe.
 			// This ensures delays (emptyResultDelay, blockUnavailableDelay) only
@@ -743,7 +751,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	defer req.RUnlock()
 
 	if execErr != nil {
-		if errors.Is(execErr, upstream.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+		// When the lifecycle ctx fires, failsafe may return plain context.DeadlineExceeded
+		// with no sentinel in the Unwrap chain. Substitute the ctx cause so
+		// TranslateFailsafeError can classify it as ErrFailsafeTimeoutExceeded.
+		if _, ok := execErr.(common.StandardError); !ok && errors.Is(execErr, context.DeadlineExceeded) {
+			if cause := context.Cause(ectx); cause != nil && !errors.Is(cause, context.DeadlineExceeded) {
+				execErr = cause
+			}
+		}
+		// Guard on HasErrorCode so upstream-scope timeouts that already incremented
+		// the counter with scope=upstream do not double-count at scope=network when
+		// they bubble up wrapped as ErrFailsafeTimeoutExceeded.
+		if errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
 			finality := req.Finality(ctx)
 			telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
 				n.projectId,

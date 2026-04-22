@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func init() { util.ConfigureTestLogger() }
+
 func TestNetwork_TimeoutPolicy(t *testing.T) {
 	t.Run("FixedTimeout_BackwardCompatible", func(t *testing.T) {
 		util.ResetGock()
@@ -146,6 +148,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Set up mocks for metric building phase (10 requests with varying latencies)
 		for i := 0; i < 10; i++ {
@@ -215,6 +218,7 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Build metrics with very fast responses
 		for i := 0; i < 5; i++ {
@@ -362,6 +366,160 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, jrr.GetResultString(), "0x1111")
 	})
+
+	t.Run("NetworkTimeoutIsLifecycleScoped_BoundsRetryBudget", func(t *testing.T) {
+		// Regression lock: a 500ms network timeout with 3 retries must bound
+		// total wall-clock to ~500ms, not 500ms × 3 attempts. Applying the
+		// timeout inside the per-attempt callback would silently blow this
+		// budget; this test fails unless the timeout wraps the entire executor.
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		// Each upstream attempt delays 2s. With per-attempt timeout semantics,
+		// 3 retries would take up to 6s. With lifecycle semantics, the 500ms
+		// network timeout fires once and stops everything.
+		for i := 0; i < 5; i++ {
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1111",
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithTimeoutAndRetry(t, ctx,
+			&common.TimeoutPolicyConfig{Duration: common.Duration(500 * time.Millisecond)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(10 * time.Millisecond)},
+		)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+		start := time.Now()
+		_, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+
+		require.Error(t, err)
+		assert.True(t,
+			common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
+			"expected lifecycle timeout to wrap as ErrFailsafeTimeoutExceeded, got: %v", err,
+		)
+		assert.Less(t, elapsed, 1500*time.Millisecond,
+			"lifecycle timeout should bound total wall-clock near 500ms, not 500ms*retries; got %s", elapsed,
+		)
+	})
+
+	t.Run("RetryExhaustedWithTimeoutOnLastAttempt_NotMisclassifiedAsTimeout", func(t *testing.T) {
+		// Regression lock for pc-001: if retry policy exhausts and the last
+		// attempt hit a timeout, the classifier must NOT surface it as
+		// ErrFailsafeTimeoutExceeded — the retry-exhausted branch owns the
+		// final classification. Without the isRetryExceeded guard in
+		// TranslateFailsafeError, errors.Is would walk through the Unwrap
+		// chain of retrypolicy.ExceededError and incorrectly match the
+		// dynamic-timeout sentinel branch first.
+		//
+		// We put retry+timeout both at the upstream level so the failsafe
+		// exhaustion surfaces as a raw retrypolicy.ExceededError without the
+		// ErrUpstreamsExhausted short-circuit that kicks in at network scope.
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		// 3 attempts × always-slow mock → retry exhausts with timeout on last.
+		for i := 0; i < 6; i++ {
+			gock.New("http://rpc1.localhost").
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(2 * time.Second).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1111",
+				})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithUpstreamTimeoutAndRetry(t, ctx,
+			&common.TimeoutPolicyConfig{Duration: common.Duration(50 * time.Millisecond)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(10 * time.Millisecond)},
+		)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+		_, err := network.Forward(ctx, req)
+
+		require.Error(t, err)
+		// The key invariant: retry-exhausted must NOT be misclassified as
+		// FailsafeTimeoutExceeded at the top level, even though the last
+		// attempt's underlying cause is a timeout.
+		assert.False(t,
+			topLevelErrorCode(err) == string(common.ErrCodeFailsafeTimeoutExceeded),
+			"retry exhaustion with timeout-on-last-attempt must not surface as FailsafeTimeoutExceeded; got top-level code %s in chain: %v",
+			topLevelErrorCode(err), err,
+		)
+	})
+
+	t.Run("UpstreamTimeout_DoesNotDoubleCountNetworkFiredCounter", func(t *testing.T) {
+		// Regression lock: when an upstream-scope timeout bubbles up as
+		// ErrFailsafeTimeoutExceeded, the network-scope counter check must
+		// see HasErrorCode(ErrCodeFailsafeTimeoutExceeded) and skip the
+		// increment. Otherwise every upstream timeout produces two fires
+		// (scope=upstream at upstream.go + scope=network at networks.go).
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(2 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1111",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithUpstreamTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
+			Duration: common.Duration(100 * time.Millisecond),
+		})
+
+		before := timeoutFiredCounterValue(t, "upstream") + timeoutFiredCounterValue(t, "network")
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+		_, err := network.Forward(ctx, req)
+		require.Error(t, err)
+
+		upstreamAfter := timeoutFiredCounterValue(t, "upstream")
+		networkAfter := timeoutFiredCounterValue(t, "network")
+
+		// Upstream-scope should have fired exactly once; network-scope must not
+		// have fired (the guard suppresses the already-classified timeout).
+		assert.Greater(t, upstreamAfter, uint64(0), "upstream timeout counter must fire")
+		assert.Equal(t, before, networkAfter+upstreamAfter-1,
+			"network-scope counter must not double-count an upstream-originated timeout; before=%d upstream=%d network=%d",
+			before, upstreamAfter, networkAfter,
+		)
+	})
 }
 
 func TestUpstream_TimeoutPolicy(t *testing.T) {
@@ -411,6 +569,7 @@ func TestUpstream_TimeoutPolicy(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		for i := 0; i < 10; i++ {
 			gock.New("http://rpc1.localhost").
@@ -518,6 +677,89 @@ func setupTestNetworkWithUpstreamTimeoutPolicy(t *testing.T, ctx context.Context
 	}
 
 	return setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
+}
+
+// timeoutFiredCounterValue returns the total MetricNetworkTimeoutFiredTotal
+// count for the given scope label across all other label combinations.
+func timeoutFiredCounterValue(t *testing.T, scope string) uint64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	var total uint64
+	for _, mf := range mfs {
+		if mf.GetName() != "erpc_network_timeout_fired_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			var mScope string
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "scope" {
+					mScope = lp.GetValue()
+				}
+			}
+			if mScope != scope {
+				continue
+			}
+			if c := m.GetCounter(); c != nil {
+				total += uint64(c.GetValue())
+			}
+		}
+	}
+	return total
+}
+
+// setupTestNetworkWithTimeoutAndRetry attaches both a timeout and retry policy
+// at the network level — used to verify lifecycle semantics.
+func setupTestNetworkWithTimeoutAndRetry(t *testing.T, ctx context.Context, timeoutConfig *common.TimeoutPolicyConfig, retryConfig *common.RetryPolicyConfig) *Network {
+	t.Helper()
+	upstreamConfigs := []*common.UpstreamConfig{{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	}}
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			Timeout: timeoutConfig,
+			Retry:   retryConfig,
+		}},
+	}
+	return setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
+}
+
+// setupTestNetworkWithUpstreamTimeoutAndRetry attaches both timeout and retry
+// at the upstream level. Used to verify retry-exhaust classification when the
+// last attempt is a timeout: failsafe exhaustion surfaces here as a raw
+// retrypolicy.ExceededError without the ErrUpstreamsExhausted wrapping that
+// network scope adds around upstream iteration.
+func setupTestNetworkWithUpstreamTimeoutAndRetry(t *testing.T, ctx context.Context, timeoutConfig *common.TimeoutPolicyConfig, retryConfig *common.RetryPolicyConfig) *Network {
+	t.Helper()
+	upstreamConfigs := []*common.UpstreamConfig{{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{
+			Timeout: timeoutConfig,
+			Retry:   retryConfig,
+		}},
+	}}
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}
+	return setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
+}
+
+// topLevelErrorCode returns the ErrorCode of the outermost StandardError in
+// the chain, or "" if err is not a StandardError.
+func topLevelErrorCode(err error) string {
+	if se, ok := err.(common.StandardError); ok {
+		return string(se.Base().Code)
+	}
+	return ""
 }
 
 // Helper to set up network with timeout policy

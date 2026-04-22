@@ -938,7 +938,7 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
 			}
 		}
-	} else if errors.Is(execErr, ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+	} else if errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
 		// Timeout-policy sentinel takes precedence over StandardError so that a
 		// timeout wrapped as ErrEndpointTransportFailure is still classified as a
 		// timeout. The sentinel is only set by our own context.WithTimeoutCause,

@@ -788,6 +788,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "timeout policy exceeded on upstream-level")
+		// Lock in the error code too, not just the message. The sentinel-cause
+		// propagation through batch mode is what makes this classification
+		// survive — a string-only check would silently pass if the wording
+		// changed or the code regressed to a generic transport failure.
+		assert.Contains(t, body, string(common.ErrCodeFailsafeTimeoutExceeded))
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {

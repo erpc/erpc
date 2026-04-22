@@ -67,6 +67,17 @@ type batchRequest struct {
 
 // (gzip pooling implemented via util.GzipReaderPool)
 
+// effectiveCause returns context.Cause(ctx) if set, otherwise ctx.Err(). Use
+// whenever the code needs the reason a ctx was canceled or expired, so
+// policy-driven sentinels (e.g. common.ErrDynamicTimeoutExceeded) are
+// preferred over the generic context.DeadlineExceeded.
+func effectiveCause(ctx context.Context) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return ctx.Err()
+}
+
 func NewGenericHttpJsonRpcClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
@@ -179,13 +190,7 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	case err := <-errChan:
 		return nil, err
 	case <-ctx.Done():
-		// Prefer context.Cause so policy-driven sentinels (e.g. ErrDynamicTimeoutExceeded)
-		// survive upstream-level error translation instead of being flattened to plain
-		// context.DeadlineExceeded.
-		err := context.Cause(ctx)
-		if err == nil {
-			err = ctx.Err()
-		}
+		err := effectiveCause(ctx)
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
@@ -434,11 +439,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	// pick the client from the proxy pool registry (if configured) or fallback
 	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
-		batchCause := context.Cause(batchCtx)
-		if batchCause == nil {
-			batchCause = batchCtx.Err()
-		}
-		if batchCause != nil {
+		if batchCause := effectiveCause(batchCtx); batchCause != nil {
 			err = batchCause
 		}
 		// TODO For both of these conditions failsafe library can introduce carrying
@@ -718,10 +719,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
-		cause := context.Cause(ctx)
-		if cause == nil {
-			cause = ctx.Err()
-		}
+		cause := effectiveCause(ctx)
 		c.logger.Debug().Err(err).Object("request", req).AnErr("contextError", cause).Msg("transport failure while sending single request")
 		if cause != nil {
 			err = cause
