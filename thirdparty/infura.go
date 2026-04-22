@@ -87,8 +87,11 @@ func (v *InfuraVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logg
 				return nil, fmt.Errorf("unsupported network chain ID for Infura: %d", chainID)
 			}
 			infuraURL := fmt.Sprintf("https://%s.infura.io/v3/%s", netName, apiKey)
+			// Infura WebSocket uses /ws/v3/ path instead of /v3/
+			infuraWsURL := fmt.Sprintf("wss://%s.infura.io/ws/v3/%s", netName, apiKey)
 			if netName == "ava-mainnet" || netName == "ava-testnet" {
-				// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
+				// Avalanche HTTP endpoints need an extra path `/ext/bc/C/rpc`
+				// WebSocket does NOT need this extra path
 				infuraURL = fmt.Sprintf("%s/ext/bc/C/rpc", infuraURL)
 			}
 			parsedURL, err := url.Parse(infuraURL)
@@ -97,6 +100,7 @@ func (v *InfuraVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logg
 			}
 
 			upstream.Endpoint = parsedURL.String()
+			upstream.WebsocketEndpoint = infuraWsURL
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
 			return nil, fmt.Errorf("apiKey is required in infura settings")

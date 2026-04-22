@@ -605,6 +605,7 @@ type UpstreamConfig struct {
 	Group                        string                   `yaml:"group,omitempty" json:"group"`
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
+	WebsocketEndpoint            string                   `yaml:"websocketEndpoint,omitempty" json:"websocketEndpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
@@ -905,6 +906,7 @@ type EvmUpstreamConfig struct {
 	// observed block time, falling back to the network-level
 	// FallbackStatePollerDebounce, then to a 1s floor.
 	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+	StatePollerSubscribe               *bool                       `yaml:"statePollerSubscribe,omitempty" json:"statePollerSubscribe"`
 	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
 	SkipWhenSyncing                    *bool                       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
@@ -1036,6 +1038,10 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.SkipWhenSyncing != nil {
 		v := *c.SkipWhenSyncing
 		copied.SkipWhenSyncing = &v
+	}
+	if c.StatePollerSubscribe != nil {
+		v := *c.StatePollerSubscribe
+		copied.StatePollerSubscribe = &v
 	}
 	if c.Integrity != nil {
 		copied.Integrity = c.Integrity.Copy()
