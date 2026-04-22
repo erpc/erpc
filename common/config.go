@@ -907,6 +907,11 @@ type EvmUpstreamConfig struct {
 	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
+	// TraceFilterAutoSplittingRangeThreshold proactively splits trace_filter and
+	// arbtrace_filter requests whose block range exceeds this value into contiguous
+	// sub-requests executed concurrently and merged before returning. Zero disables
+	// the feature.
+	TraceFilterAutoSplittingRangeThreshold int64                    `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
 	SkipWhenSyncing                    *bool                       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
 	Integrity                          *UpstreamIntegrityConfig    `yaml:"integrity,omitempty" json:"integrity"`
 
@@ -1706,6 +1711,13 @@ type EvmNetworkConfig struct {
 	GetLogsMaxAllowedTopics     int64               `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError         *bool               `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
 	GetLogsSplitConcurrency     int                 `yaml:"getLogsSplitConcurrency,omitempty" json:"getLogsSplitConcurrency"`
+	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
+	// arbtrace_filter requests when the upstream returns a range-too-large error.
+	// Nil disables the feature.
+	TraceFilterSplitOnError     *bool               `yaml:"traceFilterSplitOnError,omitempty" json:"traceFilterSplitOnError"`
+	// TraceFilterSplitConcurrency caps in-flight sub-requests when a trace_filter
+	// or arbtrace_filter request is split. Zero falls back to 10.
+	TraceFilterSplitConcurrency int                 `yaml:"traceFilterSplitConcurrency,omitempty" json:"traceFilterSplitConcurrency"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.

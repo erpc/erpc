@@ -142,6 +142,24 @@ var (
 		Help:      "Total number of eth_getLogs request splits by dimension (block_range, addresses, topics), network-scoped.",
 	}, []string{"project", "network", "dimension", "user", "agent_name"})
 
+	MetricNetworkEvmTraceFilterSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_split_success_total",
+		Help:      "Total number of successful split trace_filter/arbtrace_filter sub-requests (network-scoped).",
+	}, []string{"project", "network", "method", "user", "agent_name"})
+
+	MetricNetworkEvmTraceFilterSplitFailure = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_split_failure_total",
+		Help:      "Total number of failed split trace_filter/arbtrace_filter sub-requests (network-scoped).",
+	}, []string{"project", "network", "method", "user", "agent_name"})
+
+	MetricNetworkEvmTraceFilterForcedSplits = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_forced_splits_total",
+		Help:      "Total number of trace_filter/arbtrace_filter request splits by dimension (block_range, from_address, to_address), network-scoped.",
+	}, []string{"project", "network", "method", "dimension", "user", "agent_name"})
+
 	MetricUpstreamLatestBlockPolled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_latest_block_polled_total",
@@ -406,6 +424,7 @@ var (
 		Name:      "x402_payment_total",
 		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
 	}, []string{"project", "network", "facilitator", "outcome"})
+
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -424,10 +443,11 @@ var EvmGetLogsRangeHistogramBuckets = []float64{1, 10, 100, 500, 1000, 5000, 100
 
 // Histograms are populated by SetHistogramBuckets so the label filter applies.
 var (
-	MetricUpstreamRequestDuration         *LabeledHistogram
-	MetricNetworkRequestDuration          *LabeledHistogram
-	MetricNetworkEvmGetLogsRangeRequested *LabeledHistogram
-	MetricNetworkHedgeDelaySeconds        *LabeledHistogram
+	MetricUpstreamRequestDuration             *LabeledHistogram
+	MetricNetworkRequestDuration              *LabeledHistogram
+	MetricNetworkEvmGetLogsRangeRequested     *LabeledHistogram
+	MetricNetworkEvmTraceFilterRangeRequested *LabeledHistogram
+	MetricNetworkHedgeDelaySeconds            *LabeledHistogram
 	MetricConsensusResponsesCollected     *LabeledHistogram
 	MetricConsensusAgreementCount         *LabeledHistogram
 	MetricX402FacilitatorRequestDuration  *LabeledHistogram
@@ -504,6 +524,13 @@ func buildFilterAwareHistograms(bucketsStr string) error {
 		Help:      "eth_getLogs requested block-range sizes.",
 		Buckets:   EvmGetLogsRangeHistogramBuckets,
 	}, []string{"project", "network", "category", "user", "finality"})
+
+	MetricNetworkEvmTraceFilterRangeRequested = NewLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "network_evm_trace_filter_range_requested",
+		Help:      "trace_filter/arbtrace_filter requested block-range sizes.",
+		Buckets:   EvmGetLogsRangeHistogramBuckets,
+	}, []string{"project", "network", "method", "user", "finality"})
 
 	MetricNetworkHedgeDelaySeconds = NewLabeledHistogram(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -601,6 +628,7 @@ func SetHistogramBuckets(bucketsStr string) error {
 	MetricUpstreamRequestDuration = registerOrReuse(MetricUpstreamRequestDuration)
 	MetricNetworkRequestDuration = registerOrReuse(MetricNetworkRequestDuration)
 	MetricNetworkEvmGetLogsRangeRequested = registerOrReuse(MetricNetworkEvmGetLogsRangeRequested)
+	MetricNetworkEvmTraceFilterRangeRequested = registerOrReuse(MetricNetworkEvmTraceFilterRangeRequested)
 	MetricNetworkHedgeDelaySeconds = registerOrReuse(MetricNetworkHedgeDelaySeconds)
 	MetricConsensusResponsesCollected = registerOrReuse(MetricConsensusResponsesCollected)
 	MetricConsensusAgreementCount = registerOrReuse(MetricConsensusAgreementCount)

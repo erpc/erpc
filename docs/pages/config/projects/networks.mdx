@@ -608,6 +608,104 @@ export default createConfig({
   Splitting preserves order and merges results server-side. Address count is the length of the <code>address</code> array (if present). Topic count considers only <code>topics[0]</code> when it is an OR-list.
 </Callout>
 
+### `trace_filter` and `arbtrace_filter`
+
+The same proactive / reactive splitting pattern is available for `trace_filter`
+(OpenEthereum/Erigon/Reth/Nethermind) and `arbtrace_filter` (Arbitrum Nova),
+which share block range semantics with `eth_getLogs` but return trace objects
+instead of logs. Useful when an upstream caps trace results per response
+(for example, returning "too many results" with a hint to paginate).
+
+- **Proactive splitting**: if the requested block range exceeds an effective
+  threshold, the network splits the request into contiguous ranges before
+  contacting any upstream. The effective threshold is the minimum positive
+  `upstream.evm.traceFilterAutoSplittingRangeThreshold` across selected
+  upstreams.
+- **Split on error**: if an upstream signals a range-too-large error, the
+  network retries by bisecting first the block range, then `fromAddress`,
+  then `toAddress` arrays, and merges results.
+- **Concurrency**: `traceFilterSplitConcurrency` limits parallel sub-requests
+  during splitting.
+
+Both the proactive threshold and the on-error split are opt-in and disabled by
+default.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+
+          # Retry by splitting when an upstream returns "too many results" /
+          # "try paginating" / similar range-too-large errors.
+          traceFilterSplitOnError: true
+
+          # Parallelism for split sub-requests (applies to proactive and error-driven splits).
+          traceFilterSplitConcurrency: 10
+
+    upstreams:
+      - id: my-upstream
+        endpoint: https://mainnet.example.com
+        evm:
+          # 0 or negative disables the proactive split hint for this upstream.
+          # Pick a value that stays comfortably below the upstream's per-response
+          # result cap for typical trace density on the target chain.
+          traceFilterAutoSplittingRangeThreshold: 100
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+
+            // Retry by splitting when an upstream returns "too many results" /
+            // "try paginating" / similar range-too-large errors.
+            traceFilterSplitOnError: true,
+
+            // Parallelism for split sub-requests (applies to proactive and error-driven splits).
+            traceFilterSplitConcurrency: 10,
+          },
+        },
+      ],
+
+      upstreams: [
+        {
+          id: "my-upstream",
+          endpoint: "https://mainnet.example.com",
+          evm: {
+            // 0 or negative disables the proactive split hint for this upstream.
+            // Pick a value that stays comfortably below the upstream's per-response
+            // result cap for typical trace density on the target chain.
+            traceFilterAutoSplittingRangeThreshold: 100,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  Sub-ranges and address-list halves are disjoint by construction, so no
+  deduplication is performed server-side. Order is preserved by sub-request
+  index.
+</Callout>
+
 ### `eth_sendRawTransaction`
 
 eRPC provides **idempotent transaction broadcasting** for `eth_sendRawTransaction`, enabling safe use of retry and hedge policies with transaction sending.

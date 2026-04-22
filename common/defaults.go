@@ -1556,6 +1556,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
 			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
 		}
+		if u.Evm.TraceFilterAutoSplittingRangeThreshold == 0 && defaults.Evm.TraceFilterAutoSplittingRangeThreshold != 0 {
+			u.Evm.TraceFilterAutoSplittingRangeThreshold = defaults.Evm.TraceFilterAutoSplittingRangeThreshold
+		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -1877,6 +1880,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
+			if n.Evm.TraceFilterSplitOnError == nil && defaults.Evm.TraceFilterSplitOnError != nil {
+				n.Evm.TraceFilterSplitOnError = defaults.Evm.TraceFilterSplitOnError
+			}
+			if n.Evm.TraceFilterSplitConcurrency == 0 && defaults.Evm.TraceFilterSplitConcurrency != 0 {
+				n.Evm.TraceFilterSplitConcurrency = defaults.Evm.TraceFilterSplitConcurrency
+			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
@@ -2031,6 +2040,13 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 	}
 	if e.GetLogsSplitConcurrency == 0 {
 		e.GetLogsSplitConcurrency = 10
+	}
+
+	// Defaults for network-level trace_filter controls.
+	// TraceFilterSplitOnError intentionally defaults to nil (off) — this is a
+	// new feature and preserving existing behavior requires operator opt-in.
+	if e.TraceFilterSplitConcurrency == 0 {
+		e.TraceFilterSplitConcurrency = 10
 	}
 
 	// Default methods for marking empty results as errors
