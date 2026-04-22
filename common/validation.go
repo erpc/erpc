@@ -1319,6 +1319,35 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return fmt.Errorf("network.*.alias '%s' must contain only alphanumeric characters, dash, or underscore", n.Alias)
 		}
 	}
+	for i, sr := range n.StaticResponses {
+		if err := sr.Validate(); err != nil {
+			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (s *StaticResponseConfig) Validate() error {
+	if s == nil {
+		return fmt.Errorf("entry is nil")
+	}
+	if s.Method == "" {
+		return fmt.Errorf("method is required")
+	}
+	if s.Response == nil {
+		return fmt.Errorf("response is required")
+	}
+	hasResult := s.Response.Result != nil
+	hasError := s.Response.Error != nil
+	if hasResult && hasError {
+		return fmt.Errorf("response must set exactly one of result or error, got both")
+	}
+	if !hasResult && !hasError {
+		return fmt.Errorf("response must set exactly one of result or error, got neither")
+	}
+	if hasError && s.Response.Error.Message == "" {
+		return fmt.Errorf("response.error.message is required")
+	}
 	return nil
 }
 
