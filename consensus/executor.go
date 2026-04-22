@@ -30,22 +30,6 @@ var (
 	errPanicInConsensus  = errors.New("panic in consensus execution")
 )
 
-// drainResponsesInBackground spawns a goroutine to drain remaining responses from the channel
-// and release any results to avoid memory retention. This is called when short-circuiting
-// or when the context is cancelled.
-func drainResponsesInBackground(responseChan <-chan *execResult, startIdx, maxToSpawn int) {
-	go func() {
-		for j := startIdx; j < maxToSpawn; j++ {
-			er := <-responseChan
-			if er != nil && er.Result != nil {
-				if releasable, ok := any(er.Result).(interface{ Release() }); ok && releasable != nil {
-					releasable.Release()
-				}
-			}
-		}
-	}()
-}
-
 type metricsLabels struct {
 	method      string
 	category    string
@@ -113,8 +97,18 @@ type execResult struct {
 	Index int
 }
 
-// Apply is the main entry point for the consensus policy. It orchestrates the collection,
-// analysis, and decision phases.
+// consensusOutcome is the atomic handoff from the analyzer goroutine to the
+// caller's select. All fields must be fully populated before the send so the
+// caller always receives a consistent snapshot.
+type consensusOutcome struct {
+	winner         *failsafeCommon.PolicyResult[*common.NormalizedResponse]
+	analysis       *consensusAnalysis
+	shortCircuited bool
+}
+
+// Apply is the main entry point for the consensus policy. It delegates to
+// executeConsensus which decouples caller-visible latency from analysis
+// completion (see runAnalyzer).
 func (e *executor) Apply(innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse]) func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 	return func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 		startTime := time.Now()
@@ -137,46 +131,31 @@ func (e *executor) Apply(innerFn func(failsafe.Execution[*common.NormalizedRespo
 			Str("networkId", labels.networkId).
 			Logger()
 
-		winner, analysis := e.executeConsensus(
+		return e.executeConsensus(
 			ctx,
 			&lg,
 			originalReq,
 			labels,
 			exec.(policy.ExecutionInternal[*common.NormalizedResponse]),
 			innerFn,
+			startTime,
+			consensusSpan,
 		)
-
-		// Track misbehaviors while responses are still available
-		e.trackAndPunishMisbehavingUpstreams(&lg, originalReq, labels, winner, analysis)
-
-		// Now release non-winning responses to free memory
-		if analysis != nil {
-			var winnerResp *common.NormalizedResponse
-			if winner != nil {
-				if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
-					winnerResp = wr
-				}
-			}
-			// Release responses from the groups in analysis
-			for _, group := range analysis.groups {
-				for _, result := range group.Results {
-					if result != nil && result.Result != nil {
-						// Only release if it's not the winner
-						if result.Result != winnerResp {
-							result.Result.Release()
-						}
-					}
-				}
-			}
-		}
-
-		// --- Finalization ---
-		e.recordMetricsAndTracing(originalReq, startTime, winner, analysis, labels, consensusSpan)
-
-		return winner
 	}
 }
 
+// executeConsensus decouples two distinct concerns:
+//
+//  1. Caller-visible latency: the caller must return promptly when its context
+//     is cancelled (HTTP disconnect, upstream deadline, shutdown).
+//  2. Analysis completeness: misbehavior tracking and metrics must see every
+//     participant's response, even ones that arrive after the caller gave up.
+//
+// The analyzer goroutine owns (2); the caller's select owns (1). They
+// communicate through a single-buffered outcomeCh so neither side blocks the
+// other. Analyzer lifetime is bounded by the slowest participant's lifetime,
+// which is already bounded by failsafe policy timeouts and HTTP client
+// timeouts — no new magic-number budget is required.
 func (e *executor) executeConsensus(
 	ctx context.Context,
 	lg *zerolog.Logger,
@@ -184,9 +163,14 @@ func (e *executor) executeConsensus(
 	labels metricsLabels,
 	parentExecution policy.ExecutionInternal[*common.NormalizedResponse],
 	innerFn func(failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse],
-) (*failsafeCommon.PolicyResult[*common.NormalizedResponse], *consensusAnalysis) {
+	startTime time.Time,
+	consensusSpan trace.Span,
+) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
 	ctx, collectionSpan := common.StartDetailSpan(ctx, "Consensus.CollectResponses")
-	defer collectionSpan.End()
+	// NOTE: collectionSpan.End() is owned by runAnalyzer (in its deferred
+	// cleanup), not this function. The analyzer outlives executeConsensus on
+	// the caller-cancel path, and ending the span here would drop late
+	// attributes (short_circuited, responses.collected).
 
 	// For fire-and-forget mode, detach from parent context cancellation so background
 	// requests continue even after the HTTP response is sent. This is critical for
@@ -214,8 +198,6 @@ func (e *executor) executeConsensus(
 		}
 	}()
 
-	var shortCircuited bool
-
 	// Spawn only as many participants as configured by policy
 	maxToSpawn := e.maxParticipants
 	if maxToSpawn <= 0 {
@@ -229,86 +211,222 @@ func (e *executor) executeConsensus(
 		go e.executeParticipant(cancellableCtx, lg, attempts[i], labels, innerFn, i, responseChan)
 	}
 
-	responses := make([]*execResult, 0, maxToSpawn)
-	var shortCircuitReason string
-	var analysis *consensusAnalysis
-	var winner *failsafeCommon.PolicyResult[*common.NormalizedResponse]
+	// outcomeCh is buffered so the analyzer can signal the caller and
+	// continue to tracking/release without blocking on the caller still being
+	// there. If the caller abandons on ctx.Done() before receiving, a drain
+	// goroutine takes the buffered value and releases the winner.
+	outcomeCh := make(chan consensusOutcome, 1)
+	// analyzerDone closes when the analyzer has finished every read of the
+	// winner (tracking, misbehavior export, releaseNonWinningResponses). The
+	// abandon-path drain goroutine waits on this before releasing the winner
+	// to avoid racing trackAndPunishMisbehavingUpstreams on winner.Result.
+	analyzerDone := make(chan struct{})
+	go e.runAnalyzer(
+		lg, originalReq, labels, parentExecution,
+		responseChan, attempts, maxToSpawn, cancelRemaining,
+		outcomeCh, analyzerDone, collectionSpan,
+	)
 
-collectLoop:
-	for i := 0; i < maxToSpawn; i++ {
+	// Caller's select: prefer winner when available; bail on ctx cancel.
+	select {
+	case outcome := <-outcomeCh:
+		e.recordMetricsAndTracing(originalReq, startTime, outcome.winner, outcome.analysis, labels, consensusSpan)
+		return outcome.winner
+	case <-ctx.Done():
+		// Close the race where outcomeCh was sent to but Go's select picked
+		// ctx.Done() first (both cases ready → random choice). Non-blocking
+		// try-receive: if the analyzer already has a winner, take it.
 		select {
-		case resp := <-responseChan:
-			if resp != nil {
-				responses = append(responses, resp)
-				if !shortCircuited {
-					analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
-					winner = e.determineWinner(lg, analysis)
-					if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
-						shortCircuited = true
-						shortCircuitReason = reason
+		case outcome := <-outcomeCh:
+			e.recordMetricsAndTracing(originalReq, startTime, outcome.winner, outcome.analysis, labels, consensusSpan)
+			return outcome.winner
+		default:
+			// Caller abandoned before the analyzer published an outcome.
+			// The analyzer is still going to publish exactly one outcome to
+			// the (buffered) outcomeCh and then finish its own cleanup.
+			// Since we will NOT return the winner up the stack, nobody else
+			// will call winner.Result.Release() — the winner is explicitly
+			// skipped by releaseNonWinningResponses. Leaking the winner
+			// means leaking the response body/JSON-RPC buffer. Spawn a
+			// drain goroutine that waits for the analyzer to finish reading
+			// the winner (analyzerDone), then releases it.
+			go e.drainAbandonedOutcome(outcomeCh, analyzerDone)
+			return e.handleCallerAbandoned(lg, originalReq, labels, startTime, consensusSpan, ctx.Err())
+		}
+	}
+}
 
-						// In fire-and-forget mode, let remaining requests complete in background
-						// without cancelling them. This is useful for write operations like
-						// eth_sendRawTransaction where we want to broadcast to all nodes.
-						if e.config.fireAndForget {
-							lg.Debug().
-								Str("reason", reason).
-								Int("remaining", maxToSpawn-i-1).
-								Msg("fire-and-forget mode: letting remaining requests complete in background")
+// drainAbandonedOutcome releases the winner response when the caller has
+// abandoned consensus before receiving. It waits for analyzerDone to be
+// closed so analyzer-side reads of winner.Result (misbehavior tracking,
+// buildMisbehaviorRecord, releaseNonWinningResponses skip-check) have
+// completed before we free the underlying buffers.
+func (e *executor) drainAbandonedOutcome(
+	outcomeCh <-chan consensusOutcome,
+	analyzerDone <-chan struct{},
+) {
+	outcome := <-outcomeCh
+	<-analyzerDone
+	if outcome.winner == nil {
+		return
+	}
+	wr, ok := any(outcome.winner.Result).(*common.NormalizedResponse)
+	if !ok || wr == nil {
+		return
+	}
+	wr.Release()
+}
 
-							// Drain remaining responses in background without cancelling
-							// The HTTP requests will complete naturally
-							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
-						} else {
-							// Normal mode: cancel remaining requests immediately to save resources
-							cancelRemaining()
-							// Explicitly cancel all outstanding attempt executions to abort in-flight work
-							for ai := range attempts {
-								if attempts[ai] != nil {
-									attempts[ai].Cancel(nil)
-								}
-							}
-							drainResponsesInBackground(responseChan, i+1, maxToSpawn)
-						}
-						break collectLoop
-					}
-				}
-			}
-		case <-ctx.Done():
-			lg.Warn().Err(ctx.Err()).Msg("Context cancelled during response collection")
-			// Record collection phase cancellation
-			telemetry.MetricConsensusCancellations.
-				WithLabelValues(labels.projectId, labels.networkId, labels.category, "collection", labels.finalityStr).
+// handleCallerAbandoned records caller-abandon metrics and returns an error
+// result to the caller. The analyzer goroutine continues in the background
+// and will emit MetricConsensusResponsesCollected / MetricConsensusShortCircuit
+// plus run trackAndPunishMisbehavingUpstreams when all participants finish.
+func (e *executor) handleCallerAbandoned(
+	lg *zerolog.Logger,
+	_ *common.NormalizedRequest,
+	labels metricsLabels,
+	startTime time.Time,
+	consensusSpan trace.Span,
+	cancelErr error,
+) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+	telemetry.MetricConsensusCancellations.
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		Inc()
+	telemetry.MetricConsensusTotal.
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		Inc()
+	telemetry.MetricConsensusDuration.
+		WithLabelValues(labels.projectId, labels.networkId, labels.category, "caller_abandoned", labels.finalityStr).
+		Observe(time.Since(startTime).Seconds())
+	common.SetTraceSpanError(consensusSpan, cancelErr)
+	consensusSpan.SetAttributes(attribute.String("consensus.outcome", "caller_abandoned"))
+	lg.Warn().Err(cancelErr).Msg("consensus caller abandoned; analysis continues in background")
+	return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: cancelErr}
+}
+
+// runAnalyzer owns all consensus work downstream of participant dispatch:
+// collection, analysis, winner determination, misbehavior tracking, and
+// response memory release. It always runs to completion regardless of caller
+// context state.
+//
+// Its lifetime is bounded by the slowest participant's lifetime, which is
+// itself bounded by the failsafe timeout policy and the HTTP client timeout
+// (see clients/http_json_rpc_client.go). No new budget is introduced.
+//
+// INVARIANT: exactly one consensusOutcome is sent to outcomeCh before this
+// function returns, so the caller's select never deadlocks. The deferred
+// panic handler preserves this invariant.
+func (e *executor) runAnalyzer(
+	lg *zerolog.Logger,
+	originalReq *common.NormalizedRequest,
+	labels metricsLabels,
+	parentExecution policy.ExecutionInternal[*common.NormalizedResponse],
+	responseChan <-chan *execResult,
+	attempts []policy.ExecutionInternal[*common.NormalizedResponse],
+	maxToSpawn int,
+	cancelRemaining func(),
+	outcomeCh chan<- consensusOutcome,
+	analyzerDone chan<- struct{},
+	collectionSpan trace.Span,
+) {
+	outcomeSent := false
+	sendOutcomeOnce := func(o consensusOutcome) {
+		if outcomeSent {
+			return
+		}
+		outcomeCh <- o // non-blocking: outcomeCh is buffered size 1
+		outcomeSent = true
+	}
+
+	// analyzerDone is closed LAST (defers run LIFO). This signals to the
+	// abandon-path drain goroutine that all analyzer-side reads of
+	// winner.Result have completed and releasing it is now safe.
+	defer close(analyzerDone)
+
+	defer func() {
+		// Recover from any panic before ending the span so a panic in
+		// analysis doesn't leak the span and — critically — doesn't
+		// deadlock the caller waiting on outcomeCh.
+		if r := recover(); r != nil {
+			lg.Error().
+				Interface("panic", r).
+				Str("stack", string(debug.Stack())).
+				Msg("panic in consensus analyzer")
+			telemetry.MetricConsensusPanics.
+				WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr).
 				Inc()
+			sendOutcomeOnce(consensusOutcome{
+				winner: &failsafeCommon.PolicyResult[*common.NormalizedResponse]{Error: errPanicInConsensus},
+			})
+		}
+		collectionSpan.End()
+	}()
 
-			// In fire-and-forget mode, let remaining requests complete in background
-			// even when parent context is cancelled. This is critical for transaction
-			// broadcasting where we want all nodes to receive the transaction regardless
-			// of whether the client's HTTP connection dropped.
+	responses := make([]*execResult, 0, maxToSpawn)
+	var winner *failsafeCommon.PolicyResult[*common.NormalizedResponse]
+	var analysis *consensusAnalysis
+	var shortCircuitReason string
+	shortCircuited := false
+
+	// Collect all responses. Every participant is guaranteed to write exactly
+	// once to responseChan (see executeParticipant: all exit paths + panic
+	// recovery write; channel is buffered to maxToSpawn so writes never block).
+	for i := 0; i < maxToSpawn; i++ {
+		resp := <-responseChan
+		if resp == nil {
+			continue
+		}
+
+		if shortCircuited {
+			// Analysis is frozen at the short-circuit moment. Any response
+			// that arrives after is NOT in analysis.groups, so
+			// releaseNonWinningResponses won't cover it. Release it here,
+			// mirroring the old drainResponsesInBackground behavior.
+			if resp.Result != nil {
+				resp.Result.Release()
+			}
+			continue
+		}
+
+		responses = append(responses, resp)
+
+		analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
+		winner = e.determineWinner(lg, analysis)
+		if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
+			shortCircuited = true
+			shortCircuitReason = reason
+
+			// Release caller immediately. The winner won't change even if
+			// more responses arrive, matching pre-refactor short-circuit
+			// semantics for the winner returned to the caller.
+			sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: true})
+
 			if e.config.fireAndForget {
 				lg.Debug().
-					Int("remaining", maxToSpawn-i).
-					Msg("fire-and-forget mode: letting remaining requests complete despite parent cancellation")
-				drainResponsesInBackground(responseChan, i, maxToSpawn)
+					Str("reason", reason).
+					Int("remaining", maxToSpawn-i-1).
+					Msg("fire-and-forget mode: remaining requests complete in background")
 			} else {
-				// Normal mode: cancel remaining requests to save resources
 				cancelRemaining()
 				for ai := range attempts {
 					if attempts[ai] != nil {
 						attempts[ai].Cancel(nil)
 					}
 				}
-				drainResponsesInBackground(responseChan, i, maxToSpawn)
 			}
-			break collectLoop
 		}
 	}
 
+	// All participants accounted for. If no short-circuit fired, compute the
+	// final analysis and send the winner now.
 	if analysis == nil {
 		analysis = newConsensusAnalysis(e.logger, parentExecution, e.config, responses)
 		winner = e.determineWinner(lg, analysis)
 	}
+	sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: shortCircuited})
 
+	// Emit collection-phase attributes and metrics. These run after the
+	// outcome has been sent, so they don't block the caller.
 	collectionSpan.SetAttributes(
 		attribute.Bool("short_circuited", shortCircuited),
 		attribute.Int("responses.collected", len(responses)),
@@ -322,7 +440,6 @@ collectLoop:
 	}
 	sort.Strings(vendorNames)
 
-	// Record how many responses were collected and whether we short-circuited
 	telemetry.MetricConsensusResponsesCollected.
 		WithLabelValues(
 			labels.projectId,
@@ -343,7 +460,38 @@ collectLoop:
 			Inc()
 	}
 
-	return winner, analysis
+	// Track misbehavior with the final winner + analysis. Previously this
+	// ran synchronously in Apply(). Moving it here guarantees it sees every
+	// response, even ones that arrived after the caller abandoned.
+	e.trackAndPunishMisbehavingUpstreams(lg, originalReq, labels, winner, analysis)
+
+	// Release non-winning response objects. Previously inlined in Apply().
+	e.releaseNonWinningResponses(analysis, winner)
+}
+
+// releaseNonWinningResponses releases the Result pointers on every non-winning
+// execResult in analysis.groups. Extracted verbatim from the previous inline
+// loop in Apply() so behavior is preserved.
+func (e *executor) releaseNonWinningResponses(
+	analysis *consensusAnalysis,
+	winner *failsafeCommon.PolicyResult[*common.NormalizedResponse],
+) {
+	if analysis == nil {
+		return
+	}
+	var winnerResp *common.NormalizedResponse
+	if winner != nil {
+		if wr, ok := any(winner.Result).(*common.NormalizedResponse); ok {
+			winnerResp = wr
+		}
+	}
+	for _, group := range analysis.groups {
+		for _, result := range group.Results {
+			if result != nil && result.Result != nil && result.Result != winnerResp {
+				result.Result.Release()
+			}
+		}
+	}
 }
 
 // executeParticipant runs a single upstream request within a goroutine.
@@ -381,18 +529,13 @@ func (e *executor) executeParticipant(
 	// Execute using the pre-created cancellable attempt execution
 	result := innerFn(attemptExecution)
 
-	// Check for cancellation after execution; release any produced result before dropping it
+	// Track post-execution cancellations for observability, but do NOT discard the result.
+	// The result is still valid and should participate in consensus analysis.
+	// Discarding here caused 0 groups → ErrConsensusLowParticipants "participants: null".
 	if ctx.Err() != nil {
 		telemetry.MetricConsensusCancellations.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, "after_execution", labels.finalityStr).
 			Inc()
-		if result != nil {
-			if releasable, ok := any(result.Result).(interface{ Release() }); ok && releasable != nil {
-				releasable.Release()
-			}
-		}
-		responseChan <- nil
-		return
 	}
 
 	if result == nil {
@@ -959,6 +1102,28 @@ func (e *executor) startConsensusSpan(ctx context.Context, labels metricsLabels,
 }
 
 func (e *executor) recordMetricsAndTracing(req *common.NormalizedRequest, startTime time.Time, result *failsafeCommon.PolicyResult[*common.NormalizedResponse], analysis *consensusAnalysis, labels metricsLabels, span trace.Span) {
+	// Defensive: analysis is nil on the catastrophic-path where the analyzer
+	// goroutine panicked before any responses could be classified. Emit
+	// minimal metrics and mark the span error rather than nil-dereferencing.
+	if analysis == nil {
+		outcome := "generic_error"
+		if result != nil && result.Error != nil {
+			common.SetTraceSpanError(span, result.Error)
+		}
+		span.SetAttributes(attribute.String("consensus.outcome", outcome))
+		duration := time.Since(startTime).Seconds()
+		telemetry.MetricConsensusTotal.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			Inc()
+		telemetry.MetricConsensusDuration.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			Observe(duration)
+		telemetry.MetricConsensusErrors.
+			WithLabelValues(labels.projectId, labels.networkId, labels.category, outcome, labels.finalityStr).
+			Inc()
+		return
+	}
+
 	// Determine if consensus was achieved based on the highest count group
 	best := analysis.getBestByCount()
 	hasConsensus := best != nil && best.Count >= e.agreementThreshold

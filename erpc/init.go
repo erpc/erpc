@@ -42,11 +42,15 @@ func Init(
 	}
 
 	//
-	// 2) Set the right histogram buckets
+	// 2) Set the right histogram buckets and label filter
 	//
 	bucketStr := ""
-	if cfg.Metrics != nil && cfg.Metrics.HistogramBuckets != "" {
-		bucketStr = cfg.Metrics.HistogramBuckets
+	if cfg.Metrics != nil {
+		if cfg.Metrics.HistogramBuckets != "" {
+			bucketStr = cfg.Metrics.HistogramBuckets
+		}
+		// Must run before SetHistogramBuckets so the new Vecs are built with the filter applied.
+		telemetry.SetHistogramLabelFilter(cfg.Metrics.HistogramDropLabels, cfg.Metrics.HistogramLabelOverrides)
 	}
 	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
 		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")

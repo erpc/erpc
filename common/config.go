@@ -2022,6 +2022,18 @@ type MetricsConfig struct {
 	Port             *int      `yaml:"port" json:"port"`
 	ErrorLabelMode   LabelMode `yaml:"errorLabelMode,omitempty" json:"errorLabelMode"`
 	HistogramBuckets string    `yaml:"histogramBuckets,omitempty" json:"histogramBuckets"`
+
+	// HistogramDropLabels removes these labels from every histogram. Counters
+	// and gauges are unaffected. Useful to cap per-instance /metrics response
+	// size when high-cardinality labels (e.g. "user") push a scrape past the
+	// managed scraper's sample/body limits.
+	HistogramDropLabels []string `yaml:"histogramDropLabels,omitempty" json:"histogramDropLabels,omitempty"`
+
+	// HistogramLabelOverrides re-adds labels for specific histograms even if
+	// they appear in HistogramDropLabels. Key is the metric Name (without the
+	// "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
+	// Value is the list of label names to keep for that metric.
+	HistogramLabelOverrides map[string][]string `yaml:"histogramLabelOverrides,omitempty" json:"histogramLabelOverrides,omitempty"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.

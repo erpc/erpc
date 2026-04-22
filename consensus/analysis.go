@@ -138,6 +138,18 @@ func newConsensusAnalysis(lg *zerolog.Logger, exec failsafe.Execution[*common.No
 		}
 	}
 
+	// Pre-populate all cached accessors so the struct is effectively
+	// immutable after construction. This is critical: after the analyzer
+	// goroutine sends the outcome to the caller via outcomeCh (see
+	// executor.go runAnalyzer), both goroutines may read the analysis
+	// concurrently. Lazy-init under concurrent reads would be a data race.
+	analysis.getValidGroups()
+	analysis.getBestNonEmpty()
+	analysis.getBestEmpty()
+	analysis.getBestError()
+	analysis.getBestByCount()
+	analysis.getBestBySize()
+
 	return analysis
 }
 
