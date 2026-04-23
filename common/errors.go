@@ -2367,25 +2367,78 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	return false
 }
 
+// IsRetryableTowardNetwork reports whether err should be retried at network
+// scope (i.e. against a different upstream). Returns true by default; returns
+// false only when:
+//
+//   - it's an ErrUpstreamsExhausted with no underlying cause (nothing tried,
+//     nothing to recover — terminal), OR
+//   - every child of a multi-error wrapper cause (ErrUpstreamsExhausted,
+//     ErrConsensusDispute, ErrConsensusLowParticipants, or any errors.Join
+//     bundle) is itself non-retryable, OR
+//   - any error along the linear Cause chain carries
+//     WithRetryableTowardNetwork(false).
+//
+// Multi-error wrappers are traversed by explicit iteration. The flag lookup
+// descends the single-cause chain (so an outer ErrUpstreamRequest wrapping an
+// inner ErrEndpointCapacityExceeded with the flag still short-circuits) but
+// never enters a multi-error wrapper — that fan-out is handled above and
+// descending into it would reintroduce the order-dependent bug that
+// DeepSearch had.
 func IsRetryableTowardNetwork(err error) bool {
-	// For ErrUpstreamsExhausted, check if any underlying error is retryable toward network
-	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
-		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
-			errs := exher.Errors()
-			for _, e := range errs {
-				if IsRetryableTowardNetwork(e) {
-					return true
+	if err == nil {
+		return true
+	}
+
+	se, isStandard := err.(StandardError)
+	if !isStandard {
+		return true
+	}
+
+	cause := se.GetCause()
+
+	// Empty ErrUpstreamsExhausted (no cause) is terminal — no upstreams were
+	// ever tried, so retrying at the network scope cannot make progress.
+	if cause == nil && HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		return false
+	}
+
+	// Multi-error wrapper cause (errors.Join-style): retry if ANY child is
+	// retryable. Covers ErrUpstreamsExhausted, ErrConsensusDispute, and
+	// ErrConsensusLowParticipants uniformly — never descend via DeepSearch.
+	if cause != nil {
+		if ew, ok := cause.(interface{ Unwrap() []error }); ok {
+			if children := ew.Unwrap(); len(children) > 0 {
+				for _, child := range children {
+					if IsRetryableTowardNetwork(child) {
+						return true
+					}
 				}
+				return false
 			}
-			return false
 		}
 	}
 
-	// If the error explicitly sets retryableTowardNetwork: false, respect it
-	if se, ok := err.(StandardError); ok {
-		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && !rt {
-			return false
+	// Walk the single-cause chain looking for an explicit opt-out. Wrappers
+	// like ErrUpstreamRequest typically carry the flag on a deeper cause
+	// (ErrEndpointCapacityExceeded, ErrEndpointClientSideException, etc.),
+	// so a top-level-only check would miss it. Stop before entering any
+	// multi-error wrapper — handled above.
+	for cur := error(err); cur != nil; {
+		cse, ok := cur.(StandardError)
+		if !ok {
+			break
 		}
+		if base := cse.Base(); base != nil && base.Details != nil {
+			if rt, ok := base.Details["retryableTowardNetwork"].(bool); ok && !rt {
+				return false
+			}
+		}
+		next := cse.GetCause()
+		if _, isMulti := next.(interface{ Unwrap() []error }); isMulti {
+			break
+		}
+		cur = next
 	}
 
 	return true
