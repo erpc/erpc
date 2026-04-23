@@ -355,6 +355,24 @@ func upstreamPreForward_trace_filter(ctx context.Context, n common.Network, u co
 	return false, nil, nil
 }
 
+// upstreamPostForward_trace_filter normalizes emptyish results (e.g. `null`)
+// into `[]`. Some upstreams return `null` when no traces match, which breaks
+// consumers that decode the result as an array.
+func upstreamPostForward_trace_filter(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.trace_filter", trace.WithAttributes(
+		attribute.String("request.id", fmt.Sprintf("%v", rq.ID())),
+		attribute.String("network.id", n.Id()),
+		attribute.String("upstream.id", u.Id()),
+	))
+	defer span.End()
+
+	if re == nil && rs != nil && rs.IsResultEmptyish(ctx) {
+		return normalizeEmptyArrayResponse(ctx, u, rq, rs)
+	}
+
+	return rs, re
+}
+
 // traceFilterSubRequest captures the parameters needed to construct a split
 // trace_filter/arbtrace_filter sub-request.
 type traceFilterSubRequest struct {
