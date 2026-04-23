@@ -423,12 +423,6 @@ export interface NetworkDefaults {
     evm?: TsEvmNetworkConfigForDefaults;
     multiplexing?: boolean;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface CORSConfig {
     allowedOrigins: string[];
     allowedMethods: string[];
@@ -468,12 +462,6 @@ export interface UpstreamConfig {
     routing?: RoutingConfig;
     shadow?: ShadowUpstreamConfig;
 }
-/**
- * Define a type alias to avoid recursion
- */
-/**
- * If that fails, try the old format with single failsafe object
- */
 export interface ShadowUpstreamConfig {
     enabled: boolean;
     sampleRate?: number;
@@ -809,13 +797,37 @@ export interface NetworkConfig {
     alias?: string;
     methods?: MethodsConfig;
     multiplexing?: boolean;
+    staticResponses?: (StaticResponseConfig | undefined)[];
 }
 /**
- * Define a type alias to avoid recursion
+ * StaticResponseConfig declares a canned JSON-RPC response for a specific
+ * (method, params) pair on a network. When an inbound request matches, the
+ * configured response is returned immediately and no upstream is contacted.
+ * Useful for chains that deviate from client assumptions (for example, chains
+ * whose genesis block is not 0) where probing upstreams would yield errors
+ * or inconsistent data.
  */
+export interface StaticResponseConfig {
+    method: string;
+    params?: any[];
+    response?: StaticResponseBodyConfig;
+}
 /**
- * If that fails, try the old format with single failsafe object
+ * StaticResponseBodyConfig holds the JSON-RPC payload to serve. Exactly one
+ * of Result or Error must be set.
  */
+export interface StaticResponseBodyConfig {
+    result?: any;
+    error?: StaticResponseErrorConfig;
+}
+/**
+ * StaticResponseErrorConfig mirrors a JSON-RPC error object.
+ */
+export interface StaticResponseErrorConfig {
+    code: number;
+    message: string;
+    data?: any;
+}
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
     retryPending?: boolean;
@@ -1118,6 +1130,22 @@ export interface MetricsConfig {
     port?: number;
     errorLabelMode?: LabelMode;
     histogramBuckets?: string;
+    /**
+     * HistogramDropLabels removes these labels from every histogram. Counters
+     * and gauges are unaffected. Useful to cap per-instance /metrics response
+     * size when high-cardinality labels (e.g. "user") push a scrape past the
+     * managed scraper's sample/body limits.
+     */
+    histogramDropLabels?: string[];
+    /**
+     * HistogramLabelOverrides re-adds labels for specific histograms even if
+     * they appear in HistogramDropLabels. Key is the metric Name (without the
+     * "erpc_" namespace prefix), e.g. "network_request_duration_seconds".
+     * Value is the list of label names to keep for that metric.
+     */
+    histogramLabelOverrides?: {
+        [key: string]: string[];
+    };
 }
 /**
  * RateLimitStoreConfig defines where rate limit counters are stored
