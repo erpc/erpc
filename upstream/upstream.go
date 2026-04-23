@@ -1251,6 +1251,10 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		}
 		nid, err := u.EvmGetChainId(ctx)
 		if err != nil {
+			// RPC / network failure — potentially transient (provider outage,
+			// rate limit during startup, DNS blip). Leave the init error
+			// unwrapped so the Initializer's auto-retry loop can keep trying;
+			// the upstream will self-heal if the provider recovers.
 			return common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdDetectionFailed",
@@ -1261,22 +1265,26 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 		}
 		realChainID, err := strconv.ParseInt(nid, 0, 64)
 		if err != nil {
-			return common.NewErrUpstreamClientInitialization(
+			// Upstream returned a non-numeric chainId — won't self-heal on
+			// retry. Wrap with NewTaskFatal so the Initializer stops retrying.
+			return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdDetectionFailed",
 					Cause: err,
 				},
 				u,
-			)
+			))
 		}
 		if cfg.Evm.ChainId > 0 && cfg.Evm.ChainId != realChainID {
-			return common.NewErrUpstreamClientInitialization(
+			// Misconfiguration (wrong upstream for this network) — permanent.
+			// Wrap with NewTaskFatal so the Initializer stops retrying.
+			return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 				&common.BaseError{
 					Code:  "ErrUpstreamChainIdMismatch",
 					Cause: fmt.Errorf("chainId mismatch: configured %d, detected %d", cfg.Evm.ChainId, realChainID),
 				},
 				u,
-			)
+			))
 		}
 		cfg.Evm.ChainId = realChainID
 		u.networkId.Store(util.EvmNetworkId(cfg.Evm.ChainId))

@@ -750,6 +750,14 @@ type ErrUpstreamClientInitialization struct {
 	BaseError
 }
 
+// Note: ErrUpstreamClientInitialization deliberately does not implement
+// IsTaskFatal — the same constructor is used for both permanent
+// (chainId-mismatch, parse-error, unsupported-type) and transient (RPC/network
+// failure during chainId detection) causes. Call sites that know the cause is
+// permanent wrap with common.NewTaskFatal() so the Initializer stops retrying.
+// Leaving this unimplemented keeps transient failures retryable — a provider
+// outage during startup should be recoverable once the provider returns.
+
 var NewErrUpstreamClientInitialization = func(cause error, upstream Upstream) error {
 	return &ErrUpstreamClientInitialization{
 		UpstreamAwareError: UpstreamAwareError{
