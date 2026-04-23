@@ -838,6 +838,50 @@ The `preferHighestValueFor` map supports:
   When `preferHighestValueFor` is configured for a method, it takes precedence over normal hash-based consensus. Error responses are ignored; only valid numeric responses are compared.
 </Callout>
 
+## Static responses
+
+Some chains deviate from common client assumptions in ways that make specific RPC requests unanswerable or produce inconsistent responses across upstreams. For example, a chain whose genesis block is at height `1` instead of `0` has no valid answer for `eth_getBlockByNumber("0x0", false)` — clients that probe block 0 will see errors or divergent results, and the upstream may be flagged as misbehaving.
+
+`staticResponses` lets you configure a canned JSON-RPC response for a specific `(method, params)` pair on a network. When an inbound request matches, the configured response is returned immediately and no upstream is contacted.
+
+```yaml
+networks:
+  - architecture: evm
+    evm:
+      chainId: 999
+    staticResponses:
+      # Return a synthetic block for eth_getBlockByNumber("0x0", false)
+      - method: eth_getBlockByNumber
+        params: ["0x0", false]
+        response:
+          result:
+            number: "0x0"
+            hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000"
+            # ...remaining block fields
+
+      # Or return a JSON-RPC error
+      - method: some_unsupported_method
+        params: []
+        response:
+          error:
+            code: -32601
+            message: "Method not found"
+```
+
+Match semantics:
+
+* The `method` must match the request method exactly.
+* The `params` must match the request params via deep equality. Maps may have keys in any order. Integer and floating-point types of the same numeric value compare equal (for example, config written as `1` in YAML matches an incoming JSON `1.0`). Hex strings are compared literally — `"0x0"` and `"0x00"` are treated as distinct.
+* Entries are checked in declaration order; the first match wins.
+* Exactly one of `response.result` or `response.error` must be set.
+
+Matched requests skip cache, multiplexer, and upstream selection entirely, and the inbound request `id` is echoed in the response. Hits are counted by the `erpc_network_static_response_served_total` metric.
+
+<Callout type='info'>
+  Static responses apply only to user-facing requests on the network. eRPC's internal state pollers (for block number and finality) continue to query upstreams normally.
+</Callout>
+
 ## Name aliasing
 
 You can define friendly aliases for your networks instead of the /architecture/chainId format. For example, instead of using `/main/evm/1`, you can use `/main/ethereum`:

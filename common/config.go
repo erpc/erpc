@@ -841,7 +841,7 @@ func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 		*UJAlias
 	}{
 		Endpoint: util.RedactEndpoint(u.Endpoint),
-		UJAlias:    (*UJAlias)(u),
+		UJAlias:  (*UJAlias)(u),
 	})
 }
 
@@ -912,8 +912,8 @@ type EvmUpstreamConfig struct {
 	// sub-requests executed concurrently and merged before returning. Zero disables
 	// the feature.
 	TraceFilterAutoSplittingRangeThreshold int64                    `yaml:"traceFilterAutoSplittingRangeThreshold,omitempty" json:"traceFilterAutoSplittingRangeThreshold"`
-	SkipWhenSyncing                    *bool                       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
-	Integrity                          *UpstreamIntegrityConfig    `yaml:"integrity,omitempty" json:"integrity"`
+	SkipWhenSyncing                        *bool                    `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
+	Integrity                              *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 
 	// @deprecated: use blockAvailability bounds instead; kept for config back-compat only
 	NodeType EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
@@ -1559,6 +1559,33 @@ type NetworkConfig struct {
 	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+}
+
+// StaticResponseConfig declares a canned JSON-RPC response for a specific
+// (method, params) pair on a network. When an inbound request matches, the
+// configured response is returned immediately and no upstream is contacted.
+// Useful for chains that deviate from client assumptions (for example, chains
+// whose genesis block is not 0) where probing upstreams would yield errors
+// or inconsistent data.
+type StaticResponseConfig struct {
+	Method   string                    `yaml:"method" json:"method"`
+	Params   []interface{}             `yaml:"params,omitempty" json:"params,omitempty"`
+	Response *StaticResponseBodyConfig `yaml:"response" json:"response"`
+}
+
+// StaticResponseBodyConfig holds the JSON-RPC payload to serve. Exactly one
+// of Result or Error must be set.
+type StaticResponseBodyConfig struct {
+	Result interface{}                `yaml:"result,omitempty" json:"result"`
+	Error  *StaticResponseErrorConfig `yaml:"error,omitempty" json:"error"`
+}
+
+// StaticResponseErrorConfig mirrors a JSON-RPC error object.
+type StaticResponseErrorConfig struct {
+	Code    int         `yaml:"code" json:"code"`
+	Message string      `yaml:"message" json:"message"`
+	Data    interface{} `yaml:"data,omitempty" json:"data"`
 }
 
 func (n *NetworkConfig) MultiplexingEnabled() bool {
@@ -1601,6 +1628,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
 		Alias             string                   `yaml:"alias,omitempty"`
 		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
+		StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
 	}
 
 	var old oldNetworkConfig
@@ -1618,6 +1646,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.DirectiveDefaults = old.DirectiveDefaults
 	n.Alias = old.Alias
 	n.Methods = old.Methods
+	n.StaticResponses = old.StaticResponses
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -1714,10 +1743,10 @@ type EvmNetworkConfig struct {
 	// TraceFilterSplitOnError controls reactive splitting for trace_filter and
 	// arbtrace_filter requests when the upstream returns a range-too-large error.
 	// Nil disables the feature.
-	TraceFilterSplitOnError     *bool               `yaml:"traceFilterSplitOnError,omitempty" json:"traceFilterSplitOnError"`
+	TraceFilterSplitOnError *bool `yaml:"traceFilterSplitOnError,omitempty" json:"traceFilterSplitOnError"`
 	// TraceFilterSplitConcurrency caps in-flight sub-requests when a trace_filter
 	// or arbtrace_filter request is split. Zero falls back to 10.
-	TraceFilterSplitConcurrency int                 `yaml:"traceFilterSplitConcurrency,omitempty" json:"traceFilterSplitConcurrency"`
+	TraceFilterSplitConcurrency int `yaml:"traceFilterSplitConcurrency,omitempty" json:"traceFilterSplitConcurrency"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.

@@ -196,6 +196,12 @@ var (
 		Help:      "Total number of multiplexed requests for a network.",
 	}, []string{"project", "network", "category", "finality", "user", "agent_name"})
 
+	MetricNetworkStaticResponseServedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_static_response_served_total",
+		Help:      "Total number of requests served from a configured static response without contacting any upstream.",
+	}, []string{"project", "network", "category"})
+
 	MetricNetworkHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_hedged_request_total",
@@ -424,7 +430,6 @@ var (
 		Name:      "x402_payment_total",
 		Help:      "Total number of x402 payments processed (verified, settled, rejected).",
 	}, []string{"project", "network", "facilitator", "outcome"})
-
 )
 
 var DefaultHistogramBuckets = []float64{
@@ -448,15 +453,15 @@ var (
 	MetricNetworkEvmGetLogsRangeRequested     *LabeledHistogram
 	MetricNetworkEvmTraceFilterRangeRequested *LabeledHistogram
 	MetricNetworkHedgeDelaySeconds            *LabeledHistogram
-	MetricConsensusResponsesCollected     *LabeledHistogram
-	MetricConsensusAgreementCount         *LabeledHistogram
-	MetricX402FacilitatorRequestDuration  *LabeledHistogram
-	MetricConsensusDuration               *LabeledHistogram
-	MetricCacheSetSuccessDuration         *LabeledHistogram
-	MetricCacheSetErrorDuration           *LabeledHistogram
-	MetricCacheGetSuccessHitDuration      *LabeledHistogram
-	MetricCacheGetSuccessMissDuration     *LabeledHistogram
-	MetricCacheGetErrorDuration           *LabeledHistogram
+	MetricConsensusResponsesCollected         *LabeledHistogram
+	MetricConsensusAgreementCount             *LabeledHistogram
+	MetricX402FacilitatorRequestDuration      *LabeledHistogram
+	MetricConsensusDuration                   *LabeledHistogram
+	MetricCacheSetSuccessDuration             *LabeledHistogram
+	MetricCacheSetErrorDuration               *LabeledHistogram
+	MetricCacheGetSuccessHitDuration          *LabeledHistogram
+	MetricCacheGetSuccessMissDuration         *LabeledHistogram
+	MetricCacheGetErrorDuration               *LabeledHistogram
 )
 
 // ScoreMetricsMode controls how score metrics are emitted.

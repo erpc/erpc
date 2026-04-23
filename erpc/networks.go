@@ -304,6 +304,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		lg.Debug().Msgf("forwarding request for network")
 	}
 
+	// Static response short-circuit. Checked after method extraction and before
+	// the multiplexer/cache/upstream-selection path so matching requests never
+	// touch any upstream. See StaticResponseConfig for match semantics.
+	if len(n.cfg.StaticResponses) > 0 {
+		if resp, ok := n.tryServeStaticResponse(ctx, &lg, req, method); ok {
+			forwardSpan.SetAttributes(attribute.Bool("static_response.hit", true))
+			return resp, nil
+		}
+	}
+
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer (follower path)
