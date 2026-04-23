@@ -157,6 +157,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		// Then apply directive-based validation
 		rs, validationErr = upstreamPostForward_eth_getBlockByNumber(ctx, n, u, rq, rs, re)
 
+	case "trace_filter", "arbtrace_filter":
+		rs, validationErr = upstreamPostForward_trace_filter(ctx, n, u, rq, rs, re)
+
 	default:
 		// For other methods, only apply the mark empty check if configured
 		if shouldMarkEmpty {
