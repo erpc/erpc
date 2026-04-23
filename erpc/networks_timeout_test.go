@@ -504,21 +504,66 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 			Duration: common.Duration(100 * time.Millisecond),
 		})
 
-		before := timeoutFiredCounterValue(t, "upstream") + timeoutFiredCounterValue(t, "network")
+		upstreamBefore := timeoutFiredCounterValue(t, "upstream")
+		networkBefore := timeoutFiredCounterValue(t, "network")
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
 		_, err := network.Forward(ctx, req)
 		require.Error(t, err)
 
-		upstreamAfter := timeoutFiredCounterValue(t, "upstream")
-		networkAfter := timeoutFiredCounterValue(t, "network")
+		// Split assertions: each invariant checked independently so a regression
+		// in one direction can't pass by compensating in the other.
+		assert.Equal(t, upstreamBefore+1, timeoutFiredCounterValue(t, "upstream"),
+			"upstream-scope counter must fire exactly once for an upstream-configured timeout")
+		assert.Equal(t, networkBefore, timeoutFiredCounterValue(t, "network"),
+			"network-scope counter must not increment when the timeout was already classified at upstream scope")
+	})
 
-		// Upstream-scope should have fired exactly once; network-scope must not
-		// have fired (the guard suppresses the already-classified timeout).
-		assert.Greater(t, upstreamAfter, uint64(0), "upstream timeout counter must fire")
-		assert.Equal(t, before, networkAfter+upstreamAfter-1,
-			"network-scope counter must not double-count an upstream-originated timeout; before=%d upstream=%d network=%d",
-			before, upstreamAfter, networkAfter,
-		)
+	t.Run("NetworkOnlyTimeout_FiresAtNetworkScopeNotUpstream", func(t *testing.T) {
+		// Regression lock: when only the network scope has a timeout policy
+		// and the upstream has none, the lifecycle sentinel propagates via
+		// ctx inheritance into the upstream's error chain. Both the counter
+		// and error classification at upstream scope must be guarded on
+		// `failsafeExecutor.timeout != nil` so the scope attribution stays
+		// truthful — the timeout was the NETWORK's policy firing, not the
+		// upstream's.
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(2 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1111",
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Timeout at NETWORK only; upstream has no timeout.
+		network := setupTestNetworkWithTimeoutPolicy(t, ctx, &common.TimeoutPolicyConfig{
+			Duration: common.Duration(100 * time.Millisecond),
+		})
+
+		upstreamBefore := timeoutFiredCounterValue(t, "upstream")
+		networkBefore := timeoutFiredCounterValue(t, "network")
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
+		_, err := network.Forward(ctx, req)
+		require.Error(t, err)
+
+		assert.Equal(t, upstreamBefore, timeoutFiredCounterValue(t, "upstream"),
+			"upstream counter must not fire when upstream has no timeout policy (sentinel is inherited from network scope)")
+		assert.Equal(t, networkBefore+1, timeoutFiredCounterValue(t, "network"),
+			"network-scope counter must fire exactly once for a network-configured timeout")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded),
+			"error should classify as ErrFailsafeTimeoutExceeded, got: %v", err)
 	})
 }
 

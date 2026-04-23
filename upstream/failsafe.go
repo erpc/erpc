@@ -903,7 +903,14 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	return p, nil
 }
 
-func TranslateFailsafeError(scope common.Scope, upstreamId string, method string, execErr error, startTime *time.Time) error {
+// TranslateFailsafeError maps internal failsafe-go errors and context-cancellation
+// sentinels to erpc's public StandardError types.
+//
+// scopeOwnsTimeout must be true only when THIS scope actually configured a
+// timeout policy. A parent scope's ErrDynamicTimeoutExceeded sentinel leaks
+// into child contexts via inheritance, and without this guard the child scope
+// would re-classify it as if its own policy had fired.
+func TranslateFailsafeError(scope common.Scope, upstreamId string, method string, execErr error, startTime *time.Time, scopeOwnsTimeout bool) error {
 	var err error
 	var retryExceededErr retrypolicy.ExceededError
 
@@ -922,7 +929,7 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 		}
 		var translatedCause error
 		if ler != nil {
-			translatedCause = TranslateFailsafeError(scope, "", "", ler, startTime)
+			translatedCause = TranslateFailsafeError(scope, "", "", ler, startTime, scopeOwnsTimeout)
 		}
 		if exr, ok := translatedCause.(*common.ErrUpstreamsExhausted); ok {
 			// In this case we already have a grouping of all errors encountered via upstreams,
@@ -938,11 +945,14 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 				err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
 			}
 		}
-	} else if errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+	} else if scopeOwnsTimeout && errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
 		// Timeout-policy sentinel takes precedence over StandardError so that a
 		// timeout wrapped as ErrEndpointTransportFailure is still classified as a
 		// timeout. The sentinel is only set by our own context.WithTimeoutCause,
-		// so it never picks up parent-context deadlines.
+		// so it never picks up parent-context deadlines. The scopeOwnsTimeout
+		// guard ensures a parent scope's sentinel, inherited via ctx propagation,
+		// is NOT re-classified here as a child-scope timeout — it must flow up
+		// to the scope whose policy actually fired.
 		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
 	} else if serr, ok := execErr.(common.StandardError); ok {
 		err = serr

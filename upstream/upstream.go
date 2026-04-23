@@ -677,7 +677,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					string(common.ScopeUpstream),
 				).Inc()
 			}
-			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
+			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime, failsafeExecutor.timeout != nil)
 		}
 
 		return resp, nil

@@ -752,17 +752,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if execErr != nil {
 		// When the lifecycle ctx fires, failsafe may return plain context.DeadlineExceeded
-		// with no sentinel in the Unwrap chain. Substitute the ctx cause so
-		// TranslateFailsafeError can classify it as ErrFailsafeTimeoutExceeded.
+		// with no sentinel in the Unwrap chain. Substitute only when the ctx cause
+		// is OUR sentinel — accepting any non-DeadlineExceeded cause would leak
+		// parent-scope causes (e.g. http_timeout.go's ErrHandlerTimeout) through
+		// TranslateFailsafeError unclassified.
 		if _, ok := execErr.(common.StandardError); !ok && errors.Is(execErr, context.DeadlineExceeded) {
-			if cause := context.Cause(ectx); cause != nil && !errors.Is(cause, context.DeadlineExceeded) {
+			if cause := context.Cause(ectx); errors.Is(cause, common.ErrDynamicTimeoutExceeded) {
 				execErr = cause
 			}
 		}
 		// Guard on HasErrorCode so upstream-scope timeouts that already incremented
 		// the counter with scope=upstream do not double-count at scope=network when
 		// they bubble up wrapped as ErrFailsafeTimeoutExceeded.
-		if errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+		if failsafeExecutor.timeout != nil && errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
 			finality := req.Finality(ctx)
 			telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
 				n.projectId,
@@ -772,7 +774,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				string(common.ScopeNetwork),
 			).Inc()
 		}
-		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
+		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime, failsafeExecutor.timeout != nil)
 		// Don't override consensus results with last valid response from individual upstreams
 		// For example if 1 upstream gives empty response another 3 give "reverted" error,
 		// we should still return reverted error, even though there was an empty response before.
