@@ -667,7 +667,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 		if execErr != nil {
 			common.SetTraceSpanError(span, execErr)
-			if errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
+			if failsafeExecutor.timeout != nil && errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
 				finality := nrq.Finality(ctx)
 				telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
 					u.ProjectId,
