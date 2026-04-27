@@ -60,14 +60,17 @@ type SolanaStatePoller struct {
 
 	healthy            atomic.Bool
 	shredInsertLag     atomic.Int64 // maxShredInsertSlot − processedSlot; 0 = unknown
-	debounceInterval   time.Duration
-	lastPollTime       time.Time
-	pollMu             sync.Mutex
+	debounceInterval time.Duration
+	lastPollTime     time.Time
+	pollMu           sync.Mutex
 
-	skipFinalizedCheck bool
-	finalizedFailCount int
-	latestFailCount    int
-	healthFailCount    int
+	// These counters are accessed from the per-poll fan-out goroutines after
+	// pollMu is released, so they must be atomic. Bootstrap's initial
+	// synchronous Poll() can race with the ticker-driven Poll() goroutine.
+	skipFinalizedCheck atomic.Bool
+	finalizedFailCount atomic.Int32
+	latestFailCount    atomic.Int32
+	healthFailCount    atomic.Int32
 }
 
 // NewSolanaStatePoller creates a new poller. latestSlotVar and finalizedSlotVar
@@ -182,7 +185,8 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 		s, e := p.PollProcessedSlot(ctx)
 		latestCh <- slotResult{s, e}
 	}()
-	if !p.skipFinalizedCheck {
+	skipFinalized := p.skipFinalizedCheck.Load()
+	if !skipFinalized {
 		go func() {
 			s, e := p.PollFinalizedSlot(ctx)
 			finalizedCh <- slotResult{s, e}
@@ -197,33 +201,33 @@ func (p *SolanaStatePoller) Poll(ctx context.Context) error {
 
 	healthErr := <-healthErrCh
 	if healthErr != nil {
-		p.healthFailCount++
+		p.healthFailCount.Add(1)
 		p.logger.Debug().Err(healthErr).Msg("solana getHealth poll failed")
 	} else {
-		p.healthFailCount = 0
+		p.healthFailCount.Store(0)
 	}
 
 	latestRes := <-latestCh
 	if latestRes.err != nil {
-		p.latestFailCount++
+		p.latestFailCount.Add(1)
 		p.logger.Debug().Err(latestRes.err).Msg("failed to poll processed slot")
 	} else {
-		p.latestFailCount = 0
+		p.latestFailCount.Store(0)
 		p.SuggestLatestSlot(latestRes.slot)
 	}
 
-	if !p.skipFinalizedCheck {
+	if !skipFinalized {
 		fRes := <-finalizedCh
 		if fRes.err != nil {
-			p.finalizedFailCount++
-			if p.finalizedFailCount >= 5 {
+			n := p.finalizedFailCount.Add(1)
+			if n >= 5 {
 				p.logger.Warn().
 					Err(fRes.err).
 					Msg("disabling finalized slot polling after 5 consecutive failures")
-				p.skipFinalizedCheck = true
+				p.skipFinalizedCheck.Store(true)
 			}
 		} else {
-			p.finalizedFailCount = 0
+			p.finalizedFailCount.Store(0)
 			p.SuggestFinalizedSlot(fRes.slot)
 		}
 	}
