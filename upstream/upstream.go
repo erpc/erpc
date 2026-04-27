@@ -24,6 +24,7 @@ import (
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -667,7 +668,14 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 
 		if execErr != nil {
 			common.SetTraceSpanError(span, execErr)
-			if failsafeExecutor.timeout != nil && errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
+			// Mirror TranslateFailsafeError's retry-exhausted-wins ordering: if the
+			// retry policy exhausted on a timeout-tail attempt, the user-visible
+			// classification is ErrFailsafeRetryExceeded — counting that as a
+			// timeout fire would contradict the metric's own description.
+			var retryExceededErr retrypolicy.ExceededError
+			if failsafeExecutor.timeout != nil &&
+				!errors.As(execErr, &retryExceededErr) &&
+				errors.Is(execErr, common.ErrDynamicTimeoutExceeded) {
 				finality := nrq.Finality(ctx)
 				telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
 					u.ProjectId,

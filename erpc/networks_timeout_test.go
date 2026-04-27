@@ -459,11 +459,14 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 			&common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(10 * time.Millisecond)},
 		)
 
+		upstreamBefore := timeoutFiredCounterValue(t, "upstream")
+		networkBefore := timeoutFiredCounterValue(t, "network")
+
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x123","latest"]}`))
 		_, err := network.Forward(ctx, req)
 
 		require.Error(t, err)
-		// The key invariant: retry-exhausted must NOT be misclassified as
+		// Invariant 1: retry-exhausted must NOT be misclassified as
 		// FailsafeTimeoutExceeded at the top level, even though the last
 		// attempt's underlying cause is a timeout.
 		assert.False(t,
@@ -471,6 +474,14 @@ func TestNetwork_TimeoutPolicy(t *testing.T) {
 			"retry exhaustion with timeout-on-last-attempt must not surface as FailsafeTimeoutExceeded; got top-level code %s in chain: %v",
 			topLevelErrorCode(err), err,
 		)
+		// Invariant 2: the timeout-fired counter must NOT increment when retry
+		// is the user-visible classification. errors.Is walks the Unwrap chain
+		// and would match the sentinel inside retrypolicy.ExceededError.LastError
+		// without the errors.As guard.
+		assert.Equal(t, upstreamBefore, timeoutFiredCounterValue(t, "upstream"),
+			"upstream timeout counter must not fire on retry-exhausted-with-timeout-tail")
+		assert.Equal(t, networkBefore, timeoutFiredCounterValue(t, "network"),
+			"network timeout counter must not fire on retry-exhausted-with-timeout-tail")
 	})
 
 	t.Run("UpstreamTimeout_DoesNotDoubleCountNetworkFiredCounter", func(t *testing.T) {

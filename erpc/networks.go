@@ -18,6 +18,7 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -761,10 +762,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				execErr = cause
 			}
 		}
-		// Guard on HasErrorCode so upstream-scope timeouts that already incremented
-		// the counter with scope=upstream do not double-count at scope=network when
-		// they bubble up wrapped as ErrFailsafeTimeoutExceeded.
-		if failsafeExecutor.timeout != nil && errors.Is(execErr, common.ErrDynamicTimeoutExceeded) && !common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+		// Three guards stacked, each closing a distinct misattribution:
+		//   - failsafeExecutor.timeout != nil: parent-scope sentinel inherited
+		//     via ctx propagation must not credit a scope that didn't own a policy.
+		//   - !errors.As(retryExceededErr): mirror TranslateFailsafeError's
+		//     retry-exhausted-wins ordering so retry-tail timeouts are reported
+		//     as retry exhaustion (matching the user-visible classification).
+		//   - !HasErrorCode(ErrCodeFailsafeTimeoutExceeded): an upstream-scope
+		//     timeout already incremented at scope=upstream — don't double-count
+		//     when it bubbles up here.
+		var retryExceededErr retrypolicy.ExceededError
+		if failsafeExecutor.timeout != nil &&
+			!errors.As(execErr, &retryExceededErr) &&
+			errors.Is(execErr, common.ErrDynamicTimeoutExceeded) &&
+			!common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
 			finality := req.Finality(ctx)
 			telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
 				n.projectId,
