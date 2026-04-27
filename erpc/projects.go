@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
-	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -253,29 +252,21 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	// Project-level pre-forward: cache-affecting, upstream-agnostic short-circuits.
-	// Dispatch by architecture so each architecture can independently handle early exits.
-	switch network.cfg.Architecture {
-	case common.ArchitectureEvm:
-		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
-			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
-		}
-	case common.ArchitectureSolana:
-		if handled, resp, err := solana.HandleProjectPreForward(ctx, network, nq); handled {
-			return solana.HandleNetworkPostForward(ctx, network, nq, resp, err)
-		}
+	h := common.GetArchitectureHandler(network.cfg.Architecture)
+	if h == nil {
+		// Unknown architecture: forward with no project- or network-level hooks.
+		return network.Forward(ctx, nq)
 	}
 
-	// Normal forward path — also dispatched by architecture for post-forward.
-	resp, err := network.Forward(ctx, nq)
-	switch network.cfg.Architecture {
-	case common.ArchitectureEvm:
-		return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
-	case common.ArchitectureSolana:
-		return solana.HandleNetworkPostForward(ctx, network, nq, resp, err)
-	default:
-		return resp, err
+	// Project-level pre-forward: cache-affecting, upstream-agnostic short-circuit.
+	if handled, resp, err := h.HandleProjectPreForward(ctx, network, nq); handled {
+		return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
 	}
+
+	// Normal forward path; the network post-forward hook always runs so the
+	// architecture can decorate, validate, or translate the result.
+	resp, err := network.Forward(ctx, nq)
+	return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
 }
 
 func (p *PreparedProject) AcquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {

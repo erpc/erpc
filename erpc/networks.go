@@ -420,16 +420,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
-	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic.
-	// Dispatch by architecture to avoid EVM hooks firing on Solana requests.
+	// Network-level pre-forward (executed after upstream selection) for
+	// upstream-aware logic. Dispatched via the per-architecture handler so
+	// EVM hooks don't fire on Solana requests (and vice versa).
 	var networkPreHandled bool
 	var networkPreResp *common.NormalizedResponse
 	var networkPreErr error
-	switch n.cfg.Architecture {
-	case common.ArchitectureEvm:
-		networkPreHandled, networkPreResp, networkPreErr = evm.HandleNetworkPreForward(ctx, n, upsList, req)
-	case common.ArchitectureSolana:
-		networkPreHandled, networkPreResp, networkPreErr = solana.HandleNetworkPreForward(ctx, n, upsList, req)
+	if h := common.GetArchitectureHandler(n.cfg.Architecture); h != nil {
+		networkPreHandled, networkPreResp, networkPreErr = h.HandleNetworkPreForward(ctx, n, upsList, req)
 	}
 	if networkPreHandled {
 		if networkPreErr != nil {
@@ -947,32 +945,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 }
 
 func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
-	switch n.Architecture() {
-	case common.ArchitectureEvm:
-		jsonRpcReq, err := nr.JsonRpcRequest(ctx)
-		if err != nil {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorParseException,
-				"failed to unmarshal json-rpc request",
-				err,
-				nil,
-			)
-		}
-		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
-	case common.ArchitectureSolana:
-		jsonRpcReq, err := nr.JsonRpcRequest(ctx)
-		if err != nil {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorParseException,
-				"failed to unmarshal solana json-rpc request",
-				err,
-				nil,
-			)
-		}
-		solana.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
-	default:
+	h := common.GetArchitectureHandler(n.Architecture())
+	if h == nil {
 		return common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorServerSideException,
@@ -982,6 +956,17 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 		)
 	}
 
+	jsonRpcReq, err := nr.JsonRpcRequest(ctx)
+	if err != nil {
+		return common.NewErrJsonRpcExceptionInternal(
+			0,
+			common.JsonRpcErrorParseException,
+			"failed to unmarshal json-rpc request",
+			err,
+			nil,
+		)
+	}
+	h.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
 	return nil
 }
 
@@ -1104,25 +1089,16 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead bool) (*common.NormalizedResponse, error) {
-	switch n.cfg.Architecture {
-	case common.ArchitectureEvm:
-		if handled, resp, err := evm.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
-			return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
-		}
-		// If not handled, forward and run EVM post-hook
-		resp, err := u.Forward(execSpanCtx, req, false)
-		return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
-	case common.ArchitectureSolana:
-		if handled, resp, err := solana.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
-			return solana.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
-		}
-		resp, err := u.Forward(execSpanCtx, req, false)
-		return solana.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
-	default:
-		// Unknown architecture: just forward with no post-processing
-		resp, err := u.Forward(execSpanCtx, req, false)
-		return resp, err
+	h := common.GetArchitectureHandler(n.cfg.Architecture)
+	if h == nil {
+		// Unknown architecture: just forward with no post-processing.
+		return u.Forward(execSpanCtx, req, false)
 	}
+	if handled, resp, err := h.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
+		return h.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	}
+	resp, err := u.Forward(execSpanCtx, req, false)
+	return h.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
 // resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability
