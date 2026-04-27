@@ -1555,13 +1555,6 @@ type MethodsConfig struct {
 type SolanaNetworkConfig struct {
 	// Cluster is the Solana cluster: "mainnet-beta", "devnet", or "testnet".
 	Cluster string `yaml:"cluster" json:"cluster"`
-
-	// FallbackFinalitySlotDistance is slots behind "processed" considered finalized
-	// when the upstream doesn't return a finalized slot. Default: 32.
-	FallbackFinalitySlotDistance int64 `yaml:"fallbackFinalitySlotDistance,omitempty" json:"fallbackFinalitySlotDistance,omitempty"`
-
-	// StatePollerDebounce controls minimum interval between slot polls. Default: 400ms.
-	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce,omitempty"`
 }
 
 // SolanaUpstreamConfig holds Solana-specific upstream configuration.
