@@ -1147,6 +1147,15 @@ type JsonRpcRequest struct {
 	Method  string        `json:"method"`
 	Params  []interface{} `json:"params"`
 
+	// responseIDIsNull is true when the client explicitly sent "id":null in
+	// the request. JSON-RPC 2.0 distinguishes "no id" (a notification — server
+	// must not respond) from "id":null (a regular request whose response id
+	// must be null). erpc internally assigns a random ID to every request so
+	// the multiplexing layer can correlate concurrent calls; this flag lets
+	// the response-side rewrite restore the client's original null instead
+	// of leaking the internal random ID back to the caller.
+	responseIDIsNull bool
+
 	cacheHash atomic.Value
 }
 
@@ -1250,9 +1259,18 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			r.ID = int64(v)
 		case string:
 			r.ID = v
+		case nil:
+			// Client explicitly sent "id":null. Per JSON-RPC 2.0 the response
+			// id must echo null. Mark the request so the response-side rewrite
+			// can restore null instead of returning the random internal ID.
+			r.responseIDIsNull = true
 		}
 	}
 
+	// Internal ID is required for the multiplexing layer to correlate
+	// concurrent calls — generate one when missing or empty. This is purely
+	// internal; the response-side rewrite restores the client's original ID
+	// (including null) before returning to the caller.
 	if r.ID == nil {
 		r.ID = util.RandomID()
 	} else {
@@ -1265,6 +1283,19 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// ResponseIDIsNull reports whether the client explicitly sent "id":null and
+// therefore expects the response id to be null. Internal ID assignment for
+// multiplexing happens regardless; this flag only governs the response-side
+// rewrite (see Network.normalizeResponse).
+func (r *JsonRpcRequest) ResponseIDIsNull() bool {
+	if r == nil {
+		return false
+	}
+	r.RLock()
+	defer r.RUnlock()
+	return r.responseIDIsNull
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {

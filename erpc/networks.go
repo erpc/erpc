@@ -1549,13 +1549,22 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 	// toward upstreams, and must apply to every JSON-RPC architecture — not just
 	// EVM — so non-EVM clients (Solana and future architectures) aren't left with
 	// mismatched response IDs.
+	//
+	// Special case: the client may have explicitly sent "id":null (a valid
+	// JSON-RPC 2.0 request). erpc internally assigns a random ID for
+	// multiplexing correlation; here we restore the client's null so the
+	// caller doesn't see a leaked internal ID.
 	if resp != nil {
 		if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
 			jrq, err := req.JsonRpcRequest(ctx)
 			if err != nil {
 				return err
 			}
-			if err := jrr.SetID(jrq.ID); err != nil {
+			var idToSet interface{} = jrq.ID
+			if jrq.ResponseIDIsNull() {
+				idToSet = nil
+			}
+			if err := jrr.SetID(idToSet); err != nil {
 				return err
 			}
 		}
