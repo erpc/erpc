@@ -209,7 +209,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts:            4,
@@ -333,7 +333,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{MaxAttempts: 3}, // no EmptyResultMaxAttempts set
 		}
@@ -453,7 +453,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultMaxAttempts: 2}}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
@@ -547,7 +547,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 2}}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
@@ -633,7 +633,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 5, EmptyResultMaxAttempts: 4, EmptyResultAccept: []string{"eth_getBalance"}}}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{}}, &log.Logger)
 		if err != nil {
@@ -729,7 +729,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts:      2,
@@ -838,7 +838,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts:      3,
@@ -941,7 +941,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -1153,7 +1153,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -1281,7 +1281,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -1420,7 +1420,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		upsFsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -1587,7 +1587,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		upsFsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -1756,7 +1756,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -1949,7 +1949,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge:   nil,
 			Timeout: nil,
@@ -2167,7 +2167,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -2360,7 +2360,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -2586,7 +2586,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Set up the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 		vr := thirdparty.NewVendorsRegistry()
 		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -2719,7 +2719,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -2928,7 +2928,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -3119,7 +3119,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -3303,7 +3303,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -3506,7 +3506,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
@@ -3736,7 +3736,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -3928,7 +3928,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3, // Allow up to 3 retry attempts
@@ -4117,7 +4117,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -4303,7 +4303,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -4433,7 +4433,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -4567,7 +4567,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -4740,7 +4740,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -4871,7 +4871,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -5121,7 +5121,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -5255,7 +5255,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4,
@@ -5379,7 +5379,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
@@ -5518,7 +5518,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: common.Duration(1 * time.Second),
@@ -5651,7 +5651,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(200 * time.Millisecond),
@@ -5805,7 +5805,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(100 * time.Millisecond),
@@ -5957,7 +5957,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    common.Duration(100 * time.Millisecond),
@@ -6114,7 +6114,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
@@ -6244,7 +6244,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfgNetwork := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 1,
@@ -6391,7 +6391,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -6544,7 +6544,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -6679,7 +6679,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -6825,7 +6825,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -6954,7 +6954,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -7107,7 +7107,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,

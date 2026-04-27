@@ -31,17 +31,17 @@ type ClientRegistry struct {
 	projectId         string
 	clients           sync.Map
 	proxyPoolRegistry *ProxyPoolRegistry
-	evmExtractor      common.JsonRpcErrorExtractor
 }
 
-func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry, evmExtractor common.JsonRpcErrorExtractor) *ClientRegistry {
-	cr := &ClientRegistry{
+// NewClientRegistry constructs a ClientRegistry. Architecture-specific error
+// extractors are owned by each Upstream (see common.Upstream.ErrorExtractor),
+// so the registry itself stays architecture-agnostic.
+func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry) *ClientRegistry {
+	return &ClientRegistry{
 		logger:            logger,
 		projectId:         projectId,
 		proxyPoolRegistry: proxyPoolRegistry,
-		evmExtractor:      evmExtractor,
 	}
-	return cr
 }
 
 func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {

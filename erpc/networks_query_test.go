@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -25,7 +24,7 @@ import (
 func setupQueryTestNetwork(t *testing.T, ctx context.Context, ntwCfg *common.NetworkConfig) (*Network, *upstream.UpstreamsRegistry) {
 	t.Helper()
 
-	clr := clients.NewClientRegistry(&log.Logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+	clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 	rlr, err := upstream.NewRateLimitersRegistry(ctx, &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)
