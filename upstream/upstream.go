@@ -860,18 +860,24 @@ func (u *Upstream) solanaVerifyGenesisHash(ctx context.Context, cluster string) 
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
-		return common.NewErrUpstreamClientInitialization(
-			&common.BaseError{Code: "ErrSolanaGenesisHashParseFailed", Cause: err}, u)
+		// JSON parse failure on a getGenesisHash response is almost always
+		// permanent — the endpoint is misconfigured (wrong URL, gateway
+		// returning HTML, missing auth that triggered an auth wall). Wrap
+		// fatal so the Initializer doesn't burn 30s/cycle retrying it.
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashParseFailed", Cause: err}, u))
 	}
 
 	// Detect non-JSON-RPC responses (e.g. HTML error pages, gateway auth walls).
-	// If both result and error are absent the upstream returned a non-RPC body.
+	// If both result and error are absent the upstream returned a non-RPC body —
+	// strong signal of misconfiguration (wrong endpoint URL or auth wall);
+	// fatal so the Initializer fails fast instead of retrying a hopeless task.
 	if jrr.Error == nil && len(jrr.GetResultBytes()) == 0 {
-		return common.NewErrUpstreamClientInitialization(
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
 			&common.BaseError{
 				Code:  "ErrSolanaGenesisHashFetchFailed",
 				Cause: fmt.Errorf("upstream returned non-JSON-RPC body for getGenesisHash (check auth/endpoint URL)"),
-			}, u)
+			}, u))
 	}
 
 	if jrr.Error != nil {
