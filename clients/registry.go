@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
@@ -83,7 +82,11 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 		once.Do(func() {
 			lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
 			switch cfg.Type {
-			case common.UpstreamTypeEvm:
+			case common.UpstreamTypeEvm, common.UpstreamTypeSolana:
+				// JSON-RPC over HTTP/HTTPS for any architecture that supports it.
+				// The architecture-specific error extractor is owned by the
+				// upstream itself (see common.Upstream.ErrorExtractor) so this
+				// layer stays architecture-agnostic.
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
 					newClient, err = NewGenericHttpJsonRpcClient(
 						appCtx,
@@ -93,7 +96,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						parsedUrl,
 						cfg.JsonRpc,
 						proxyPool,
-						manager.evmExtractor,
+						ups.ErrorExtractor(),
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
@@ -101,41 +104,23 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
 				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
-					newClient, err = NewGrpcBdsClient(
-						appCtx,
-						&lg,
-						manager.projectId,
-						ups,
-						parsedUrl,
-					)
-					if err != nil {
-						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
+					if cfg.Type != common.UpstreamTypeEvm {
+						clientErr = fmt.Errorf("grpc scheme is not supported for upstream type %v: %v", cfg.Type, cfg.Id)
+					} else {
+						newClient, err = NewGrpcBdsClient(
+							appCtx,
+							&lg,
+							manager.projectId,
+							ups,
+							parsedUrl,
+						)
+						if err != nil {
+							clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
+						}
 					}
 				} else {
 					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
 				}
-
-
-		case common.UpstreamTypeSolana:
-			// Solana JSON-RPC runs over standard HTTP/HTTPS — reuse the generic client
-			// with the Solana-specific error extractor that maps -32005/-32004/-32007.
-			if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-				newClient, err = NewGenericHttpJsonRpcClient(
-					appCtx,
-					&lg,
-					manager.projectId,
-					ups,
-					parsedUrl,
-					cfg.JsonRpc,
-					proxyPool,
-					solana.NewJsonRpcErrorExtractor(),
-				)
-				if err != nil {
-					clientErr = fmt.Errorf("failed to create HTTP client for solana upstream: %v", cfg.Id)
-				}
-			} else {
-				clientErr = fmt.Errorf("unsupported endpoint scheme %q for solana upstream: %v", parsedUrl.Scheme, cfg.Id)
-			}
 
 			default:
 				clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)

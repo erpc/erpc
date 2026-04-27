@@ -44,6 +44,14 @@ type Upstream interface {
 	Cordon(method string, reason string)
 	Uncordon(method string, reason string)
 	IgnoreMethod(method string)
+
+	// ErrorExtractor returns the architecture-specific JSON-RPC error extractor
+	// for this upstream. Each architecture knows its own error code taxonomy
+	// (EVM, Solana, etc.); centralising the lookup here keeps the clients/
+	// transport layer free of architecture imports — it just asks the upstream
+	// what to use. Implementations should return nil only for upstream types
+	// that do not require error extraction (e.g. raw gRPC clients).
+	ErrorExtractor() JsonRpcErrorExtractor
 }
 
 // UniqueUpstreamKey returns a unique hash for an upstream.

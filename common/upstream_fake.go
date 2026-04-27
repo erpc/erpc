@@ -95,6 +95,10 @@ func (u *FakeUpstream) Vendor() Vendor {
 	return nil
 }
 
+func (u *FakeUpstream) ErrorExtractor() JsonRpcErrorExtractor {
+	return nil
+}
+
 func (u *FakeUpstream) Tracker() HealthTracker {
 	return u.tracker
 }

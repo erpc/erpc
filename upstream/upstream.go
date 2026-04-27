@@ -276,6 +276,24 @@ func (u *Upstream) Vendor() common.Vendor {
 	return u.vendor
 }
 
+// ErrorExtractor returns the architecture-specific JSON-RPC error extractor
+// for this upstream. Centralising the lookup here keeps the clients/ transport
+// layer free of architecture imports: it just asks the upstream what to use.
+// New architectures register themselves by adding a case below — clients/
+// is never touched.
+func (u *Upstream) ErrorExtractor() common.JsonRpcErrorExtractor {
+	if u == nil {
+		return nil
+	}
+	switch u.config.Type {
+	case common.UpstreamTypeEvm:
+		return evm.NewJsonRpcErrorExtractor()
+	case common.UpstreamTypeSolana:
+		return solana.NewJsonRpcErrorExtractor()
+	}
+	return nil
+}
+
 func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	// TODO Can we eliminate this circular dependency of upstream state poller <> network? e.g. by requiring network ID everywhere?
 	if cfg == nil {

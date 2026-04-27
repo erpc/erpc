@@ -144,6 +144,7 @@ func (u *stubUpstream) Vendor() common.Vendor                       { return nil
 func (u *stubUpstream) Cordon(_ string, _ string)                   {}
 func (u *stubUpstream) Uncordon(_ string, _ string)                 {}
 func (u *stubUpstream) IgnoreMethod(_ string)                       {}
+func (u *stubUpstream) ErrorExtractor() common.JsonRpcErrorExtractor { return nil }
 
 // ── Gap 1+2: Tracker integration via OnValue callbacks ───────────────────────
 
