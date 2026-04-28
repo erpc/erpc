@@ -1493,6 +1493,28 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// "Method not found / not supported by upstream" must surface as the
+	// JSON-RPC standard -32601, not the generic -32603 fallthrough below.
+	// This only fires for callers that wrap ErrEndpointUnsupported with a
+	// plain (non-ErrJsonRpcExceptionInternal) cause; the early return at
+	// the top of this function already preserves codes when the chain
+	// already contains an ErrJsonRpcExceptionInternal (the EVM normalizer
+	// path), so EVM behavior is unchanged.
+	if HasErrorCode(err, ErrCodeEndpointUnsupported) {
+		var msg = "method not supported by upstream"
+		if se, ok := err.(StandardError); ok {
+			msg = se.DeepestMessage()
+		} else {
+			msg = err.Error()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnsupportedException,
+			msg,
+			err,
+			nil,
+		)
+	}
 	if HasErrorCode(err, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
