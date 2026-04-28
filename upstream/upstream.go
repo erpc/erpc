@@ -1367,27 +1367,14 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	// If block can be determined from request, enforce configured bounds early
-	if u.config.Evm != nil {
-		_, bn, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req)
-		if ebn == nil && bn > 0 {
-			minBound, maxBound := u.resolveAvailabilityBounds()
-			if minBound != math.MinInt64 && bn < minBound {
-				return common.NewErrUpstreamRequestSkipped(
-					fmt.Errorf("block below lower availability bound: %d < %d", bn, minBound),
-					u.config.Id,
-				), true
-			}
-			if maxBound != math.MaxInt64 && bn > maxBound {
-				return common.NewErrUpstreamRequestSkipped(
-					fmt.Errorf("block above upper availability bound: %d > %d", bn, maxBound),
-					u.config.Id,
-				), true
-			}
-		}
-	}
-
-	// Upper-bound enforcement against per-upstream latest/finality is handled at network level.
+	// Block availability bound enforcement (lower/upper) is the responsibility of
+	// the network-level smart path, Network.checkUpstreamBlockAvailability, which
+	// is gated on EnforceBlockAvailability, classifies head-of-chain races within
+	// MaxRetryableBlockDistance as retryable, and routes through handleBlockSkip
+	// so the failsafe retry policy can apply blockUnavailableDelay. Keeping that
+	// logic in a single place avoids the duplicate-error-class footgun where an
+	// early upstream-level check would short-circuit the retryable classification
+	// and produce a non-retryable ErrUpstreamRequestSkipped.
 
 	return nil, false
 }

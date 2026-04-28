@@ -273,7 +273,10 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
-		// evm/eth_getBlockByNumber.go hook already enforces lower/upper-bound against per-upstream latest/finality, so we don't need to enforce it here.
+		// The post-forward hook in evm/eth_getBlockByNumber.go only enforces "latest"/"finalized"
+		// tag handling; it does not gate numeric block requests against per-upstream bounds.
+		// Numeric blocks beyond an upstream's known head will be forwarded and may return
+		// missing-data, which the failsafe retry policy can space out via emptyResultDelay.
 		EnforceBlockAvailability: util.BoolPtr(false),
 		// Don't interpolate "latest"/"finalized" tags for this method - it should fetch actual
 		// current state from upstream. This method is the source of truth for block tags,
