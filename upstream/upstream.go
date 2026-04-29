@@ -1367,14 +1367,15 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
-	// Block availability bound enforcement (lower/upper) is the responsibility of
-	// the network-level smart path, Network.checkUpstreamBlockAvailability, which
-	// is gated on EnforceBlockAvailability, classifies head-of-chain races within
-	// MaxRetryableBlockDistance as retryable, and routes through handleBlockSkip
-	// so the failsafe retry policy can apply blockUnavailableDelay. Keeping that
-	// logic in a single place avoids the duplicate-error-class footgun where an
-	// early upstream-level check would short-circuit the retryable classification
-	// and produce a non-retryable ErrUpstreamRequestSkipped.
+	// Block availability bound enforcement (lower/upper) lives in a single place:
+	// Network.checkUpstreamBlockAvailability. It runs whenever the upstream has
+	// BlockAvailability bounds configured (or EnforceBlockAvailability resolves
+	// to true), classifies head-of-chain races within MaxRetryableBlockDistance
+	// as retryable, and routes through handleBlockSkip so the failsafe retry
+	// policy can apply blockUnavailableDelay. Centralising it there avoids the
+	// duplicate-error-class footgun where an early upstream-level check would
+	// short-circuit the retryable classification with a non-retryable
+	// ErrUpstreamRequestSkipped.
 
 	return nil, false
 }

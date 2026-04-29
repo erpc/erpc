@@ -502,7 +502,7 @@ func TestNetworkAvailability_EarliestPlus_Freeze_NoAdvance(t *testing.T) {
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
@@ -591,7 +591,7 @@ func TestNetworkAvailability_EarliestPlus_UpdateRate_Advance(t *testing.T) {
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
@@ -745,7 +745,7 @@ func TestNetworkAvailability_UpperEarliestPlus_Enforced(t *testing.T) {
 	upr.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
-	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123, EnforceBlockAvailability: b(true)}}
+	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
@@ -925,8 +925,11 @@ func TestNetworkAvailability_Enforce_Precedence_DefaultDoesNotOverrideNetwork(t 
 	}
 }
 
-// When nothing is set, default (false for eth_getBalance via override) should disable enforcement and allow forward
-func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(t *testing.T) {
+// Configured per-upstream BlockAvailability bounds are an opt-in signal that
+// enables enforcement, overriding the method common default's "false". Explicit
+// user overrides at method-level or network-level still win (covered by the
+// other Enforce_* tests in this file).
+func TestNetworkAvailability_Enforce_ConfiguredBounds_Override_DefaultFalse(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
@@ -935,7 +938,7 @@ func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Temporarily force default for eth_getBalance to disable enforcement
+	// Temporarily force the method common default for eth_getBalance to disable enforcement
 	orig := common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability
 	common.DefaultWithBlockCacheMethods["eth_getBalance"].EnforceBlockAvailability = b(false)
 	defer func() {
@@ -982,12 +985,15 @@ func TestNetworkAvailability_Enforce_DefaultFalse_Disables_WhenNoExplicitConfig(
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 
-	// Build request and verify network-level gating returns nil (allowed, no enforcement)
+	// Block 1 is below the configured ExactBlock(100) lower bound. Even though the
+	// method common default has enforcement off, the configured bound opts in to
+	// enforcement and the request should be skipped (non-retryable).
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x1"]}`))
 	req.SetNetwork(network)
 	ups := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
-	skipErr, _ := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
-	require.NoError(t, skipErr, "expected no skip error (allowed)")
+	skipErr, isRetryable := network.checkUpstreamBlockAvailability(ctx, ups, req, "eth_getBalance")
+	require.Error(t, skipErr, "expected skip error: configured bounds should override method common default")
+	require.False(t, isRetryable, "expected non-retryable: below lower bound")
 }
 
 // Network-level false should disable enforcement regardless of defaults

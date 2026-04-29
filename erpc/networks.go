@@ -1052,26 +1052,55 @@ func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req 
 	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
-// resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability
-// using strict precedence: method-level > network-level > default method config > fallback (true).
-func (n *Network) resolveEnforceBlockAvailability(method string) bool {
-	// Highest precedence: method-level override from network config
+// upstreamHasBlockAvailabilityBounds reports whether the upstream has any
+// BlockAvailability bounds (lower or upper) configured. Presence of explicit
+// bounds is treated as the user's intent to enforce them when no higher-priority
+// explicit override has been set.
+func upstreamHasBlockAvailabilityBounds(u common.Upstream) bool {
+	if u == nil {
+		return false
+	}
+	cfg := u.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil {
+		return false
+	}
+	ba := cfg.Evm.BlockAvailability
+	return ba.Lower != nil || ba.Upper != nil
+}
+
+// resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability.
+// Precedence (highest to lowest):
+//  1. Explicit method-level user override (network.cfg.Methods.Definitions[method].EnforceBlockAvailability)
+//  2. Explicit network-level user override (network.cfg.Evm.EnforceBlockAvailability)
+//  3. Per-upstream BlockAvailability bounds — configured bounds are themselves
+//     an opt-in signal that overrides the method common default
+//  4. Method common default (DefaultWithBlockCacheMethods[method].EnforceBlockAvailability)
+//  5. Fallback: enabled
+func (n *Network) resolveEnforceBlockAvailability(method string, u common.Upstream) bool {
+	// 1. Explicit method-level user override
 	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
 		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
 			return *mc.EnforceBlockAvailability
 		}
 	}
-	// Next: network-level default
+	// 2. Explicit network-level user override
 	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.EnforceBlockAvailability != nil {
 		return *n.cfg.Evm.EnforceBlockAvailability
 	}
-	// Lowest: common default method config
+	// 3. Configured per-upstream bounds opt-in to enforcement, regardless of
+	//    method common defaults. This ensures that users who configure
+	//    BlockAvailability on an upstream actually get their bounds enforced
+	//    even for methods whose system default has it off (e.g. eth_getBlockByNumber).
+	if upstreamHasBlockAvailabilityBounds(u) {
+		return true
+	}
+	// 4. Method common default
 	if common.DefaultWithBlockCacheMethods != nil {
 		if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil && dmc.EnforceBlockAvailability != nil {
 			return *dmc.EnforceBlockAvailability
 		}
 	}
-	// Fallback default: enabled
+	// 5. Fallback: enabled
 	return true
 }
 
@@ -1154,22 +1183,32 @@ func (n *Network) recordHedgeDiscard(
 //   - isRetryable=true: block is just slightly ahead (within MaxRetryableBlockDistance), upstream may catch up
 //   - isRetryable=false: block is too far ahead or below lower bound, not worth retrying this upstream
 //
+// This is the single point of block-availability enforcement. It runs whenever
+// EnforceBlockAvailability resolves to true OR the upstream has explicit
+// BlockAvailability bounds configured (the user's signal that they want bounds
+// enforced regardless of per-method defaults).
+//
 // FAIL-OPEN BEHAVIOR: If we cannot determine block availability (e.g., state poller issues),
 // we allow the request to proceed rather than blocking traffic.
 func (n *Network) checkUpstreamBlockAvailability(ctx context.Context, u common.Upstream, req *common.NormalizedRequest, method string) (error, bool) {
 	if n.cfg.Architecture != common.ArchitectureEvm {
 		return nil, false
 	}
-	// Resolve enforcement using strict precedence
-	enforce := n.resolveEnforceBlockAvailability(method)
-	if !enforce {
+	if !n.resolveEnforceBlockAvailability(method, u) {
 		return nil, false
 	}
-	// Use cached block number from normalization to avoid re-extracting from mutated params
+	// Prefer the cached block number from normalization. Fall back to extracting
+	// from the request (defensive: handles paths that bypass json_rpc.go's
+	// normalization, and methods whose params haven't been pre-cached yet).
 	var bn int64
 	if v := req.EvmBlockNumber(); v != nil {
 		if n64, ok := v.(int64); ok {
 			bn = n64
+		}
+	}
+	if bn <= 0 {
+		if _, x, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req); ebn == nil && x > 0 {
+			bn = x
 		}
 	}
 	if bn <= 0 {
