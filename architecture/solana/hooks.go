@@ -146,6 +146,17 @@ func (e *JsonRpcErrorExtractor) Extract(
 	}
 
 	msg := jr.Error.Message
+	originalCode := int(jr.Error.Code)
+
+	// wrapJrpc wraps the upstream's error in an ErrJsonRpcExceptionInternal
+	// carrying both the original upstream code (for client visibility) and a
+	// normalized JSON-RPC spec code (-32600/-32601/-32603/-32014/etc.). This
+	// matches the EVM normalizer's pattern: the inner ErrJsonRpcExceptionInternal
+	// is what TranslateToJsonRpcException's early-return uses to surface the
+	// correct user-facing code instead of falling through to the -32603 default.
+	wrapJrpc := func(normalizedCode common.JsonRpcErrorNumber, m string) error {
+		return common.NewErrJsonRpcExceptionInternal(originalCode, normalizedCode, m, nil, nil)
+	}
 
 	// Solana error codes:
 	//  -32000: Generic server-side error (rate limits, overloaded, etc.) — BUT also
@@ -179,69 +190,91 @@ func (e *JsonRpcErrorExtractor) Extract(
 		if strings.Contains(lmsg, "transaction simulation failed") ||
 			strings.Contains(lmsg, "blockhash not found") ||
 			strings.Contains(lmsg, "blockhash expired") {
-			return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg)).
-				WithRetryableTowardNetwork(false)
+			return common.NewErrEndpointClientSideException(
+				wrapJrpc(common.JsonRpcErrorClientSideException, msg),
+			).WithRetryableTowardNetwork(false)
 		}
 		if strings.Contains(msg, "Connection rate limits exceeded") ||
 			strings.Contains(lmsg, "rate limit") ||
 			strings.Contains(lmsg, "too many requests") {
-			return common.NewErrEndpointCapacityExceeded(fmt.Errorf("%s", msg))
+			return common.NewErrEndpointCapacityExceeded(
+				wrapJrpc(common.JsonRpcErrorCapacityExceeded, msg),
+			)
 		}
 		return common.NewErrEndpointServerSideException(
-			fmt.Errorf("%s", msg), nil, statusCode,
+			wrapJrpc(common.JsonRpcErrorServerSideException, msg), nil, statusCode,
 		)
 
 	case -32002, -32003, -32013: // Deterministic tx errors — bad tx, bad sig, bad length.
 		// All upstreams will return the same error. Return to client immediately.
-		return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg)).
-			WithRetryableTowardNetwork(false)
+		return common.NewErrEndpointClientSideException(
+			wrapJrpc(common.JsonRpcErrorClientSideException, msg),
+		).WithRetryableTowardNetwork(false)
 
 	case -32005, -32006: // Node unhealthy / behind — failover to another upstream
 		return common.NewErrEndpointServerSideException(
-			fmt.Errorf("solana node unhealthy: %s", msg), nil, statusCode,
+			wrapJrpc(common.JsonRpcErrorServerSideException, "solana node unhealthy: "+msg), nil, statusCode,
 		)
 
 	case -32012: // Long-term storage unavailable — failover
 		return common.NewErrEndpointServerSideException(
-			fmt.Errorf("%s", msg), nil, statusCode,
+			wrapJrpc(common.JsonRpcErrorServerSideException, msg), nil, statusCode,
 		)
 
 	case -32004, -32007, -32008, -32015: // Block/slot/snapshot not available — try another upstream
-		return common.NewErrEndpointMissingData(fmt.Errorf("%s", msg), upstream)
+		return common.NewErrEndpointMissingData(
+			wrapJrpc(common.JsonRpcErrorMissingData, msg), upstream,
+		)
 
 	case -32009, -32010: // Account / program not found OR provider indexing restriction.
 		// Check for provider-specific "excluded from secondary indexes" before
 		// treating as generic missing data — another provider may index the program.
 		if strings.Contains(msg, "excluded from account secondary indexes") ||
 			strings.Contains(msg, "this RPC method unavailable for key") {
-			return common.NewErrEndpointUnsupported(fmt.Errorf("%s", msg))
+			return common.NewErrEndpointUnsupported(
+				wrapJrpc(common.JsonRpcErrorUnsupportedException, msg),
+			)
 		}
-		return common.NewErrEndpointMissingData(fmt.Errorf("%s", msg), upstream)
+		return common.NewErrEndpointMissingData(
+			wrapJrpc(common.JsonRpcErrorMissingData, msg), upstream,
+		)
 
 	case -32011, -32016: // Min context slot not reached — node is behind, try another upstream.
 		// Note: the spec uses -32011; QuickNode uses -32016 for the same condition.
 		return common.NewErrEndpointServerSideException(
-			fmt.Errorf("solana upstream behind requested slot: %s", msg), nil, statusCode,
+			wrapJrpc(common.JsonRpcErrorServerSideException, "solana upstream behind requested slot: "+msg), nil, statusCode,
 		)
 
 	case -32601: // Method not found — this upstream doesn't support it, try another.
-		return common.NewErrEndpointUnsupported(fmt.Errorf("%s", msg))
+		return common.NewErrEndpointUnsupported(
+			wrapJrpc(common.JsonRpcErrorUnsupportedException, msg),
+		)
+
+	case -32602: // Invalid params — deterministic client error, never retry across upstreams.
+		return common.NewErrEndpointClientSideException(
+			wrapJrpc(common.JsonRpcErrorInvalidArgument, msg),
+		).WithRetryableTowardNetwork(false)
 	}
 
 	// Text-based patterns: vendor messages that don't fit standard codes.
 	if strings.Contains(msg, "excluded from account secondary indexes") ||
 		strings.Contains(msg, "this RPC method unavailable for key") {
 		// Provider doesn't index this program — another provider might.
-		return common.NewErrEndpointUnsupported(fmt.Errorf("%s", msg))
+		return common.NewErrEndpointUnsupported(
+			wrapJrpc(common.JsonRpcErrorUnsupportedException, msg),
+		)
 	}
 	if strings.Contains(msg, "Connection rate limits exceeded") ||
 		strings.Contains(strings.ToLower(msg), "rate limit") ||
 		strings.Contains(strings.ToLower(msg), "too many requests") {
-		return common.NewErrEndpointCapacityExceeded(fmt.Errorf("%s", msg))
+		return common.NewErrEndpointCapacityExceeded(
+			wrapJrpc(common.JsonRpcErrorCapacityExceeded, msg),
+		)
 	}
 
 	// Everything else is a deterministic client-side error (bad params, wrong
 	// encoding, invalid address, etc.) — no point retrying another upstream.
-	return common.NewErrEndpointClientSideException(fmt.Errorf("%s", msg)).
-		WithRetryableTowardNetwork(false)
+	return common.NewErrEndpointClientSideException(
+		wrapJrpc(common.JsonRpcErrorClientSideException, msg),
+	).WithRetryableTowardNetwork(false)
 }
