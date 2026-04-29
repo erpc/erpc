@@ -1090,3 +1090,76 @@ func TestRetryPolicy_DynamicBlockUnavailableDelay(t *testing.T) {
 		assert.Equal(t, 0, callCount, "dynamic provider should not be called for non-block-unavailable errors")
 	})
 }
+
+// Regression test for the hedge-executor deadlock that previously stuck
+// request goroutines whenever:
+//
+//  1. eRPC's OnHedge predicate skipped every hedge iteration (true for
+//     composite requests and non-retryable write methods like
+//     eth_sendTransaction), and
+//  2. The primary execution returned a non-abortable error — i.e. one for
+//     which IsRetryableTowardNetwork is true, so CancelIf returns false
+//     and the inner goroutine holds back its result waiting for another
+//     hedge to make progress.
+//
+// In that combination the outer hedge loop reached the "last execution"
+// branch, found actuallyStarted > 0, and parked on an unconditional
+// <-resultChan that nobody would ever send on. The fix (in the failsafe-go
+// fork) adds a <-parentExecution.Context().Done() case to that receive so
+// parent cancellation unblocks it. This test asserts the wired-up
+// behavior end-to-end through createHedgePolicy, so a future failsafe-go
+// bump or a regression in the OnHedge wiring is caught here.
+func TestHedgePolicy_NoDeadlockWhenAllHedgesSkippedAndPrimaryNonAbortable(t *testing.T) {
+	logger := zerolog.Nop()
+
+	hp, err := createHedgePolicy(
+		&logger,
+		&common.HedgePolicyConfig{
+			Delay:    common.Duration(5 * time.Millisecond),
+			MaxCount: 1,
+		},
+		nil,
+		false,
+	)
+	assert.NoError(t, err)
+
+	// eth_sendTransaction is in IsNonRetryableWriteMethod, which makes
+	// OnHedge return false. Wire it through RequestContextKey so the
+	// production OnHedge predicate sees it.
+	req := common.NewNormalizedRequestFromJsonRpcRequest(&common.JsonRpcRequest{
+		JSONRPC: "2.0",
+		Method:  "eth_sendTransaction",
+		Params:  []interface{}{},
+	})
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), common.RequestContextKey, req))
+	defer cancel()
+
+	// Plain error => IsRetryableTowardNetwork(err)==true => CancelIf returns
+	// false => non-abortable, which is exactly the trigger condition.
+	nonAbortableErr := errors.New("transient-not-abortable")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = failsafe.NewExecutor(hp).
+			WithContext(ctx).
+			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				return nil, nonAbortableErr
+			})
+	}()
+
+	// Give the executor enough time to: run the primary, fire the hedge
+	// timer, see OnHedge skip, and park on the final receive. 50ms is well
+	// past the 5ms delay.
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+		// ok — Apply returned after parent ctx cancellation.
+	case <-time.After(2 * time.Second):
+		assert.Fail(t, "hedge executor deadlocked: Apply did not return after parent context was canceled — failsafe-go fork is missing the cancellation-aware receive in hedgeexecutor.go")
+	}
+}

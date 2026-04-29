@@ -281,6 +281,13 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 	// Upstream runtime checks (chain id + block hash comparisons). Use a silent logger and short timeout per upstream
 	silent := zerolog.New(io.Discard)
 
+	// Scope all transient upstreams created below to a validation-only ctx.
+	// Their client goroutines (HTTP shutdown waiter, WS read/ping loops)
+	// listen on this ctx — without scoping, they outlive validation and
+	// accumulate forever.
+	valCtx, cancelVal := context.WithCancel(ctx)
+	defer cancelVal()
+
 	// Histogram buckets (validate config value)
 	if err := telemetry.SetHistogramBuckets(cfg.Metrics.HistogramBuckets); err != nil {
 		report.Errors = append(report.Errors, fmt.Sprintf("invalid metrics histogramBuckets: %v", err))
@@ -328,7 +335,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 		}
 		clReg := clients.NewClientRegistry(&silent, project.Id, prxPool, evm.NewJsonRpcErrorExtractor())
 		vndReg := thirdparty.NewVendorsRegistry()
-		rlr, err := upstream.NewRateLimitersRegistry(ctx, cfg.RateLimiters, &silent)
+		rlr, err := upstream.NewRateLimitersRegistry(valCtx, cfg.RateLimiters, &silent)
 		if err != nil {
 			appendErr(fmt.Sprintf("project=%s failed to create rate limiters registry: %v", project.Id, err))
 			continue
@@ -347,7 +354,7 @@ func GenerateValidationReport(ctx context.Context, cfg *common.Config) *Validati
 				}
 
 				// Create upstream
-				ups, err := upstream.NewUpstream(ctx, prj, uc, clReg, rlr, vndReg, &silent, mt, nil)
+				ups, err := upstream.NewUpstream(valCtx, prj, uc, clReg, rlr, vndReg, &silent, mt, nil)
 				if err != nil {
 					appendErr(fmt.Sprintf("project=%s upstream=%s failed to create upstream: %v", prj, uc.Id, err))
 					return
@@ -972,6 +979,13 @@ func printConfigStats(logger zerolog.Logger, stats ConfigStats) {
 }
 
 func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger zerolog.Logger) error {
+	// The Upstreams we construct below spawn long-lived client goroutines
+	// (HTTP shutdown waiter, WS read/ping loops) that listen on the appCtx
+	// passed into NewUpstream. If we hand them the caller's ctx, they
+	// outlive validation and accumulate forever. Scope them to a
+	// validation-only ctx that we cancel on return.
+	valCtx, cancelVal := context.WithCancel(ctx)
+	defer cancelVal()
 	err := telemetry.SetHistogramBuckets(
 		cfg.Metrics.HistogramBuckets,
 	)
@@ -998,7 +1012,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 		)
 		vndReg := thirdparty.NewVendorsRegistry()
 		rlr, err := upstream.NewRateLimitersRegistry(
-			ctx,
+			valCtx,
 			cfg.RateLimiters,
 			&logger,
 		)
@@ -1034,7 +1048,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 				continue
 			}
 			ups, err := upstream.NewUpstream(
-				ctx,
+				valCtx,
 				project.Id,
 				upsCfg,
 				clReg,
@@ -1047,7 +1061,7 @@ func validateUpstreamEndpoints(ctx context.Context, cfg *common.Config, logger z
 			if err != nil {
 				return fmt.Errorf("failed to create upstream for project: \"%s\" and upstream id: \"%s\": %w", project.Id, upsCfg.Id, err)
 			}
-			chainStr, err := ups.EvmGetChainId(ctx)
+			chainStr, err := ups.EvmGetChainId(valCtx)
 			if err != nil {
 				return fmt.Errorf("failed to get chain id for project: \"%s\" and upstream id: \"%s\": %w", project.Id, upsCfg.Id, err)
 			}
