@@ -252,17 +252,21 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	switch network.cfg.Architecture {
-	case common.ArchitectureEvm:
-		// Early, project-level pre-forward (cache-affecting, upstream-agnostic)
-		if handled, resp, err := evm.HandleProjectPreForward(ctx, network, nq); handled {
-			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
-		}
+	h := common.GetArchitectureHandler(network.cfg.Architecture)
+	if h == nil {
+		// Unknown architecture: forward with no project- or network-level hooks.
+		return network.Forward(ctx, nq)
 	}
 
-	// If not handled, then fallback to the normal forward
+	// Project-level pre-forward: cache-affecting, upstream-agnostic short-circuit.
+	if handled, resp, err := h.HandleProjectPreForward(ctx, network, nq); handled {
+		return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	}
+
+	// Normal forward path; the network post-forward hook always runs so the
+	// architecture can decorate, validate, or translate the result.
 	resp, err := network.Forward(ctx, nq)
-	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
+	return h.HandleNetworkPostForward(ctx, network, nq, resp, err)
 }
 
 func (p *PreparedProject) AcquireRateLimitPermit(ctx context.Context, req *common.NormalizedRequest) error {

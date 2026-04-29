@@ -16,6 +16,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -56,6 +57,7 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	solanaStatePoller    common.SolanaStatePoller
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 }
@@ -180,6 +182,23 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		}
 	}
 
+	if u.config.Type == common.UpstreamTypeSolana {
+		// Create shared-state counters in the upstream layer (which can import data)
+		// and pass them as common.SlotSharedVariable to the poller, avoiding an
+		// import cycle through clients → architecture/solana → data.
+		latestKey := fmt.Sprintf("solana/latestSlot/%s", common.UniqueUpstreamKey(u))
+		finalizedKey := fmt.Sprintf("solana/finalizedSlot/%s", common.UniqueUpstreamKey(u))
+		latestVar := u.sharedStateRegistry.GetCounterInt64(latestKey, solana.DefaultToleratedSlotRollback)
+		finalizedVar := u.sharedStateRegistry.GetCounterInt64(finalizedKey, solana.DefaultToleratedSlotRollback)
+
+		u.solanaStatePoller = solana.NewSolanaStatePoller(
+			u.appCtx, u.logger, u, u.metricsTracker, latestVar, finalizedVar,
+		)
+		if err := u.solanaStatePoller.Bootstrap(ctx); err != nil {
+			u.logger.Error().Err(err).Msg("failed on initial bootstrap of solana state poller (will retry in background)")
+		}
+	}
+
 	return nil
 }
 
@@ -255,6 +274,24 @@ func (u *Upstream) Vendor() common.Vendor {
 		return nil
 	}
 	return u.vendor
+}
+
+// ErrorExtractor returns the architecture-specific JSON-RPC error extractor
+// for this upstream. Centralising the lookup here keeps the clients/ transport
+// layer free of architecture imports: it just asks the upstream what to use.
+// New architectures register themselves by adding a case below — clients/
+// is never touched.
+func (u *Upstream) ErrorExtractor() common.JsonRpcErrorExtractor {
+	if u == nil {
+		return nil
+	}
+	switch u.config.Type {
+	case common.UpstreamTypeEvm:
+		return evm.NewJsonRpcErrorExtractor()
+	case common.UpstreamTypeSolana:
+		return solana.NewJsonRpcErrorExtractor()
+	}
+	return nil
 }
 
 func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
@@ -790,6 +827,90 @@ func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
 }
 
+func (u *Upstream) SolanaStatePoller() common.SolanaStatePoller {
+	return u.solanaStatePoller
+}
+
+// solanaVerifyGenesisHash calls getGenesisHash on the upstream and compares it
+// against the known hash for the configured cluster. Returns an error on mismatch.
+// Skips verification for unknown/custom clusters (no entry in SolanaGenesisHashes).
+func (u *Upstream) solanaVerifyGenesisHash(ctx context.Context, cluster string) error {
+	expectedHash, ok := common.SolanaGenesisHashes[common.SolanaCluster(cluster)]
+	if !ok {
+		// Unknown cluster (e.g. localnet) — skip verification.
+		return nil
+	}
+
+	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getGenesisHash","params":[]}`))
+	resp, err := u.Forward(ctx, pr, true)
+	if err != nil {
+		// Check for HTTP-level errors (e.g. 401 Unauthorized, 403 Forbidden) to give a
+		// clearer diagnostic than "empty JSON input" when auth is required.
+		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) ||
+			common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
+			return common.NewErrUpstreamClientInitialization(
+				&common.BaseError{
+					Code:  "ErrSolanaGenesisHashFetchFailed",
+					Cause: fmt.Errorf("HTTP-level error fetching genesis hash (check auth/network): %w", err),
+				}, u)
+		}
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashFetchFailed", Cause: err}, u)
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		// JSON parse failure on a getGenesisHash response is almost always
+		// permanent — the endpoint is misconfigured (wrong URL, gateway
+		// returning HTML, missing auth that triggered an auth wall). Wrap
+		// fatal so the Initializer doesn't burn 30s/cycle retrying it.
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashParseFailed", Cause: err}, u))
+	}
+
+	// Detect non-JSON-RPC responses (e.g. HTML error pages, gateway auth walls).
+	// If both result and error are absent the upstream returned a non-RPC body —
+	// strong signal of misconfiguration (wrong endpoint URL or auth wall);
+	// fatal so the Initializer fails fast instead of retrying a hopeless task.
+	if jrr.Error == nil && len(jrr.GetResultBytes()) == 0 {
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{
+				Code:  "ErrSolanaGenesisHashFetchFailed",
+				Cause: fmt.Errorf("upstream returned non-JSON-RPC body for getGenesisHash (check auth/endpoint URL)"),
+			}, u))
+	}
+
+	if jrr.Error != nil {
+		return common.NewErrUpstreamClientInitialization(
+			&common.BaseError{
+				Code:  "ErrSolanaGenesisHashRpcError",
+				Cause: fmt.Errorf("RPC error %d: %s", jrr.Error.Code, jrr.Error.Message),
+			}, u)
+	}
+
+	var genesisHash string
+	if err := sonic.Unmarshal(jrr.GetResultBytes(), &genesisHash); err != nil {
+		// Upstream returned a non-string body for getGenesisHash — won't
+		// self-heal on retry. Wrap with NewTaskFatal so the Initializer stops.
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{Code: "ErrSolanaGenesisHashUnmarshalFailed", Cause: err}, u))
+	}
+	if genesisHash != expectedHash {
+		// Misconfiguration (wrong upstream for this cluster) — permanent.
+		// Direct analog of EVM chainId mismatch; wrap with NewTaskFatal so
+		// the Initializer detects the failure immediately instead of hanging.
+		return common.NewTaskFatal(common.NewErrUpstreamClientInitialization(
+			&common.BaseError{
+				Code: "ErrSolanaClusterMismatch",
+				Cause: fmt.Errorf(
+					"genesis hash mismatch: upstream returned %q but cluster %q expects %q",
+					genesisHash, cluster, expectedHash,
+				),
+			}, u))
+	}
+	return nil
+}
+
 // TODO move to evm package?
 // EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
 // For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
@@ -1294,6 +1415,20 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
 		// TODO evm: detect max eth_getLogs max block range
+	} else if cfg.Type == common.UpstreamTypeSolana {
+		if cfg.Solana == nil {
+			cfg.Solana = &common.SolanaUpstreamConfig{}
+		}
+		if cfg.Solana.Cluster == "" {
+			cfg.Solana.Cluster = string(common.SolanaClusterMainnetBeta)
+		}
+		u.networkId.Store(util.SolanaNetworkId(cfg.Solana.Cluster))
+		// Verify the node's genesis hash matches the configured cluster.
+		// Mirrors eth_chainId validation for EVM upstreams — prevents a misconfigured
+		// devnet node from silently serving requests meant for mainnet-beta.
+		if err := u.solanaVerifyGenesisHash(ctx, cfg.Solana.Cluster); err != nil {
+			return err
+		}
 	} else {
 		return fmt.Errorf("upstream type not supported: %s", cfg.Type)
 	}

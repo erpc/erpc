@@ -31,17 +31,17 @@ type ClientRegistry struct {
 	projectId         string
 	clients           sync.Map
 	proxyPoolRegistry *ProxyPoolRegistry
-	evmExtractor      common.JsonRpcErrorExtractor
 }
 
-func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry, evmExtractor common.JsonRpcErrorExtractor) *ClientRegistry {
-	cr := &ClientRegistry{
+// NewClientRegistry constructs a ClientRegistry. Architecture-specific error
+// extractors are owned by each Upstream (see common.Upstream.ErrorExtractor),
+// so the registry itself stays architecture-agnostic.
+func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry) *ClientRegistry {
+	return &ClientRegistry{
 		logger:            logger,
 		projectId:         projectId,
 		proxyPoolRegistry: proxyPoolRegistry,
-		evmExtractor:      evmExtractor,
 	}
-	return cr
 }
 
 func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {
@@ -82,7 +82,11 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 		once.Do(func() {
 			lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
 			switch cfg.Type {
-			case common.UpstreamTypeEvm:
+			case common.UpstreamTypeEvm, common.UpstreamTypeSolana:
+				// JSON-RPC over HTTP/HTTPS for any architecture that supports it.
+				// The architecture-specific error extractor is owned by the
+				// upstream itself (see common.Upstream.ErrorExtractor) so this
+				// layer stays architecture-agnostic.
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
 					newClient, err = NewGenericHttpJsonRpcClient(
 						appCtx,
@@ -92,7 +96,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						parsedUrl,
 						cfg.JsonRpc,
 						proxyPool,
-						manager.evmExtractor,
+						ups.ErrorExtractor(),
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
@@ -100,15 +104,19 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
 				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
-					newClient, err = NewGrpcBdsClient(
-						appCtx,
-						&lg,
-						manager.projectId,
-						ups,
-						parsedUrl,
-					)
-					if err != nil {
-						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
+					if cfg.Type != common.UpstreamTypeEvm {
+						clientErr = fmt.Errorf("grpc scheme is not supported for upstream type %v: %v", cfg.Type, cfg.Id)
+					} else {
+						newClient, err = NewGrpcBdsClient(
+							appCtx,
+							&lg,
+							manager.projectId,
+							ups,
+							parsedUrl,
+						)
+						if err != nil {
+							clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
+						}
 					}
 				} else {
 					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)

@@ -311,6 +311,8 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		if nr.evmJsonRpcCache != nil {
 			network.cacheDal = nr.evmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
+	case "solana":
+		// Phase 1: no Solana-specific cache DAL yet; cacheDal remains nil (caching disabled)
 	default:
 		return nil, errors.New("unknown network architecture")
 	}
@@ -361,6 +363,10 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 				return nil, e
 			}
 			nwCfg.Evm = &common.EvmNetworkConfig{ChainId: int64(c)}
+		case common.ArchitectureSolana:
+			if nwCfg.Solana == nil {
+				nwCfg.Solana = &common.SolanaNetworkConfig{Cluster: s[1]}
+			}
 		}
 		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
 			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)

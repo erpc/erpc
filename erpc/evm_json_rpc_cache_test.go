@@ -82,7 +82,7 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 		},
 	}
 
-	clr := clients.NewClientRegistry(&logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+	clr := clients.NewClientRegistry(&logger, "prjA", nil)
 	vr := thirdparty.NewVendorsRegistry()
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{
@@ -2609,7 +2609,7 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 	syncState common.EvmSyncingState, finalizedBlock, latestBlock int64) *upstream.Upstream {
 
 	logger := log.Logger
-	clr := clients.NewClientRegistry(&logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+	clr := clients.NewClientRegistry(&logger, "prjA", nil)
 	vr := thirdparty.NewVendorsRegistry()
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{
@@ -3220,7 +3220,7 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 		},
 	}
 
-	clr := clients.NewClientRegistry(&logger, "prjA", nil, evm.NewJsonRpcErrorExtractor())
+	clr := clients.NewClientRegistry(&logger, "prjA", nil)
 	vr := thirdparty.NewVendorsRegistry()
 	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{

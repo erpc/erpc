@@ -41,6 +41,8 @@ func (n *queryTestNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) i
 	return n.finalized
 }
 func (n *queryTestNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream { return nil }
+func (n *queryTestNetwork) SolanaHighestLatestSlot(ctx context.Context) int64      { return 0 }
+func (n *queryTestNetwork) SolanaHighestFinalizedSlot(ctx context.Context) int64   { return 0 }
 
 type queryTestUpstream struct {
 	supported bool
@@ -66,9 +68,10 @@ func (u *queryTestUpstream) Tracker() common.HealthTracker { return nil }
 func (u *queryTestUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *queryTestUpstream) Cordon(method string, reason string)   {}
-func (u *queryTestUpstream) Uncordon(method string, reason string) {}
-func (u *queryTestUpstream) IgnoreMethod(method string)            {}
+func (u *queryTestUpstream) Cordon(method string, reason string)              {}
+func (u *queryTestUpstream) Uncordon(method string, reason string)            {}
+func (u *queryTestUpstream) IgnoreMethod(method string)                       {}
+func (u *queryTestUpstream) ErrorExtractor() common.JsonRpcErrorExtractor     { return nil }
 func (u *queryTestUpstream) ShouldHandleMethod(method string) (bool, error) {
 	return u.supported, nil
 }
@@ -91,9 +94,10 @@ func (u *queryTestConfigUpstream) Tracker() common.HealthTracker { return nil }
 func (u *queryTestConfigUpstream) Forward(ctx context.Context, nq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
-func (u *queryTestConfigUpstream) Cordon(method string, reason string)   {}
-func (u *queryTestConfigUpstream) Uncordon(method string, reason string) {}
-func (u *queryTestConfigUpstream) IgnoreMethod(method string)            {}
+func (u *queryTestConfigUpstream) Cordon(method string, reason string)          {}
+func (u *queryTestConfigUpstream) Uncordon(method string, reason string)        {}
+func (u *queryTestConfigUpstream) IgnoreMethod(method string)                   {}
+func (u *queryTestConfigUpstream) ErrorExtractor() common.JsonRpcErrorExtractor { return nil }
 
 func TestParseQueryRequest_ResolvesCursorAndSelections(t *testing.T) {
 	network := &queryTestNetwork{

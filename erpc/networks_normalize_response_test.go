@@ -72,4 +72,49 @@ func TestNormalizeResponse_IDRewrite_AppliesToAllArchitectures(t *testing.T) {
 		network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
 		assert.NoError(t, network.normalizeResponse(ctx, buildReq(), nil))
 	})
+
+	// Regression: clients that explicitly send "id":null (a valid JSON-RPC 2.0
+	// request) used to receive a leaked internal random ID instead. erpc
+	// internally assigns a random ID for multiplexing correlation; the
+	// response-side rewrite must restore null. Caught by the dogfood run
+	// against public Solana devnet.
+	t.Run("ExplicitNullIDIsPreservedInResponse", func(t *testing.T) {
+		network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":null,"method":"eth_chainId","params":[]}`))
+		// Upstream saw whatever internal ID erpc assigned and echoed it back.
+		jrr := common.MustNewJsonRpcResponseFromBytes(
+			[]byte(`123456789`),
+			[]byte(`"0x1"`),
+			nil,
+		)
+		resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+		require.NoError(t, network.normalizeResponse(ctx, req, resp))
+
+		out, err := resp.JsonRpcResponse(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, out)
+		assert.Nil(t, out.ID(),
+			"client sent id:null and the response id must be null (got %v)", out.ID())
+
+		// Sanity: the request's parsed ID should still be the random internal
+		// ID (used for upstream multiplexing). The response-rewrite handles
+		// the special null case via the ResponseIDIsNull flag.
+		jrq, _ := req.JsonRpcRequest(ctx)
+		assert.NotNil(t, jrq.ID,
+			"internal ID must still be assigned for upstream multiplexing correlation")
+		assert.True(t, jrq.ResponseIDIsNull(),
+			"ResponseIDIsNull must be set when client sent id:null")
+	})
+
+	// Sanity: a request with NO id field (a notification) should NOT trigger
+	// the null-preservation path. erpc historically treats it as a regular
+	// request with a random ID; we keep that behaviour.
+	t.Run("MissingIDFieldIsNotTreatedAsExplicitNull", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+		jrq, _ := req.JsonRpcRequest(ctx)
+		assert.False(t, jrq.ResponseIDIsNull(),
+			"missing id field must NOT be treated as explicit null")
+		assert.NotNil(t, jrq.ID,
+			"missing id field must still get an internal random ID")
+	})
 }

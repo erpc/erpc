@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/solana"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
@@ -230,6 +231,42 @@ func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {
 	return minBlock
 }
 
+// SolanaHighestLatestSlot returns the highest processed/latest slot seen across all
+// healthy Solana upstreams on this network. Used for slot-lag scoring.
+func (n *Network) SolanaHighestLatestSlot(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.SolanaHighestLatestSlot")
+	defer span.End()
+	maxSlot := n.solanaHighestSlot(ctx, func(sp common.SolanaStatePoller) int64 { return sp.LatestSlot() })
+	span.SetAttributes(attribute.Int64("highest_latest_slot", maxSlot))
+	return maxSlot
+}
+
+// SolanaHighestFinalizedSlot returns the highest finalized slot seen across all
+// Solana upstreams on this network.
+func (n *Network) SolanaHighestFinalizedSlot(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.SolanaHighestFinalizedSlot")
+	defer span.End()
+	maxSlot := n.solanaHighestSlot(ctx, func(sp common.SolanaStatePoller) int64 { return sp.FinalizedSlot() })
+	span.SetAttributes(attribute.Int64("highest_finalized_slot", maxSlot))
+	return maxSlot
+}
+
+// solanaHighestSlot iterates all Solana upstreams and returns the maximum slot
+// returned by the given accessor. Shared by SolanaHighestLatestSlot and SolanaHighestFinalizedSlot.
+func (n *Network) solanaHighestSlot(ctx context.Context, accessor func(common.SolanaStatePoller) int64) int64 {
+	var maxSlot int64
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		sp := u.SolanaStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if slot := accessor(sp); slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+	return maxSlot
+}
+
 func (n *Network) EvmLeaderUpstream(ctx context.Context) common.Upstream {
 	var leader common.Upstream
 	var leaderLastBlock int64 = 0
@@ -383,18 +420,26 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Set upstreams on the request
 	req.SetUpstreams(upsList)
 
-	// Network-level pre-forward (executed after upstream selection) for upstream-aware logic
-	if handled, resp, err := evm.HandleNetworkPreForward(ctx, n, upsList, req); handled {
-		if err != nil {
+	// Network-level pre-forward (executed after upstream selection) for
+	// upstream-aware logic. Dispatched via the per-architecture handler so
+	// EVM hooks don't fire on Solana requests (and vice versa).
+	var networkPreHandled bool
+	var networkPreResp *common.NormalizedResponse
+	var networkPreErr error
+	if h := common.GetArchitectureHandler(n.cfg.Architecture); h != nil {
+		networkPreHandled, networkPreResp, networkPreErr = h.HandleNetworkPreForward(ctx, n, upsList, req)
+	}
+	if networkPreHandled {
+		if networkPreErr != nil {
 			if mlx != nil {
-				mlx.Close(ctx, nil, err)
+				mlx.Close(ctx, nil, networkPreErr)
 			}
-			return nil, err
+			return nil, networkPreErr
 		}
 		if mlx != nil {
-			mlx.Close(ctx, resp, nil)
+			mlx.Close(ctx, networkPreResp, nil)
 		}
-		return resp, nil
+		return networkPreResp, nil
 	}
 
 	// 3) Check if we should handle this method on this network
@@ -900,20 +945,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 }
 
 func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
-	switch n.Architecture() {
-	case common.ArchitectureEvm:
-		jsonRpcReq, err := nr.JsonRpcRequest(ctx)
-		if err != nil {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorParseException,
-				"failed to unmarshal json-rpc request",
-				err,
-				nil,
-			)
-		}
-		evm.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
-	default:
+	h := common.GetArchitectureHandler(n.Architecture())
+	if h == nil {
 		return common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorServerSideException,
@@ -923,6 +956,17 @@ func (n *Network) prepareRequest(ctx context.Context, nr *common.NormalizedReque
 		)
 	}
 
+	jsonRpcReq, err := nr.JsonRpcRequest(ctx)
+	if err != nil {
+		return common.NewErrJsonRpcExceptionInternal(
+			0,
+			common.JsonRpcErrorParseException,
+			"failed to unmarshal json-rpc request",
+			err,
+			nil,
+		)
+	}
+	h.NormalizeHttpJsonRpc(ctx, nr, jsonRpcReq)
 	return nil
 }
 
@@ -947,6 +991,11 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 
 	if req == nil && resp == nil {
 		return finality
+	}
+
+	// Dispatch to architecture-specific finality logic
+	if n.cfg.Architecture == common.ArchitectureSolana {
+		return solana.GetFinality(ctx, n, req, resp)
 	}
 
 	method, _ := req.Method()
@@ -1040,16 +1089,16 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (n *Network) doForward(execSpanCtx context.Context, u common.Upstream, req *common.NormalizedRequest, skipCacheRead bool) (*common.NormalizedResponse, error) {
-	switch n.cfg.Architecture {
-	case common.ArchitectureEvm:
-		if handled, resp, err := evm.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
-			return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
-		}
+	h := common.GetArchitectureHandler(n.cfg.Architecture)
+	if h == nil {
+		// Unknown architecture: just forward with no post-processing.
+		return u.Forward(execSpanCtx, req, false)
 	}
-
-	// If not handled, then fallback to the normal forward
+	if handled, resp, err := h.HandleUpstreamPreForward(execSpanCtx, n, u, req, skipCacheRead); handled {
+		return h.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	}
 	resp, err := u.Forward(execSpanCtx, req, false)
-	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
+	return h.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
 // resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability
@@ -1500,13 +1549,22 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 	// toward upstreams, and must apply to every JSON-RPC architecture — not just
 	// EVM — so non-EVM clients (Solana and future architectures) aren't left with
 	// mismatched response IDs.
+	//
+	// Special case: the client may have explicitly sent "id":null (a valid
+	// JSON-RPC 2.0 request). erpc internally assigns a random ID for
+	// multiplexing correlation; here we restore the client's null so the
+	// caller doesn't see a leaked internal ID.
 	if resp != nil {
 		if jrr, err := resp.JsonRpcResponse(ctx); err == nil && jrr != nil {
 			jrq, err := req.JsonRpcRequest(ctx)
 			if err != nil {
 				return err
 			}
-			if err := jrr.SetID(jrq.ID); err != nil {
+			var idToSet interface{} = jrq.ID
+			if jrq.ResponseIDIsNull() {
+				idToSet = nil
+			}
+			if err := jrr.SetID(idToSet); err != nil {
 				return err
 			}
 		}

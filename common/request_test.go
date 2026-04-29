@@ -29,6 +29,7 @@ func (m *mockUpstreamForSelection) Forward(ctx context.Context, nq *NormalizedRe
 func (m *mockUpstreamForSelection) Cordon(method string, reason string)   {}
 func (m *mockUpstreamForSelection) Uncordon(method string, reason string) {}
 func (m *mockUpstreamForSelection) IgnoreMethod(method string)            {}
+func (m *mockUpstreamForSelection) ErrorExtractor() JsonRpcErrorExtractor { return nil }
 
 func newMockUpstream(id string) *mockUpstreamForSelection {
 	return &mockUpstreamForSelection{id: id}
