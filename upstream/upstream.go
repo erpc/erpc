@@ -129,6 +129,11 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 	evmStatePoller       common.EvmStatePoller
+	// Guards lazy creation of evmStatePoller so concurrent or repeated
+	// Bootstrap calls don't construct a second poller — every prior poller's
+	// goroutine listens on appCtx and never exits, so reassigning leaks one
+	// goroutine per call.
+	evmStatePollerMu sync.Mutex
 	// True after successful chainId detection/validation; enables short-circuit in EvmGetChainId.
 	chainIdValidated atomic.Bool
 }
@@ -228,16 +233,21 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 	}
 
 	if u.config.Type == common.UpstreamTypeEvm {
-		u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
-	}
-
-	if u.evmStatePoller != nil {
-		err = u.evmStatePoller.Bootstrap(ctx)
-		if err != nil {
-			// The reason we're not returning error is to allow upstream to still be registered
-			// even if background block polling fails initially.
-			u.logger.Error().Err(err).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+		// Guard against repeated calls. Bootstrap can be re-entered when the
+		// owning task is retried (e.g. provider regeneration re-submits the
+		// same upstream task name); without this check the previous
+		// EvmStatePoller's polling goroutine would be orphaned and live
+		// until appCtx shutdown.
+		u.evmStatePollerMu.Lock()
+		if u.evmStatePoller == nil {
+			u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
+			if perr := u.evmStatePoller.Bootstrap(ctx); perr != nil {
+				// The reason we're not returning error is to allow upstream to still be registered
+				// even if background block polling fails initially.
+				u.logger.Error().Err(perr).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+			}
 		}
+		u.evmStatePollerMu.Unlock()
 	}
 
 	return nil

@@ -19,6 +19,7 @@ require (
 	github.com/go-logr/zerologr v1.2.3
 	github.com/go-redsync/redsync/v4 v4.15.0
 	github.com/golang-jwt/jwt/v4 v4.5.2
+	github.com/gorilla/websocket v1.5.3
 	github.com/grafana/sobek v0.0.0-20241024150027-d91f02b05e9b
 	github.com/h2non/gock v1.2.0
 	github.com/jackc/pgconn v1.14.3
@@ -98,7 +99,6 @@ require (
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7 // indirect
 	github.com/h2non/parth v0.0.0-20190131123155-b4df798d6542 // indirect

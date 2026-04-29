@@ -613,12 +613,13 @@ func TestEarliestDetection_StaleHighValueInSharedState(t *testing.T) {
 	sharedStateCfg.SetDefaults("test")
 	ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
 
-	// Pre-compute the key that will be used for earliest block storage
-	// This matches what UniqueUpstreamKey computes: id + "/" + sha256(id + endpoint + networkId)
+	// Pre-compute the key that will be used for earliest block storage.
+	// This matches what UniqueUpstreamKey computes:
+	//   id + "/" + sha256(id + endpoint + sorted(headers))
+	// (No networkId — cfg.Endpoint already disambiguates across networks.)
 	sha := sha256.New()
 	sha.Write([]byte("rpc1"))                  // upCfg.Id
 	sha.Write([]byte("http://rpc1.localhost")) // upCfg.Endpoint
-	sha.Write([]byte("evm:123"))               // networkId
 	uniqueKey := "rpc1/" + hex.EncodeToString(sha.Sum(nil))
 	presetKey := fmt.Sprintf("earliestBlock/%s/blockHeader", uniqueKey)
 	t.Logf("Pre-computed key: %s", presetKey)

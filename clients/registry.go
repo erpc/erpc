@@ -27,10 +27,24 @@ type Client struct {
 	Upstream common.Upstream
 }
 
+// clientCreation memoises the once-per-upstream client construction. Sharing
+// the sync.Once across CreateClient calls is the correctness-critical part:
+// previously `var once sync.Once` was declared locally so every call ran the
+// body, and two concurrent callers that both missed the cache could each
+// spawn a client and its goroutines, with only the last winning Store — the
+// losing client (and its <-appCtx.Done() shutdown waiter, ping/read loops,
+// etc.) leaked for the lifetime of the process.
+type clientCreation struct {
+	once   sync.Once
+	client ClientInterface
+	err    error
+}
+
 type ClientRegistry struct {
 	logger            *zerolog.Logger
 	projectId         string
-	clients           sync.Map
+	clients           sync.Map // upstream key -> ClientInterface (read-fast path)
+	clientCreations   sync.Map // upstream key -> *clientCreation (build coordination)
 	proxyPoolRegistry *ProxyPoolRegistry
 	evmExtractor      common.JsonRpcErrorExtractor
 }
@@ -54,10 +68,6 @@ func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups com
 }
 
 func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {
-	var once sync.Once
-	var newClient ClientInterface
-	var clientErr error
-
 	cfg := ups.Config()
 
 	if cfg.Endpoint == "" {
@@ -77,64 +87,67 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 		}
 	}
 
-	if err != nil {
-		clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
-	} else {
-		once.Do(func() {
-			lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
-			switch cfg.Type {
-			case common.UpstreamTypeEvm:
-				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					newClient, err = NewGenericHttpJsonRpcClient(
-						appCtx,
-						&lg,
-						manager.projectId,
-						ups,
-						parsedUrl,
-						cfg.JsonRpc,
-						proxyPool,
-						manager.evmExtractor,
-					)
-					if err != nil {
-						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
-					}
-				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
-					newClient, err = NewWsJsonRpcClient(
-						appCtx,
-						&lg,
-						manager.projectId,
-						ups,
-						parsedUrl,
-						cfg.JsonRpc,
-						manager.evmExtractor,
-					)
-					if err != nil {
-						clientErr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, err)
-					}
-				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" {
-					newClient, err = NewGrpcBdsClient(
-						appCtx,
-						&lg,
-						manager.projectId,
-						ups,
-						parsedUrl,
-					)
-					if err != nil {
-						clientErr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v", cfg.Id)
-					}
-				} else {
-					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
+	upstreamKey := common.UniqueUpstreamKey(ups)
+	cv, _ := manager.clientCreations.LoadOrStore(upstreamKey, &clientCreation{})
+	creation := cv.(*clientCreation)
+
+	creation.once.Do(func() {
+		lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
+		var c ClientInterface
+		var cerr error
+		switch cfg.Type {
+		case common.UpstreamTypeEvm:
+			switch parsedUrl.Scheme {
+			case "http", "https":
+				c, cerr = NewGenericHttpJsonRpcClient(
+					appCtx,
+					&lg,
+					manager.projectId,
+					ups,
+					parsedUrl,
+					cfg.JsonRpc,
+					proxyPool,
+					manager.evmExtractor,
+				)
+				if cerr != nil {
+					cerr = fmt.Errorf("failed to create HTTP client for upstream: %v: %w", cfg.Id, cerr)
 				}
-
+			case "ws", "wss":
+				c, cerr = NewWsJsonRpcClient(
+					appCtx,
+					&lg,
+					manager.projectId,
+					ups,
+					parsedUrl,
+					cfg.JsonRpc,
+					manager.evmExtractor,
+				)
+				if cerr != nil {
+					cerr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, cerr)
+				}
+			case "grpc", "grpc+bds":
+				c, cerr = NewGrpcBdsClient(
+					appCtx,
+					&lg,
+					manager.projectId,
+					ups,
+					parsedUrl,
+				)
+				if cerr != nil {
+					cerr = fmt.Errorf("failed to create gRPC BDS client for upstream: %v: %w", cfg.Id, cerr)
+				}
 			default:
-				clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
+				cerr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
 			}
+		default:
+			cerr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
+		}
+		creation.client = c
+		creation.err = cerr
+		if cerr == nil {
+			manager.clients.Store(upstreamKey, c)
+		}
+	})
 
-			if clientErr == nil {
-				manager.clients.Store(common.UniqueUpstreamKey(ups), newClient)
-			}
-		})
-	}
-
-	return newClient, clientErr
+	return creation.client, creation.err
 }
