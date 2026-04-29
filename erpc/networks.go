@@ -1068,19 +1068,44 @@ func upstreamHasBlockAvailabilityBounds(u common.Upstream) bool {
 	return ba.Lower != nil || ba.Upper != nil
 }
 
+// systemDefaultEnforceBlockAvailability returns the global system default for
+// EnforceBlockAvailability for a given method, or nil if no default is set.
+func systemDefaultEnforceBlockAvailability(method string) *bool {
+	if common.DefaultWithBlockCacheMethods == nil {
+		return nil
+	}
+	if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil {
+		return dmc.EnforceBlockAvailability
+	}
+	return nil
+}
+
 // resolveEnforceBlockAvailability resolves the effective enforcement flag for block availability.
 // Precedence (highest to lowest):
-//  1. Explicit method-level user override (network.cfg.Methods.Definitions[method].EnforceBlockAvailability)
-//  2. Explicit network-level user override (network.cfg.Evm.EnforceBlockAvailability)
+//  1. Explicit method-level user override that differs from the system default
+//     (system defaults get merged into n.cfg.Methods.Definitions during config
+//     loading, so a method-level value that matches the system default is
+//     treated as not-an-override).
+//  2. Explicit network-level user override (network.cfg.Evm.EnforceBlockAvailability).
 //  3. Per-upstream BlockAvailability bounds — configured bounds are themselves
-//     an opt-in signal that overrides the method common default
-//  4. Method common default (DefaultWithBlockCacheMethods[method].EnforceBlockAvailability)
-//  5. Fallback: enabled
+//     an opt-in signal that overrides the method common default.
+//  4. System default for this method (DefaultWithBlockCacheMethods).
+//  5. Fallback: enabled.
 func (n *Network) resolveEnforceBlockAvailability(method string, u common.Upstream) bool {
-	// 1. Explicit method-level user override
+	sysDefault := systemDefaultEnforceBlockAvailability(method)
+
+	// 1. Method-level user override (only when it differs from the system default).
+	//    The defaults loader merges DefaultWithBlockCacheMethods into Methods.Definitions,
+	//    so we cannot tell apart a user's explicit value from a merged-in default by
+	//    presence alone. Comparing values is the cleanest way to distinguish — and is
+	//    semantically harmless because a user explicitly setting the same value as the
+	//    default has the same intent as not setting it.
 	if n.cfg != nil && n.cfg.Methods != nil && n.cfg.Methods.Definitions != nil {
 		if mc, ok := n.cfg.Methods.Definitions[method]; ok && mc != nil && mc.EnforceBlockAvailability != nil {
-			return *mc.EnforceBlockAvailability
+			if sysDefault == nil || *mc.EnforceBlockAvailability != *sysDefault {
+				return *mc.EnforceBlockAvailability
+			}
+			// Matches the system default — treat as not-an-override and fall through.
 		}
 	}
 	// 2. Explicit network-level user override
@@ -1094,11 +1119,9 @@ func (n *Network) resolveEnforceBlockAvailability(method string, u common.Upstre
 	if upstreamHasBlockAvailabilityBounds(u) {
 		return true
 	}
-	// 4. Method common default
-	if common.DefaultWithBlockCacheMethods != nil {
-		if dmc, ok := common.DefaultWithBlockCacheMethods[method]; ok && dmc != nil && dmc.EnforceBlockAvailability != nil {
-			return *dmc.EnforceBlockAvailability
-		}
+	// 4. System default for this method
+	if sysDefault != nil {
+		return *sysDefault
 	}
 	// 5. Fallback: enabled
 	return true
