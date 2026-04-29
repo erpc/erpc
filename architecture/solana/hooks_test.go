@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func timeNowForTest() time.Time { return time.Now() }
 
 // ── test helpers ─────────────────────────────────────────────────────────────
 
@@ -173,6 +176,59 @@ func TestHandleUpstreamPostForward_SendTransaction_PlainErrorWrapped(t *testing.
 	require.Error(t, outErr)
 	assert.False(t, common.IsRetryableTowardNetwork(outErr),
 		"plain errors on sendTransaction should be wrapped and marked non-retryable")
+}
+
+// ── JsonRpcErrorExtractor — user-facing JSON-RPC code propagation ────────────
+//
+// Pins the contract that upstream JSON-RPC error codes survive the failsafe
+// wrapper and surface to the client with the correct spec code (-32601 for
+// "method not found", -32602 for "invalid params", etc.). The mechanism: the
+// extractor wraps the cause with ErrJsonRpcExceptionInternal carrying the
+// normalized code, and TranslateToJsonRpcException's early-return preserves
+// it. This matches the EVM normalizer pattern and replaces an earlier
+// approach that patched the translation layer directly.
+func TestJsonRpcErrorExtractor_NormalizedCode_SurvivesFailsafeWrapper(t *testing.T) {
+	cases := []struct {
+		name           string
+		upstreamCode   int
+		upstreamMsg    string
+		wantNormalized common.JsonRpcErrorNumber
+	}{
+		{name: "method_not_found", upstreamCode: -32601, upstreamMsg: "Method not found", wantNormalized: common.JsonRpcErrorUnsupportedException},
+		{name: "invalid_params", upstreamCode: -32602, upstreamMsg: "Invalid params", wantNormalized: common.JsonRpcErrorInvalidArgument},
+		{name: "block_not_available", upstreamCode: -32004, upstreamMsg: "Block 123 not available", wantNormalized: common.JsonRpcErrorMissingData},
+		{name: "slot_skipped", upstreamCode: -32007, upstreamMsg: "Slot 456 was skipped", wantNormalized: common.JsonRpcErrorMissingData},
+		{name: "node_unhealthy", upstreamCode: -32005, upstreamMsg: "Node is unhealthy", wantNormalized: common.JsonRpcErrorServerSideException},
+		{name: "tx_simulation_failed", upstreamCode: -32002, upstreamMsg: "Transaction simulation failed", wantNormalized: common.JsonRpcErrorClientSideException},
+	}
+
+	extractor := NewJsonRpcErrorExtractor()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Step 1: extract the upstream error.
+			extracted := extractor.Extract(fakeResp(200), nil, fakeJrrWithError(tc.upstreamCode, tc.upstreamMsg), nil)
+			require.Error(t, extracted)
+
+			// Step 2: simulate the failsafe layer wrapping it (this is what
+			// erpc does in production after retry exhaustion).
+			now := timeNowForTest()
+			wrapped := common.NewErrFailsafeRetryExceeded(common.ScopeUpstream, extracted, &now)
+
+			// Step 3: run through TranslateToJsonRpcException — this is what
+			// http_server.go does before serializing the error to the client.
+			translated := common.TranslateToJsonRpcException(wrapped)
+			require.NotNil(t, translated)
+
+			// Step 4: extract the user-facing JsonRpcExceptionInternal.
+			jre := &common.ErrJsonRpcExceptionInternal{}
+			require.True(t, errors.As(translated, &jre), "expected a *ErrJsonRpcExceptionInternal in chain")
+			assert.Equal(t, tc.wantNormalized, jre.NormalizedCode(),
+				"upstream code %d %q must surface to client with normalized code %d",
+				tc.upstreamCode, tc.upstreamMsg, tc.wantNormalized)
+			assert.Equal(t, tc.upstreamCode, jre.OriginalCode(),
+				"original upstream code must be preserved in details for client visibility")
+		})
+	}
 }
 
 // ── JsonRpcErrorExtractor ─────────────────────────────────────────────────────
