@@ -91,17 +91,52 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, req *common.NormalizedR
 		return nil, common.NewErrAuthUnauthorized("n/a", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
-	// If any strategy returned ErrPaymentRequired (x402), prefer that over a
-	// generic unauthorized error so the 402 response reaches the client.
+	// If multiple strategies returned ErrPaymentRequired (e.g. several x402
+	// strategies advertising different chains/assets), merge their Accepts
+	// arrays into a single 402 response so the challenge advertises every
+	// accepted option. Otherwise SDK clients only ever see the first chain
+	// in the response and signed payments for other chains never get tried.
+	var payErrs []*common.ErrPaymentRequired
 	for _, e := range errs {
 		var payErr *common.ErrPaymentRequired
 		if errors.As(e, &payErr) {
-			return nil, e
+			payErrs = append(payErrs, payErr)
 		}
+	}
+	if len(payErrs) > 0 {
+		return nil, mergePaymentRequired(payErrs)
 	}
 
 	// If no strategy matched or succeeded, consider the request unauthorized
 	return nil, common.NewErrAuthUnauthorized("n/a", errors.Join(errs...).Error())
+}
+
+// mergePaymentRequired combines multiple ErrPaymentRequired errors into a
+// single error whose Accepts list is the concatenation of all inputs. The
+// X402Version, Error, and Resource fields are taken from the first error
+// since they don't vary across x402 strategies for a given request.
+//
+// If any payErr wraps a payload that isn't an X402PaymentRequirementsResponse
+// (some future scheme), we fall back to the first error verbatim rather than
+// dropping foreign entries silently.
+func mergePaymentRequired(errs []*common.ErrPaymentRequired) error {
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	base, ok := errs[0].PaymentRequirements.(X402PaymentRequirementsResponse)
+	if !ok {
+		return errs[0]
+	}
+	merged := append([]X402PaymentRequirement{}, base.Accepts...)
+	for _, e := range errs[1:] {
+		next, ok := e.PaymentRequirements.(X402PaymentRequirementsResponse)
+		if !ok {
+			return errs[0]
+		}
+		merged = append(merged, next.Accepts...)
+	}
+	base.Accepts = merged
+	return common.NewErrPaymentRequired(base)
 }
 
 // FindDatabaseConnector finds a database connector by ID from the strategies
