@@ -27,6 +27,10 @@ By default a built-in selection policy is activated if **at least one upstream**
 
 These environment variables allow you to adjust the default logic without rewriting the policy function.
 
+<Callout type='info'>
+  If you want fallbacks to kick in immediately when defaults fail (rather than waiting for the next interval), use [`failover.onDefaultsExhausted`](/config/projects/networks#config) on the network config instead.
+</Callout>
+
 #### Use cases
 
 - **Block Lag:** Disable upstreams that are lagging behind more than a specified number of blocks until they resync.

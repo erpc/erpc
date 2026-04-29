@@ -67,11 +67,11 @@ func CreateFailSafePolicies(appCtx context.Context, logger *zerolog.Logger, scop
 				},
 			)
 		}
-		p, err := createCircuitBreakerPolicy(&lg, fsCfg.CircuitBreaker)
+		cb, err := createCircuitBreakerPolicy(&lg, fsCfg.CircuitBreaker)
 		if err != nil {
 			return nil, err
 		}
-		policies["circuitBreaker"] = p
+		policies["circuitBreaker"] = cb
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
@@ -119,7 +119,7 @@ func ToPolicyArray(policies map[string]failsafe.Policy[*common.NormalizedRespons
 	return pls
 }
 
-func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreakerPolicyConfig) (circuitbreaker.CircuitBreaker[*common.NormalizedResponse], error) {
 	builder := circuitbreaker.Builder[*common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {

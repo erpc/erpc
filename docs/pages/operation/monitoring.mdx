@@ -47,26 +47,51 @@ export default createConfig({
 
 ### Reducing Metrics Cardinality
 
-eRPC provides two configuration options to help reduce metrics cardinality, which can significantly decrease the storage requirements and query performance of your monitoring system.
+For large deployments with many networks and upstreams, these settings help control metric cardinality:
 
-#### Error Label Mode
+#### Histogram Label Mode
 
-The `errorLabelMode` setting controls how detailed error information is included in metrics labels:
+The biggest cardinality driver. Duration histograms (`upstream_request_duration_seconds`, `network_request_duration_seconds`) include per-upstream, per-finality, per-user, and per-composite labels by default. In compact mode, these collapse to `"n/a"` — keeping only network and method as dynamic labels.
 
-- `verbose`: Uses the full error message as labels (default for backward compatibility)
-- `compact`: Uses only the error type as labels, reducing cardinality significantly
-    
+- `detailed` (default): All labels on histograms. Highest cardinality.
+- `compact`: Collapses upstream, finality, user, composite to `"n/a"`. **~80% reduction** in histogram series.
+
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 metrics:
-  errorLabelMode: "compact" # "verbose" or "compact"
+  histogramLabelMode: "compact"
 ```
   </Tabs.Tab>
   <Tabs.Tab>
 ```ts filename="erpc.ts"
 metrics: {
-  errorLabelMode: "compact", // "verbose" or "compact"
+  histogramLabelMode: "compact",
+}
+```
+  </Tabs.Tab>
+</Tabs>
+
+Per-upstream latency detail is lost, but per-upstream counters and health scores are unaffected.
+
+#### Error Label Mode
+
+Controls how detailed error information is included in error counter labels:
+
+- `verbose` (default): Full error fingerprint as labels.
+- `compact`: Groups similar errors by type only.
+    
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+metrics:
+  errorLabelMode: "compact"
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+metrics: {
+  errorLabelMode: "compact",
 }
 ```
   </Tabs.Tab>
@@ -74,7 +99,7 @@ metrics: {
 
 #### Histogram Buckets
 
-You can customize histogram buckets to reduce cardinality and focus on relevant latency ranges:
+Fewer buckets = proportionally fewer series per histogram. The default (`0.05, 0.5, 5, 30`) is already minimal at 4 buckets. Only change if you need finer latency percentile resolution.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -92,7 +117,6 @@ metrics: {
   </Tabs.Tab>
 </Tabs>
 
-Setting fewer buckets or focusing on relevant latency ranges can significantly reduce the number of time series stored in your monitoring system.
 
 Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up montoring.
 

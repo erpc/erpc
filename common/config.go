@@ -44,8 +44,24 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects,omitempty" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters,omitempty" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics,omitempty" json:"metrics"`
+	Indexer      *IndexerConfig     `yaml:"indexer,omitempty" json:"indexer"`
 	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
 	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
+}
+
+// IndexerConfig tunes the transport-neutral event-stream indexer that
+// powers `eth_subscribe` fan-out and reorg-aware log invalidation. Most
+// deployments can leave this unset.
+type IndexerConfig struct {
+	// CanonicalChainDepth is the per-network ring-buffer size for the
+	// canonical-chain tracker. It bounds how deep a reorg the indexer
+	// can fully resolve — reorgs beyond this window get only the
+	// immediate head evicted. 0 uses the internal default (256).
+	CanonicalChainDepth int `yaml:"canonicalChainDepth,omitempty" json:"canonicalChainDepth"`
+	// DedupWindowSize is the per-filter seen-set capacity for log /
+	// pending-tx fan-out across sibling upstreams. 0 uses the internal
+	// default (8192).
+	DedupWindowSize int `yaml:"dedupWindowSize,omitempty" json:"dedupWindowSize"`
 }
 
 // LoadConfig loads the configuration from the specified file.
@@ -86,32 +102,41 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 }
 
 type ServerConfig struct {
-	ListenV4            *bool             `yaml:"listenV4,omitempty" json:"listenV4"`
-	HttpHostV4          *string           `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
-	ListenV6            *bool             `yaml:"listenV6,omitempty" json:"listenV6"`
-	HttpHostV6          *string           `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort            *int              `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
-	HttpPortV4          *int              `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
-	HttpPortV6          *int              `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
-	GrpcEnabled         *bool             `yaml:"grpcEnabled,omitempty" json:"grpcEnabled"`
-	GrpcHostV4          *string           `yaml:"grpcHostV4,omitempty" json:"grpcHostV4"`
-	GrpcPortV4          *int              `yaml:"grpcPortV4,omitempty" json:"grpcPortV4"`
-	GrpcHostV6          *string           `yaml:"grpcHostV6,omitempty" json:"grpcHostV6"`
-	GrpcPortV6          *int              `yaml:"grpcPortV6,omitempty" json:"grpcPortV6"`
-	GrpcMaxRecvMsgSize  *int              `yaml:"grpcMaxRecvMsgSize,omitempty" json:"grpcMaxRecvMsgSize"`
-	GrpcMaxSendMsgSize  *int              `yaml:"grpcMaxSendMsgSize,omitempty" json:"grpcMaxSendMsgSize"`
-	MaxTimeout          *Duration         `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
-	ReadTimeout         *Duration         `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
-	WriteTimeout        *Duration         `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
-	EnableGzip          *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	TLS                 *TLSConfig        `yaml:"tls,omitempty" json:"tls"`
-	Aliasing            *AliasingConfig   `yaml:"aliasing" json:"aliasing"`
-	WaitBeforeShutdown  *Duration         `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
-	WaitAfterShutdown   *Duration         `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
-	IncludeErrorDetails *bool             `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
-	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
-	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
-	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+	ListenV4            *bool                  `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4          *string                `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6            *bool                  `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6          *string                `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort            *int                   `yaml:"httpPort,omitempty" json:"httpPort"` // Deprecated: use HttpPortV4
+	HttpPortV4          *int                   `yaml:"httpPortV4,omitempty" json:"httpPortV4"`
+	HttpPortV6          *int                   `yaml:"httpPortV6,omitempty" json:"httpPortV6"`
+	GrpcEnabled         *bool                  `yaml:"grpcEnabled,omitempty" json:"grpcEnabled"`
+	GrpcHostV4          *string                `yaml:"grpcHostV4,omitempty" json:"grpcHostV4"`
+	GrpcPortV4          *int                   `yaml:"grpcPortV4,omitempty" json:"grpcPortV4"`
+	GrpcHostV6          *string                `yaml:"grpcHostV6,omitempty" json:"grpcHostV6"`
+	GrpcPortV6          *int                   `yaml:"grpcPortV6,omitempty" json:"grpcPortV6"`
+	GrpcMaxRecvMsgSize  *int                   `yaml:"grpcMaxRecvMsgSize,omitempty" json:"grpcMaxRecvMsgSize"`
+	GrpcMaxSendMsgSize  *int                   `yaml:"grpcMaxSendMsgSize,omitempty" json:"grpcMaxSendMsgSize"`
+	MaxTimeout          *Duration              `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
+	ReadTimeout         *Duration              `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
+	WriteTimeout        *Duration              `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
+	EnableGzip          *bool                  `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS                 *TLSConfig             `yaml:"tls,omitempty" json:"tls"`
+	Aliasing            *AliasingConfig        `yaml:"aliasing" json:"aliasing"`
+	WaitBeforeShutdown  *Duration              `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
+	WaitAfterShutdown   *Duration              `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
+	IncludeErrorDetails *bool                  `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	TrustedIPForwarders []string               `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
+	TrustedIPHeaders    []string               `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
+	ResponseHeaders     map[string]string      `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+	WebSocket           *WebSocketServerConfig `yaml:"webSocket,omitempty" json:"webSocket"`
+}
+
+type WebSocketServerConfig struct {
+	ReadBufferSize                int       `yaml:"readBufferSize,omitempty" json:"readBufferSize"`
+	WriteBufferSize               int       `yaml:"writeBufferSize,omitempty" json:"writeBufferSize"`
+	MaxMessageSize                int64     `yaml:"maxMessageSize,omitempty" json:"maxMessageSize"`
+	PingInterval                  *Duration `yaml:"pingInterval,omitempty" json:"pingInterval" tstype:"Duration"`
+	MaxSubscriptionsPerConnection int       `yaml:"maxSubscriptionsPerConnection,omitempty" json:"maxSubscriptionsPerConnection"`
 }
 
 type HealthCheckConfig struct {
@@ -497,6 +522,27 @@ type NetworkDefaults struct {
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
+}
+
+// FailoverConfig controls within-request escalation between upstream groups.
+// Independent of SelectionPolicy (which evaluates group membership
+// periodically across requests) — Failover operates per-request only.
+type FailoverConfig struct {
+	// OnDefaultsExhausted, when true, causes the network request loop to
+	// try upstreams with group "default" (or unset) first and only advance
+	// to group "fallback" if every default upstream returned a retryable
+	// error within the same request. Deterministic client errors still
+	// short-circuit without advancing.
+	OnDefaultsExhausted *bool `yaml:"onDefaultsExhausted,omitempty" json:"onDefaultsExhausted"`
+}
+
+// Enabled reports whether any failover behaviour is configured. Nil-safe.
+func (f *FailoverConfig) Enabled() bool {
+	if f == nil {
+		return false
+	}
+	return f.OnDefaultsExhausted != nil && *f.OnDefaultsExhausted
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
@@ -598,6 +644,13 @@ func (p *ProviderConfig) MarshalYAML() (interface{}, error) {
 		"overrides":          p.Overrides,
 	}, nil
 }
+
+// UpstreamGroupFallback marks an upstream as part of the "fallback" group:
+// used only when all non-fallback upstreams are unavailable. Referenced by
+// default selection policies and by network-level block-number aggregation
+// so that a more-advanced fallback doesn't drag the shared counter ahead of
+// what primaries can actually serve.
+const UpstreamGroupFallback = "fallback"
 
 type UpstreamConfig struct {
 	Id                           string                   `yaml:"id,omitempty" json:"id"`
@@ -1560,6 +1613,7 @@ type NetworkConfig struct {
 	Methods           *MethodsConfig           `yaml:"methods,omitempty" json:"methods"`
 	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
 	StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty" json:"staticResponses,omitempty"`
+	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1765,6 +1819,18 @@ type EvmNetworkConfig struct {
 	// empty result likely means the upstream hasn't indexed that data yet.
 	// Default includes common point-lookup methods like eth_getBlockByNumber, eth_getTransactionByHash, etc.
 	MarkEmptyAsErrorMethods []string `yaml:"markEmptyAsErrorMethods,omitempty" json:"markEmptyAsErrorMethods,omitempty"`
+
+	// StripSubscribeFromBlockZero, when true, removes `fromBlock: "0x0"` from
+	// eth_subscribe logs filters before forwarding to upstream WebSockets.
+	// Some clients include `fromBlock: "0x0"` in the filter as a
+	// "from genesis" marker. eth_subscribe is a live-stream RPC — fromBlock
+	// has no standardised meaning there — and on backends that prune
+	// historical data the subscription fails outright. Enabling this flag
+	// for such networks drops the field so the live stream succeeds;
+	// historical logs remain retrievable via eth_getLogs. Only the exact
+	// value "0x0" or "0" is stripped — non-zero fromBlocks pass through
+	// unchanged. DEFAULT: false.
+	StripSubscribeFromBlockZero *bool `yaml:"stripSubscribeFromBlockZero,omitempty" json:"stripSubscribeFromBlockZero,omitempty"`
 
 	// DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
 	// the debounce interval for block polling. A value of 0.7 means debounce = 70% of

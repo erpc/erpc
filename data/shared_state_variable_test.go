@@ -841,6 +841,99 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	connector.AssertExpectations(t)
 }
 
+// TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline verifies that the
+// background refresh fn receives at least the caller-provided context deadline
+// as its timeout, rather than being silently capped at fallbackTimeout. This
+// matters for slow-chain state pollers (e.g. Hedera relay) whose eth_getBlockByNumber
+// legitimately exceeds the default 3s fallbackTimeout.
+func TestCounterInt64_TryUpdateIfStale_FnTimeoutFromCtxDeadline(t *testing.T) {
+	// refreshFn deliberately returns an error so applyRefreshResult short-circuits
+	// before scheduleBackgroundPushCurrent, avoiding a background Publish goroutine
+	// that would race across t.Run boundaries.
+	refreshErr := errors.New("intentional")
+	makeCounter := func(t *testing.T, registry *sharedStateRegistry, key string) *counterInt64 {
+		t.Helper()
+		c := &counterInt64{
+			registry:         registry,
+			key:              key,
+			ignoreRollbackOf: 1024,
+		}
+		c.value.Store(5)
+		c.updatedAtUnixMs.Store(time.Now().Add(-2 * time.Second).UnixMilli())
+		return c
+	}
+
+	t.Run("ctx deadline longer than fallback is honored", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-ctx-deadline")
+
+		const callerDeadline = 4 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should honor caller ctx deadline when longer than fallbackTimeout")
+		assert.LessOrEqual(t, fnTimeout, callerDeadline)
+	})
+
+	t.Run("no ctx deadline falls back to fallbackTimeout", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 500 * time.Millisecond
+
+		counter := makeCounter(t, registry, "test-no-deadline")
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(context.Background(), time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.LessOrEqual(t, fnTimeout, registry.fallbackTimeout,
+			"fn timeout should be bounded by fallbackTimeout when caller has no deadline")
+	})
+
+	t.Run("ctx deadline shorter than fallback uses fallback", func(t *testing.T) {
+		registry, _, _ := setupTest("my-dev")
+		registry.fallbackTimeout = 2 * time.Second
+		registry.updateMaxWait = 5 * time.Second
+
+		counter := makeCounter(t, registry, "test-short-deadline")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		var fnTimeout time.Duration
+		refreshFn := func(fnCtx context.Context) (int64, error) {
+			if deadline, ok := fnCtx.Deadline(); ok {
+				fnTimeout = time.Until(deadline)
+			}
+			return 0, refreshErr
+		}
+
+		_, err := counter.TryUpdateIfStale(ctx, time.Second, refreshFn)
+		assert.ErrorIs(t, err, refreshErr)
+		assert.Greater(t, fnTimeout, 500*time.Millisecond,
+			"fn timeout should use fallbackTimeout when caller deadline is shorter")
+	})
+}
+
 func TestCounterInt64_ReaderStarvation(t *testing.T) {
 	t.Run("GetValue NOT blocked by long-running TryUpdateIfStale", func(t *testing.T) {
 		counter := &counterInt64{
