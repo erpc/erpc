@@ -188,22 +188,27 @@ func MustNewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byt
 	return jr
 }
 
+// parseID populates the typed r.id from r.idBytes WITHOUT modifying
+// r.idBytes. The wire output uses idBytes verbatim, so leaving it untouched
+// preserves byte-level fidelity for ids outside the int53 safe range and
+// for non-canonical numeric formats (e.g. "1.0"). Acquires r.idMu.
 func (r *JsonRpcResponse) parseID() error {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
+	return r.parseIDLocked()
+}
 
+// parseIDLocked is the lock-free variant for callers that already hold
+// r.idMu (e.g. SetIDBytes).
+func (r *JsonRpcResponse) parseIDLocked() error {
 	var rawID interface{}
-	err := SonicCfg.Unmarshal(r.idBytes, &rawID)
-	if err != nil {
+	if err := SonicCfg.Unmarshal(r.idBytes, &rawID); err != nil {
 		return err
 	}
-
 	switch v := rawID.(type) {
 	case float64:
 		r.id = int64(v)
-		// Update idBytes with the parsed int64 value
-		r.idBytes, err = SonicCfg.Marshal(r.id)
-		return err
+		return nil
 	case string:
 		r.id = v
 		return nil
@@ -252,39 +257,18 @@ func (r *JsonRpcResponse) ID() interface{} {
 	return r.id
 }
 
+// SetIDBytes stores the response id from raw JSON bytes verbatim. The wire
+// output (WriteTo) uses idBytes directly, so this preserves byte-for-byte
+// fidelity for large integers (>2^53), fractional ids, and any exotic
+// numeric format the upstream/client used. The parsed r.id is populated as
+// a best-effort typed view for callers that read it; precision loss there
+// is acceptable because the wire output never round-trips through r.id.
 func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) error {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
 
 	r.idBytes = idBytes
-	return r.parseID()
-}
-
-// SetIDBytesPreserving stores the response id from raw JSON bytes verbatim,
-// without canonicalizing them through a float64→int64 round-trip. The wire
-// output uses idBytes directly, so this preserves byte-for-byte fidelity for
-// large integers (>2^53), fractional ids, and exotic numeric formats. The
-// parsed r.id is populated best-effort for callers that read the typed view;
-// precision loss there is acceptable because the wire output uses idBytes.
-func (r *JsonRpcResponse) SetIDBytesPreserving(idBytes []byte) error {
-	r.idMu.Lock()
-	defer r.idMu.Unlock()
-
-	r.idBytes = idBytes
-
-	var rawID interface{}
-	if err := SonicCfg.Unmarshal(idBytes, &rawID); err != nil {
-		return err
-	}
-	switch v := rawID.(type) {
-	case float64:
-		r.id = int64(v)
-	case string:
-		r.id = v
-	case nil:
-		r.id = nil
-	}
-	return nil
+	return r.parseIDLocked()
 }
 
 func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reader, expectedSize int) error {
@@ -1217,12 +1201,21 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 		}
 	}
 
-	return &JsonRpcRequest{
+	clone := &JsonRpcRequest{
 		JSONRPC: r.JSONRPC,
 		ID:      r.ID,
 		Method:  r.Method,
 		Params:  clonedParams,
 	}
+	// Carry idRaw forward so the cloned request still round-trips its id
+	// byte-for-byte through normalizeResponse. Without this, the clone falls
+	// back to the lossy typed-id path and re-introduces the precision loss
+	// for ids outside the int53 safe range.
+	if len(r.idRaw) > 0 {
+		clone.idRaw = make([]byte, len(r.idRaw))
+		copy(clone.idRaw, r.idRaw)
+	}
+	return clone
 }
 
 // deepCopyValue creates a deep copy of a value to avoid concurrent access issues
@@ -1257,6 +1250,9 @@ func (r *JsonRpcRequest) SetID(id interface{}) error {
 	defer r.Unlock()
 
 	r.ID = id
+	// Drop any captured wire bytes — the typed id is now authoritative and
+	// must win over a stale idRaw on the response path.
+	r.idRaw = nil
 	return nil
 }
 

@@ -125,3 +125,33 @@ func TestJsonRpcRequest_IDRawBytes(t *testing.T) {
 		assert.Nil(t, req.IDRawBytes(), "programmatically-built requests should have no idRaw")
 	})
 }
+
+// TestJsonRpcRequest_Clone_PropagatesIDRaw pins the contract that Clone()
+// carries the verbatim id bytes forward. Without this, a cloned request
+// would silently re-introduce the precision-loss bug for any flow that
+// clones the request before response normalization.
+func TestJsonRpcRequest_Clone_PropagatesIDRaw(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","method":"x","id":9007199254740993}`)
+	req := &common.JsonRpcRequest{}
+	require.NoError(t, req.UnmarshalJSON(body))
+	require.Equal(t, "9007199254740993", string(req.IDRawBytes()))
+
+	clone := req.Clone()
+	assert.Equal(t, "9007199254740993", string(clone.IDRawBytes()),
+		"Clone must propagate idRaw so cloned requests still round-trip the id byte-for-byte")
+}
+
+// TestJsonRpcRequest_SetID_ClearsStaleIDRaw pins that SetID makes the typed
+// id authoritative — any captured wire bytes from UnmarshalJSON must be
+// dropped, otherwise normalizeResponse (which prefers IDRawBytes) would
+// echo the OLD wire id back to the client instead of the newly-set one.
+func TestJsonRpcRequest_SetID_ClearsStaleIDRaw(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","method":"x","id":1}`)
+	req := &common.JsonRpcRequest{}
+	require.NoError(t, req.UnmarshalJSON(body))
+	require.Equal(t, "1", string(req.IDRawBytes()), "precondition: idRaw is captured from wire")
+
+	require.NoError(t, req.SetID(int64(42)))
+	assert.Nil(t, req.IDRawBytes(),
+		"SetID must clear idRaw so the new typed id (not the stale wire bytes) wins on the response")
+}

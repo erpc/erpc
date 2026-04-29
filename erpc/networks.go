@@ -1512,7 +1512,7 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 			// back to the typed id for programmatically-constructed
 			// requests where idRaw is unset.
 			if rawID := jrq.IDRawBytes(); len(rawID) > 0 {
-				if err := jrr.SetIDBytesPreserving(rawID); err != nil {
+				if err := jrr.SetIDBytes(rawID); err != nil {
 					return err
 				}
 			} else if err := jrr.SetID(jrq.ID); err != nil {
