@@ -1604,7 +1604,16 @@ func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedR
 			if err != nil {
 				return err
 			}
-			if err := jrr.SetID(jrq.ID); err != nil {
+			// Prefer the verbatim request id bytes when available so that
+			// large integers (>2^53), fractional ids, and other exotic
+			// numeric formats round-trip without precision loss. Falls
+			// back to the typed id for programmatically-constructed
+			// requests where idRaw is unset.
+			if rawID := jrq.IDRawBytes(); len(rawID) > 0 {
+				if err := jrr.SetIDBytes(rawID); err != nil {
+					return err
+				}
+			} else if err := jrr.SetID(jrq.ID); err != nil {
 				return err
 			}
 		}
