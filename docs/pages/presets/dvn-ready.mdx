@@ -8,8 +8,6 @@ import { Callout, Tabs, Tab } from "nextra/components";
 
 A minimal, self-hosted eRPC config for **DVN (Decentralized Verifier Network) operators** and any other off-chain service that verifies on-chain state and cannot afford a single-RPC trust assumption.
 
-The April 2026 LayerZero / KelpDAO incident drained $292M because a DVN read `eth_getLogs` from a single RPC stack and that stack was poisoned. The fix is provider diversity plus cross-upstream consensus on the methods verification actually depends on. This page gives you a working config that does exactly that.
-
 <Callout type="info">
   This preset is meant to be **run yourself**, alongside (or in front of) your DVN. eRPC sits between your verifier and the upstream RPC providers, runs every read against multiple providers, and rejects responses where providers disagree.
 </Callout>
