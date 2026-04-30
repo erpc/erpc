@@ -26,7 +26,7 @@ A minimal, self-hosted eRPC config for **DVN (Decentralized Verifier Network) op
 
 ## Minimal config
 
-Replace the `endpoint` values with your own provider credentials. Use **at least three independent providers** for any chain you verify on; mixing self-hosted nodes with managed providers (Alchemy, Dwellir, BlockPI, QuickNode, Chainstack, etc.) gives the strongest guarantees.
+Replace the `endpoint` values with your own provider credentials. Use **at least three independent providers** for any chain you verify on; mixing self-hosted nodes with managed RPC providers gives the strongest guarantees.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -88,11 +88,11 @@ projects:
     upstreams:
       # Three independent providers minimum. Add more for stronger guarantees.
       - id: provider-a
-        endpoint: https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
+        endpoint: ${PROVIDER_A_ENDPOINT}
       - id: provider-b
-        endpoint: https://api-eth-mainnet.dwellir.com/${DWELLIR_KEY}
+        endpoint: ${PROVIDER_B_ENDPOINT}
       - id: provider-c
-        endpoint: https://ethereum.blockpi.network/v1/rpc/${BLOCKPI_KEY}
+        endpoint: ${PROVIDER_C_ENDPOINT}
       # - id: self-hosted
       #   endpoint: http://your-eth-node:8545
 ```
@@ -161,9 +161,9 @@ export default createConfig({
     ],
     upstreams: [
       // Three independent providers minimum.
-      { id: "provider-a", endpoint: `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_KEY}` },
-      { id: "provider-b", endpoint: `https://api-eth-mainnet.dwellir.com/${process.env.DWELLIR_KEY}` },
-      { id: "provider-c", endpoint: `https://ethereum.blockpi.network/v1/rpc/${process.env.BLOCKPI_KEY}` },
+      { id: "provider-a", endpoint: process.env.PROVIDER_A_ENDPOINT! },
+      { id: "provider-b", endpoint: process.env.PROVIDER_B_ENDPOINT! },
+      { id: "provider-c", endpoint: process.env.PROVIDER_C_ENDPOINT! },
       // { id: "self-hosted", endpoint: "http://your-eth-node:8545" },
     ],
   }],
