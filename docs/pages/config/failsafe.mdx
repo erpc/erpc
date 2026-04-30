@@ -132,6 +132,12 @@ export default createConfig({
 
 Sets a timeout for requests. Network-level timeout applies to the entire request lifecycle (including retries), while upstream-level timeout applies to each individual attempt.
 
+Timeout supports two modes: **fixed** (static duration) and **dynamic** (quantile-based, adapts to real latency).
+
+### Fixed timeout
+
+The simplest configuration — a static duration that applies to all requests matching the policy.
+
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
@@ -181,6 +187,90 @@ export default createConfig({
 ```
   </Tabs.Tab>
 </Tabs>
+
+### Dynamic quantile-based timeout
+
+<Callout type="info">
+  **Quantile-based timeout** (recommended) computes the timeout from real latency percentiles per method, so it automatically adapts to your traffic. Works similarly to [quantile-based hedging](/config/failsafe#hedge-policy).
+</Callout>
+
+When `quantile` is set, the timeout is computed dynamically from the DDSketch latency distribution for each RPC method. For example, `quantile: 0.99` means "set the timeout at the p99 of observed latencies" — only the slowest 1% of requests would be timed out.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `duration` | Duration | Cold-start fallback used until enough latency data is collected. Also serves as the fallback when `maxDuration` is not set. |
+| `quantile` | float | Percentile of latency distribution to use as timeout (e.g., `0.99` for p99). Must be between 0 and 1. |
+| `minDuration` | Duration | *(Optional)* Floor for the computed timeout. Prevents false timeouts when latencies are very low. |
+| `maxDuration` | Duration | *(Optional)* Ceiling for the computed timeout. Can be used as the cold-start fallback when `duration` is omitted. |
+
+<Callout type="tip">
+  For most use cases, just `duration` + `quantile` is sufficient. Use `quantile: 0.99` to timeout only truly stuck requests while letting the system self-tune. The `minDuration` and `maxDuration` fields are optional guard rails.
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          # Recommended: pure dynamic timeout with p99
+          - matchMethod: "eth_call|eth_getLogs"
+            timeout:
+              duration: 30s        # Cold-start fallback
+              quantile: 0.99       # Timeout at p99 of observed latencies
+          
+          # With optional guard rails
+          - matchMethod: "*"
+            timeout:
+              duration: 60s        # Cold-start fallback
+              quantile: 0.99
+              minDuration: 200ms   # Never timeout faster than this
+              maxDuration: 60s     # Never wait longer than this
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      failsafe: [
+        // Recommended: pure dynamic timeout with p99
+        {
+          matchMethod: "eth_call|eth_getLogs",
+          timeout: {
+            duration: "30s",       // Cold-start fallback
+            quantile: 0.99         // Timeout at p99 of observed latencies
+          }
+        },
+        // With optional guard rails
+        {
+          matchMethod: "*",
+          timeout: {
+            duration: "60s",       // Cold-start fallback
+            quantile: 0.99,
+            minDuration: "200ms",  // Never timeout faster than this
+            maxDuration: "60s"     // Never wait longer than this
+          }
+        }
+      ]
+    }]
+  }]
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+Monitor the computed timeout values via Prometheus metric:
+- `erpc_network_timeout_duration_seconds` — histogram of dynamically computed timeout durations per method
 
 ## `retry` policy
 

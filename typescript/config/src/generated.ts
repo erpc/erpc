@@ -643,6 +643,9 @@ export interface CircuitBreakerPolicyConfig {
 }
 export interface TimeoutPolicyConfig {
   duration?: Duration;
+  quantile?: number /* float64 */;
+  minDuration?: Duration;
+  maxDuration?: Duration;
 }
 export interface HedgePolicyConfig {
   delay?: Duration;

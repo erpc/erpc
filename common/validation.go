@@ -1064,8 +1064,18 @@ func (f *FailsafeConfig) Validate() error {
 }
 
 func (t *TimeoutPolicyConfig) Validate() error {
-	if t.Duration == 0 {
+	if t.Quantile > 0 {
+		if t.Quantile > 1 {
+			return fmt.Errorf("upstream.*.failsafe.timeout.quantile must be between 0 and 1")
+		}
+		if t.Duration == 0 && t.MaxDuration == 0 {
+			return fmt.Errorf("upstream.*.failsafe.timeout.duration or maxDuration is required when quantile is set")
+		}
+	} else if t.Duration == 0 {
 		return fmt.Errorf("upstream.*.failsafe.timeout.duration is required")
+	}
+	if t.MinDuration > 0 && t.MaxDuration > 0 && t.MinDuration > t.MaxDuration {
+		return fmt.Errorf("upstream.*.failsafe.timeout.minDuration must be less than or equal to maxDuration")
 	}
 	return nil
 }

@@ -115,11 +115,11 @@ func NewNetwork(
 			if err != nil {
 				return nil, err
 			}
-			policyArray := upstream.ToPolicyArray(pls, "timeout", "consensus", "retry", "hedge")
+			policyArray := upstream.ToPolicyArray(pls, "consensus", "retry", "hedge")
 
-			var timeoutDuration *time.Duration
+			var timeoutFn upstream.TimeoutFunc
 			if fsCfg.Timeout != nil {
-				timeoutDuration = fsCfg.Timeout.Duration.DurationPtr()
+				timeoutFn = upstream.NewTimeoutFunc(&lg, fsCfg.Timeout)
 			}
 
 			method := fsCfg.MatchMethod
@@ -136,7 +136,7 @@ func NewNetwork(
 				method:                 method,
 				finalities:             fsCfg.MatchFinality,
 				executor:               failsafe.NewExecutor(policyArray...),
-				timeout:                timeoutDuration,
+				timeout:                timeoutFn,
 				consensusPolicyEnabled: fsCfg.Consensus != nil,
 				emptyResultAccept:      emptyAccept,
 			})

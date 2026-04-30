@@ -18,6 +18,7 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -28,7 +29,7 @@ type FailsafeExecutor struct {
 	method                 string
 	finalities             []common.DataFinalityState
 	executor               failsafe.Executor[*common.NormalizedResponse]
-	timeout                *time.Duration
+	timeout                upstream.TimeoutFunc
 	consensusPolicyEnabled bool
 	// emptyResultAccept lists methods for which the first emptyish result
 	// short-circuits the upstream loop. Without this the loop tries every
@@ -470,6 +471,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		attribute.String("failsafe.matched_finalities", fmt.Sprintf("%v", failsafeExecutor.finalities)),
 	)
 
+	// Network-level timeout is lifecycle-scoped: it wraps the entire failsafe
+	// execution including retries and hedges. Applying it here (outside the
+	// executor) matches the documented semantics — a network timeout of 5s with
+	// 3 retries still bounds total wall-clock to 5s. Upstream-level timeout,
+	// applied per-attempt inside Upstream.Forward, is independent.
+	if failsafeExecutor.timeout != nil {
+		if td := failsafeExecutor.timeout(ectx, req); td != nil {
+			var cancelFn context.CancelFunc
+			ectx, cancelFn = context.WithTimeoutCause(ectx, *td, common.ErrDynamicTimeoutExceeded)
+			defer cancelFn()
+		}
+	}
+
 	// Track time from failsafe executor start to first callback invocation
 	failsafeStartTime := time.Now()
 
@@ -524,19 +538,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					return nil, ctxErr
 				}
 			}
-			if failsafeExecutor.timeout != nil {
-				var cancelFn context.CancelFunc
-				execSpanCtx, cancelFn = context.WithTimeout(
-					execSpanCtx,
-					// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode).
-					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-					//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
-					//      but allow the failsafe execution to fail with timeout first for proper error handling.
-					*failsafeExecutor.timeout+5*time.Millisecond,
-				)
-
-				defer cancelFn()
-			}
+			// Network-scope timeout was applied at Forward entry (lifecycle-scoped).
+			// Per-attempt enforcement here would double-apply and break retry budgets.
 
 			// Try all upstreams in a single execution before returning to failsafe.
 			// This ensures delays (emptyResultDelay, blockUnavailableDelay) only
@@ -749,7 +752,40 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	defer req.RUnlock()
 
 	if execErr != nil {
-		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
+		// When the lifecycle ctx fires, failsafe may return plain context.DeadlineExceeded
+		// with no sentinel in the Unwrap chain. Substitute only when the ctx cause
+		// is OUR sentinel — accepting any non-DeadlineExceeded cause would leak
+		// parent-scope causes (e.g. http_timeout.go's ErrHandlerTimeout) through
+		// TranslateFailsafeError unclassified.
+		if _, ok := execErr.(common.StandardError); !ok && errors.Is(execErr, context.DeadlineExceeded) {
+			if cause := context.Cause(ectx); errors.Is(cause, common.ErrDynamicTimeoutExceeded) {
+				execErr = cause
+			}
+		}
+		// Three guards stacked, each closing a distinct misattribution:
+		//   - failsafeExecutor.timeout != nil: parent-scope sentinel inherited
+		//     via ctx propagation must not credit a scope that didn't own a policy.
+		//   - !errors.As(retryExceededErr): mirror TranslateFailsafeError's
+		//     retry-exhausted-wins ordering so retry-tail timeouts are reported
+		//     as retry exhaustion (matching the user-visible classification).
+		//   - !HasErrorCode(ErrCodeFailsafeTimeoutExceeded): an upstream-scope
+		//     timeout already incremented at scope=upstream — don't double-count
+		//     when it bubbles up here.
+		var retryExceededErr retrypolicy.ExceededError
+		if failsafeExecutor.timeout != nil &&
+			!errors.As(execErr, &retryExceededErr) &&
+			errors.Is(execErr, common.ErrDynamicTimeoutExceeded) &&
+			!common.HasErrorCode(execErr, common.ErrCodeFailsafeTimeoutExceeded) {
+			finality := req.Finality(ctx)
+			telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
+				n.projectId,
+				req.NetworkLabel(),
+				method,
+				finality.String(),
+				string(common.ScopeNetwork),
+			).Inc()
+		}
+		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime, failsafeExecutor.timeout != nil)
 		// Don't override consensus results with last valid response from individual upstreams
 		// For example if 1 upstream gives empty response another 3 give "reverted" error,
 		// we should still return reverted error, even though there was an empty response before.
