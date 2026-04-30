@@ -21,7 +21,6 @@ A minimal, self-hosted eRPC config for **DVN (Decentralized Verifier Network) op
 | `disputeBehavior: returnError` | If providers disagree, return an error to the verifier. Never accept a disputed read. |
 | `preferNonEmpty: true` | Reject `[]` for `eth_getLogs` if any other provider returned real logs. **This is the exact KelpDAO attack signature.** |
 | `preferLargerResponses: true` | Reject a truncated log set if a larger valid one exists. |
-| Cache disabled on verification methods | Every verification read goes live to upstreams; no cached short-circuit. |
 | `punishMisbehavior` | Upstreams that repeatedly disagree are cordoned automatically. |
 | `misbehaviorsDestination` | Every dispute is exported as JSONL for audit + alerting. |
 
@@ -40,9 +39,6 @@ projects:
       - architecture: evm
         evm:
           chainId: 1 # Ethereum mainnet — repeat the network block per chain you verify
-        # Disable cache on verification methods — every read must go live to upstreams.
-        methods:
-          enforceMethodCompatibility: true
         failsafe:
           # 1. Strict consensus on the methods DVN verification depends on.
           - matchMethod: "eth_getLogs|eth_getBlockByNumber|eth_getTransactionReceipt|eth_getBlockReceipts"
