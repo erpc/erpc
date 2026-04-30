@@ -23,13 +23,14 @@ type ProjectsRegistry struct {
 	logger *zerolog.Logger
 	appCtx context.Context
 
-	rateLimitersRegistry *upstream.RateLimitersRegistry
-	sharedState          data.SharedStateRegistry
-	evmJsonRpcCache      *evm.EvmJsonRpcCache
-	preparedProjects     map[string]*PreparedProject
-	staticProjects       []*common.ProjectConfig
-	vendorsRegistry      *thirdparty.VendorsRegistry
-	proxyPoolRegistry    *clients.ProxyPoolRegistry
+	rateLimitersRegistry     *upstream.RateLimitersRegistry
+	sharedState              data.SharedStateRegistry
+	evmJsonRpcCache          *evm.EvmJsonRpcCache
+	preparedProjects         map[string]*PreparedProject
+	staticProjects           []*common.ProjectConfig
+	vendorsRegistry          *thirdparty.VendorsRegistry
+	proxyPoolRegistry        *clients.ProxyPoolRegistry
+	evmLatestBlockGuarantees []*common.EvmLatestBlockGuaranteeConfig
 }
 
 func NewProjectsRegistry(
@@ -41,17 +42,19 @@ func NewProjectsRegistry(
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *thirdparty.VendorsRegistry,
 	proxyPoolRegistry *clients.ProxyPoolRegistry,
+	evmLatestBlockGuarantees []*common.EvmLatestBlockGuaranteeConfig,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
-		appCtx:               appCtx,
-		logger:               logger,
-		staticProjects:       staticProjects,
-		preparedProjects:     make(map[string]*PreparedProject),
-		sharedState:          sharedState,
-		rateLimitersRegistry: rateLimitersRegistry,
-		evmJsonRpcCache:      evmJsonRpcCache,
-		vendorsRegistry:      vendorsRegistry,
-		proxyPoolRegistry:    proxyPoolRegistry,
+		appCtx:                   appCtx,
+		logger:                   logger,
+		staticProjects:           staticProjects,
+		preparedProjects:         make(map[string]*PreparedProject),
+		sharedState:              sharedState,
+		rateLimitersRegistry:     rateLimitersRegistry,
+		evmJsonRpcCache:          evmJsonRpcCache,
+		vendorsRegistry:          vendorsRegistry,
+		proxyPoolRegistry:        proxyPoolRegistry,
+		evmLatestBlockGuarantees: evmLatestBlockGuarantees,
 	}
 
 	for _, prjCfg := range staticProjects {
@@ -169,6 +172,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.evmJsonRpcCache,
 		r.rateLimitersRegistry,
 		&lg,
+		r.evmLatestBlockGuarantees,
 	)
 	r.preparedProjects[prjCfg.Id] = pp
 

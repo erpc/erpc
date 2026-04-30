@@ -97,12 +97,12 @@ func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
 	return args.Get(0).(common.EvmStatePoller)
 }
 
-func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
 	args := m.Called(ctx)
 	return args.Get(0).(int64)
 }
 
-func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context, guaranteeProfileOverride ...string) int64 {
 	args := m.Called(ctx)
 	return args.Get(0).(int64)
 }

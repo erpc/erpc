@@ -794,3 +794,138 @@ func TestUpstream_EvmAssertBlockAvailability_Finalized(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+func TestUpstream_SupportsMethodPattern(t *testing.T) {
+	tests := []struct {
+		name          string
+		ignoreMethods []string
+		allowMethods  []string
+		pattern       string
+		expected      bool
+	}{
+		{
+			name:     "no restrictions, any pattern supported",
+			pattern:  "*trace*",
+			expected: true,
+		},
+		{
+			name:          "ignore trace methods, trace pattern blocked",
+			ignoreMethods: []string{"trace_*"},
+			pattern:       "*trace*",
+			expected:      false,
+		},
+		{
+			name:          "ignore trace and debug, combined pattern blocked",
+			ignoreMethods: []string{"trace_*", "debug_*"},
+			pattern:       "*trace*|*debug*",
+			expected:      false,
+		},
+		{
+			name:          "ignore trace only, debug pattern supported",
+			ignoreMethods: []string{"trace_*"},
+			pattern:       "*debug*",
+			expected:      true,
+		},
+		{
+			name:          "OR pattern: ignore trace only, combined pattern still supported via debug",
+			ignoreMethods: []string{"trace_*"},
+			pattern:       "*trace*|*debug*",
+			expected:      true,
+		},
+		{
+			name:          "OR pattern: ignore debug only, combined pattern still supported via trace",
+			ignoreMethods: []string{"debug_*"},
+			pattern:       "*trace*|*debug*",
+			expected:      true,
+		},
+		{
+			name:         "OR pattern: allowMethods has trace only, combined pattern supported via trace",
+			allowMethods: []string{"trace_*"},
+			pattern:      "*trace*|*debug*",
+			expected:     true,
+		},
+		{
+			name:         "OR pattern: allowMethods has neither, combined pattern not supported",
+			allowMethods: []string{"eth_*"},
+			pattern:      "*trace*|*debug*",
+			expected:     false,
+		},
+		{
+			name:         "allowMethods with trace, trace pattern supported",
+			allowMethods: []string{"trace_*", "eth_*"},
+			pattern:      "*trace*",
+			expected:     true,
+		},
+		{
+			name:         "allowMethods without trace, trace pattern not supported",
+			allowMethods: []string{"eth_*"},
+			pattern:      "*trace*",
+			expected:     false,
+		},
+		{
+			name:         "allowMethods wildcard all, any pattern supported",
+			allowMethods: []string{"*"},
+			pattern:      "*trace*",
+			expected:     true,
+		},
+		{
+			name:          "allowMethods overrides ignoreMethods",
+			ignoreMethods: []string{"*"},
+			allowMethods:  []string{"trace_*"},
+			pattern:       "*trace*",
+			expected:      true,
+		},
+		{
+			name:          "ignoreMethods blocks and allowMethods does not rescue unrelated pattern",
+			ignoreMethods: []string{"*"},
+			allowMethods:  []string{"eth_*"},
+			pattern:       "*trace*",
+			expected:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := &Upstream{
+				config: &common.UpstreamConfig{
+					Id:            "test",
+					IgnoreMethods: tt.ignoreMethods,
+					AllowMethods:  tt.allowMethods,
+				},
+				logger: &zerolog.Logger{},
+			}
+			result, err := u.SupportsMethodPattern(tt.pattern)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, result, "pattern=%s ignore=%v allow=%v", tt.pattern, tt.ignoreMethods, tt.allowMethods)
+		})
+	}
+}
+
+func TestUpstream_SupportsMethodPattern_ConsistentWithShouldHandleMethod(t *testing.T) {
+	logger := zerolog.Nop()
+	u := &Upstream{
+		config: &common.UpstreamConfig{
+			Id:           "test",
+			AllowMethods: []string{"eth_*"},
+		},
+		logger: &logger,
+	}
+
+	// Both must reject trace methods when allowMethods only includes eth_*
+	handleResult, err := u.ShouldHandleMethod("trace_block")
+	assert.NoError(t, err)
+	assert.False(t, handleResult, "ShouldHandleMethod should reject trace_block when allowMethods=[eth_*]")
+
+	patternResult, err := u.SupportsMethodPattern("*trace*")
+	assert.NoError(t, err)
+	assert.False(t, patternResult, "SupportsMethodPattern should reject *trace* when allowMethods=[eth_*]")
+
+	// Both must accept eth methods
+	handleResult, err = u.ShouldHandleMethod("eth_call")
+	assert.NoError(t, err)
+	assert.True(t, handleResult, "ShouldHandleMethod should accept eth_call when allowMethods=[eth_*]")
+
+	patternResult, err = u.SupportsMethodPattern("eth_*")
+	assert.NoError(t, err)
+	assert.True(t, patternResult, "SupportsMethodPattern should accept eth_* when allowMethods=[eth_*]")
+}

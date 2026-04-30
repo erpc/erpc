@@ -150,9 +150,16 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
+	guaranteeProfile := dirs.EvmLatestBlockGuarantee
+
 	switch bnp {
 	case "latest":
-		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		var highestBlockNumber int64
+		if guaranteeProfile != "" {
+			highestBlockNumber = network.EvmHighestLatestBlockNumber(ctx, guaranteeProfile)
+		} else {
+			highestBlockNumber = network.EvmHighestLatestBlockNumber(ctx)
+		}
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
@@ -213,7 +220,12 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nr, re
 		}
 	case "finalized":
-		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx)
+		var highestBlockNumber int64
+		if guaranteeProfile != "" {
+			highestBlockNumber = network.EvmHighestFinalizedBlockNumber(ctx, guaranteeProfile)
+		} else {
+			highestBlockNumber = network.EvmHighestFinalizedBlockNumber(ctx)
+		}
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err

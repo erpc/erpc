@@ -1038,6 +1038,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs []*comm
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	require.NoError(t, err)
 

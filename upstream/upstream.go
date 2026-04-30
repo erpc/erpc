@@ -1235,15 +1235,21 @@ func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
 	}
 
 	if cfg.AllowMethods != nil {
+		allowed := false
 		for _, m := range cfg.AllowMethods {
 			match, err := common.WildcardMatch(m, method)
 			if err != nil {
 				return false, err
 			}
 			if match {
-				v = true
+				allowed = true
 				break
 			}
+		}
+		if allowed {
+			v = true
+		} else {
+			v = false
 		}
 	}
 
@@ -1251,6 +1257,105 @@ func (u *Upstream) ShouldHandleMethod(method string) (v bool, err error) {
 	u.logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
 
 	return v, nil
+}
+
+// SupportsMethodPattern checks if the upstream could support methods matching the given
+// wildcard pattern (e.g., "*trace*" or "*trace*|*debug*"), by checking against the
+// upstream's allowMethods and ignoreMethods config.
+//
+// For compound OR patterns (e.g., "*trace*|*debug*"), each alternative is checked
+// independently — the upstream supports the pattern if ANY alternative survives the
+// ignore/allow checks. This correctly handles cases like an upstream that ignores
+// trace_* but supports debug_*.
+func (u *Upstream) SupportsMethodPattern(pattern string) (bool, error) {
+	// Split top-level OR alternatives so each is evaluated independently.
+	alternatives := splitTopLevelOr(pattern)
+
+	cfg := u.Config()
+	u.cfgMu.RLock()
+	defer u.cfgMu.RUnlock()
+
+	for _, alt := range alternatives {
+		ok, err := supportsSimplePattern(cfg, alt)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// splitTopLevelOr splits a pattern on top-level '|' operators, respecting parentheses.
+// e.g., "*trace*|*debug*" → ["*trace*", "*debug*"]
+//
+//	"(*a*|*b*)&*c*" → ["(*a*|*b*)&*c*"] (the | is inside parens, not split)
+func splitTopLevelOr(pattern string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '|':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(pattern[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(pattern[start:]))
+	return parts
+}
+
+// supportsSimplePattern checks a single (non-OR-compound) pattern against the upstream's
+// allowMethods and ignoreMethods config using bidirectional WildcardMatch.
+func supportsSimplePattern(cfg *common.UpstreamConfig, pattern string) (bool, error) {
+	supported := true
+
+	// Check ignoreMethods first: if any ignore entry overlaps with our pattern, methods are blocked
+	if cfg.IgnoreMethods != nil {
+		for _, im := range cfg.IgnoreMethods {
+			m1, err := common.WildcardMatch(pattern, im)
+			if err != nil {
+				return false, err
+			}
+			m2, err := common.WildcardMatch(im, pattern)
+			if err != nil {
+				return false, err
+			}
+			if m1 || m2 {
+				supported = false
+				break
+			}
+		}
+	}
+
+	// Check allowMethods: acts as a whitelist. If set and any entry overlaps, methods are
+	// supported (overrides ignoreMethods). If set but nothing overlaps, methods are blocked.
+	if cfg.AllowMethods != nil {
+		for _, am := range cfg.AllowMethods {
+			m1, err := common.WildcardMatch(pattern, am)
+			if err != nil {
+				return false, err
+			}
+			m2, err := common.WildcardMatch(am, pattern)
+			if err != nil {
+				return false, err
+			}
+			if m1 || m2 {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
+	return supported, nil
 }
 
 func (u *Upstream) detectFeatures(ctx context.Context) error {

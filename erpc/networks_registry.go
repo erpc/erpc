@@ -19,17 +19,18 @@ import (
 )
 
 type NetworksRegistry struct {
-	project              *PreparedProject
-	appCtx               context.Context
-	upstreamsRegistry    *upstream.UpstreamsRegistry
-	metricsTracker       *health.Tracker
-	evmJsonRpcCache      *evm.EvmJsonRpcCache
-	rateLimitersRegistry *upstream.RateLimitersRegistry
-	preparedNetworks     sync.Map // map[string]*Network
-	aliasToNetworkId     map[string]aliasEntry
-	aliasMu              *sync.RWMutex
-	initializer          *util.Initializer
-	logger               *zerolog.Logger
+	project                  *PreparedProject
+	appCtx                   context.Context
+	upstreamsRegistry        *upstream.UpstreamsRegistry
+	metricsTracker           *health.Tracker
+	evmJsonRpcCache          *evm.EvmJsonRpcCache
+	rateLimitersRegistry     *upstream.RateLimitersRegistry
+	preparedNetworks         sync.Map // map[string]*Network
+	aliasToNetworkId         map[string]aliasEntry
+	aliasMu                  *sync.RWMutex
+	initializer              *util.Initializer
+	logger                   *zerolog.Logger
+	evmLatestBlockGuarantees []*common.EvmLatestBlockGuaranteeConfig
 }
 
 type aliasEntry struct {
@@ -45,20 +46,22 @@ func NewNetworksRegistry(
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	logger *zerolog.Logger,
+	evmLatestBlockGuarantees []*common.EvmLatestBlockGuaranteeConfig,
 ) *NetworksRegistry {
 	lg := logger.With().Str("component", "networksRegistry").Logger()
 	r := &NetworksRegistry{
-		project:              project,
-		appCtx:               appCtx,
-		upstreamsRegistry:    upstreamsRegistry,
-		metricsTracker:       metricsTracker,
-		evmJsonRpcCache:      evmJsonRpcCache,
-		rateLimitersRegistry: rateLimitersRegistry,
-		preparedNetworks:     sync.Map{},
-		aliasToNetworkId:     map[string]aliasEntry{},
-		aliasMu:              &sync.RWMutex{},
-		initializer:          util.NewInitializer(appCtx, &lg, nil),
-		logger:               logger,
+		project:                  project,
+		appCtx:                   appCtx,
+		upstreamsRegistry:        upstreamsRegistry,
+		metricsTracker:           metricsTracker,
+		evmJsonRpcCache:          evmJsonRpcCache,
+		rateLimitersRegistry:     rateLimitersRegistry,
+		preparedNetworks:         sync.Map{},
+		aliasToNetworkId:         map[string]aliasEntry{},
+		aliasMu:                  &sync.RWMutex{},
+		initializer:              util.NewInitializer(appCtx, &lg, nil),
+		logger:                   logger,
+		evmLatestBlockGuarantees: evmLatestBlockGuarantees,
 	}
 	// Eagerly register aliases from statically defined networks so aliasing works immediately
 	if project != nil && project.Config != nil {
@@ -84,6 +87,7 @@ func NewNetwork(
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
+	evmLatestBlockGuarantees []*common.EvmLatestBlockGuaranteeConfig,
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
@@ -163,6 +167,17 @@ func NewNetwork(
 		netLabel = a
 	}
 
+	// Pre-resolve the default EVM guarantee methods from directive defaults
+	var evmDefaultGuaranteeMethods []string
+	if nwCfg.DirectiveDefaults != nil && nwCfg.DirectiveDefaults.EvmLatestBlockGuarantee != nil {
+		profileId := *nwCfg.DirectiveDefaults.EvmLatestBlockGuarantee
+		methods, err := evm.ResolveEvmLatestBlockGuarantee(evmLatestBlockGuarantees, profileId)
+		if err != nil {
+			return nil, fmt.Errorf("directive defaults: %w", err)
+		}
+		evmDefaultGuaranteeMethods = methods
+	}
+
 	network := &Network{
 		cfg:          nwCfg,
 		logger:       &lg,
@@ -179,6 +194,9 @@ func NewNetwork(
 		inFlightRequests:  &sync.Map{},
 		failsafeExecutors: failsafeExecutors,
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
+
+		evmLatestBlockGuarantees:   evmLatestBlockGuarantees,
+		evmDefaultGuaranteeMethods: evmDefaultGuaranteeMethods,
 	}
 
 	if nwCfg.Architecture == "" {
@@ -301,6 +319,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 		nr.rateLimitersRegistry,
 		nr.upstreamsRegistry,
 		nr.metricsTracker,
+		nr.evmLatestBlockGuarantees,
 	)
 	if err != nil {
 		return nil, err

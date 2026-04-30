@@ -138,6 +138,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -272,7 +273,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup2.Client = cl2
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -400,7 +401,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup3.Client = cl3
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -497,7 +498,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -592,7 +593,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		// RetryEmpty disabled
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.FALSE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.FALSE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -677,7 +678,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -783,7 +784,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup2.Client = cl2
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -882,7 +883,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -994,7 +995,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup2.Client = cl2
 
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt)
+		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}, Failsafe: []*common.FailsafeConfig{fsCfg}, DirectiveDefaults: &common.DirectiveDefaultsConfig{RetryEmpty: &common.TRUE}}, rlr, upr, mt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1111,6 +1112,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1243,6 +1245,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1371,6 +1374,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1536,6 +1540,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1703,6 +1708,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1876,6 +1882,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2074,6 +2081,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2284,6 +2292,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2477,6 +2486,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2630,7 +2640,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Architecture: common.ArchitectureEvm,
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Failsafe:     []*common.FailsafeConfig{fsCfg},
-		}, rlr, upr, mt)
+		}, rlr, upr, mt, nil)
 
 		_ = ntw.Bootstrap(ctx)
 		upstream.ReorderUpstreams(upr)
@@ -2832,6 +2842,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3033,6 +3044,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3224,6 +3236,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3410,6 +3423,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3631,6 +3645,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3841,6 +3856,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4030,6 +4046,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4219,6 +4236,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4376,6 +4394,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4507,6 +4526,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4685,6 +4705,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4820,6 +4841,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4954,6 +4976,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			health.NewTracker(&log.Logger, "prjA", 10*time.Second),
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5074,6 +5097,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			upsReg,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5200,6 +5224,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5333,6 +5358,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5466,6 +5492,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5596,6 +5623,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5747,6 +5775,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5901,6 +5930,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6053,6 +6083,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6194,6 +6225,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6331,6 +6363,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6473,6 +6506,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6619,6 +6653,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6775,6 +6810,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6904,6 +6940,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -7052,6 +7089,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -7202,6 +7240,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -7346,6 +7385,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create network: %v", err)
@@ -7473,6 +7513,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -7596,6 +7637,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -7719,6 +7761,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -7832,6 +7875,7 @@ func TestNetwork_Forward(t *testing.T) {
 			nil,
 			rateLimitersRegistry,
 			&logger,
+			nil,
 		)
 
 		ntw, err := networksRegistry.prepareNetwork(
@@ -8031,6 +8075,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -9666,7 +9711,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 					},
 				},
 			}
-			network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker)
+			network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
 			require.NoError(t, err)
 
 			upstreamsRegistry.Bootstrap(ctx)
@@ -10609,7 +10654,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Failsafe:     []*common.FailsafeConfig{fsCfg},
 		}
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, ntw.Bootstrap(ctx)) // This starts the poller ticker
 
@@ -10803,7 +10848,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 				},
 			},
 		}
-		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
 		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 		require.NoError(t, ntw.Bootstrap(ctx))
 
@@ -10997,6 +11042,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			rlr,
 			upr,
 			mt,
+			nil,
 		)
 
 		upr.Bootstrap(ctx)
@@ -11111,6 +11157,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	assert.NoError(t, err)
 
@@ -11234,6 +11281,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	assert.NoError(t, err)
 
@@ -11367,6 +11415,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11522,6 +11571,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11680,6 +11730,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11808,6 +11859,7 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -11832,6 +11884,512 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		highest := network.EvmHighestLatestBlockNumber(ctx)
 
 		assert.Equal(t, int64(2000), highest, "Should return raw latest block when upper bound exceeds latest")
+	})
+}
+
+func TestNetwork_HighestLatestBlockNumberWithGuarantee(t *testing.T) {
+	t.Run("ReturnsMinOfMaxBlockPerGuaranteedMethod", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Upstream A: supports getBlock + eth_call, latest=1000
+		// Upstream B: supports trace_block + eth_call, latest=999
+		// Guaranteed methods: [eth_getBlockByNumber, eth_call, trace_block]
+		// Expected: min(1000, 1000, 999) = 999
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "node-a",
+			Endpoint: "http://node-a.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			IgnoreMethods: []string{"trace_*", "debug_*"},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "node-b",
+			Endpoint: "http://node-b.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			IgnoreMethods: []string{"eth_getBlockByNumber"},
+		}
+
+		gock.New("http://node-a.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+		gock.New("http://node-b.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "test",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr, rateLimitersRegistry, vr, pr, nil, metricsTracker,
+			1*time.Second, nil, nil,
+		)
+
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
+			{Id: "test-guarantee", Methods: []string{"eth_getBlockByNumber", "eth_call", "trace_block"}},
+		}
+		network, err := NewNetwork(
+			ctx, &log.Logger, "test",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			},
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, customProfiles,
+		)
+		require.NoError(t, err)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+		require.NoError(t, network.Bootstrap(ctx))
+		time.Sleep(250 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 2)
+
+		var nodeA, nodeB *upstream.Upstream
+		for _, u := range upsList {
+			switch u.Id() {
+			case "node-a":
+				nodeA = u
+			case "node-b":
+				nodeB = u
+			}
+		}
+		require.NotNil(t, nodeA)
+		require.NotNil(t, nodeB)
+
+		nodeA.EvmStatePoller().SuggestLatestBlock(1000)
+		nodeB.EvmStatePoller().SuggestLatestBlock(999)
+		time.Sleep(50 * time.Millisecond)
+
+		result := network.EvmHighestLatestBlockNumber(ctx, "test-guarantee")
+		assert.Equal(t, int64(999), result, "Should return min of max blocks per guaranteed method")
+	})
+
+	t.Run("ReturnsZeroWhenMethodNotSupportedByAnyUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Single upstream that ignores trace_block
+		up1 := &common.UpstreamConfig{
+			Type:          common.UpstreamTypeEvm,
+			Id:            "basic-node",
+			Endpoint:      "http://basic.localhost",
+			Evm:           &common.EvmUpstreamConfig{ChainId: 123},
+			IgnoreMethods: []string{"trace_*"},
+		}
+
+		gock.New("http://basic.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "test",
+			[]*common.UpstreamConfig{up1},
+			ssr, rateLimitersRegistry, vr, pr, nil, metricsTracker,
+			1*time.Second, nil, nil,
+		)
+
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
+			{Id: "trace-required", Methods: []string{"eth_getBlockByNumber", "trace_block"}},
+		}
+		network, err := NewNetwork(
+			ctx, &log.Logger, "test",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			},
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, customProfiles,
+		)
+		require.NoError(t, err)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+		require.NoError(t, network.Bootstrap(ctx))
+		time.Sleep(250 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 1)
+		upsList[0].EvmStatePoller().SuggestLatestBlock(1000)
+		time.Sleep(50 * time.Millisecond)
+
+		// trace_block is not supported, so should return 0
+		result := network.EvmHighestLatestBlockNumber(ctx, "trace-required")
+		assert.Equal(t, int64(0), result, "Should return 0 when a guaranteed method is unsupported")
+	})
+
+	t.Run("EmptyMethodsReturnsSameAsRawHighest", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "normal-node",
+			Endpoint: "http://normal.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+
+		gock.New("http://normal.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "test",
+			[]*common.UpstreamConfig{up1},
+			ssr, rateLimitersRegistry, vr, pr, nil, metricsTracker,
+			1*time.Second, nil, nil,
+		)
+
+		network, err := NewNetwork(
+			ctx, &log.Logger, "test",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			},
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+		)
+		require.NoError(t, err)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+		require.NoError(t, network.Bootstrap(ctx))
+		time.Sleep(250 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 1)
+		upsList[0].EvmStatePoller().SuggestLatestBlock(1000)
+		time.Sleep(50 * time.Millisecond)
+
+		// No guarantee profile → should return raw highest
+		raw := network.evmHighestLatestBlockNumberRaw(ctx)
+		withNoOverride := network.EvmHighestLatestBlockNumber(ctx)
+		assert.Equal(t, raw, withNoOverride, "No guarantee should return same as raw highest")
+	})
+
+	t.Run("DefaultGuaranteeAppliedViaEvmHighestLatestBlockNumber", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Two upstreams: node-a supports everything, node-b ignores trace and debug
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "full-node",
+			Endpoint: "http://full.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:          common.UpstreamTypeEvm,
+			Id:            "partial-node",
+			Endpoint:      "http://partial.localhost",
+			Evm:           &common.EvmUpstreamConfig{ChainId: 123},
+			IgnoreMethods: []string{"trace_*", "debug_*"},
+		}
+
+		gock.New("http://full.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+		gock.New("http://partial.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "test",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr, rateLimitersRegistry, vr, pr, nil, metricsTracker,
+			1*time.Second, nil, nil,
+		)
+
+		// Configure network with a default guarantee profile using built-in profile
+		guaranteeProfile := "complete-indexing"
+		network, err := NewNetwork(
+			ctx, &log.Logger, "test",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					EvmLatestBlockGuarantee: &guaranteeProfile,
+				},
+			},
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+		)
+		require.NoError(t, err)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+		require.NoError(t, network.Bootstrap(ctx))
+		time.Sleep(250 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 2)
+
+		var fullNode, partialNode *upstream.Upstream
+		for _, u := range upsList {
+			switch u.Id() {
+			case "full-node":
+				fullNode = u
+			case "partial-node":
+				partialNode = u
+			}
+		}
+		require.NotNil(t, fullNode)
+		require.NotNil(t, partialNode)
+
+		// partial-node has higher block but doesn't support trace or debug methods
+		fullNode.EvmStatePoller().SuggestLatestBlock(999)
+		partialNode.EvmStatePoller().SuggestLatestBlock(1000)
+		time.Sleep(50 * time.Millisecond)
+
+		// EvmHighestLatestBlockNumber should apply the default guarantee
+		// complete-indexing includes *trace*|*debug* which only full-node supports (latest=999)
+		highest := network.EvmHighestLatestBlockNumber(ctx)
+		assert.Equal(t, int64(999), highest,
+			"Default guarantee should constrain latest block to the trace-capable upstream's block")
+	})
+
+	t.Run("WildcardPatternInGuaranteeMethods", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Upstream A: basic node, ignores trace and debug methods, latest=1000
+		// Upstream B: archive node, supports everything, latest=999
+		// Guarantee: [eth_getBlockByNumber, *trace*|*debug*]
+		// Expected: eth_getBlockByNumber → max(1000, 999)=1000; *trace*|*debug* → only B(999); min(1000, 999)=999
+		up1 := &common.UpstreamConfig{
+			Type:          common.UpstreamTypeEvm,
+			Id:            "basic-node",
+			Endpoint:      "http://basic-wc.localhost",
+			Evm:           &common.EvmUpstreamConfig{ChainId: 123},
+			IgnoreMethods: []string{"trace_*", "debug_*"},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "archive-node",
+			Endpoint: "http://archive-wc.localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}
+
+		gock.New("http://basic-wc.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+		gock.New("http://archive-wc.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `eth_chainId`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":"0x7b"}`))
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "test",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr, rateLimitersRegistry, vr, pr, nil, metricsTracker,
+			1*time.Second, nil, nil,
+		)
+
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
+			{Id: "wildcard-test", Methods: []string{"eth_getBlockByNumber", "*trace*|*debug*"}},
+		}
+		network, err := NewNetwork(
+			ctx, &log.Logger, "test",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			},
+			rateLimitersRegistry, upstreamsRegistry, metricsTracker, customProfiles,
+		)
+		require.NoError(t, err)
+
+		upstreamsRegistry.Bootstrap(ctx)
+		time.Sleep(200 * time.Millisecond)
+		require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+		require.NoError(t, network.Bootstrap(ctx))
+		time.Sleep(250 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 2)
+
+		var basicNode, archiveNode *upstream.Upstream
+		for _, u := range upsList {
+			switch u.Id() {
+			case "basic-node":
+				basicNode = u
+			case "archive-node":
+				archiveNode = u
+			}
+		}
+		require.NotNil(t, basicNode)
+		require.NotNil(t, archiveNode)
+
+		basicNode.EvmStatePoller().SuggestLatestBlock(1000)
+		archiveNode.EvmStatePoller().SuggestLatestBlock(999)
+		time.Sleep(50 * time.Millisecond)
+
+		// Wildcard pattern: *trace*|*debug* means "supports trace or debug methods"
+		result := network.EvmHighestLatestBlockNumber(ctx, "wildcard-test")
+		assert.Equal(t, int64(999), result, "Wildcard guarantee should constrain to archive node's block")
+
+		// When both nodes have same block, should return that block
+		basicNode.EvmStatePoller().SuggestLatestBlock(999)
+		time.Sleep(50 * time.Millisecond)
+		result = network.EvmHighestLatestBlockNumber(ctx, "wildcard-test")
+		assert.Equal(t, int64(999), result)
+
+	})
+
+	t.Run("ResolveEvmLatestBlockGuarantee_BuiltinAndCustomProfiles", func(t *testing.T) {
+		customProfiles := []*common.EvmLatestBlockGuaranteeConfig{
+			{Id: "my-custom", Methods: []string{"eth_call", "my_method"}},
+		}
+
+		// Custom profile should resolve
+		methods, err := evm.ResolveEvmLatestBlockGuarantee(customProfiles, "my-custom")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"eth_call", "my_method"}, methods)
+
+		// Built-in profile should resolve
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(customProfiles, "frontend-dapps")
+		require.NoError(t, err)
+		assert.Equal(t, evm.EvmBuiltinLatestBlockGuarantees["frontend-dapps"], methods)
+
+		// Unknown profile returns error
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(customProfiles, "nonexistent")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "nonexistent")
+		assert.Nil(t, methods)
+
+		// Empty profile returns nil without error
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(customProfiles, "")
+		assert.NoError(t, err)
+		assert.Nil(t, methods)
+
+		// Nil custom profiles still resolves built-ins
+		methods, err = evm.ResolveEvmLatestBlockGuarantee(nil, "complete-indexing")
+		require.NoError(t, err)
+		assert.Equal(t, evm.EvmBuiltinLatestBlockGuarantees["complete-indexing"], methods)
 	})
 }
 
@@ -11943,6 +12501,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -12075,6 +12634,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -12205,6 +12765,7 @@ func TestNetwork_HighestFinalizedBlockNumber(t *testing.T) {
 			rateLimitersRegistry,
 			upstreamsRegistry,
 			metricsTracker,
+			nil,
 		)
 		require.NoError(t, err)
 

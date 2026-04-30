@@ -58,6 +58,7 @@ const (
 	headerDirectiveValidateTxFields           = "X-ERPC-Validate-Transaction-Fields"
 	headerDirectiveValidateTxBlockInfo        = "X-ERPC-Validate-Transaction-Block-Info"
 	headerDirectiveValidateLogFields          = "X-ERPC-Validate-Log-Fields"
+	headerDirectiveEvmLatestBlockGuarantee    = "X-ERPC-Evm-Latest-Block-Guarantee"
 )
 
 const (
@@ -83,6 +84,7 @@ const (
 	queryDirectiveValidateTxFields           = "validate-transaction-fields"
 	queryDirectiveValidateTxBlockInfo        = "validate-transaction-block-info"
 	queryDirectiveValidateLogFields          = "validate-log-fields"
+	queryDirectiveEvmLatestBlockGuarantee    = "evm-latest-block-guarantee"
 )
 
 var directiveKeyRegistry = []directiveKeyNames{
@@ -108,6 +110,7 @@ var directiveKeyRegistry = []directiveKeyNames{
 	{header: headerDirectiveValidateTxFields, query: queryDirectiveValidateTxFields},
 	{header: headerDirectiveValidateTxBlockInfo, query: queryDirectiveValidateTxBlockInfo},
 	{header: headerDirectiveValidateLogFields, query: queryDirectiveValidateLogFields},
+	{header: headerDirectiveEvmLatestBlockGuarantee, query: queryDirectiveEvmLatestBlockGuarantee},
 }
 
 type RequestDirectives struct {
@@ -142,6 +145,10 @@ type RequestDirectives struct {
 	// When true, the system will still compute and cache block references (for finality/metrics),
 	// but will NOT replace tags like "latest"/"finalized" with hex numbers in outbound requests.
 	SkipInterpolation bool `json:"skipInterpolation"`
+
+	// EvmLatestBlockGuarantee references a named profile of methods that must be available
+	// on at least one upstream before reporting a block as "latest".
+	EvmLatestBlockGuarantee string `json:"evmLatestBlockGuarantee,omitempty"`
 
 	// Validation: Block Integrity
 	EnforceHighestBlock        bool `json:"enforceHighestBlock,omitempty"`
@@ -548,6 +555,9 @@ func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveD
 	if directiveDefaults.SkipInterpolation != nil {
 		r.directives.SkipInterpolation = *directiveDefaults.SkipInterpolation
 	}
+	if directiveDefaults.EvmLatestBlockGuarantee != nil && r.directives.EvmLatestBlockGuarantee == "" {
+		r.directives.EvmLatestBlockGuarantee = *directiveDefaults.EvmLatestBlockGuarantee
+	}
 
 	// Validation: Block Integrity
 	if directiveDefaults.EnforceHighestBlock != nil {
@@ -696,6 +706,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 	if hv := headers.Get(headerDirectiveSkipInterpolation); hv != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(hv)) == "true"
 	}
+	if hv := headers.Get(headerDirectiveEvmLatestBlockGuarantee); hv != "" {
+		r.directives.EvmLatestBlockGuarantee = strings.TrimSpace(hv)
+	}
 
 	// Validation Headers
 	if hv := headers.Get(headerDirectiveEnforceHighestBlock); hv != "" {
@@ -776,6 +789,9 @@ func (r *NormalizedRequest) EnrichFromHttp(headers http.Header, queryArgs url.Va
 
 	if skipInterpolation := queryArgs.Get(queryDirectiveSkipInterpolation); skipInterpolation != "" {
 		r.directives.SkipInterpolation = strings.ToLower(strings.TrimSpace(skipInterpolation)) == "true"
+	}
+	if v := queryArgs.Get(queryDirectiveEvmLatestBlockGuarantee); v != "" {
+		r.directives.EvmLatestBlockGuarantee = strings.TrimSpace(v)
 	}
 
 	// Validation query parameters

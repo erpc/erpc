@@ -431,6 +431,7 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
+		nil,
 	)
 	require.NoError(t, err)
 
