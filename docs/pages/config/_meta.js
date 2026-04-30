@@ -17,9 +17,6 @@ module.exports = {
 			{name: "Consensus", href: "/config/failsafe/consensus"},
 		],
 	},
-	"dvn-ready": {
-		title: "DVN-ready preset",
-	},
 	database: {
 		title: "Database",
 	},
