@@ -27,8 +27,14 @@ type Network interface {
 	GetFinality(ctx context.Context, req *NormalizedRequest, resp *NormalizedResponse) DataFinalityState
 
 	// TODO Move to EvmNetwork interface?
-	EvmHighestLatestBlockNumber(ctx context.Context) int64
-	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
+	// EvmHighestLatestBlockNumber returns the highest "latest" block number across
+	// upstreams. Optional extraMethods are unioned with the network's configured
+	// LatestBlockGuaranteedMethods; the resulting set constrains which upstream
+	// blocks count (see EvmNetworkConfig.LatestBlockGuaranteedMethods).
+	EvmHighestLatestBlockNumber(ctx context.Context, extraMethods ...string) int64
+	// EvmHighestFinalizedBlockNumber mirrors EvmHighestLatestBlockNumber for the
+	// "finalized" tag.
+	EvmHighestFinalizedBlockNumber(ctx context.Context, extraMethods ...string) int64
 	EvmLeaderUpstream(ctx context.Context) Upstream
 }
 

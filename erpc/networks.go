@@ -108,81 +108,187 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
-	defer span.End()
-
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
-	var maxBlock int64 = 0
-	for _, u := range upstreams {
-		statePoller := u.EvmStatePoller()
-		if statePoller == nil {
-			continue
-		}
-
-		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
-		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest latest block calculation")
-			continue
-		}
-
-		// Check if upstream is excluded by selection policy
-		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_blockNumber" as it's a common method that would be used to get latest block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_blockNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest latest block calculation")
-				continue
-			}
-		}
-
-		// Use effective latest block which considers blockAvailability.upper config
-		// (e.g., if upstream has latestBlockMinus: 5, use latest-5 instead of latest)
-		upBlock := u.EvmEffectiveLatestBlock()
-		if upBlock > maxBlock {
-			maxBlock = upBlock
-		}
-	}
-	span.SetAttributes(attribute.Int64("highest_latest_block", maxBlock))
-	return maxBlock
+func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context, extraMethods ...string) int64 {
+	return n.evmHighestBlock(
+		ctx,
+		"latest",
+		"eth_blockNumber",
+		n.guaranteedMethodsUnion(extraMethods),
+		(*upstream.Upstream).EvmEffectiveLatestBlock,
+	)
 }
 
-func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestFinalizedBlockNumber", trace.WithAttributes(
+func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context, extraMethods ...string) int64 {
+	return n.evmHighestBlock(
+		ctx,
+		"finalized",
+		"eth_getBlockByNumber",
+		n.guaranteedMethodsUnion(extraMethods),
+		(*upstream.Upstream).EvmEffectiveFinalizedBlock,
+	)
+}
+
+// guaranteedMethodsUnion returns the deduplicated union of the network's configured
+// LatestBlockGuaranteedMethods and the caller-supplied extras. Order is preserved
+// in (configured-first, extras-second) order; empty entries are dropped. Returns
+// nil when the result is empty so the caller can branch on len()==0.
+func (n *Network) guaranteedMethodsUnion(extras []string) []string {
+	var configured []string
+	if n.cfg != nil && n.cfg.Evm != nil {
+		configured = n.cfg.Evm.LatestBlockGuaranteedMethods
+	}
+	if len(configured) == 0 && len(extras) == 0 {
+		return nil
+	}
+	merged := make([]string, 0, len(configured)+len(extras))
+	seen := make(map[string]struct{}, len(configured)+len(extras))
+	for _, m := range configured {
+		if m == "" {
+			continue
+		}
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{}
+		merged = append(merged, m)
+	}
+	for _, m := range extras {
+		if m == "" {
+			continue
+		}
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{}
+		merged = append(merged, m)
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+// evmHighestBlock computes the highest block reported by the network's upstreams,
+// optionally constrained to a set of methods that must each be servable by at least
+// one non-syncing, non-policy-excluded upstream.
+//
+// When requiredMethods is empty, returns max(blockGetter(u)) across eligible
+// upstreams (the historical, unconstrained behavior).
+//
+// When requiredMethods is non-empty, computes
+//
+//	min over m in requiredMethods of max(blockGetter(u)) where u.ShouldHandleMethod(m)
+//
+// and returns 0 when any required method has no supporting eligible upstream — in
+// that case the network is treated as "unable to guarantee a block height" and
+// callers fall through to whatever fallback they had for the unconstrained case.
+//
+// Method support is read via Upstream.ShouldHandleMethod, which honors statically
+// configured allow/ignoreMethods AND the dynamically populated ignore list from
+// autoIgnoreUnsupportedMethods. This means once an upstream returns
+// "method not supported" once, it is automatically excluded from future guarantee
+// calculations for that method without operator intervention.
+func (n *Network) evmHighestBlock(
+	ctx context.Context,
+	blockKind string,
+	permitMethod string,
+	requiredMethods []string,
+	blockGetter func(*upstream.Upstream) int64,
+) int64 {
+	spanName := "Network.EvmHighestLatestBlockNumber"
+	if blockKind == "finalized" {
+		spanName = "Network.EvmHighestFinalizedBlockNumber"
+	}
+	ctx, span := common.StartDetailSpan(ctx, spanName, trace.WithAttributes(
 		attribute.String("network.id", n.networkId),
+		attribute.String("block.kind", blockKind),
 	))
 	defer span.End()
 
 	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
+
+	// Per-method maxima are only allocated when the guarantee constraint is active.
+	var perMethodMax map[string]int64
+	if len(requiredMethods) > 0 {
+		perMethodMax = make(map[string]int64, len(requiredMethods))
+		for _, m := range requiredMethods {
+			perMethodMax[m] = 0
+		}
+	}
+
 	var maxBlock int64 = 0
 	for _, u := range upstreams {
 		statePoller := u.EvmStatePoller()
 		if statePoller == nil {
 			continue
 		}
-
-		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
-			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest finalized block calculation")
+			n.logger.Debug().Str("upstreamId", u.Id()).Str("blockKind", blockKind).Msg("skipping syncing upstream for highest block calculation")
 			continue
 		}
-
-		// Check if upstream is excluded by selection policy
 		if n.selectionPolicyEvaluator != nil {
-			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
-			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
-				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest finalized block calculation")
+			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, permitMethod); err != nil {
+				n.logger.Debug().Str("upstreamId", u.Id()).Str("blockKind", blockKind).Err(err).Msg("skipping upstream excluded by selection policy for highest block calculation")
 				continue
 			}
 		}
 
-		// Use effective finalized block which considers blockAvailability.upper config
-		upBlock := u.EvmEffectiveFinalizedBlock()
-		if upBlock > maxBlock {
-			maxBlock = upBlock
+		upBlock := blockGetter(u)
+		if upBlock <= 0 {
+			continue
+		}
+
+		if perMethodMax == nil {
+			if upBlock > maxBlock {
+				maxBlock = upBlock
+			}
+			continue
+		}
+
+		// Constrained path: only attribute this upstream's block to methods it can serve.
+		for _, m := range requiredMethods {
+			allowed, err := u.ShouldHandleMethod(m)
+			if err != nil {
+				n.logger.Debug().Str("upstreamId", u.Id()).Str("method", m).Err(err).Msg("error checking method support; treating as unsupported")
+				continue
+			}
+			if !allowed {
+				continue
+			}
+			if upBlock > perMethodMax[m] {
+				perMethodMax[m] = upBlock
+			}
 		}
 	}
-	span.SetAttributes(attribute.Int64("highest_finalized_block", maxBlock))
-	return maxBlock
+
+	if perMethodMax == nil {
+		span.SetAttributes(attribute.Int64("highest_"+blockKind+"_block", maxBlock))
+		return maxBlock
+	}
+
+	// Take min across the per-method maxima. Any unsatisfied method (max == 0)
+	// short-circuits to 0 so callers fall through to their existing fallbacks.
+	result := int64(math.MaxInt64)
+	for _, m := range requiredMethods {
+		mb := perMethodMax[m]
+		if mb == 0 {
+			n.logger.Debug().Str("method", m).Str("blockKind", blockKind).Msg("no upstream can serve guaranteed method; treating highest block as 0")
+			span.SetAttributes(attribute.String("unsatisfied_method", m))
+			return 0
+		}
+		if mb < result {
+			result = mb
+		}
+	}
+	if result == math.MaxInt64 {
+		// All methods returned 0 simultaneously — defensive; the loop above already returns.
+		result = 0
+	}
+	span.SetAttributes(
+		attribute.Int64("highest_"+blockKind+"_block", result),
+		attribute.StringSlice("guaranteed_methods", requiredMethods),
+	)
+	return result
 }
 
 func (n *Network) EvmLowestFinalizedBlockNumber(ctx context.Context) int64 {

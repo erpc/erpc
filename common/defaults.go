@@ -1889,6 +1889,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.TraceFilterSplitConcurrency == 0 && defaults.Evm.TraceFilterSplitConcurrency != 0 {
 				n.Evm.TraceFilterSplitConcurrency = defaults.Evm.TraceFilterSplitConcurrency
 			}
+			if len(n.Evm.LatestBlockGuaranteedMethods) == 0 && len(defaults.Evm.LatestBlockGuaranteedMethods) > 0 {
+				n.Evm.LatestBlockGuaranteedMethods = append([]string(nil), defaults.Evm.LatestBlockGuaranteedMethods...)
+			}
 		} else if n.Evm == nil && defaults.Evm != nil {
 			n.Evm = &EvmNetworkConfig{}
 			*n.Evm = *defaults.Evm
