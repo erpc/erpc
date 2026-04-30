@@ -41,7 +41,7 @@ projects:
             timeout:
               duration: 10s
             retry:
-              maxAttempts: 2
+              maxAttempts: 3
             consensus:
               maxParticipants: 3
               agreementThreshold: 3        # Unanimous — security over availability.
@@ -110,7 +110,7 @@ export default createConfig({
             // 1. Strict consensus on the methods DVN verification depends on.
             matchMethod: "eth_getLogs|eth_getBlockByNumber|eth_getTransactionReceipt|eth_getBlockReceipts",
             timeout: { duration: "10s" },
-            retry: { maxAttempts: 2 },
+            retry: { maxAttempts: 3 },
             consensus: {
               maxParticipants: 3,
               agreementThreshold: 3,            // Unanimous — security over availability.
