@@ -138,16 +138,15 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		seenFinalized bool
 	)
 
-	// Helper: cache numeric block number when safe
+	// Helper: cache numeric block number when safe.
+	// The cached value is metadata used by cache lookups, gRPC routing, tracing, and
+	// the network-level block-availability check. It does not by itself drive routing
+	// decisions — that is gated independently by EnforceBlockAvailability at the
+	// consumer call sites. Always caching when we can extract a number keeps the
+	// metadata complete regardless of per-method enforcement defaults.
 	cacheBlockNumber := func(n int64) {
-		// Best-effort: always cache the last seen numeric block number.
 		// Ordering of ReqRefs should ensure higher bounds (e.g., toBlock) appear later,
 		// so the final cached value represents the upper bound when ranges are present.
-		// Respect method-level override to disable block availability enforcement:
-		// when enforcement is disabled, do not cache the number to avoid influencing selection.
-		if methodCfg != nil && methodCfg.EnforceBlockAvailability != nil && !*methodCfg.EnforceBlockAvailability {
-			return
-		}
 		if n > 0 {
 			nrq.SetEvmBlockNumber(n)
 		}
