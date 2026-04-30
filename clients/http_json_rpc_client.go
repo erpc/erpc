@@ -758,7 +758,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
 	}
-	// DO NOT close resp.Body here - it will be closed by NormalizedResponse after reading
+	// DO NOT close resp.Body here - the wrapper owns it (gzip path) or
+	// NormalizedResponse closes it directly (non-gzip path) after reading.
 
 	var bodyReader io.ReadCloser = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
@@ -767,7 +768,10 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			_ = resp.Body.Close() // Must close on error path
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
-		bodyReader = c.gzipPool.WrapGzipReader(gzReader)
+		// Pass resp.Body so the wrapper closes it on Close — without this,
+		// gzip.Reader.Close leaves the underlying http stream open and the
+		// transport keeps the conn pinned. See pooledGzipReadCloser docs.
+		bodyReader = c.gzipPool.WrapGzipReader(gzReader, resp.Body)
 	}
 
 	nr := common.NewNormalizedResponse().
