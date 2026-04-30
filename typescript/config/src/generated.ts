@@ -963,6 +963,24 @@ export interface EvmNetworkConfig {
    * Set to false to disable this behavior and return raw upstream errors.
    */
   idempotentTransactionBroadcast?: boolean;
+  /**
+   * LatestBlockGuaranteedMethods constrains the network's reported "latest" and
+   * "finalized" block numbers to ones for which every listed method is actually
+   * servable by at least one non-syncing upstream.
+   * Algorithm: for each listed method, find the highest block among upstreams
+   * that can serve that method (via ShouldHandleMethod, which honors
+   * allow/ignoreMethods plus dynamic autoIgnoreUnsupportedMethods); the network's
+   * effective latest/finalized is the minimum across those per-method maxima. If
+   * any method has no supporting upstream, the result is 0 (treated as "unknown")
+   * so callers fall through to their existing fallbacks.
+   * Use this when an upstream may be ahead of the chain head it can fully serve
+   * (e.g. one provider reports latest=N but cannot serve eth_getBlockReceipts(N)
+   * while another provider that can is one block behind). Without this, clients
+   * see "block not found" on the follow-up call.
+   * Empty/nil disables the constraint and the raw highest block across upstreams
+   * is returned (current behavior).
+   */
+  latestBlockGuaranteedMethods?: string[];
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.

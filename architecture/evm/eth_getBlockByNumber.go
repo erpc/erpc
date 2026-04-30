@@ -152,7 +152,10 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 	switch bnp {
 	case "latest":
-		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		// Self-reference: when picking a higher "latest" block, ensure that block
+		// is actually servable by an upstream supporting eth_getBlockByNumber. This
+		// composes with any LatestBlockGuaranteedMethods configured on the network.
+		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx, "eth_getBlockByNumber")
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
@@ -213,7 +216,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nr, re
 		}
 	case "finalized":
-		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx)
+		// Same self-reference rationale as the "latest" branch above.
+		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx, "eth_getBlockByNumber")
 		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
