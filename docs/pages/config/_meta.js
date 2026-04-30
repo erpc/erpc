@@ -17,6 +17,9 @@ module.exports = {
 			{name: "Consensus", href: "/config/failsafe/consensus"},
 		],
 	},
+	presets: {
+		title: "Presets",
+	},
 	database: {
 		title: "Database",
 	},
