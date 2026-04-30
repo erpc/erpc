@@ -10,11 +10,6 @@ module.exports = {
 		title: "Config",
 	},
 	config: { display: "children", title: "Config" },
-	"-- Presets": {
-		type: "separator",
-		title: "Presets",
-	},
-	presets: { title: "Presets", display: "children" },
 	"-- Deployment": {
 		type: "separator",
 		title: "Deployment",
