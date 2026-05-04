@@ -618,11 +618,26 @@ func (c *CachePolicyConfig) convertLegacyMatchers() {
 		return
 	}
 
-	// Convert legacy fields to new matcher format if any are present
-	hasLegacyFields := c.Network != "" || c.Method != "" || len(c.Params) > 0
+	// Convert legacy fields to new matcher format if any are present.
+	//
+	// Finality and Empty present a detection limitation:
+	//   * `DataFinalityStateFinalized` is the zero value (intentional default per
+	//     common/data.go) — we cannot distinguish "user set finality: finalized"
+	//     from "user didn't set finality at all".
+	//   * `CacheEmptyBehaviorIgnore` is the zero value — same problem.
+	// We therefore detect *non-default* values (Unfinalized/Realtime/Unknown for
+	// finality; Allow/Only for empty). Configs whose ONLY legacy field is the
+	// zero-value of one of these enums fall through to the catch-all matcher
+	// below, which matches all finalities/empty behaviors. For users who
+	// explicitly want `finality: finalized` or `empty: ignore` constraints, they
+	// must use the new `matchers:` schema directly. (Future fix: convert these
+	// fields to pointer types so unset/explicit can be distinguished.)
+	hasLegacyFields := c.Network != "" ||
+		c.Method != "" ||
+		len(c.Params) > 0 ||
+		c.Finality != DataFinalityStateFinalized ||
+		c.Empty != CacheEmptyBehaviorIgnore
 
-	// For finality and empty, we need to check if they were explicitly set by looking at the struct
-	// Since we can't distinguish between unset and zero value, we'll convert if any other field is set
 	if hasLegacyFields {
 		matcher := &MatcherConfig{
 			Action: MatcherInclude, // Default action for cache policies
@@ -2172,10 +2187,12 @@ func (f *FailsafeConfig) convertLegacyMatchers() {
 		}
 		// If MatchMethod is empty, leave Method empty (which means match all)
 
-		// Convert MatchFinality - include all finality states in a single matcher
+		// Convert MatchFinality - include all finality states in a single matcher.
+		// Copy the slice (don't share the backing array) so subsequent mutations
+		// to f.MatchFinality or matcher.Finality don't corrupt the other —
+		// matches the resolution from PR review comments #14/#15.
 		if len(f.MatchFinality) > 0 {
-			// Convert the slice to DataFinalityStateArray and assign to matcher
-			matcher.Finality = f.MatchFinality
+			matcher.Finality = append([]DataFinalityState(nil), f.MatchFinality...)
 		}
 
 		// Add the matcher (with or without finality states)

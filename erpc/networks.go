@@ -283,11 +283,11 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 		}
 	}
 
-	// If no specific match found, return the default executor (should be the last one)
-	if len(n.failsafeExecutors) > 0 {
-		return n.failsafeExecutors[len(n.failsafeExecutors)-1]
-	}
-
+	// No fallback: the synthetic default executor (appended last in
+	// networks_registry.go with method="*", finalities=nil, config=nil)
+	// is guaranteed to match any request via the legacy branch above.
+	// If we ever reach here, the registry invariant has broken — return nil
+	// so callers can detect it (both call sites already nil-check).
 	return nil
 }
 

@@ -1,0 +1,141 @@
+{
+  "reviewer": "api-contract",
+  "findings": [
+    {
+      "id": "api-contract-1",
+      "severity": "high",
+      "confidence": 0.95,
+      "title": "Cache policy convertLegacyMatchers silently drops `finality` and `empty` when they are the only legacy fields set",
+      "category": "breaking_change",
+      "description": "In `common/defaults.go::CachePolicyConfig.convertLegacyMatchers` (line 622), `hasLegacyFields := c.Network != \"\" || c.Method != \"\" || len(c.Params) > 0` does NOT include `c.Finality` or `c.Empty`. When a user has an existing cache policy that sets ONLY a legacy non-zero `finality` (e.g. `realtime`, `unfinalized`, `unknown`) and/or a non-zero `empty` (e.g. `allow`, `only`), the conversion block is skipped and the catch-all branch at line 660 inserts a default matcher with `Method:\"*\"` and no finality/empty constraint. The user's filter is silently dropped, so a policy that was scoped to e.g. realtime data now applies to all data. The in-code comment at line 624 (\"we'll convert if any other field is set\") explicitly acknowledges this gap but accepts it. Note: `DataFinalityStateFinalized` is the zero value of `DataFinalityState`, so policies that legacy-set `finality: finalized` are indistinguishable from unset and cannot be detected here, but `realtime`/`unfinalized`/`unknown` (non-zero values that users have actually configured) are detectable and being missed. This is a silent semantic regression of an existing user-facing config contract.",
+      "location": "common/defaults.go:611-665 (CachePolicyConfig.convertLegacyMatchers)",
+      "evidence": "hasLegacyFields := c.Network != \"\" || c.Method != \"\" || len(c.Params) > 0  // omits Finality, Empty",
+      "recommendation": "Either (a) include `c.Finality != DataFinalityStateFinalized` and `c.Empty != CacheEmptyBehaviorIgnore` in the legacy detection, with a documented caveat that a legacy `finality: finalized` cannot be distinguished from unset (and recommend users move to `matchers`), or (b) make `Finality` and `Empty` pointer types (`*DataFinalityState`, `*CacheEmptyBehavior`) so 'unset' is unambiguous, or (c) emit a runtime warning when any of Method/Network/Params/Finality/Empty are non-zero AND no matchers were declared, telling the user to migrate. Add a regression test for the `finality: realtime` only case and the `empty: only` only case."
+    },
+    {
+      "id": "api-contract-2",
+      "severity": "high",
+      "confidence": 0.97,
+      "title": "TypeScript config types are stale: `matchers` field missing from FailsafeConfig and CachePolicyConfig in generated .d.ts/.ts",
+      "category": "breaking_change",
+      "description": "`tygo.yaml` declares `typescript/config/src/generated.ts` is auto-generated from the Go `common` package, but the diff does NOT include any updates to `typescript/config/src/generated.ts` or `typescript/config/lib/generated.d.ts`. Both files still expose only the legacy fields:\n  export interface FailsafeConfig { matchMethod?: string; matchFinality?: DataFinalityState[]; ... }\nand have no `matchers?: MatcherConfig[]` field, no `MatcherConfig` interface, and no `MatcherAction` type. Consequences for downstream consumers of the `@erpc/config` TypeScript package: (1) cannot type-check or autocomplete the new `matchers: [...]` schema, which is the schema the new docs (`docs/pages/config/failsafe.mdx`, `docs/pages/config/matcher.mdx`) tell them to use — the TS examples in `failsafe.mdx` will fail `tsc` against the published types; (2) the legacy fields lack `@deprecated` JSDoc, so IDE tooling won't surface the migration; (3) any code that constructs a config via `createConfig({ ... })` with `matchers` is currently a type error.",
+      "location": "typescript/config/src/generated.ts:596-599; typescript/config/lib/generated.d.ts:583-591 (both unchanged in this PR)",
+      "evidence": "grep on generated.ts shows MatchMethod/MatchFinality only, no MatcherConfig or matchers field; tygo.yaml maps `common` package -> generated.ts.",
+      "recommendation": "Re-run `tygo` (or whatever generator the repo uses) to regenerate `generated.ts` and `generated.d.ts` in this PR, including the new `MatcherConfig`, `MatcherAction` ('include' | 'exclude'), `MatchResult`, and `matchers?` fields on `FailsafeConfig` and `CachePolicyConfig`. Mark `matchMethod` and `matchFinality` with a `/** @deprecated Use matchers instead. */` JSDoc tag (if tygo supports it) or via post-processing. Add a CI step that fails when the Go config types diverge from the committed TS files."
+    },
+    {
+      "id": "api-contract-3",
+      "severity": "high",
+      "confidence": 0.92,
+      "title": "User-defined failsafe entries no longer inherit fields from upstreamDefaults/networkDefaults",
+      "category": "breaking_change",
+      "description": "In `common/defaults.go::UpstreamConfig.SetDefaults` (and the parallel block in `NetworkConfig.SetDefaults`), the previous behavior matched each user failsafe entry to a `defaults.Failsafe[]` entry by `MatchMethod` (wildcard) + `MatchFinality` and called `fs.SetDefaults(defaultFs)` so that fields the user did not set (e.g. `timeout`, `circuitBreaker`, `hedge`) were filled in from the matched default. The new code unconditionally calls `fs.SetDefaults(nil)` whenever the user has any failsafe entries. The inline comment explicitly acknowledges this: 'matchers PR (#388) deliberately replaced per-method/finality merging with \"user policies override defaults entirely\"'. This is a real behavior change for existing production configs of the shape:\n  upstreamDefaults: { failsafe: [{ matchMethod: '*', timeout: 30s, retry: { maxAttempts: 3 } }] }\n  upstreams: [ { failsafe: [{ matchMethod: '*', retry: { maxAttempts: 5 } }] } ]\nPre-PR: upstream gets timeout=30s + retry.maxAttempts=5. Post-PR: upstream has NO timeout (and no circuit breaker, hedge, or consensus from defaults). This silently degrades resiliency.",
+      "location": "common/defaults.go:1670-1700 (UpstreamConfig.SetDefaults), common/defaults.go:1810-1830 (NetworkConfig.SetDefaults)",
+      "evidence": "Diff shows the per-default matching loop and the call `fs.SetDefaults(defaultFs)` removed; replaced with `fs.SetDefaults(nil)`.",
+      "recommendation": "Either (a) restore inheritance using the new matcher framework — i.e. for each user failsafe entry, find the first defaults entry whose `Matchers` overlap and pass it to `SetDefaults` so unset fields fill in; or (b) keep the new semantics but bump to a major-signaling version, add a CHANGELOG/migration entry under 'Breaking changes', and emit a startup warning when user failsafe entries lack any of {timeout, retry, circuitBreaker, hedge} while defaults provide them. Without one of these, existing deployments will silently lose timeouts/retries on upgrade."
+    },
+    {
+      "id": "api-contract-4",
+      "severity": "high",
+      "confidence": 0.85,
+      "title": "Failsafe executor selection changed from 'most-specific wins' to 'first match in declaration order'",
+      "category": "breaking_change",
+      "description": "The old `Upstream.getFailsafeExecutor` (`upstream/upstream.go`) used a four-tier priority: (1) match method+finality, (2) match method only, (3) match finality only, (4) catch-all. The new implementation iterates `u.failsafeExecutors` in declared order and returns the first whose `Matchers` match. After legacy conversion, a user config like:\n  failsafe:\n    - matchMethod: '*'           # broad\n      timeout: 30s\n    - matchMethod: 'eth_getLogs'\n      matchFinality: ['finalized']\n      timeout: 60s\nprior to this PR routed an eth_getLogs+finalized request to the SECOND policy (60s) by specificity. Post-PR, since the first matcher (`*`) matches everything and short-circuits, the request hits the FIRST policy (30s). Behavior reverses without any user action. The `failsafe.mdx` doc already said 'evaluated in order, first match wins', so this is technically aligning code to docs, but it is still a runtime semantics change for existing configs and warrants a migration note.",
+      "location": "upstream/upstream.go:290-330 (getFailsafeExecutor)",
+      "evidence": "Diff removes the three-pass loop in favor of a single pass that returns on first match; the legacy fallback inside the loop also returns on first method+finality match without a specificity tier.",
+      "recommendation": "Add a CHANGELOG entry under 'Behavior change' describing the new 'first match wins, ordering matters' semantics with a worked example of how to reorder existing configs (most specific entries first). Consider linting at config-load time and warning when a broad matcher (Method='*' with no other fields) precedes a narrower one in the same `failsafe` array. Add an integration test that pins down the new ordering semantic so it can't silently regress."
+    },
+    {
+      "id": "api-contract-5",
+      "severity": "medium",
+      "confidence": 0.8,
+      "title": "Cache MatchesForGet drops the 'Finalized requests also match Unfinalized policies' fallback",
+      "category": "behavior_change",
+      "description": "`data/cache_policy.go::MatchesForGet` previously had explicit logic that, when the request finality was `Finalized`, matched both `Finalized` and `Unfinalized` policies (since data written while unfinalized may have since become finalized). The new implementation delegates to `matchers.MatchConfig` which does an exact-equality check on `config.Finality`. After legacy conversion, a user policy with `finality: unfinalized` becomes a matcher with `Finality: [Unfinalized]`. A Get for newly-finalized data (request finality=Finalized) will no longer match that policy, leading to cache misses where pre-PR there would be hits. This will manifest as latency / origin load increases on upgrade for users who run separate Finalized vs Unfinalized cache layers.",
+      "location": "data/cache_policy.go MatchesForGetWithMatcher; matchers/matcher.go:38-49",
+      "evidence": "Diff removes the `if finality == DataFinalityStateFinalized { return p.config.Finality == Finalized || p.config.Finality == Unfinalized }` branch; replaced by the matchers framework which does direct equality.",
+      "recommendation": "Either restore the cross-finality fallback for Get operations (perhaps by allowing a matcher to declare `finality: ['finalized', 'unfinalized']` explicitly in migration), or document this as a behavior change with guidance: 'If you previously relied on Finalized requests reading from Unfinalized cache layers, add `finality: [\"finalized\", \"unfinalized\"]` to the relevant cache policy matchers.' Add a regression test."
+    },
+    {
+      "id": "api-contract-6",
+      "severity": "medium",
+      "confidence": 0.7,
+      "title": "CachePolicyConfig.Validate no longer requires network/method, hiding typos in user configs",
+      "category": "input_contract_relaxation",
+      "description": "Old `validation.go` rejected cache policies with `network == ''` or `method == ''`. New code only validates `Matchers` if non-empty. Combined with `SetDefaults` always coercing to a catch-all when no matchers exist, a user typo like `methdo: eth_call` (sic) now silently produces a catch-all `Method: '*'` policy rather than a config-load error. This narrows the input-validation contract: previously-rejected typos are now accepted as 'cache everything' — much broader than user intent.",
+      "location": "common/validation.go:444-470 (CachePolicyConfig.Validate)",
+      "evidence": "Removed `if p.Network == ''` / `if p.Method == ''` errors; new code only inspects p.Matchers.",
+      "recommendation": "After SetDefaults, validate that at least one matcher had at least one non-default field (or that the user explicitly wrote `matchers: [{ method: '*' }]`). Reject empty + auto-defaulted configs that came from a struct with neither legacy nor matcher fields, OR at minimum log a warning. This catches YAML key typos."
+    },
+    {
+      "id": "api-contract-7",
+      "severity": "medium",
+      "confidence": 0.6,
+      "title": "MatcherConfig.Empty zero-value semantics are not addressable from user configs",
+      "category": "schema_design",
+      "description": "`MatcherConfig.Empty` is `CacheEmptyBehavior` (int), with zero value `CacheEmptyBehaviorIgnore`. In `matchers/matcher.go::MatchConfig` lines 52-57, an unset `Empty` (zero) actively filters out empty responses (`if isEmptyish && config.Empty == Ignore { return false }`). This means there is no way for a user to write `matchers: [{ method: 'eth_call', action: include }]` without Ignore semantics — empty responses will always be filtered. The `matcher.mdx` documents `empty: ignore | allow | only` as 'optional', but 'optional' here actually means 'defaults to ignore', which has filtering side-effects. Either the field's zero value should be a 'no constraint' sentinel or the doc should explicitly state the default behavior.",
+      "location": "common/config.go MatcherConfig.Empty; matchers/matcher.go:52-57",
+      "evidence": "MatchConfig treats Empty==Ignore as an active filter; CacheEmptyBehaviorIgnore is iota=0.",
+      "recommendation": "Add a `CacheEmptyBehaviorAny` (or rename Ignore -> 'skipEmpty' and add a 'noConstraint' default) so 'unset' is distinguishable, OR change `Empty` to `*CacheEmptyBehavior` so `nil` means 'no constraint'. Either way, update matcher.mdx with the actual default semantic and a note that `empty: ignore` is the implicit filter."
+    },
+    {
+      "id": "api-contract-8",
+      "severity": "low",
+      "confidence": 0.9,
+      "title": "No runtime deprecation warning when configs use matchMethod/matchFinality/legacy cache fields",
+      "category": "deprecation_signaling",
+      "description": "The Go struct comments say `// Deprecated: Use Matchers instead`, but no log line is emitted when `convertLegacyMatchers` converts a legacy config at startup. Users running upgraded eRPC will continue to use the deprecated schema indefinitely with no signal, then be surprised when a future major version removes the legacy fields. Combined with finding api-contract-2 (TS types lack `@deprecated`), there is zero deprecation surface area visible to consumers.",
+      "location": "common/defaults.go convertLegacyMatchers (FailsafeConfig and CachePolicyConfig)",
+      "evidence": "No log.Warn call in convertLegacyMatchers; struct tag comments only.",
+      "recommendation": "Add a `log.Warn().Msg(\"failsafe.matchMethod/matchFinality are deprecated; convert to failsafe[].matchers\")` (rate-limited / once per startup) inside the legacy-conversion branch. Same for cache policy legacy fields. Add JSDoc `@deprecated` to the regenerated TS types."
+    },
+    {
+      "id": "api-contract-9",
+      "severity": "low",
+      "confidence": 0.9,
+      "title": "Validate error wrappers use %v instead of %w, breaking errors.Is/As chains",
+      "category": "error_contract",
+      "description": "`common/validation.go` changed `return err` to `return fmt.Errorf(\"upstream.failsafe[%d]: %v\", i, err)` and `\"network.failsafe[%d]: %v\"` and `\"failsafe.matchers validation failed: %v\"`. Using `%v` rather than `%w` flattens the error chain so callers cannot do `errors.Is(err, ErrInvalidConfig)` or `errors.As(err, &target)`. Programmatic consumers of the validation result are affected.",
+      "location": "common/validation.go:961-965 (Upstream), 1399-1403 (Network), 1124-1129 (FailsafeConfig.Validate)",
+      "evidence": "Three `%v` wrap formats in the diff.",
+      "recommendation": "Replace `%v` with `%w` in all three sites. This is a one-line fix with no behavioral risk."
+    },
+    {
+      "id": "api-contract-10",
+      "severity": "low",
+      "confidence": 0.7,
+      "title": "Legacy MatchMethod empty-string semantic flipped from 'invalid' to 'match all'",
+      "category": "behavior_change",
+      "description": "Old `FailsafeConfig.Validate` rejected `MatchMethod == \"\"` with `\"failsafe.matchMethod cannot be empty, use '*' to match any method\"`. Old `SetDefaults` then set empty MatchMethod to `\"*\"`. The new `convertLegacyMatchers` comment says \"Empty MatchMethod now means 'match all methods' (consistent with new matcher system)\". This is a relaxation: old code raised on empty MatchMethod if validation ran before defaulting, e.g. through any code path that called Validate without prior SetDefaults. Probably benign in practice but worth noting that the input contract for `matchMethod: ''` (a possible accidental user input from omitting/clearing the field) silently became 'match everything'.",
+      "location": "common/defaults.go:2148-2188 (convertLegacyMatchers); common/validation.go:1124-1129 (was: empty-MatchMethod rejection)",
+      "evidence": "Diff removes the empty-MatchMethod error; conversion treats empty as catch-all.",
+      "recommendation": "Optional: add a boot warning if a legacy FailsafeConfig has `matchMethod: ''` AND any other failsafe entry exists (high probability of user error). Otherwise document the new semantic in the failsafe.mdx 'Migration' section."
+    },
+    {
+      "id": "api-contract-11",
+      "severity": "low",
+      "confidence": 0.95,
+      "title": "Versioning: pre-1.0 project but multiple breaking semantic changes shipped without major-signaling bump",
+      "category": "versioning",
+      "description": "Per concern #8: this PR contains at least findings api-contract-1, -3, -4, -5, -6, and -7 above as semantic changes that affect existing user configs at runtime. The project is at 0.0.64 (pre-1.0), so SemVer permits breaking changes in minor or patch bumps, but conventionally a 0.x project signals breaking changes by bumping the second digit (0.0.x -> 0.1.0). The diff doesn't include a CHANGELOG/Release note for this PR. There is no gRPC service definition change and no HTTP route or JSON-RPC response shape change — the contract surface affected is exclusively the YAML/JSON config schema and the published TS types. So this is not a 'wire-protocol break', but it IS a 'config-schema break' for production deployments.",
+      "location": "VERSION/CHANGELOG (not modified in PR)",
+      "evidence": "Last release commit on base: `d75aabe chore: release 0.0.64`; PR has no version/changelog entry; documented behavior changes match findings 3-7.",
+      "recommendation": "Bump to 0.1.0 (or 0.0.65 with a prominent 'BREAKING' CHANGELOG section) and document the migration: (a) finality:realtime/empty:only legacy users must move to matchers; (b) upstream/network failsafe partial-overrides must be re-expressed as full configs; (c) re-order failsafe arrays so most-specific entries come first; (d) add finality fallbacks if you relied on Finalized->Unfinalized cache reads. Include before/after YAML snippets in the release notes."
+    }
+  ],
+  "residual_risks": [
+    "Semver vs. SchemaVer: there is no schema-version field in the eRPC config (no `apiVersion: erpc/v1` or similar). Without one, downstream config loaders cannot detect schema-incompatible files programmatically; users will hit subtle behavior changes only at runtime. Consider introducing one in a near-future PR.",
+    "The `MatcherConfig` struct mixes request-time fields (Network, Method, Params, Finality) with response-time fields (Empty). Same matcher type is used for both failsafe (request-only) and cache (request+response). For failsafe, `Empty` is meaningless but currently still type-checked and serialized. A user could write `matchers: [{ method: 'eth_call', empty: only }]` inside a `failsafe` block with no error — it will silently filter their failsafe to only-empty responses. Consider splitting into FailsafeMatcher and CacheMatcher, or rejecting `empty` in failsafe matcher validation.",
+    "Persistent-cache compatibility: if any cache policy state is persisted (Redis keyspace shape, etc.), changing how policies are described/named (the `str` debug string in NewCachePolicy now contains `matchers=[...]` instead of `network=... method=... finality=...`) may invalidate cached metric labels, alerts, and dashboards keyed off those names. Worth scanning Grafana/Prometheus dashboards used by operators.",
+    "Documentation drift: docs/pages/config/failsafe.mdx and matcher.mdx assume the regenerated TS types exist (they show `matchers: [...]` in TS examples). Until finding api-contract-2 is fixed, these examples are misleading."
+  ],
+  "testing_gaps": [
+    "No regression test in `common/defaults_test.go` for cache policies that set ONLY `finality: realtime` (or `finality: unfinalized`, `finality: unknown`) without method/network/params — the very case Bugbot flagged. Add cases asserting that the resulting matcher contains the user's finality value, not the catch-all.",
+    "No regression test for cache policies that set ONLY `empty: allow` or `empty: only`. Add cases asserting Empty is preserved post-conversion.",
+    "No test asserting upstream/network failsafe inheritance behavior for partial overrides — both the OLD inheritance and the NEW no-inheritance contract are unspecified by test. Add a test that documents the chosen semantic so a future regression can't slip through.",
+    "No test for the failsafe ordering change (api-contract-4): pin a config like `[{matchers:[{method:'*'}]}, {matchers:[{method:'eth_getLogs', finality:['finalized']}]}]` and assert getFailsafeExecutor returns the first one for an eth_getLogs+finalized request, demonstrating the new ordering semantic.",
+    "No test for cross-finality cache Get fallback (api-contract-5) — neither pinning the old behavior nor pinning the new behavior. Add either, depending on which contract is intended.",
+    "No TypeScript-level test (e.g., a tsd test or `tsc --noEmit` on the docs example) that the TS generated types match the Go source. Add a CI check that runs tygo and fails on drift.",
+    "No validation test rejecting nonsense combinations like a failsafe matcher with `empty: only` (cache-only field used in failsafe context) — see residual risk."
+  ]
+}

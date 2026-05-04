@@ -1412,6 +1412,41 @@ func TestCachePolicySetDefaults(t *testing.T) {
 		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
 	})
 
+	t.Run("finality-only legacy field preserves finality constraint", func(t *testing.T) {
+		// Regression for cursor-bot HIGH at common/defaults.go:622: a config
+		// with only `finality: realtime` (no method/network/params) used to
+		// silently fall through to a catch-all matcher, dropping the finality
+		// constraint entirely.
+		policy := &CachePolicyConfig{
+			Finality: DataFinalityStateRealtime,
+		}
+
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, []DataFinalityState{DataFinalityStateRealtime}, policy.Matchers[0].Finality,
+			"finality constraint must be preserved through legacy conversion")
+		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
+	})
+
+	t.Run("empty-only legacy field preserves empty behavior", func(t *testing.T) {
+		// Regression for cursor-bot HIGH at common/defaults.go:622: a config
+		// with only `empty: only` (no method/network/params) used to silently
+		// flip to the OPPOSITE Empty:Ignore catch-all.
+		policy := &CachePolicyConfig{
+			Empty: CacheEmptyBehaviorOnly,
+		}
+
+		err := policy.SetDefaults()
+		assert.NoError(t, err)
+
+		assert.Len(t, policy.Matchers, 1)
+		assert.Equal(t, CacheEmptyBehaviorOnly, policy.Matchers[0].Empty,
+			"empty behavior must be preserved through legacy conversion")
+		assert.Equal(t, MatcherInclude, policy.Matchers[0].Action)
+	})
+
 	t.Run("existing matchers are not modified", func(t *testing.T) {
 		policy := &CachePolicyConfig{
 			Network: "1",

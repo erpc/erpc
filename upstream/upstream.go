@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -291,43 +292,37 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 }
 
 func (u *Upstream) getFailsafeExecutor(ctx context.Context, req *common.NormalizedRequest) *FailsafeExecutor {
+	method, _ := req.Method()
+	// Iterate through executors in config order and return the first match.
+	// Prefer matcher-based selection when configured; otherwise fall back to
+	// legacy method/finality matching (which also handles the synthetic
+	// default executor with config=nil, method="*", finalities=nil that
+	// upstream_registry appends last).
 	for _, fe := range u.failsafeExecutors {
-		if fe.config != nil {
-			// Prefer new matcher-based selection when matchers are provided
-			if len(fe.config.Matchers) > 0 {
-				if matchers.Match(ctx, fe.config.Matchers, req, nil) {
-					return fe
-				}
-				continue
+		if fe.config != nil && len(fe.config.Matchers) > 0 {
+			if matchers.Match(ctx, fe.config.Matchers, req, nil) {
+				return fe
 			}
+			continue
+		}
 
-			// Fallback to legacy matching when no matchers are defined
-			method, _ := req.Method()
-			if ok, _ := common.WildcardMatch(fe.method, method); !ok {
-				continue
-			}
-			if len(fe.finalities) > 0 {
-				reqFinality := req.Finality(ctx)
-				finalityMatched := false
-				for _, f := range fe.finalities {
-					if f == reqFinality {
-						finalityMatched = true
-						break
-					}
-				}
-				if !finalityMatched {
-					continue
-				}
-			}
+		// Legacy matching: wildcard method + finality slice membership.
+		methodMatches := fe.method == "*"
+		if !methodMatches {
+			methodMatches, _ = common.WildcardMatch(fe.method, method)
+		}
+		finalityMatches := len(fe.finalities) == 0 || slices.Contains(fe.finalities, req.Finality(ctx))
+
+		if methodMatches && finalityMatches {
 			return fe
 		}
 	}
 
-	// If no specific match found, return the default executor (should be the last one)
-	if len(u.failsafeExecutors) > 0 {
-		return u.failsafeExecutors[len(u.failsafeExecutors)-1]
-	}
-
+	// No fallback: the synthetic default executor (appended last in
+	// upstream_registry with method="*", finalities=nil, config=nil) is
+	// guaranteed to match any request via the legacy branch above. If we
+	// reach here, the registry invariant has broken — return nil so callers
+	// can detect it (the call site already nil-checks).
 	return nil
 }
 
