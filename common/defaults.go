@@ -2180,13 +2180,6 @@ func (f *FailsafeConfig) convertLegacyMatchers() {
 
 		// Add the matcher (with or without finality states)
 		f.Matchers = append(f.Matchers, matcher)
-
-		// If we converted legacy fields and ended up with an empty method matcher
-		// AND no finality constraints, make it explicit as a catch-all
-		// If there are finality constraints, keep method empty to allow validation to add excludes
-		if len(f.Matchers) == 1 && f.Matchers[0].Method == "" && len(f.Matchers[0].Finality) == 0 {
-			f.Matchers[0].Method = "*"
-		}
 	}
 }
 

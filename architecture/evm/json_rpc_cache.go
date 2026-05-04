@@ -262,7 +262,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 		policySpan.End()
 		if jrr != nil {
-			// Validate the cached result's age against the policy's TTL (from main)
+			// Validate the cached result's age against the policy's TTL.
 			if c.shouldAcceptCachedResult(ctx, req, jrr, policy) {
 				matchedPolicyWithMatcher = policyWithMatcher // Remember which policy actually returned data
 				break

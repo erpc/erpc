@@ -1075,11 +1075,6 @@ const (
 	MatcherExclude MatcherAction = "exclude"
 )
 
-type MatchResult struct {
-	Matched bool
-	Action  MatcherAction
-}
-
 type FailsafeConfig struct {
 	Matchers       []*MatcherConfig            `yaml:"matchers,omitempty" json:"matchers"`
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`

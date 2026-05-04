@@ -963,7 +963,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if u.Failsafe != nil {
 		for i, fs := range u.Failsafe {
 			if err := fs.Validate(); err != nil {
-				return fmt.Errorf("upstream.failsafe[%d]: %v", i, err)
+				return fmt.Errorf("upstream.failsafe[%d]: %w", i, err)
 			}
 		}
 	}
@@ -1127,7 +1127,7 @@ func (f *FailsafeConfig) Validate() error {
 	if len(f.Matchers) > 0 {
 		processedMatchers, err := validateMatchers(f.Matchers)
 		if err != nil {
-			return fmt.Errorf("failsafe.matchers validation failed: %v", err)
+			return fmt.Errorf("failsafe.matchers validation failed: %w", err)
 		}
 		f.Matchers = processedMatchers
 	}
@@ -1401,7 +1401,7 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if n.Failsafe != nil {
 		for i, fs := range n.Failsafe {
 			if err := fs.Validate(); err != nil {
-				return fmt.Errorf("network.failsafe[%d]: %v", i, err)
+				return fmt.Errorf("network.failsafe[%d]: %w", i, err)
 			}
 		}
 	}

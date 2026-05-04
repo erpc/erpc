@@ -248,16 +248,20 @@ export interface CacheMethodConfig {
     enforceBlockAvailability?: boolean;
 }
 export interface CachePolicyConfig {
+    matchers?: (MatcherConfig | undefined)[];
     connector: string;
+    appliesTo?: 'get' | 'set' | 'both';
+    minItemSize?: ByteSize;
+    maxItemSize?: ByteSize;
+    ttl?: Duration;
+    /**
+     * Deprecated: Use Matchers instead
+     */
     network?: string;
     method?: string;
     params?: any[];
     finality?: DataFinalityState;
     empty?: CacheEmptyBehavior;
-    appliesTo?: 'get' | 'set' | 'both';
-    minItemSize?: ByteSize;
-    maxItemSize?: ByteSize;
-    ttl?: Duration;
 }
 export type ConnectorDriverType = string;
 export declare const DriverMemory: ConnectorDriverType;
@@ -580,14 +584,29 @@ export interface EvmAvailabilityBoundConfig {
     probe?: EvmAvailabilityProbeType;
     updateRate?: Duration;
 }
+export interface MatcherConfig {
+    network?: string;
+    method?: string;
+    params?: any[];
+    finality?: DataFinalityState[];
+    empty?: CacheEmptyBehavior;
+    action?: MatcherAction;
+}
+export type MatcherAction = string;
+export declare const MatcherInclude: MatcherAction;
+export declare const MatcherExclude: MatcherAction;
 export interface FailsafeConfig {
-    matchMethod?: string;
-    matchFinality?: DataFinalityState[];
+    matchers?: (MatcherConfig | undefined)[];
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
     hedge?: HedgePolicyConfig;
     consensus?: ConsensusPolicyConfig;
+    /**
+     * Deprecated: Use Matchers instead
+     */
+    matchMethod?: string;
+    matchFinality?: DataFinalityState[];
 }
 export interface RetryPolicyConfig {
     maxAttempts: number;

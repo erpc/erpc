@@ -24,8 +24,13 @@ type PolicyWithMatcher struct {
 	Matcher *common.MatcherConfig
 }
 
-// EmptyState returns the empty state behavior from the matched matcher
+// EmptyState returns the empty state behavior from the matched matcher.
+// Falls back to CacheEmptyBehaviorIgnore when the matcher is nil (defensive —
+// callers should always populate Matcher, but a nil shouldn't NPE in the cache hot path).
 func (pm *PolicyWithMatcher) EmptyState() common.CacheEmptyBehavior {
+	if pm == nil || pm.Matcher == nil {
+		return common.CacheEmptyBehaviorIgnore
+	}
 	return pm.Matcher.Empty
 }
 

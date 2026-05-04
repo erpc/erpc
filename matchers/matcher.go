@@ -156,14 +156,13 @@ func Match(ctx context.Context, configs []*common.MatcherConfig, req *common.Nor
 	// Extract required fields from request
 	method, _ := req.Method()
 	finality := req.Finality(ctx)
-	networkId := ""
-	if req.NetworkId() != "" {
-		networkId = req.NetworkId()
-	}
+	networkId := req.NetworkId()
 
 	var params []interface{}
 	if jrpcReq, err := req.JsonRpcRequest(); err == nil && jrpcReq != nil {
+		jrpcReq.RLock()
 		params = jrpcReq.Params
+		jrpcReq.RUnlock()
 	}
 
 	// Determine if response is empty
